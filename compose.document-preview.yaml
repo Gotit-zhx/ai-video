@@ -11,7 +11,7 @@ services:
       knowledge-preview:
         priority: 0
   document-preview:
-    build: ./document-preview
+    build: ./services/document-preview
     image: heyi-document-preview:local
     user: "10001:10001"
     read_only: true

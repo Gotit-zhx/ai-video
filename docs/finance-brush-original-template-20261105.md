@@ -34,7 +34,7 @@ Validation:
   charges UI suite passed. No financial records were imported during acceptance.
 
 Asset: `frontend/assets/templates/finance-brush-cost-template.xlsx`.
-Release helper: `scripts/release-finance-brush-original-template.py`.
+Release helper: `scripts/release/release-finance-brush-original-template.py`.
 Release root: `/opt/heyi/releases/finance-brush-original-template-20261105`.
 Frontend: `ai-commerce-frontend:finance-brush-original-template-20261105`.
 Backend remains `ai-commerce-platform:finance-source-orders-20261105`.

@@ -62,7 +62,7 @@ jobs:
     timeout-minutes: 35
     defaults:
       run:
-        working-directory: hr-desktop
+        working-directory: apps/hr-desktop
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -91,14 +91,14 @@ jobs:
       - run: python -m unittest discover -s runtime -p test_managed_jobs.py
       - run: python -m unittest discover -s runtime -p test_wire_output.py
       - run: python -m unittest discover -s runtime -p test_conversation_scope.py
-      - run: python -m unittest discover -s ../scripts/boss-agent -p test_recruitment_demands.py
-      - run: python -m unittest discover -s ../scripts/boss-agent -p test_passive_pool.py
-      - run: python -m unittest discover -s ../scripts/boss-agent -p test_hr_account_identity.py
-      - run: python -m unittest discover -s ../scripts/boss-agent -p test_hr_sourcing.py
-      - run: python -m unittest discover -s ../scripts/boss-agent -p test_resume_identity.py
+      - run: python -m unittest discover -s ../../services/recruitment -p test_recruitment_demands.py
+      - run: python -m unittest discover -s ../../services/recruitment -p test_passive_pool.py
+      - run: python -m unittest discover -s ../../services/recruitment -p test_hr_account_identity.py
+      - run: python -m unittest discover -s ../../services/recruitment -p test_hr_sourcing.py
+      - run: python -m unittest discover -s ../../services/recruitment -p test_resume_identity.py
       - run: python runtime/test_portable.py
       - run: python runtime/test_direct_network.py
-      - run: python -m unittest discover -s ../scripts/boss-agent -p test_desktop_bridge.py
+      - run: python -m unittest discover -s ../../services/recruitment -p test_desktop_bridge.py
       - name: Offline floating-orb and BOSS-window smoke
         shell: bash
         run: |
@@ -191,7 +191,7 @@ jobs:
             if ($env:SOURCE_COMMIT -notmatch '^[a-f0-9]{40}$') { throw 'Exact source commit required' }
             git fetch --no-tags --depth=1 origin $env:SOURCE_COMMIT
             if ($LASTEXITCODE -ne 0) { throw 'Source commit unavailable' }
-            git diff --exit-code $env:SOURCE_COMMIT HEAD -- hr-desktop scripts/boss-agent
+            git diff --exit-code $env:SOURCE_COMMIT HEAD -- apps/hr-desktop services/recruitment
             if ($LASTEXITCODE -ne 0) { throw 'Business sources differ from requested artifact commit' }
             $commit = $env:SOURCE_COMMIT
           }
@@ -218,34 +218,34 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install isolated inspection dependencies
-        working-directory: hr-desktop/client-workbench
+        working-directory: apps/hr-desktop/client-workbench
         run: pnpm install --ignore-workspace --ignore-scripts --frozen-lockfile
       - name: Verify local inspector driver with real Node fixtures
-        run: node --test hr-desktop/client-workbench/*.test.cjs hr-desktop/test/core.test.cjs
+        run: node --test apps/hr-desktop/client-workbench/*.test.cjs apps/hr-desktop/test/core.test.cjs
       - name: Build Windows worker for the isolated workbench
         if: ${{ inputs.nativeWorkbench == true }}
         run: |
-          python -m unittest discover -s hr-desktop/runtime -p test_build_manifest.py
-          python hr-desktop/runtime/install.py
-          python hr-desktop/runtime/build.py
+          python -m unittest discover -s apps/hr-desktop/runtime -p test_build_manifest.py
+          python apps/hr-desktop/runtime/install.py
+          python apps/hr-desktop/runtime/build.py
       - name: Check both invitation workflows with isolated platform fixtures
         if: ${{ inputs.nativeWorkbench == true }}
         env:
-          PYTHONPATH: hr-desktop/runtime/build/shared
+          PYTHONPATH: apps/hr-desktop/runtime/build/shared
         run: |
-          python -m unittest discover -s hr-desktop/runtime -p test_invitation_lifecycle.py
-          python -m unittest discover -s scripts/boss-agent -p test_hr_account_identity.py
+          python -m unittest discover -s apps/hr-desktop/runtime -p test_invitation_lifecycle.py
+          python -m unittest discover -s services/recruitment -p test_hr_account_identity.py
       - name: Check receipt scheduling and configured request ceiling
         if: ${{ inputs.nativeWorkbench == true }}
         env:
-          PYTHONPATH: hr-desktop/runtime/build/shared
+          PYTHONPATH: apps/hr-desktop/runtime/build/shared
         run: |
-          python -m unittest discover -s hr-desktop/runtime -p test_desktop_budget.py
-          python -m unittest discover -s hr-desktop/runtime -p test_passive_runtime.py
-          python -m unittest discover -s hr-desktop/runtime -p test_boss_chat_receipts.py
-          python -m unittest discover -s hr-desktop/runtime -p test_resume_reuse.py
-          python -m unittest discover -s hr-desktop/runtime -p test_recommendation_budget.py
-          python -m unittest discover -s hr-desktop/runtime -p test_managed_jobs.py
+          python -m unittest discover -s apps/hr-desktop/runtime -p test_desktop_budget.py
+          python -m unittest discover -s apps/hr-desktop/runtime -p test_passive_runtime.py
+          python -m unittest discover -s apps/hr-desktop/runtime -p test_boss_chat_receipts.py
+          python -m unittest discover -s apps/hr-desktop/runtime -p test_resume_reuse.py
+          python -m unittest discover -s apps/hr-desktop/runtime -p test_recommendation_budget.py
+          python -m unittest discover -s apps/hr-desktop/runtime -p test_managed_jobs.py
       - name: Check private candidate export boundaries
         if: ${{ inputs.nativeWorkbench == true }}
         run: |
@@ -256,9 +256,9 @@ jobs:
             if ($syntaxErrors.Count) { throw ($syntaxErrors | Out-String) }
           }
           python -m unittest discover -s scripts/ci -p test_export_workbench.py
-          python -m unittest discover -s hr-desktop/client-workbench -p test_windows_entry.py
-          python -m unittest discover -s hr-desktop/client-workbench -p test_windows_installer.py
-          python -m unittest discover -s hr-desktop/client-workbench -p test_windows_startup.py
+          python -m unittest discover -s apps/hr-desktop/client-workbench -p test_windows_entry.py
+          python -m unittest discover -s apps/hr-desktop/client-workbench -p test_windows_installer.py
+          python -m unittest discover -s apps/hr-desktop/client-workbench -p test_windows_startup.py
       - name: Observe pinned original runtime without network or login
         shell: pwsh
         env:

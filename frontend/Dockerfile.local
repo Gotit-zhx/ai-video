@@ -40,3 +40,6 @@ COPY hr-bi.js hr-desktop-bridge.js hr-onboarding.js hr-resume-preview.js hr-sour
 COPY product-listing-templates.js product-listing-templates.css /usr/share/nginx/html/
 COPY styles.css mobile.css /usr/share/nginx/html/
 COPY 50x.html /usr/share/nginx/html/
+
+# Keep the page entry resources in the image.
+COPY commerce-template-appearance.css commerce-template-appearance.js finance-charges.js finance-costs.css finance-costs.js finance-expenses-design.css finance-expenses-design.js finance-fee-exports.js finance-label-costs.js finance-loading.css finance-qianyi.css finance-qianyi.js incremental-charts.js incremental-dom.js video-direct-downloads.js /usr/share/nginx/html/

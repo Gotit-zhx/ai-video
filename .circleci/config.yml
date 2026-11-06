@@ -36,10 +36,10 @@ jobs:
             }
           no_output_timeout: 15m
       - store_artifacts:
-          path: hr-desktop/release
+          path: apps/hr-desktop/release
           destination: installers
       - store_artifacts:
-          path: hr-desktop/test-results
+          path: apps/hr-desktop/test-results
           destination: verification
 
 workflows:

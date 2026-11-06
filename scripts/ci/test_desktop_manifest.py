@@ -18,7 +18,7 @@ class DesktopManifestTests(unittest.TestCase):
         self.script = root / "scripts/ci/desktop-manifest.py"
         self.script.parent.mkdir(parents=True)
         shutil.copyfile(Path(__file__).with_name("desktop-manifest.py"), self.script)
-        self.desktop = root / "hr-desktop"
+        self.desktop = root / "apps/hr-desktop"
         self.release = self.desktop / "release"
         self.release.mkdir(parents=True)
         self.smoke = self.desktop / "test-results/packaged/smoke.json"

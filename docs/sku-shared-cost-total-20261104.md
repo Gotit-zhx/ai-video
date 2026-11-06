@@ -66,7 +66,7 @@ while a failed or incomplete query does not present a fabricated zero.
 Active images: `ai-commerce-platform:sku-shared-cost-total-20261104` and
 `ai-commerce-frontend:sku-shared-cost-total-layout-20261104`.
 Directory: `/opt/heyi/releases/sku-shared-cost-total-20261104`.
-Helper: `scripts/release-sku-shared-cost-total.py`.
+Helper: `scripts/release/release-sku-shared-cost-total.py`.
 
 Overlay scope: ProductSkuNaming, ProductSkuNamingService, FinanceCostReport,
 ProductPublicationSkuNaming, ProductCaptureSku, ProductCaptureService,

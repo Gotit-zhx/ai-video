@@ -1,0 +1,2649 @@
+{
+  "schema_version": 1,
+  "scope": {
+    "host": "8.163.34.81",
+    "timezone": "Asia/Shanghai",
+    "started_at": "2026-11-05T18:09:13.105508+08:00",
+    "inventory_completed_at": "2026-11-05T18:19:27.254146+08:00",
+    "method": "SSH read-only allowlist; selected Docker metadata; HTTP GET; read-only SQL transactions; selected receipt fields",
+    "server_config_changed": false,
+    "business_data_changed": false,
+    "services_restarted": false,
+    "backup_or_restore_started": false,
+    "excluded": "Passwords, key/token/cookie values, full Docker inspect, expanded Compose content, raw business records, raw logs, sync checkpoints/cursors"
+  },
+  "host": {
+    "observed_at": "2026-11-05T18:09:13.105508+08:00",
+    "user": "root",
+    "hostname": "iZ7xv22ayi93rf34fgl9fuZ",
+    "os": {
+      "PRETTY_NAME": "\"Ubuntu 26.04 LTS\"",
+      "NAME": "\"Ubuntu\"",
+      "VERSION_ID": "\"26.04\"",
+      "VERSION": "\"26.04 LTS (Resolute Raccoon)\"",
+      "VERSION_CODENAME": "resolute",
+      "ID": "ubuntu",
+      "ID_LIKE": "debian",
+      "HOME_URL": "\"https://www.ubuntu.com/\"",
+      "SUPPORT_URL": "\"https://help.ubuntu.com/\"",
+      "BUG_REPORT_URL": "\"https://bugs.launchpad.net/ubuntu/\"",
+      "PRIVACY_POLICY_URL": "\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"",
+      "UBUNTU_CODENAME": "resolute",
+      "LOGO": "ubuntu-logo"
+    },
+    "kernel": "7.0.0-28-generic",
+    "uptime": "18:09:13 up 78 days,  1:29,  2 users,  load average: 6.35, 7.16, 6.77",
+    "cpu": 8,
+    "memory": "total        used        free      shared  buff/cache   available\nMem:           30663       19247        6379          41        5516       11416\nSwap:              0           0           0",
+    "docker_version": "29.1.3",
+    "compose_version": "2.40.3+ds1-0ubuntu1",
+    "docker_disk": "TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE\nImages          30        10        8.001GB   4.2GB (52%)\nContainers      10        10        6.414MB   0B (0%)\nLocal Volumes   8         8         75.91GB   0B (0%)\nBuild Cache     0         0         0B        0B",
+    "failed_units": "● aegis.service             loaded failed failed Aegis Service\n● certbot.service           loaded failed failed Certbot\n● heyi-mysql-backup.service loaded failed failed Backup Heyi MySQL database",
+    "listeners": "Netid State  Recv-Q Send-Q     Local Address:Port  Peer Address:PortProcess                                                    \nudp   UNCONN 0      0             127.0.0.54:53         0.0.0.0:*    users:((\"systemd-resolve\",pid=1111742,fd=19))             \nudp   UNCONN 0      0          127.0.0.53%lo:53         0.0.0.0:*    users:((\"systemd-resolve\",pid=1111742,fd=17))             \nudp   UNCONN 0      0      172.26.168.5%eth0:68         0.0.0.0:*    users:((\"systemd-network\",pid=1111791,fd=34))             \nudp   UNCONN 0      0              127.0.0.1:323        0.0.0.0:*    users:((\"chronyd\",pid=3277086,fd=4))                      \nudp   UNCONN 0      0                  [::1]:323           [::]:*    users:((\"chronyd\",pid=3277086,fd=5))                      \ntcp   LISTEN 0      4096           127.0.0.1:6379       0.0.0.0:*    users:((\"docker-proxy\",pid=2876407,fd=7))                 \ntcp   LISTEN 0      4096           127.0.0.1:38685      0.0.0.0:*    users:((\"containerd\",pid=3277042,fd=33))                  \ntcp   LISTEN 0      4096       127.0.0.53%lo:53         0.0.0.0:*    users:((\"systemd-resolve\",pid=1111742,fd=18))             \ntcp   LISTEN 0      4096          127.0.0.54:53         0.0.0.0:*    users:((\"systemd-resolve\",pid=1111742,fd=20))             \ntcp   LISTEN 0      5             172.18.0.1:8767       0.0.0.0:*    users:((\"python\",pid=344871,fd=4))                        \ntcp   LISTEN 0      4096             0.0.0.0:8090       0.0.0.0:*    users:((\"docker-proxy\",pid=444179,fd=7))                  \ntcp   LISTEN 0      4096             0.0.0.0:8080       0.0.0.0:*    users:((\"docker-proxy\",pid=1556749,fd=7))                 \ntcp   LISTEN 0      4096             0.0.0.0:3306       0.0.0.0:*    users:((\"docker-proxy\",pid=2847387,fd=7))                 \ntcp   LISTEN 0      4096             0.0.0.0:18443      0.0.0.0:*    users:((\"1panel-core\",pid=497871,fd=22))                  \ntcp   LISTEN 0      4096             0.0.0.0:443        0.0.0.0:*    users:((\"docker-proxy\",pid=1557716,fd=7))                 \ntcp   LISTEN 0      4096           127.0.0.1:8978       0.0.0.0:*    users:((\"docker-proxy\",pid=499387,fd=7))                  \ntcp   LISTEN 0      4096             0.0.0.0:22         0.0.0.0:*    users:((\"sshd\",pid=3400422,fd=3),(\"systemd\",pid=1,fd=693))\ntcp   LISTEN 0      4096             0.0.0.0:80         0.0.0.0:*    users:((\"docker-proxy\",pid=1557694,fd=7))                 \ntcp   LISTEN 0      4096                [::]:8090          [::]:*    users:((\"docker-proxy\",pid=444186,fd=7))                  \ntcp   LISTEN 0      4096                [::]:8080          [::]:*    users:((\"docker-proxy\",pid=1556756,fd=7))                 \ntcp   LISTEN 0      4096                [::]:3306          [::]:*    users:((\"docker-proxy\",pid=2847393,fd=7))                 \ntcp   LISTEN 0      4096                [::]:443           [::]:*    users:((\"docker-proxy\",pid=1557723,fd=7))                 \ntcp   LISTEN 0      4096                [::]:22            [::]:*    users:((\"sshd\",pid=3400422,fd=4),(\"systemd\",pid=1,fd=695))\ntcp   LISTEN 0      4096                [::]:80            [::]:*    users:((\"docker-proxy\",pid=1557700,fd=7))",
+    "root_disk_final": "Filesystem     Type  Size  Used Avail Use% Mounted on\n/dev/vda3      ext4   99G   74G   21G  79% /",
+    "free_bytes_final": 21721296896,
+    "initial_root_disk_line": "/dev/vda3      ext4       99G   75G   20G  80% /"
+  },
+  "containers": [
+    {
+      "name": "finance-gift-cost-repair",
+      "container_id": "411da783792c8e32c5248ab3e277c18df799abc8e68698bbb346269e9c66559a",
+      "image_tag": "ai-commerce-platform:finance-gift-zero-20261105",
+      "image_id": "sha256:e3feb07e208e5593de8454f5b214b7909a54a73281904fe0a62a94d9e7d1546f",
+      "created_at_utc": "2026-11-05T10:10:41.34372438Z",
+      "started_at_utc": "2026-11-05T10:10:41.994455229Z",
+      "status": "running",
+      "docker_health": null,
+      "restart_count": 0,
+      "oom_killed": false,
+      "restart_policy": {
+        "Name": "no",
+        "MaximumRetryCount": 0
+      },
+      "log": {
+        "Type": "none",
+        "Config": {}
+      },
+      "ports": {
+        "8080/tcp": null
+      },
+      "networks": [
+        "web_sdk__default"
+      ],
+      "limits": {
+        "memory_bytes": 536870912,
+        "nano_cpus": 500000000,
+        "pids": null
+      },
+      "compose": {
+        "project": null,
+        "service": null,
+        "working_directory": null,
+        "config_files": [],
+        "missing_files": []
+      },
+      "mounts": [
+        {
+          "Type": "bind",
+          "Name": null,
+          "Source": "/opt/heyi/releases/finance-gift-zero-20261105",
+          "Destination": "/qa",
+          "RW": true
+        }
+      ]
+    },
+    {
+      "name": "ai-commerce-frontend",
+      "container_id": "26917a4539e17b42f9ecad6fc362d75b1cf1cb5cf3c036a43c535a0612a9d650",
+      "image_tag": "ai-commerce-frontend:finance-gift-zero-20261105",
+      "image_id": "sha256:964389c709712d5e7464ee886a5c3d19c4b038784edc0fcd1ee8d1a4d3123921",
+      "created_at_utc": "2026-11-05T09:57:43.226148387Z",
+      "started_at_utc": "2026-11-05T09:57:44.604304242Z",
+      "status": "running",
+      "docker_health": null,
+      "restart_count": 0,
+      "oom_killed": false,
+      "restart_policy": {
+        "Name": "unless-stopped",
+        "MaximumRetryCount": 0
+      },
+      "log": {
+        "Type": "none",
+        "Config": {}
+      },
+      "ports": {
+        "443/tcp": [
+          {
+            "HostIp": "0.0.0.0",
+            "HostPort": "443"
+          },
+          {
+            "HostIp": "::",
+            "HostPort": "443"
+          }
+        ],
+        "80/tcp": [
+          {
+            "HostIp": "0.0.0.0",
+            "HostPort": "80"
+          },
+          {
+            "HostIp": "::",
+            "HostPort": "80"
+          }
+        ]
+      },
+      "networks": [
+        "web_sdk__default"
+      ],
+      "limits": {
+        "memory_bytes": 0,
+        "nano_cpus": 0,
+        "pids": null
+      },
+      "compose": {
+        "project": "web_sdk_",
+        "service": "frontend",
+        "working_directory": "/opt/heyi/releases/hr-manual-scan-20260928/staged",
+        "config_files": [
+          "/opt/heyi/releases/hr-manual-scan-20260928/staged/compose.release.yaml",
+          "/opt/heyi/releases/hr-desktop-20260928/compose.desktop.json",
+          "/opt/heyi/releases/hr-workspace-20260929/compose.workspace.json",
+          "/opt/heyi/releases/hr-planning-20260929/compose.pool.json",
+          "/opt/heyi/releases/hr-planning-20260929/compose.pool.json",
+          "/opt/heyi/releases/hr-reconnect-20260929/compose.reconnect.json",
+          "/opt/heyi/releases/hr-reconnect-final-20260929/compose.reconnect.json",
+          "/opt/heyi/releases/hr-reconnect-background-20260929/compose.reconnect.json",
+          "/opt/heyi/releases/hr-jobs-four-20260929/compose.reconnect.json",
+          "/opt/heyi/releases/plugin-download-20260929/compose.plugin.json",
+          "/opt/heyi/releases/hr-passive-20260929/compose.passive.json",
+          "/opt/heyi/releases/hr-passive-reply-20260929/compose.reply.json",
+          "/opt/heyi/releases/hr-passive-capacity-20260929/compose.capacity.json",
+          "/opt/heyi/releases/hr-passive-capacity-20260929-2/compose.capacity.json",
+          "/opt/heyi/releases/hr-passive-realtime-20260929/compose.capacity.json",
+          "/opt/heyi/releases/hr-resume-review-20260929/compose.review.json",
+          "/opt/heyi/releases/hr-reconnect-catchup-20260930/compose.review.json",
+          "/opt/heyi/releases/hr-resume-names-20260930/compose.review.json",
+          "/opt/heyi/releases/hr-resume-filter-20260930/compose.review.json",
+          "/opt/heyi/releases/hr-job-jd-autoreconnect-20260930/compose.review.json",
+          "/opt/heyi/releases/hr-resume-job-tabs-20260930/compose.review.json",
+          "/opt/heyi/releases/hr-demand-stream-20260930/compose.passive.json",
+          "/opt/heyi/releases/hr-active-sourcing-20260930/compose.passive.json",
+          "/opt/heyi/releases/hr-recovery-20260930/compose.frontend.json",
+          "/opt/heyi/releases/hr-sourcing-credentials-20260930/compose.frontend.json",
+          "/opt/heyi/releases/product-select-all-20260930/compose.frontend.json",
+          "/opt/heyi/releases/hr-continuous-sourcing-20260930/compose.frontend.json",
+          "/opt/heyi/releases/hr-continuous-recovery-20260930/compose.frontend.json",
+          "/opt/heyi/releases/hr-sourcing-criteria-20260930/compose.passive.json",
+          "/opt/heyi/releases/hr-sourcing-response-20260930/compose.passive.json",
+          "/opt/heyi/releases/hr-managed-jobs-20260930/compose.reconnect.json",
+          "/opt/heyi/releases/hr-storage-20261008/compose.reconnect.json",
+          "/opt/heyi/releases/video-local-previews-20261008/compose.frontend.json",
+          "/opt/heyi/releases/video-local-assets-20261008/compose.frontend.json",
+          "/opt/heyi/releases/hr-job-cards-20261008/compose.cards.json",
+          "/opt/heyi/releases/hr-open-jobs-20261008/compose.cards.json",
+          "/opt/heyi/releases/local-asset-urls-20261008/compose.cards.json",
+          "/opt/heyi/releases/hr-job-scope-20261008/compose.cards.json",
+          "/opt/heyi/releases/hr-demand-reference-20261008/compose.passive.json",
+          "/opt/heyi/releases/hr-sourcing-selector-20261008/compose.cards.json",
+          "/opt/heyi/releases/hr-sourcing-selector-final-20261008/compose.cards.json",
+          "/opt/heyi/releases/hr-pi-sdk-progress-20261008/compose.passive.json",
+          "/opt/heyi/releases/hr-demand-close-20261008/compose.cards.json",
+          "/opt/heyi/releases/hr-sourcing-precision-20261008/compose.passive.json",
+          "/opt/heyi/releases/hr-greeting-20261008/compose.cards.json",
+          "/opt/heyi/releases/hr-matching-score-20261008/compose.cards.json",
+          "/opt/heyi/releases/hr-jd-requirements-20261008/compose.cards.json",
+          "/opt/heyi/releases/hr-jd-requirements-20261008-v2/compose.cards.json",
+          "/opt/heyi/releases/hr-greeting-receipts-20261008/compose.cards.json",
+          "/opt/heyi/releases/hr-rejection-template-20261008/compose.cards.json",
+          "/opt/heyi/releases/hr-rejection-template-simple-20261008/compose.cards.json",
+          "/opt/heyi/releases/hr-dingtalk-interviews-20261008/compose.cards.json",
+          "/opt/heyi/releases/hr-pool-remove-new-talent-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-department-phone-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-interview-reviews-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-pool-departments-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-pool-department-tabs-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-pool-compact-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-pool-simplified-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-pool-packet-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-second-interview-resume-jd-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-onboarding-bi-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-bi-design-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-bi-compact-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-dingtalk-directory-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-review-label-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-dingtalk-departments-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-departments-compact-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-desktop-installers-20261009-015/compose.cards.json",
+          "/opt/heyi/releases/hr-demands-compact-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-demands-onboarding-actions-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-mentor-directory-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-mentor-selection-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-user-access-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-desktop-downloads-0116-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-windows-connection-20261009/compose.cards.json",
+          "/opt/heyi/releases/hr-windows-unicode-017-20261009/compose.cards.json",
+          "/opt/heyi/releases/capture-templates-20261010/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/capture-templates-20261010/compose.ui.json",
+          "/opt/heyi/releases/capture-logistics-20261010/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/hr-priority-20261012/compose.priority.json",
+          "/opt/heyi/releases/hr-recovery-20261012/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/hr-recovery-20261012/receipt-reserve/compose.frontend.json",
+          "/opt/heyi/releases/hr-recovery-20261012/downloads-022/compose.downloads.json",
+          "/opt/heyi/releases/tiktok-auth-expiry-20261013/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/capture-recollect-20261013/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/collector-version-20261013/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/sizechart-resume-20261013/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/batch-sizechart-20261013/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/batch-sizechart-20261013/compose.package.json",
+          "/opt/heyi/releases/batch-chart-only-20261014/compose.frontend.json",
+          "/opt/heyi/releases/multi-shop-upload-20261014/compose.frontend.json",
+          "/opt/heyi/releases/visual-product-title-20261014/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/country-origin-20261014/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/country-origin-20261014/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/sea-origin-20261014/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/dual-origin-20261014/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/address-label-20261014/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/restored-templates-20261014/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/hr-recovery-20261012/downloads-023/compose.downloads.json",
+          "/opt/heyi/releases/hr-recovery-20261012/downloads-024/compose.downloads.json",
+          "/opt/heyi/releases/module-isolation-20261015/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/module-isolation-video-20261015/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/video-pipeline-20261015/compose.ai-commerce-frontend.activate.json",
+          "/opt/heyi/releases/hr-resume-compat-20261016/compose.resume.json",
+          "/opt/heyi/releases/sourcing-manual-20261016/compose.sourcing.json",
+          "/opt/heyi/releases/ai-boss-downloads-20261019-c11aab0/compose.downloads.json",
+          "/opt/heyi/releases/main-image-style-20261019/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/main-image-style-progress-20261019/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/ai-boss-account-reconcile-20261019/compose.frontend.json",
+          "/opt/heyi/releases/main-image-preserve-20261019-363b26d/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/main-image-detail-progress-20261019-f9d8a13/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/ai-boss-windows-startup-20261019/compose.frontend.json",
+          "/opt/heyi/releases/main-image-direct-output-20261019-2e0ab0f/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/ai-boss-windows-handoff-20261019-attempt2/compose.frontend.json",
+          "/opt/heyi/releases/template-palette-20261020/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-bi-20261020/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-layout-sync-20261021/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-recent-sync-20261021/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-configuration-20261021/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-live-ads-20261021/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/incremental-refresh-20261021/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/incremental-charts-20261021/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-reconciliation-view-20261021/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/first-load-compression-20261021/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/on-demand-entry-20261021/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-groups-20261022/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-ad-links-20261022/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-record-display-20261022/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-record-compact-20261022/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-cost-workspace-20261022/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-cost-shops-20261022/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-cost-sku-format-20261023/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-order-costs-20261023/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-order-costs-20261023/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-product-skus-20261023/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-shop-labels-20261023/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/tiktok-default-warehouse-20261023/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-settled-cost-export-20261023/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-profit-overview-20261023/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-query-speed-20261024/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-metric-defaults-20261024/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-shop-deletion-20261024/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-pending-costs-20261026/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-sku-identities-20261026/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-cost-sources-20261026/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-order-tags-20261026/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-settled-goods-20261026/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-calculation-speed-20261026/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-settlement-display-20261027/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-fee-incremental-20261027/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-operating-costs-20261027/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-charge-period-20261027/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-charge-fast-20261027/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-date-search-20261027/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-settlement-completion-20261027/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/seedance-mini-20261027/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/collector-local-env-028-20261027/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-reporting-months-20261028/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-reporting-months-calendar-20261028/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-settlement-export-20261029/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-settlement-export-20261029/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-excel-basis-20261029/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-actual-costs-20261029/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-cost-currency-20261029/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-scope-currency-20261029/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/product-size-chart-repair-20261029/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/product-size-chart-repair-20261029/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/product-size-chart-repair-20261029/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/product-size-chart-repair-20261029/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-auto-sync-20261029/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-default-all-20261029/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-label-invoices-20261030/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-label-pages-20261030/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-qianyi-20261030/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-label-zero-20261030/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-qianyi-company-20261030/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-storage-recovery-20261102/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-storage-recovery-20261102/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-storage-recovery-20261102/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-storage-recovery-20261102/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-storage-recovery-20261102/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-qianyi-refunds-20261102/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-qianyi-refunds-20261102/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-qianyi-simplify-20261102/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-qianyi-simplify-20261102/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-query-status-20261102/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-query-status-20261102/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/video-direct-downloads-20261102/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/video-direct-downloads-20261102/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-cache-reuse-20261102/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-cache-reuse-20261102/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-cache-reuse-20261102/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-cache-reuse-20261102/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-sync-priority-20261103/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-sync-priority-20261103/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-sync-priority-20261103/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-sync-priority-20261103/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-sync-priority-20261103/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-sync-priority-20261103/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-shop-month-20261103/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-shop-month-20261103/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-shop-month-check-20261103/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-shop-month-check-20261103/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-qianyi-receipt-20261103/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-qianyi-receipt-20261103/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/sku-shared-cost-total-20261104/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/sku-shared-cost-total-20261104/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/sku-shared-cost-total-20261104/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/sku-shared-cost-total-20261104/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/qianyi-return-total-20261104/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/qianyi-return-total-20261104/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-fee-export-20261104/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-fee-export-20261104/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-fee-export-20261104/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-fee-export-20261104/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-fee-native-20261104/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-fee-native-20261104/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-fee-native-20261104/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-fee-native-20261104/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-group-shops-20261104/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-group-shops-20261104/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-source-orders-20261105/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-source-orders-20261105/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-brush-template-20261105/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-brush-template-20261105/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-brush-original-template-20261105/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-brush-original-template-20261105/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/qianyi-receipt-display-20261105/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/qianyi-receipt-display-20261105/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-local-month-20261105/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-local-month-20261105/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-report-basis-20261105/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-report-basis-20261105/compose.ai-commerce-frontend.ports.yaml",
+          "/opt/heyi/releases/finance-gift-zero-20261105/compose.ai-commerce-frontend.json",
+          "/opt/heyi/releases/finance-gift-zero-20261105/compose.ai-commerce-frontend.ports.yaml"
+        ],
+        "missing_files": []
+      },
+      "mounts": [
+        {
+          "Type": "bind",
+          "Name": null,
+          "Source": "/opt/heyi/shared/hr-desktop-downloads",
+          "Destination": "/usr/share/nginx/html/downloads",
+          "RW": false
+        },
+        {
+          "Type": "bind",
+          "Name": null,
+          "Source": "/etc/letsencrypt",
+          "Destination": "/etc/letsencrypt",
+          "RW": false
+        },
+        {
+          "Type": "bind",
+          "Name": null,
+          "Source": "/opt/heyi/shared/certbot-webroot",
+          "Destination": "/var/www/certbot",
+          "RW": false
+        }
+      ]
+    },
+    {
+      "name": "ai-commerce-app",
+      "container_id": "94be42f3958f47d62966e8015c5b789ca97475f06c0d0ccc294a90cb6d860cc4",
+      "image_tag": "ai-commerce-platform:finance-gift-zero-20261105",
+      "image_id": "sha256:e3feb07e208e5593de8454f5b214b7909a54a73281904fe0a62a94d9e7d1546f",
+      "created_at_utc": "2026-11-05T09:57:24.942684615Z",
+      "started_at_utc": "2026-11-05T09:57:25.498214126Z",
+      "status": "running",
+      "docker_health": null,
+      "restart_count": 0,
+      "oom_killed": false,
+      "restart_policy": {
+        "Name": "unless-stopped",
+        "MaximumRetryCount": 0
+      },
+      "log": {
+        "Type": "none",
+        "Config": {}
+      },
+      "ports": {
+        "8080/tcp": [
+          {
+            "HostIp": "0.0.0.0",
+            "HostPort": "8080"
+          },
+          {
+            "HostIp": "::",
+            "HostPort": "8080"
+          }
+        ]
+      },
+      "networks": [
+        "heyi-knowledge-preview-internal",
+        "web_sdk__default"
+      ],
+      "limits": {
+        "memory_bytes": 0,
+        "nano_cpus": 0,
+        "pids": null
+      },
+      "compose": {
+        "project": "web_sdk_",
+        "service": "app",
+        "working_directory": "/opt/heyi/deployments/release-20260827-1200",
+        "config_files": [
+          "/opt/heyi/deployments/release-20260827-1200/compose.yaml",
+          "/opt/heyi/deployments/release-20260827-1200/compose.release.yaml",
+          "/opt/heyi/deployments/release-20260827-1200/hotfix20/compose.hotfix20.yaml",
+          "/opt/heyi/deployments/release-20260828-local-current1/compose.local-current1.yaml",
+          "/opt/heyi/deployments/oss-links-72h-20260904/compose.oss-links.yaml",
+          "/opt/heyi/deployments/oss-direct-20260904/compose.oss-direct.yaml",
+          "/opt/heyi/deployments/oss-direct-signer-20260904/compose.oss-direct-signer.yaml",
+          "/opt/heyi/deployments/oss-direct-signer-20260904/compose.enable-signer.yaml",
+          "/opt/heyi/deployments/oss-public-images-20260904/compose.public-images.yaml",
+          "/opt/heyi/deployments/oss-public-images-v2-20260904/compose.public-images.yaml",
+          "/opt/heyi/deployments/release-606a944-20260904/compose.release.yaml",
+          "/opt/heyi/deployments/vision-0ff6347-20260904/compose.vision.yaml",
+          "/opt/heyi/deployments/image-recovery-601d632-20260904/compose.image-recovery.yaml",
+          "/opt/heyi/deployments/image-stage-ui-12c56cb-20260904/compose.image-stage-ui.yaml",
+          "/opt/heyi/deployments/timeout-1000-1c09e00-20260904/compose.timeout.yaml",
+          "/opt/heyi/deployments/company-footer-20260905/compose.company-footer.yaml",
+          "/opt/heyi/deployments/usa-grid-recovery-20260915/private/live-images.json",
+          "/opt/heyi/deployments/usa-grid-recovery-20260915/private/app-release.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.image-ledger-storage.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.preview-layout.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.pipeline-continuation.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.manual-fields.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.monitor-steps.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.asset-cards.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.login-redesign.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.login-clean.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.layout-portal.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.layout-audio-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.group-copies-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.motion-restore-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.quiet-motion-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-dependencies-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.storage-resilience-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.retry-download-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-budget-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-review-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-normalize-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.media-fallback-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.driver-stream-deadline-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.provider-download-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.provider-download-v2-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.dayan-storage-v3-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.dayan-storage-v4-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.dayan-storage-v5-20260918.json",
+          "/opt/heyi/deployments/commerce-release-20260920/compose.release.json",
+          "/opt/heyi/deployments/shop-test-access-20260920/compose.test-access.json",
+          "/opt/heyi/deployments/shopee-live-20260921/compose.live.private.json",
+          "/opt/heyi/deployments/grok-image-live-20260921/compose.watermark.json",
+          "/opt/heyi/deployments/shopee-video-normalize-20260921/compose.video.json",
+          "/opt/heyi/deployments/shopee-title-20260921/compose.title.json",
+          "/opt/heyi/deployments/shopee-title-recovery-20260921/compose.title.json",
+          "/opt/heyi/deployments/shopee-original-price-20260921/compose.title.json",
+          "/opt/heyi/deployments/shopee-size-chart-20260921/compose.title.json",
+          "/opt/heyi/deployments/shopee-cotton-20260921/compose.title.json",
+          "/opt/heyi/deployments/shopee-attributes-20260921/compose.title.json",
+          "/opt/heyi/deployments/shopee-attributes-retry-20260921/compose.title.json",
+          "/opt/heyi/deployments/shopee-attributes-compact-20260921/compose.title.json",
+          "/opt/heyi/deployments/shopee-attributes-fast-20260921/compose.title.json",
+          "/opt/heyi/deployments/shopee-model-repair-20260921/compose.title.json",
+          "/opt/heyi/deployments/image-download-retry-20260921/compose.title.json",
+          "/opt/heyi/deployments/batch-env-optional-20260921/compose.title.json",
+          "/opt/heyi/deployments/drape-color-template-20260921/compose.title.json",
+          "/opt/heyi/deployments/drape-master-constraints-20260921/compose.title.json",
+          "/opt/heyi/deployments/drape-resume-20260921/compose.title.json",
+          "/opt/heyi/deployments/drape-style-20260922/compose.app.json",
+          "/opt/heyi/deployments/model-details-20260922/compose.app.json",
+          "/opt/heyi/deployments/detail-grid-20260922/compose.app.json",
+          "/opt/heyi/deployments/detail-grid-quality-20260922/compose.app.json",
+          "/opt/heyi/deployments/detail-grid-checkpoint-20260922/compose.app.json",
+          "/opt/heyi/deployments/detail-grid-style-20260922/compose.app.json",
+          "/opt/heyi/deployments/detail-grid-style-scope-20260922/compose.app.json",
+          "/opt/heyi/deployments/shopee-gallery-20260922/compose.app.json",
+          "/root/capture-republish-20260922/compose.app.json",
+          "/root/drape-source-print-20260922/compose.app.json",
+          "/root/detail-style-recovery-20260922/compose.app.json",
+          "/root/detail-garment-fidelity-20260922/compose.app.json",
+          "/root/knowledge-collaboration-20260922/compose.app.json",
+          "/root/knowledge-powerpoint-20260922/compose.app.json",
+          "/root/knowledge-access-20260923/compose.ai-commerce-app.json",
+          "/root/knowledge-access-20260923/compose.ai-commerce-app.json",
+          "/root/knowledge-access-20260923/compose.ai-commerce-app.json",
+          "/root/knowledge-access-20260923/compose.ai-commerce-app.json",
+          "/root/sku-order-20260923/compose.app.json",
+          "/tmp/sku-six-deploy/compose.app.json",
+          "/opt/heyi/releases/video-grid-recovery-20260928/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/hr-planning-20260929/compose.app.json",
+          "/opt/heyi/releases/hr-planning-20260929/compose.app.json",
+          "/opt/heyi/releases/video-recovery-20260929/ai-commerce-app.compose.json",
+          "/opt/heyi/releases/hr-passive-20260929/compose.app.json",
+          "/opt/heyi/releases/hr-demand-stream-20260930/compose.app.json",
+          "/opt/heyi/releases/hr-active-sourcing-20260930/compose.app.json",
+          "/opt/heyi/releases/hr-sourcing-criteria-20260930/compose.app.json",
+          "/opt/heyi/releases/hr-sourcing-response-20260930/compose.app.json",
+          "/opt/heyi/releases/video-local-previews-20261008/compose.app-rollback.json",
+          "/opt/heyi/releases/video-local-previews-20261008/compose.app.json",
+          "/opt/heyi/releases/video-local-assets-20261008/compose.app.json",
+          "/opt/heyi/releases/hr-demand-reference-20261008/compose.app.json",
+          "/opt/heyi/releases/hr-pi-sdk-progress-20261008/compose.app.json",
+          "/opt/heyi/releases/hr-sourcing-precision-20261008/compose.app.json",
+          "/opt/heyi/releases/hr-access-java-20261009/compose.app.json",
+          "/opt/heyi/releases/capture-templates-20261010/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/capture-logistics-20261010/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/hr-recovery-20261012/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/hr-recovery-20261012/compose.app-permissions.json",
+          "/opt/heyi/releases/tiktok-auth-expiry-20261013/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/capture-recollect-20261013/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/collector-version-20261013/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/sizechart-resume-20261013/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/batch-sizechart-20261013/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/batch-sizechart-20261013/chart-preservation/compose.json",
+          "/opt/heyi/releases/visual-product-title-20261014/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/country-origin-20261014/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/restored-templates-20261014/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/module-isolation-20261015/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/module-isolation-video-20261015/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/video-oss-upload-20261015/compose.activate.json",
+          "/opt/heyi/releases/video-pipeline-20261015/compose.ai-commerce-app.activate.json",
+          "/opt/heyi/releases/main-image-style-20261019/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/main-image-style-progress-20261019/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/main-image-preserve-20261019-363b26d/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/main-image-detail-progress-20261019-f9d8a13/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/main-image-direct-output-20261019-2e0ab0f/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/banana-default-20261019-86ec17d/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/main-image-colors-oss-20261019-2694be5/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/video-brightness-20261020-a69fa6d/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/video-room-daylight-20261020-e599b63/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/video-natural-fabric-20261020-f75ff75/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/video-photographic-edges-20261020-dccd989/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/template-palette-20261020/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-bi-20261020/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-bi-proxy-fix-20261020/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-layout-sync-20261021/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-recent-sync-20261021/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-configuration-20261021/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-live-ads-20261021/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-order-terminal-20261021/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-performance-live-20261021/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-download-recovery-20261021/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-read-cache-20261021/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-groups-20261022/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-ad-links-20261022/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-cost-workspace-20261022/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-cost-shops-20261022/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-cost-sku-format-20261023/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-order-costs-20261023/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-order-costs-20261023/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-product-skus-20261023/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-cost-orders-proxy-20261023/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/tiktok-default-warehouse-20261023/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-settled-cost-export-20261023/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-profit-overview-20261023/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-query-speed-20261024/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-shop-deletion-20261024/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-pending-costs-20261026/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-sku-identities-20261026/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-cost-sources-20261026/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-order-tags-20261026/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-settled-goods-20261026/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-calculation-speed-20261026/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-fee-incremental-20261027/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-operating-costs-20261027/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-charge-period-20261027/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-charge-fast-20261027/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-date-search-20261027/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-settlement-completion-20261027/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/seedance-mini-20261027/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-reporting-months-20261028/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/tiktok-size-order-20261028/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-settlement-export-20261029/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-excel-basis-20261029/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-actual-costs-20261029/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-cost-currency-20261029/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/product-size-chart-repair-20261029/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/product-size-chart-repair-20261029/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/product-size-chart-repair-20261029/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/product-size-chart-repair-20261029/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-auto-sync-20261029/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-latency-20261030/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-latency-20261030/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-label-invoices-20261030/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-label-pages-20261030/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-sync-locks-20261030/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-qianyi-20261030/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-sync-queue-20261030/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-label-zero-20261030/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-qianyi-company-20261030/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-storage-recovery-20261102/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-storage-recovery-20261102/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-storage-recovery-20261102/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-storage-recovery-20261102/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-storage-recovery-20261102/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-qianyi-refunds-20261102/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-qianyi-refunds-20261102/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-pending-speed-20261102/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-pending-speed-20261102/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-qianyi-simplify-20261102/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-qianyi-simplify-20261102/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/video-direct-downloads-20261102/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/video-direct-downloads-20261102/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-cache-reuse-20261102/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-cache-reuse-20261102/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-cache-reuse-20261102/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-cache-reuse-20261102/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/storage-compact-20261102/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/storage-compact-20261102/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-sync-priority-20261103/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-sync-priority-20261103/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-shop-month-check-20261103/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-shop-month-check-20261103/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-query-reuse-20261103/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-query-reuse-20261103/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-calendar-month-20261103/compose.finance-ads.json",
+          "/opt/heyi/releases/finance-calendar-month-20261103/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-calendar-month-20261103/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-missing-first-20261103/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-missing-first-20261103/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-qianyi-receipt-20261103/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-qianyi-receipt-20261103/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/product-sku-naming-20261104/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/product-sku-naming-20261104/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/product-sku-pattern-option-20261104/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/product-sku-pattern-option-20261104/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/sku-shared-cost-total-20261104/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/sku-shared-cost-total-20261104/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/qianyi-return-total-20261104/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/qianyi-return-total-20261104/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/qianyi-reverse-phrases-20261104/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/qianyi-reverse-phrases-20261104/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-fee-export-20261104/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-fee-export-20261104/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-fee-native-20261104/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-fee-native-20261104/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-cost-dedupe-20261104/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-cost-dedupe-20261104/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-source-orders-20261105/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-source-orders-20261105/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-local-month-20261105/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-local-month-20261105/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-report-basis-20261105/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-report-basis-20261105/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-report-basis-resume-20261105/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-report-basis-resume-20261105/compose.ai-commerce-app.ports.yaml",
+          "/opt/heyi/releases/finance-gift-zero-20261105/compose.ai-commerce-app.json",
+          "/opt/heyi/releases/finance-gift-zero-20261105/compose.ai-commerce-app.ports.yaml"
+        ],
+        "missing_files": []
+      },
+      "mounts": [
+        {
+          "Type": "volume",
+          "Name": "web_sdk__video_script_data",
+          "Source": "/var/lib/docker/volumes/web_sdk__video_script_data/_data",
+          "Destination": "/data/video-scripts",
+          "RW": true
+        },
+        {
+          "Type": "volume",
+          "Name": "web_sdk__ai_video_task_data",
+          "Source": "/var/lib/docker/volumes/web_sdk__ai_video_task_data/_data",
+          "Destination": "/data/ai-video-tasks",
+          "RW": true
+        },
+        {
+          "Type": "bind",
+          "Name": null,
+          "Source": "/opt/heyi/shared/oss-signing.properties",
+          "Destination": "/run/secrets/oss-signing.properties",
+          "RW": false
+        },
+        {
+          "Type": "bind",
+          "Name": null,
+          "Source": "/opt/heyi/secrets/dayan-oss.properties",
+          "Destination": "/run/secrets/dayan-oss.properties",
+          "RW": false
+        },
+        {
+          "Type": "bind",
+          "Name": null,
+          "Source": "/opt/heyi/shared/finance-ads",
+          "Destination": "/run/heyi-finance-ads",
+          "RW": false
+        },
+        {
+          "Type": "volume",
+          "Name": "web_sdk__automation_skill_data",
+          "Source": "/var/lib/docker/volumes/web_sdk__automation_skill_data/_data",
+          "Destination": "/data/automation-skills",
+          "RW": true
+        },
+        {
+          "Type": "volume",
+          "Name": "web_sdk__automation_attachment_data",
+          "Source": "/var/lib/docker/volumes/web_sdk__automation_attachment_data/_data",
+          "Destination": "/data/automation-attachments",
+          "RW": true
+        }
+      ]
+    },
+    {
+      "name": "finance-report-basis-repair",
+      "container_id": "8c0988c0c208ad93fc690e996f4c8584c502f29bfc0ee8877c1c36d4d40bb1c1",
+      "image_tag": "ai-commerce-platform:finance-report-basis-resume-20261105",
+      "image_id": "sha256:8d0a5cc099d9ac0d05fcfce4b8d55058a0901ada28d81102b2395c5d5fa5637e",
+      "created_at_utc": "2026-11-05T09:05:47.270215624Z",
+      "started_at_utc": "2026-11-05T09:05:47.539521662Z",
+      "status": "running",
+      "docker_health": null,
+      "restart_count": 0,
+      "oom_killed": false,
+      "restart_policy": {
+        "Name": "no",
+        "MaximumRetryCount": 0
+      },
+      "log": {
+        "Type": "none",
+        "Config": {}
+      },
+      "ports": {
+        "8080/tcp": null
+      },
+      "networks": [
+        "web_sdk__default"
+      ],
+      "limits": {
+        "memory_bytes": 805306368,
+        "nano_cpus": 1000000000,
+        "pids": null
+      },
+      "compose": {
+        "project": null,
+        "service": null,
+        "working_directory": null,
+        "config_files": [],
+        "missing_files": []
+      },
+      "mounts": [
+        {
+          "Type": "bind",
+          "Name": null,
+          "Source": "/opt/heyi/releases/finance-report-basis-20261105",
+          "Destination": "/qa",
+          "RW": true
+        }
+      ]
+    },
+    {
+      "name": "ai-commerce-redis",
+      "container_id": "f63a1b73bbc6e04f35d9e131cd1479123069e067cfdd0f4089aa272af4f237db",
+      "image_tag": "redis:8-alpine",
+      "image_id": "sha256:8096655e437712b07503796fb64d81359256cfcff0ab29d95a7da72863786efb",
+      "created_at_utc": "2026-11-02T02:04:29.084460808Z",
+      "started_at_utc": "2026-11-02T02:04:29.360891806Z",
+      "status": "running",
+      "docker_health": "healthy",
+      "restart_count": 0,
+      "oom_killed": false,
+      "restart_policy": {
+        "Name": "unless-stopped",
+        "MaximumRetryCount": 0
+      },
+      "log": {
+        "Type": "none",
+        "Config": {}
+      },
+      "ports": {
+        "6379/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": "6379"
+          }
+        ]
+      },
+      "networks": [
+        "web_sdk__default"
+      ],
+      "limits": {
+        "memory_bytes": 0,
+        "nano_cpus": 0,
+        "pids": null
+      },
+      "compose": {
+        "project": "web_sdk_",
+        "service": "redis",
+        "working_directory": "/opt/heyi/current",
+        "config_files": [
+          "/opt/heyi/current/compose.yaml",
+          "/opt/heyi/releases/finance-storage-recovery-20261102/compose.ai-commerce-redis.json",
+          "/opt/heyi/releases/finance-storage-recovery-20261102/compose.ai-commerce-redis.ports.yaml"
+        ],
+        "missing_files": []
+      },
+      "mounts": [
+        {
+          "Type": "volume",
+          "Name": "web_sdk__redis_data",
+          "Source": "/var/lib/docker/volumes/web_sdk__redis_data/_data",
+          "Destination": "/data",
+          "RW": true
+        }
+      ]
+    },
+    {
+      "name": "ai-commerce-mysql",
+      "container_id": "a4e324f7e344dcac83115a490b265320e6d8e8a30359ca0cc7e7eb2f6663a409",
+      "image_tag": "mysql:8.4",
+      "image_id": "sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb",
+      "created_at_utc": "2026-11-02T01:30:17.870861885Z",
+      "started_at_utc": "2026-11-02T01:30:19.265455097Z",
+      "status": "running",
+      "docker_health": "healthy",
+      "restart_count": 0,
+      "oom_killed": false,
+      "restart_policy": {
+        "Name": "unless-stopped",
+        "MaximumRetryCount": 0
+      },
+      "log": {
+        "Type": "none",
+        "Config": {}
+      },
+      "ports": {
+        "3306/tcp": [
+          {
+            "HostIp": "0.0.0.0",
+            "HostPort": "3306"
+          },
+          {
+            "HostIp": "::",
+            "HostPort": "3306"
+          }
+        ],
+        "33060/tcp": null
+      },
+      "networks": [
+        "web_sdk__default"
+      ],
+      "limits": {
+        "memory_bytes": 0,
+        "nano_cpus": 0,
+        "pids": null
+      },
+      "compose": {
+        "project": "web_sdk_",
+        "service": "mysql",
+        "working_directory": "/opt/heyi/current",
+        "config_files": [
+          "/opt/heyi/current/compose.yaml",
+          "/opt/heyi/releases/finance-storage-recovery-20261102/compose.mysql.json"
+        ],
+        "missing_files": []
+      },
+      "mounts": [
+        {
+          "Type": "volume",
+          "Name": "web_sdk__mysql_data",
+          "Source": "/var/lib/docker/volumes/web_sdk__mysql_data/_data",
+          "Destination": "/var/lib/mysql",
+          "RW": true
+        }
+      ]
+    },
+    {
+      "name": "heyi-pi-runtime",
+      "container_id": "dcf65a18235c4f6226dd99fbbe4d09bb68b1a85572a52c88af06242ae2e711b7",
+      "image_tag": "heyi-pi-runtime:image-operation-oss-20261020-v2",
+      "image_id": "sha256:983238446e76c35456a2a43ff6b5b6e5b124f6acb7ac221f87e49a8728981b71",
+      "created_at_utc": "2026-10-20T06:45:30.074837031Z",
+      "started_at_utc": "2026-10-20T06:45:30.859066029Z",
+      "status": "running",
+      "docker_health": null,
+      "restart_count": 0,
+      "oom_killed": false,
+      "restart_policy": {
+        "Name": "unless-stopped",
+        "MaximumRetryCount": 0
+      },
+      "log": {
+        "Type": "json-file",
+        "Config": {}
+      },
+      "ports": {
+        "8090/tcp": [
+          {
+            "HostIp": "0.0.0.0",
+            "HostPort": "8090"
+          },
+          {
+            "HostIp": "::",
+            "HostPort": "8090"
+          }
+        ]
+      },
+      "networks": [
+        "web_sdk__default"
+      ],
+      "limits": {
+        "memory_bytes": 0,
+        "nano_cpus": 0,
+        "pids": null
+      },
+      "compose": {
+        "project": "web_sdk_",
+        "service": "pi-runtime",
+        "working_directory": "/opt/heyi/deployments/release-20260827-1200",
+        "config_files": [
+          "/opt/heyi/deployments/release-20260827-1200/compose.yaml",
+          "/opt/heyi/deployments/release-20260827-1200/compose.release.yaml",
+          "/opt/heyi/deployments/release-20260827-1200/hotfix20/compose.hotfix20.yaml",
+          "/opt/heyi/deployments/release-20260828-local-current1/compose.local-current1.yaml",
+          "/opt/heyi/deployments/oss-links-72h-20260904/compose.oss-links.yaml",
+          "/opt/heyi/deployments/oss-direct-20260904/compose.oss-direct.yaml",
+          "/opt/heyi/deployments/oss-direct-signer-20260904/compose.oss-direct-signer.yaml",
+          "/opt/heyi/deployments/oss-direct-signer-20260904/compose.enable-signer.yaml",
+          "/opt/heyi/deployments/oss-public-images-20260904/compose.public-images.yaml",
+          "/opt/heyi/deployments/oss-public-images-v2-20260904/compose.public-images.yaml",
+          "/opt/heyi/deployments/release-606a944-20260904/compose.release.yaml",
+          "/opt/heyi/deployments/vision-0ff6347-20260904/compose.vision.yaml",
+          "/opt/heyi/deployments/image-recovery-601d632-20260904/compose.image-recovery.yaml",
+          "/opt/heyi/deployments/image-stage-ui-12c56cb-20260904/compose.image-stage-ui.yaml",
+          "/opt/heyi/deployments/timeout-1000-1c09e00-20260904/compose.timeout.yaml",
+          "/opt/heyi/deployments/company-footer-20260905/compose.company-footer.yaml",
+          "/opt/heyi/deployments/usa-grid-recovery-20260915/private/live-images.json",
+          "/opt/heyi/deployments/usa-grid-recovery-20260915/private/app-release.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.image-ledger-storage.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.preview-layout.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.pipeline-continuation.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.manual-fields.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.monitor-steps.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.asset-cards.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.login-redesign.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.login-clean.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.layout-portal.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.layout-audio-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.group-copies-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.motion-restore-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.quiet-motion-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-dependencies-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.storage-resilience-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.retry-download-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-budget-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-review-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-normalize-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.media-fallback-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.driver-stream-deadline-20260918.json",
+          "/opt/heyi/deployments/shopee-size-chart-20260921/compose.pi.json",
+          "/opt/heyi/deployments/shopee-attributes-20260921/compose.pi.json",
+          "/opt/heyi/deployments/shopee-attributes-compact-20260921/compose.pi.json",
+          "/opt/heyi/deployments/image-download-retry-20260921/compose.pi.json",
+          "/opt/heyi/deployments/drape-style-20260922/compose.pi.json",
+          "/opt/heyi/deployments/model-details-20260922/compose.pi.json",
+          "/opt/heyi/deployments/detail-grid-20260922/compose.pi.json",
+          "/opt/heyi/deployments/detail-grid-style-20260922/compose.pi.json",
+          "/root/detail-style-recovery-20260922/compose.pi.json",
+          "/root/detail-garment-fidelity-20260922/compose.pi.json",
+          "/opt/heyi/releases/video-grid-recovery-20260928/compose.heyi-pi-runtime.json",
+          "/opt/heyi/releases/video-recovery-20260929/heyi-pi-runtime.compose.json",
+          "/opt/heyi/releases/video-recovery-20260929/runtime-final.compose.json",
+          "/opt/heyi/releases/hr-pi-sdk-progress-20261008/compose.pi.json",
+          "/opt/heyi/releases/capture-templates-20261010/compose.heyi-pi-runtime.json",
+          "/opt/heyi/releases/hr-priority-20261012/compose.structured.json",
+          "/opt/heyi/releases/hr-recovery-20261012/compose.heyi-pi-runtime.json",
+          "/opt/heyi/releases/visual-product-title-20261014/compose.heyi-pi-runtime.json",
+          "/opt/heyi/releases/video-pipeline-20261015/compose.heyi-pi-runtime.activate.json",
+          "/opt/heyi/releases/video-fidelity-restore-20261015/compose.json",
+          "/opt/heyi/releases/main-image-style-20261019/compose.heyi-pi-runtime.json",
+          "/opt/heyi/releases/main-image-style-progress-20261019/compose.heyi-pi-runtime.json",
+          "/opt/heyi/releases/main-image-timeout-20261019-fbfe7f3/compose-timeout.json",
+          "/opt/heyi/releases/main-image-preserve-20261019-363b26d/compose.heyi-pi-runtime.json",
+          "/opt/heyi/releases/banana-default-20261019-86ec17d/compose.heyi-pi-runtime.json",
+          "/opt/heyi/releases/main-image-colors-oss-20261019-2694be5/compose.heyi-pi-runtime.json",
+          "/opt/heyi/releases/image-operation-oss-20261020-23c97c4/compose.oss-reader-only.json",
+          "/opt/heyi/releases/image-operation-oss-20261020-23c97c4/compose.oss.json",
+          "/opt/heyi/releases/image-operation-oss-20261020-5df7990/compose.oss-reader-only.json",
+          "/opt/heyi/releases/image-operation-oss-20261020-5df7990/compose.oss.json"
+        ],
+        "missing_files": []
+      },
+      "mounts": [
+        {
+          "Type": "volume",
+          "Name": "heyi_image_operation_data",
+          "Source": "/var/lib/docker/volumes/heyi_image_operation_data/_data",
+          "Destination": "/data/image-operations",
+          "RW": true
+        },
+        {
+          "Type": "bind",
+          "Name": null,
+          "Source": "/opt/heyi/secrets/dayan-oss.properties",
+          "Destination": "/run/secrets/dayan-oss.properties",
+          "RW": false
+        },
+        {
+          "Type": "volume",
+          "Name": "web_sdk__video_script_data",
+          "Source": "/var/lib/docker/volumes/web_sdk__video_script_data/_data",
+          "Destination": "/data/video-scripts",
+          "RW": false
+        }
+      ]
+    },
+    {
+      "name": "heyi-document-preview",
+      "container_id": "9ef19254b5654a8117dfb273fd31dc04bcebc26e60d85c0418642a2bd4630a20",
+      "image_tag": "sha256:fb7b6dc9a5e152a1eb2710f8b9dd38c7ea50267f3f80073fd38c5bf40893560f",
+      "image_id": "sha256:fb7b6dc9a5e152a1eb2710f8b9dd38c7ea50267f3f80073fd38c5bf40893560f",
+      "created_at_utc": "2026-09-22T10:39:21.537815711Z",
+      "started_at_utc": "2026-09-22T10:39:21.580577676Z",
+      "status": "running",
+      "docker_health": "healthy",
+      "restart_count": 0,
+      "oom_killed": false,
+      "restart_policy": {
+        "Name": "unless-stopped",
+        "MaximumRetryCount": 0
+      },
+      "log": {
+        "Type": "json-file",
+        "Config": {
+          "max-file": "3",
+          "max-size": "10m"
+        }
+      },
+      "ports": {
+        "8092/tcp": null
+      },
+      "networks": [
+        "heyi-knowledge-preview-internal"
+      ],
+      "limits": {
+        "memory_bytes": 1073741824,
+        "nano_cpus": 1000000000,
+        "pids": 128
+      },
+      "compose": {
+        "project": null,
+        "service": null,
+        "working_directory": null,
+        "config_files": [],
+        "missing_files": []
+      },
+      "mounts": []
+    },
+    {
+      "name": "heyi-commerce-image-processor",
+      "container_id": "52d27a9fac9ce7077d1075f1aac8ad5e81ec3e68adccd3e1f0f0f051d13a7e84",
+      "image_tag": "sha256:0caa2d97cde678836aa7bcbb7563ea3d7f1e74c49e8dfa4f7cfe47a6747e79a0",
+      "image_id": "sha256:0caa2d97cde678836aa7bcbb7563ea3d7f1e74c49e8dfa4f7cfe47a6747e79a0",
+      "created_at_utc": "2026-09-22T06:54:38.119474111Z",
+      "started_at_utc": "2026-09-24T06:32:14.225171242Z",
+      "status": "running",
+      "docker_health": null,
+      "restart_count": 0,
+      "oom_killed": false,
+      "restart_policy": {
+        "Name": "unless-stopped",
+        "MaximumRetryCount": 0
+      },
+      "log": {
+        "Type": "json-file",
+        "Config": {}
+      },
+      "ports": {
+        "8091/tcp": null
+      },
+      "networks": [
+        "web_sdk__default"
+      ],
+      "limits": {
+        "memory_bytes": 2147483648,
+        "nano_cpus": 2000000000,
+        "pids": null
+      },
+      "compose": {
+        "project": "web_sdk_",
+        "service": "commerce-image-processor",
+        "working_directory": "/opt/heyi/deployments/release-20260827-1200",
+        "config_files": [
+          "/opt/heyi/deployments/release-20260827-1200/compose.yaml",
+          "/opt/heyi/deployments/release-20260827-1200/compose.release.yaml",
+          "/opt/heyi/deployments/release-20260827-1200/hotfix20/compose.hotfix20.yaml",
+          "/opt/heyi/deployments/release-20260828-local-current1/compose.local-current1.yaml",
+          "/opt/heyi/deployments/oss-links-72h-20260904/compose.oss-links.yaml",
+          "/opt/heyi/deployments/oss-direct-20260904/compose.oss-direct.yaml",
+          "/opt/heyi/deployments/oss-direct-signer-20260904/compose.oss-direct-signer.yaml",
+          "/opt/heyi/deployments/oss-direct-signer-20260904/compose.enable-signer.yaml",
+          "/opt/heyi/deployments/oss-public-images-20260904/compose.public-images.yaml",
+          "/opt/heyi/deployments/oss-public-images-v2-20260904/compose.public-images.yaml",
+          "/opt/heyi/deployments/release-606a944-20260904/compose.release.yaml",
+          "/opt/heyi/deployments/vision-0ff6347-20260904/compose.vision.yaml",
+          "/opt/heyi/deployments/image-recovery-601d632-20260904/compose.image-recovery.yaml",
+          "/opt/heyi/deployments/image-stage-ui-12c56cb-20260904/compose.image-stage-ui.yaml",
+          "/opt/heyi/deployments/timeout-1000-1c09e00-20260904/compose.timeout.yaml",
+          "/opt/heyi/deployments/company-footer-20260905/compose.company-footer.yaml",
+          "/opt/heyi/deployments/usa-grid-recovery-20260915/private/live-images.json",
+          "/opt/heyi/deployments/usa-grid-recovery-20260915/private/app-release.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.image-ledger-storage.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.preview-layout.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.pipeline-continuation.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.manual-fields.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.monitor-steps.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.asset-cards.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.login-redesign.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.login-clean.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.layout-portal.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.layout-audio-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.group-copies-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.motion-restore-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.quiet-motion-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-dependencies-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.storage-resilience-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.retry-download-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-budget-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-review-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-normalize-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.media-fallback-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.driver-stream-deadline-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.provider-download-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.provider-download-v2-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.dayan-storage-v3-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.dayan-storage-v4-20260918.json",
+          "/opt/heyi/deployments/test-to-prod-20260917/compose.dayan-storage-v5-20260918.json",
+          "/opt/heyi/deployments/commerce-release-20260920/compose.release.json",
+          "/opt/heyi/deployments/drape-stall-20260921/heyi-commerce-image-processor/compose.json",
+          "/opt/heyi/deployments/drape-style-20260922/compose.processor.json",
+          "/root/drape-source-print-20260922/compose.processor.json"
+        ],
+        "missing_files": []
+      },
+      "mounts": []
+    },
+    {
+      "name": "hoyee-erphoyee",
+      "container_id": "6a3175125d40217729463d3b23012f791a400c674538476483304529ed74063c",
+      "image_tag": "hoyee-erphoyee:20260908",
+      "image_id": "sha256:6b8cf7e3644ad17e9f6a8eae54cf433adad4e73c153fe4fad9020577ed6a14ad",
+      "created_at_utc": "2026-09-08T02:27:59.406885351Z",
+      "started_at_utc": "2026-09-08T02:28:09.610505093Z",
+      "status": "running",
+      "docker_health": "healthy",
+      "restart_count": 0,
+      "oom_killed": false,
+      "restart_policy": {
+        "Name": "unless-stopped",
+        "MaximumRetryCount": 0
+      },
+      "log": {
+        "Type": "json-file",
+        "Config": {
+          "max-file": "2",
+          "max-size": "2m"
+        }
+      },
+      "ports": {
+        "8137/tcp": null
+      },
+      "networks": [
+        "web_sdk__default"
+      ],
+      "limits": {
+        "memory_bytes": 268435456,
+        "nano_cpus": 500000000,
+        "pids": 64
+      },
+      "compose": {
+        "project": "hoyee_erp",
+        "service": "erphoyee",
+        "working_directory": "/opt/heyi/erphoyee/current",
+        "config_files": [
+          "/opt/heyi/erphoyee/current/compose.yaml"
+        ],
+        "missing_files": []
+      },
+      "mounts": [
+        {
+          "Type": "bind",
+          "Name": null,
+          "Source": "/opt/heyi/erphoyee/shared/data",
+          "Destination": "/data",
+          "RW": true
+        }
+      ]
+    },
+    {
+      "name": "heyi-cloudbeaver",
+      "container_id": "7a0bfc1a0bcd31ab87a06b1ddc2cc3ce1085e7db9c253c53fdcc866b1b349786",
+      "image_tag": "dbeaver/cloudbeaver:26.1.4",
+      "image_id": "sha256:c0975db279e488c6f770e4a5a74e7f8d388d5bc53c75bce82647e82cb6358a3f",
+      "created_at_utc": "2026-08-20T02:02:41.53306113Z",
+      "started_at_utc": "2026-08-20T02:02:41.626625952Z",
+      "status": "running",
+      "docker_health": null,
+      "restart_count": 0,
+      "oom_killed": false,
+      "restart_policy": {
+        "Name": "unless-stopped",
+        "MaximumRetryCount": 0
+      },
+      "log": {
+        "Type": "json-file",
+        "Config": {}
+      },
+      "ports": {
+        "8978/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": "8978"
+          }
+        ]
+      },
+      "networks": [
+        "web_sdk__default"
+      ],
+      "limits": {
+        "memory_bytes": 0,
+        "nano_cpus": 0,
+        "pids": null
+      },
+      "compose": {
+        "project": "admin-console",
+        "service": "cloudbeaver",
+        "working_directory": "/opt/heyi/admin-console",
+        "config_files": [
+          "/opt/heyi/admin-console/docker-compose.yml"
+        ],
+        "missing_files": []
+      },
+      "mounts": [
+        {
+          "Type": "volume",
+          "Name": "heyi_cloudbeaver_workspace",
+          "Source": "/var/lib/docker/volumes/heyi_cloudbeaver_workspace/_data",
+          "Destination": "/opt/cloudbeaver/workspace",
+          "RW": true
+        }
+      ]
+    }
+  ],
+  "images": [
+    {
+      "image_id": "sha256:964389c709712d5e7464ee886a5c3d19c4b038784edc0fcd1ee8d1a4d3123921",
+      "tags": [
+        "ai-commerce-frontend:finance-gift-zero-20261105"
+      ],
+      "inspect_size_bytes": 49898573,
+      "layer_count": 5,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:e3feb07e208e5593de8454f5b214b7909a54a73281904fe0a62a94d9e7d1546f",
+      "tags": [
+        "ai-commerce-platform:finance-gift-zero-20261105"
+      ],
+      "inspect_size_bytes": 689077614,
+      "layer_count": 6,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:8d0a5cc099d9ac0d05fcfce4b8d55058a0901ada28d81102b2395c5d5fa5637e",
+      "tags": [
+        "ai-commerce-platform:finance-report-basis-resume-20261105"
+      ],
+      "inspect_size_bytes": 620230122,
+      "layer_count": 5,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:d869bdcee5342c4ddcdaf337188ee69728d1fc8bc425e4b752bbd327ce6c9da6",
+      "tags": [
+        "ai-commerce-frontend:finance-report-basis-20261105"
+      ],
+      "inspect_size_bytes": 49666781,
+      "layer_count": 4,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:dc169daa93b5919dd642c8388b5a2401530fcea73d9248ebaaad810dd67805e1",
+      "tags": [
+        "ai-commerce-platform:finance-report-basis-20261105"
+      ],
+      "inspect_size_bytes": 551383717,
+      "layer_count": 4,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:64f094600faf1d8127e2b4d2b75a37c13f9aa245e891566b1dc2e3ae1b4a157d",
+      "tags": [
+        "ai-commerce-frontend:finance-local-month-20261105"
+      ],
+      "inspect_size_bytes": 49564381,
+      "layer_count": 3,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:d8d3137387bbddb58160779c0c7990988214806c4f6f3563b1391e6f99f9c35a",
+      "tags": [
+        "ai-commerce-platform:finance-local-month-20261105"
+      ],
+      "inspect_size_bytes": 482537741,
+      "layer_count": 3,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:831a21dfe7ba59b9ecdb88f24075ef12a03f6c62be14a0017894a72bbc2791f9",
+      "tags": [
+        "ai-commerce-frontend:qianyi-receipt-display-20261105"
+      ],
+      "inspect_size_bytes": 49370761,
+      "layer_count": 2,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:644c57d1d828b1826d6559fc8296315d87b17173330552ee9982aa2e56f0ba2a",
+      "tags": [
+        "ai-commerce-frontend:qianyi-receipt-display-20261105-base"
+      ],
+      "inspect_size_bytes": 49268219,
+      "layer_count": 1,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:bf44399fea874dab47c8bf22f1487cadd5554fc2ff089a485d02b3b15c14e86a",
+      "tags": [
+        "ai-commerce-frontend:finance-brush-original-template-20261105"
+      ],
+      "inspect_size_bytes": 50205339,
+      "layer_count": 10,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:a271e999fa93ed0fb4e68a593bbe1e493a77ada91187b45c8921806425480029",
+      "tags": [
+        "ai-commerce-platform:finance-source-orders-20261105"
+      ],
+      "inspect_size_bytes": 413693143,
+      "layer_count": 2,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:4147e61a05d8db496a079b1315430c706eb16d6eb481aff15bbd5591332a30ce",
+      "tags": [
+        "ai-commerce-platform:finance-cost-dedupe-20261104",
+        "ai-commerce-platform:finance-source-orders-20261105-base"
+      ],
+      "inspect_size_bytes": 344852318,
+      "layer_count": 1,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:778e332c808f2986428029e618ded66ae111106be5f9dc0a76c49a75b888ca3c",
+      "tags": [
+        "ai-commerce-frontend:finance-fee-export-layout-20261104-base"
+      ],
+      "inspect_size_bytes": 49254576,
+      "layer_count": 1,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:983238446e76c35456a2a43ff6b5b6e5b124f6acb7ac221f87e49a8728981b71",
+      "tags": [
+        "heyi-pi-runtime:image-operation-oss-20261020-v2"
+      ],
+      "inspect_size_bytes": 157648287,
+      "layer_count": 63,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:bbc12d2938140183426eff08625510c72010d7faad8ee94b8fec20a925d53bf4",
+      "tags": [
+        "heyi-pi-runtime:image-operation-oss-20261020",
+        "heyi-pi-runtime:image-operation-oss-20261020-v2-before"
+      ],
+      "inspect_size_bytes": 157622215,
+      "layer_count": 61,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:79fb6e64e6f32dc16563dfd4bb3f10abe52dfad9314d8785e741e911828cc924",
+      "tags": [
+        "heyi-pi-runtime:image-operation-oss-20261020-before",
+        "heyi-pi-runtime:main-image-colors-oss-20261019"
+      ],
+      "inspect_size_bytes": 154943577,
+      "layer_count": 59,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:fb7b6dc9a5e152a1eb2710f8b9dd38c7ea50267f3f80073fd38c5bf40893560f",
+      "tags": [
+        "heyi-document-preview:20260922-017b7b73a40aae8a"
+      ],
+      "inspect_size_bytes": 281534014,
+      "layer_count": 7,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:0caa2d97cde678836aa7bcbb7563ea3d7f1e74c49e8dfa4f7cfe47a6747e79a0",
+      "tags": [
+        "heyi-watermark-custom:drape-source-print-20260922-962f53020cd5968d"
+      ],
+      "inspect_size_bytes": 181068429,
+      "layer_count": 14,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:c0cfab3901f22f5ad2b83d7a19132206887234353438cc0ed0800ef1906081f6",
+      "tags": [
+        "heyi-watermark-custom:drape-style-20260922-214a4b5d72971dbd"
+      ],
+      "inspect_size_bytes": 181054511,
+      "layer_count": 13,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:dba7e3be2935dd5b142c1c419b5365df9ab0a7d73ad2a5a7da03e1b84e8a33cc",
+      "tags": [
+        "heyi-watermark-custom:drape-features-20260921"
+      ],
+      "inspect_size_bytes": 181040692,
+      "layer_count": 12,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9",
+      "tags": [
+        "python:3.11-slim"
+      ],
+      "inspect_size_bytes": 45593257,
+      "layer_count": 4,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:6b8cf7e3644ad17e9f6a8eae54cf433adad4e73c153fe4fad9020577ed6a14ad",
+      "tags": [
+        "hoyee-erphoyee:20260908"
+      ],
+      "inspect_size_bytes": 51992640,
+      "layer_count": 9,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5",
+      "tags": [
+        "node:22-bookworm-slim"
+      ],
+      "inspect_size_bytes": 79901626,
+      "layer_count": 5,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:7a65df4b22d2de92d4e04056e884f3b9122d70b21e2847fd66084278bd0ce037",
+      "tags": [
+        "eclipse-temurin:21-jre"
+      ],
+      "inspect_size_bytes": 114814529,
+      "layer_count": 6,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a",
+      "tags": [
+        "python:3.12-slim"
+      ],
+      "inspect_size_bytes": 43208087,
+      "layer_count": 4,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:c0975db279e488c6f770e4a5a74e7f8d388d5bc53c75bce82647e82cb6358a3f",
+      "tags": [
+        "dbeaver/cloudbeaver:26.1.4"
+      ],
+      "inspect_size_bytes": 416048503,
+      "layer_count": 11,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
+      "tags": [
+        "node:22-alpine"
+      ],
+      "inspect_size_bytes": 57753612,
+      "layer_count": 4,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb",
+      "tags": [
+        "mysql:8.4"
+      ],
+      "inspect_size_bytes": 238990497,
+      "layer_count": 10,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:8096655e437712b07503796fb64d81359256cfcff0ab29d95a7da72863786efb",
+      "tags": [
+        "redis:8-alpine"
+      ],
+      "inspect_size_bytes": 37645543,
+      "layer_count": 7,
+      "git_revision": null
+    },
+    {
+      "image_id": "sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de",
+      "tags": [
+        "nginx:1.29-alpine"
+      ],
+      "inspect_size_bytes": 26013346,
+      "layer_count": 8,
+      "git_revision": null
+    }
+  ],
+  "system": {
+    "relevant_units": [
+      "1panel-agent.service                         enabled         enabled",
+      "1panel-core.service                          enabled         enabled",
+      "aegis.service                                enabled         enabled",
+      "certbot.service                              static          -",
+      "containerd.service                           enabled         enabled",
+      "cron.service                                 enabled         enabled",
+      "docker.service                               enabled         enabled",
+      "heyi-admin-firewall.service                  enabled         enabled",
+      "heyi-boss-chrome.service                     masked          enabled",
+      "heyi-boss-connector.service                  masked          enabled",
+      "heyi-boss-display.service                    masked          enabled",
+      "heyi-boss-novnc.service                      masked          enabled",
+      "heyi-boss-vnc.service                        masked          enabled",
+      "heyi-desktop-downloads.service               enabled         enabled",
+      "heyi-mysql-backup.service                    static          -",
+      "rsyslog.service                              disabled        enabled",
+      "systemd-journal-catalog-update.service       static          -",
+      "systemd-journal-flush.service                static          -",
+      "systemd-journald-sync@.service               static          -",
+      "systemd-journald.service                     static          -",
+      "systemd-journald@.service                    static          -"
+    ],
+    "unit_state": [
+      {
+        "Id": "1panel-agent.service",
+        "ActiveState": "active",
+        "SubState": "running",
+        "FragmentPath": "/etc/systemd/system/1panel-agent.service",
+        "UnitFileState": "enabled",
+        "TimeoutStartUSec": "1min 30s",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "success",
+        "ExecMainStartTimestamp": "Thu 2026-08-20 10:00:53 CST",
+        "ExecMainExitTimestamp": "",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "journal",
+        "StandardError": "inherit",
+        "User": ""
+      },
+      {
+        "Id": "1panel-core.service",
+        "ActiveState": "active",
+        "SubState": "running",
+        "FragmentPath": "/etc/systemd/system/1panel-core.service",
+        "UnitFileState": "enabled",
+        "TimeoutStartUSec": "1min 30s",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "success",
+        "ExecMainStartTimestamp": "Thu 2026-08-20 10:00:53 CST",
+        "ExecMainExitTimestamp": "",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "journal",
+        "StandardError": "inherit",
+        "User": ""
+      },
+      {
+        "Id": "aegis.service",
+        "ActiveState": "failed",
+        "SubState": "failed",
+        "FragmentPath": "/etc/systemd/system/aegis.service",
+        "UnitFileState": "enabled",
+        "TimeoutStartUSec": "30s",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "signal",
+        "ExecMainStartTimestamp": "",
+        "ExecMainExitTimestamp": "",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "journal",
+        "StandardError": "inherit",
+        "User": ""
+      },
+      {
+        "Id": "certbot.service",
+        "ActiveState": "failed",
+        "SubState": "failed",
+        "FragmentPath": "/usr/lib/systemd/system/certbot.service",
+        "UnitFileState": "static",
+        "TimeoutStartUSec": "infinity",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "exit-code",
+        "ExecMainStartTimestamp": "Thu 2026-11-05 06:11:39 CST",
+        "ExecMainExitTimestamp": "Thu 2026-11-05 06:11:41 CST",
+        "ExecMainStatus": "1",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "journal",
+        "StandardError": "inherit",
+        "User": ""
+      },
+      {
+        "Id": "containerd.service",
+        "ActiveState": "active",
+        "SubState": "running",
+        "FragmentPath": "/usr/lib/systemd/system/containerd.service",
+        "UnitFileState": "enabled",
+        "TimeoutStartUSec": "1min 30s",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "success",
+        "ExecMainStartTimestamp": "Fri 2026-09-11 06:09:12 CST",
+        "ExecMainExitTimestamp": "",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "journal",
+        "StandardError": "inherit",
+        "User": ""
+      },
+      {
+        "Id": "cron.service",
+        "ActiveState": "active",
+        "SubState": "running",
+        "FragmentPath": "/usr/lib/systemd/system/cron.service",
+        "UnitFileState": "enabled",
+        "TimeoutStartUSec": "1min 30s",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "success",
+        "ExecMainStartTimestamp": "Thu 2026-11-05 06:11:43 CST",
+        "ExecMainExitTimestamp": "",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "EnvironmentFiles": "/etc/default/cron (ignore_errors=yes)",
+        "WorkingDirectory": "",
+        "StandardOutput": "journal",
+        "StandardError": "inherit",
+        "User": ""
+      },
+      {
+        "Id": "docker.service",
+        "ActiveState": "active",
+        "SubState": "running",
+        "FragmentPath": "/usr/lib/systemd/system/docker.service",
+        "UnitFileState": "enabled",
+        "TimeoutStartUSec": "infinity",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "success",
+        "ExecMainStartTimestamp": "Wed 2026-08-19 17:00:18 CST",
+        "ExecMainExitTimestamp": "",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "journal",
+        "StandardError": "inherit",
+        "User": ""
+      },
+      {
+        "Id": "heyi-admin-firewall.service",
+        "ActiveState": "active",
+        "SubState": "exited",
+        "FragmentPath": "/etc/systemd/system/heyi-admin-firewall.service",
+        "UnitFileState": "enabled",
+        "TimeoutStartUSec": "infinity",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "success",
+        "ExecMainStartTimestamp": "Thu 2026-08-20 09:59:41 CST",
+        "ExecMainExitTimestamp": "Thu 2026-08-20 09:59:41 CST",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "journal",
+        "StandardError": "inherit",
+        "User": ""
+      },
+      {
+        "Id": "heyi-boss-chrome.service",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "FragmentPath": "/etc/systemd/system/heyi-boss-chrome.service",
+        "UnitFileState": "masked",
+        "TimeoutStartUSec": "1min 30s",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "success",
+        "ExecMainStartTimestamp": "",
+        "ExecMainExitTimestamp": "",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "inherit",
+        "StandardError": "inherit",
+        "User": ""
+      },
+      {
+        "Id": "heyi-boss-connector.service",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "FragmentPath": "/etc/systemd/system/heyi-boss-connector.service",
+        "UnitFileState": "masked",
+        "TimeoutStartUSec": "1min 30s",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "success",
+        "ExecMainStartTimestamp": "",
+        "ExecMainExitTimestamp": "",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "inherit",
+        "StandardError": "inherit",
+        "User": ""
+      },
+      {
+        "Id": "heyi-boss-display.service",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "FragmentPath": "/etc/systemd/system/heyi-boss-display.service",
+        "UnitFileState": "masked",
+        "TimeoutStartUSec": "1min 30s",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "success",
+        "ExecMainStartTimestamp": "",
+        "ExecMainExitTimestamp": "",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "inherit",
+        "StandardError": "inherit",
+        "User": ""
+      },
+      {
+        "Id": "heyi-boss-novnc.service",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "FragmentPath": "/etc/systemd/system/heyi-boss-novnc.service",
+        "UnitFileState": "masked",
+        "TimeoutStartUSec": "1min 30s",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "success",
+        "ExecMainStartTimestamp": "",
+        "ExecMainExitTimestamp": "",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "inherit",
+        "StandardError": "inherit",
+        "User": ""
+      },
+      {
+        "Id": "heyi-boss-vnc.service",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "FragmentPath": "/etc/systemd/system/heyi-boss-vnc.service",
+        "UnitFileState": "masked",
+        "TimeoutStartUSec": "1min 30s",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "success",
+        "ExecMainStartTimestamp": "",
+        "ExecMainExitTimestamp": "",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "inherit",
+        "StandardError": "inherit",
+        "User": ""
+      },
+      {
+        "Id": "heyi-desktop-downloads.service",
+        "ActiveState": "active",
+        "SubState": "running",
+        "FragmentPath": "/etc/systemd/system/heyi-desktop-downloads.service",
+        "UnitFileState": "enabled",
+        "TimeoutStartUSec": "1min 30s",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "success",
+        "ExecMainStartTimestamp": "Fri 2026-10-30 10:09:42 CST",
+        "ExecMainExitTimestamp": "",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "/opt/heyi/desktop-installers/service",
+        "StandardOutput": "null",
+        "StandardError": "null",
+        "User": "heyi-boss"
+      },
+      {
+        "Id": "heyi-mysql-backup.service",
+        "ActiveState": "failed",
+        "SubState": "failed",
+        "FragmentPath": "/etc/systemd/system/heyi-mysql-backup.service",
+        "UnitFileState": "static",
+        "TimeoutStartUSec": "1h 5min",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "exit-code",
+        "ExecMainStartTimestamp": "Thu 2026-11-05 03:28:58 CST",
+        "ExecMainExitTimestamp": "Thu 2026-11-05 03:28:58 CST",
+        "ExecMainStatus": "75",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "null",
+        "StandardError": "null",
+        "User": "root"
+      },
+      {
+        "Id": "rsyslog.service",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "FragmentPath": "/usr/lib/systemd/system/rsyslog.service",
+        "UnitFileState": "disabled",
+        "TimeoutStartUSec": "1min 30s",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "success",
+        "ExecMainStartTimestamp": "",
+        "ExecMainExitTimestamp": "",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "null",
+        "StandardError": "journal",
+        "User": ""
+      },
+      {
+        "Id": "systemd-journal-catalog-update.service",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "FragmentPath": "/usr/lib/systemd/system/systemd-journal-catalog-update.service",
+        "UnitFileState": "static",
+        "TimeoutStartUSec": "1min 30s",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "success",
+        "ExecMainStartTimestamp": "",
+        "ExecMainExitTimestamp": "",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "journal",
+        "StandardError": "inherit",
+        "User": ""
+      },
+      {
+        "Id": "systemd-journal-flush.service",
+        "ActiveState": "active",
+        "SubState": "exited",
+        "FragmentPath": "/usr/lib/systemd/system/systemd-journal-flush.service",
+        "UnitFileState": "static",
+        "TimeoutStartUSec": "1min 30s",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "success",
+        "ExecMainStartTimestamp": "Wed 2026-08-19 16:39:49 CST",
+        "ExecMainExitTimestamp": "Wed 2026-08-19 16:39:49 CST",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "journal",
+        "StandardError": "inherit",
+        "User": ""
+      },
+      {
+        "Id": "systemd-journald.service",
+        "ActiveState": "active",
+        "SubState": "running",
+        "FragmentPath": "/usr/lib/systemd/system/systemd-journald.service",
+        "UnitFileState": "static",
+        "TimeoutStartUSec": "1min 30s",
+        "RuntimeMaxUSec": "infinity",
+        "Result": "success",
+        "ExecMainStartTimestamp": "Thu 2026-11-05 06:11:43 CST",
+        "ExecMainExitTimestamp": "",
+        "ExecMainStatus": "0",
+        "MemoryMax": "infinity",
+        "WorkingDirectory": "",
+        "StandardOutput": "null",
+        "StandardError": "inherit",
+        "User": ""
+      }
+    ],
+    "backup_timer": "# /etc/systemd/system/heyi-mysql-backup.timer\n[Unit]\nDescription=Daily Heyi MySQL database backup\n\n[Timer]\nOnCalendar=*-*-* 03:20:00 Asia/Shanghai\nPersistent=true\nRandomizedDelaySec=15m\nUnit=heyi-mysql-backup.service\n\n[Install]\nWantedBy=timers.target\n\n# /etc/systemd/system/heyi-mysql-backup.timer.d/no-catch-up.conf\n[Timer]\nPersistent=false",
+    "backup_service": "# /etc/systemd/system/heyi-mysql-backup.service\n[Unit]\nDescription=Backup Heyi MySQL database\nRequires=docker.service\nAfter=docker.service\n\n[Service]\nType=oneshot\nExecStart=/usr/local/sbin/heyi-mysql-backup\nUser=root\nGroup=root\nNice=10\nIOSchedulingClass=best-effort\nIOSchedulingPriority=7\n\n\n# /etc/systemd/system/heyi-mysql-backup.service.d/bounded-no-output.conf\n[Service]\nStandardOutput=null\nStandardError=null\nTimeoutStartSec=3900",
+    "backup_script": {
+      "path": "/usr/local/sbin/heyi-mysql-backup",
+      "sha256": "0df055a80077ac7adbcd66890e961268f17f2fc20ebba6e377d698233a3e77ce",
+      "ROOT": "Path('/opt/heyi/backups/mysql')",
+      "GIB": "1024 ** 3",
+      "MAX_ARCHIVE": "6 * GIB",
+      "RESERVE": "8 * GIB",
+      "KEEP": "2"
+    },
+    "backup_files": [
+      {
+        "path": "/opt/heyi/backups/mysql/.backup.lock",
+        "is_directory": false,
+        "bytes": 0,
+        "mtime": "2026-11-03T03:30:57.080351+08:00",
+        "mode": "0o600"
+      },
+      {
+        "path": "/opt/heyi/backups/mysql/ai-commerce-20261102T193057Z.sql.gz",
+        "is_directory": false,
+        "bytes": 3421870878,
+        "mtime": "2026-11-03T03:43:59.633743+08:00",
+        "mode": "0o600"
+      },
+      {
+        "path": "/opt/heyi/erphoyee/backups/20260908-101126",
+        "is_directory": true,
+        "bytes": 4096,
+        "mtime": "2026-09-08T10:11:27.184551+08:00",
+        "mode": "0o755"
+      }
+    ],
+    "current_paths": [
+      {
+        "path": "/opt/heyi/current",
+        "realpath": "/opt/heyi/deployments/mobile-shell-20260826-092500",
+        "mode": "0o755",
+        "uid": 0,
+        "gid": 0,
+        "bytes": 4096
+      },
+      {
+        "path": "/opt/heyi/erphoyee/current",
+        "realpath": "/opt/heyi/erphoyee/releases/20260908",
+        "mode": "0o755",
+        "uid": 0,
+        "gid": 0,
+        "bytes": 4096
+      },
+      {
+        "path": "/opt/heyi/current/.env",
+        "realpath": "/opt/heyi/deployments/mobile-shell-20260826-092500/.env",
+        "mode": "0o600",
+        "uid": 0,
+        "gid": 0,
+        "bytes": 1262
+      },
+      {
+        "path": "/opt/heyi/current/compose.yaml",
+        "realpath": "/opt/heyi/deployments/mobile-shell-20260826-092500/compose.yaml",
+        "mode": "0o664",
+        "uid": 0,
+        "gid": 0,
+        "bytes": 4791
+      },
+      {
+        "path": "/opt/heyi/shared/oss-signing.properties",
+        "realpath": "/opt/heyi/shared/oss-signing.properties",
+        "mode": "0o400",
+        "uid": 10001,
+        "gid": 0,
+        "bytes": 84
+      },
+      {
+        "path": "/opt/heyi/secrets/dayan-oss.properties",
+        "realpath": "/opt/heyi/secrets/dayan-oss.properties",
+        "mode": "0o444",
+        "uid": 0,
+        "gid": 0,
+        "bytes": 90
+      },
+      {
+        "path": "/opt/heyi/shared/finance-ads",
+        "realpath": "/opt/heyi/shared/finance-ads",
+        "mode": "0o750",
+        "uid": 0,
+        "gid": 999,
+        "bytes": 4096
+      },
+      {
+        "path": "/etc/letsencrypt",
+        "realpath": "/etc/letsencrypt",
+        "mode": "0o755",
+        "uid": 0,
+        "gid": 0,
+        "bytes": 4096
+      },
+      {
+        "path": "/usr/local/lib/heyi/compact-release-image.py",
+        "realpath": "/usr/local/lib/heyi/compact-release-image.py",
+        "mode": "0o600",
+        "uid": 0,
+        "gid": 0,
+        "bytes": 7197
+      }
+    ]
+  },
+  "network": {
+    "nginx_test_exit": 0,
+    "nginx_routes": [
+      "listen 443 ssl;",
+      "server_name www.hoyee.org.cn;",
+      "ssl_certificate /etc/letsencrypt/live/hoyee.org.cn/fullchain.pem;",
+      "ssl_certificate_key /etc/letsencrypt/live/hoyee.org.cn/privkey.pem;",
+      "listen 80 default_server;",
+      "listen 443 ssl default_server;",
+      "server_name hoyee.org.cn _;",
+      "set $app_backend app:8080;",
+      "ssl_certificate /etc/letsencrypt/live/hoyee.org.cn/fullchain.pem;",
+      "ssl_certificate_key /etc/letsencrypt/live/hoyee.org.cn/privkey.pem;",
+      "location = /commerce-motion-demo.html {",
+      "location ^~ /.well-known/acme-challenge/ {",
+      "location = /erphoyee {",
+      "location ^~ /erphoyee/ {",
+      "set $erp_backend erphoyee:8137;",
+      "proxy_pass http://$erp_backend;",
+      "location ^~ /api/v1/hr/ {",
+      "proxy_pass http://172.18.0.1:8765;",
+      "location /api/ {",
+      "proxy_pass http://$app_backend;",
+      "location = /api/v1/auth/login {",
+      "proxy_pass http://$app_backend;",
+      "location /actuator/ {",
+      "proxy_pass http://$app_backend;",
+      "location = /index.html {",
+      "location ~* \\.(css|js)$ {",
+      "location = /downloads/hoyee-assistant-0.2.4.zip {",
+      "location = /downloads/Heyi-Recruiter-mac-arm64.dmg {",
+      "proxy_pass http://172.18.0.1:8767;",
+      "location = /downloads/Heyi-Recruiter-windows-x64-Setup.exe {",
+      "proxy_pass http://172.18.0.1:8767;",
+      "location = /downloads/hoyee-assistant-0.2.5.zip {",
+      "location = /downloads/hoyee-assistant-0.2.6.zip {",
+      "location = /downloads/hoyee-assistant-0.2.7.zip {",
+      "location = /downloads/hoyee-assistant-0.2.8.zip {",
+      "location = /downloads/hoyee-assistant-latest.zip {",
+      "location ^~ /downloads/ {",
+      "location / {"
+    ],
+    "certificates": [
+      {
+        "path": "/etc/letsencrypt/live/hoyee.org.cn/fullchain.pem",
+        "code": 0,
+        "out": "notBefore=Aug 20 00:43:02 2026 GMT\nnotAfter=Nov 18 00:43:01 2026 GMT\nissuer=C=US, O=Let's Encrypt, CN=YE1\nsubject=CN=hoyee.org.cn\nsha256 Fingerprint=06:78:12:65:24:A2:AA:88:7E:D5:2F:D4:AB:6D:B7:62:0E:BB:BA:79:C7:9A:A6:A0:5E:E6:3E:CB:C0:81:C5:B0\nX509v3 Subject Alternative Name: \n    DNS:hoyee.org.cn, DNS:www.hoyee.org.cn",
+        "err": ""
+      }
+    ],
+    "renewal_settings": [
+      {
+        "path": "/etc/letsencrypt/renewal/hoyee.org.cn.conf",
+        "selected": [
+          "authenticator = standalone",
+          "server = https://acme-v02.api.letsencrypt.org/directory"
+        ]
+      }
+    ],
+    "renewal_hooks": [
+      {
+        "path": "/etc/letsencrypt/renewal-hooks/deploy/reload-heyi-nginx",
+        "executable": true
+      }
+    ],
+    "certbot_timer": {
+      "code": 0,
+      "out": "ActiveState=active\nUnitFileState=enabled\nNextElapseUSecRealtime=Thu 2026-11-05 19:04:46 CST\nLastTriggerUSec=Thu 2026-11-05 06:11:39 CST\nPersistent=yes",
+      "err": ""
+    },
+    "ufw": {
+      "code": 0,
+      "out": "Status: inactive",
+      "err": ""
+    },
+    "input_rules": {
+      "code": 0,
+      "out": "-P INPUT ACCEPT\n-A INPUT -i lo -p tcp -m tcp --dport 18443 -m comment --comment heyi-1panel-local -j ACCEPT\n-A INPUT -p tcp -m tcp --dport 18443 -m comment --comment heyi-1panel-deny-public -j DROP",
+      "err": ""
+    },
+    "docker_user_rules": {
+      "code": 0,
+      "out": "-N DOCKER-USER",
+      "err": ""
+    },
+    "ipv6_input_rules": {
+      "code": 0,
+      "out": "-P INPUT ACCEPT",
+      "err": ""
+    },
+    "ipv6_docker_user_rules": {
+      "code": 0,
+      "out": "-N DOCKER-USER",
+      "err": ""
+    },
+    "dns": {
+      "hoyee.org.cn": [
+        "8.163.34.81"
+      ],
+      "www.hoyee.org.cn": [
+        "8.163.34.81"
+      ]
+    },
+    "http": [
+      {
+        "url": "http://127.0.0.1/",
+        "code": 0,
+        "out": "200 127.0.0.1 0",
+        "err": ""
+      },
+      {
+        "url": "http://127.0.0.1:8080/actuator/health",
+        "code": 0,
+        "out": "200 127.0.0.1 0",
+        "err": ""
+      },
+      {
+        "url": "http://127.0.0.1:8080/api/v1/finance/charges",
+        "code": 0,
+        "out": "401 127.0.0.1 0",
+        "err": ""
+      },
+      {
+        "url": "https://hoyee.org.cn/",
+        "code": 0,
+        "out": "200 127.0.0.1 0",
+        "err": ""
+      },
+      {
+        "url": "https://hoyee.org.cn/actuator/health",
+        "code": 0,
+        "out": "200 127.0.0.1 0",
+        "err": ""
+      },
+      {
+        "url": "https://hoyee.org.cn/api/v1/finance/charges",
+        "code": 0,
+        "out": "401 127.0.0.1 0",
+        "err": ""
+      },
+      {
+        "url": "https://hoyee.org.cn/api/v1/hr/health",
+        "code": 0,
+        "out": "502 127.0.0.1 0",
+        "err": ""
+      },
+      {
+        "url": "https://hoyee.org.cn/erphoyee/",
+        "code": 0,
+        "out": "200 127.0.0.1 0",
+        "err": ""
+      },
+      {
+        "url": "https://hoyee.org.cn/finance-workspace.js",
+        "code": 0,
+        "out": "200 127.0.0.1 0",
+        "err": ""
+      },
+      {
+        "url": "https://hoyee.org.cn/assets/templates/finance-brush-cost-template.xlsx",
+        "code": 0,
+        "out": "200 127.0.0.1 0",
+        "err": ""
+      }
+    ]
+  },
+  "data": {
+    "database": {
+      "code": 0,
+      "out": "SERVER\t8.4.11\tUTC\t+00:00\t12884901888\t151\t0\nSCHEMA\tai_commerce\t148\t30560813056\t40670003200\nCOLUMNS\tfinance_label_worker_lock\tid,lease_token,lease_until\nCOLUMNS\tflyway_schema_history\tinstalled_rank,version,description,type,script,checksum,installed_by,installed_on,execution_time,success\nMIGRATION\t146\t147\tfinance redundant bill index\t2026-11-05 06:20:50\t1\nMIGRATION\t145\t146\tcaptured pattern shared sku codes\t2026-11-04 04:09:24\t1\nMIGRATION\t144\t145\tcaptured merchant sku styles\t2026-11-04 02:17:01\t1\nMIGRATION\t143\t144\tqianyi receipt qualification\t2026-11-03 10:58:09\t1\nMIGRATION\t142\t143\tfinance calendar month completion\t2026-11-03 09:31:23\t1",
+      "err": ""
+    },
+    "redis": {
+      "code": 0,
+      "out": "# Persistence\nloading:0\nasync_loading:0\ncurrent_cow_peak:0\ncurrent_cow_size:0\ncurrent_cow_size_age:0\ncurrent_fork_perc:0.00\ncurrent_save_keys_processed:0\ncurrent_save_keys_total:0\nrdb_changes_since_last_save:144\nrdb_bgsave_in_progress:0\nrdb_last_save_time:1793873427\nrdb_last_bgsave_status:ok\nrdb_last_bgsave_time_sec:0\nrdb_current_bgsave_time_sec:-1\nrdb_saves:958\nrdb_saves_consecutive_failures:0\nrdb_last_cow_size:1875968\nrdb_last_load_keys_expired:0\nrdb_last_load_keys_loaded:80\naof_enabled:1\naof_rewrite_in_progress:0\naof_rewrite_scheduled:0\naof_last_rewrite_time_sec:1\naof_current_rewrite_time_sec:-1\naof_last_bgrewrite_status:ok\naof_rewrites:293\naof_rewrites_consecutive_failures:0\naof_last_write_status:ok\naof_last_cow_size:1847296\nmodule_fork_in_progress:0\nmodule_fork_last_cow_size:0\naof_current_size:28165771\naof_base_size:1558522\naof_pending_rewrite:0\naof_buffer_length:0\naof_pending_bio_fsync:0\naof_delayed_fsync:1",
+      "err": ""
+    },
+    "redis_policy": {
+      "code": 0,
+      "out": "save\n3600 1 300 100 60 10000\nappendonly\nyes\nmaxmemory-policy\nnoeviction\nmaxmemory\n0",
+      "err": ""
+    },
+    "disk_usage": {
+      "/opt/heyi": {
+        "code": 0,
+        "out": "8.0K\t/opt/heyi/admin-console\n1.7M\t/opt/heyi/migrations\n25M\t/opt/heyi/diagnostics\n1.1M\t/opt/heyi/erphoyee\n144K\t/opt/heyi/shared\n690M\t/opt/heyi/deployments\n56M\t/opt/heyi/desktop-installers\n8.0K\t/opt/heyi/secrets\n935M\t/opt/heyi/releases\n12K\t/opt/heyi/hotfix\n13M\t/opt/heyi/operations\n99M\t/opt/heyi/boss-agent\n3.2G\t/opt/heyi/backups\n5.0G\t/opt/heyi",
+        "err": ""
+      },
+      "/var/log": {
+        "code": 0,
+        "out": "12K\t/var/log/installer\n8.0K\t/var/log/journal\n76K\t/var/log/apt\n4.0K\t/var/log/dist-upgrade\n4.0K\t/var/log/landscape\n8.4M\t/var/log/sysstat\n44K\t/var/log/unattended-upgrades\n172K\t/var/log/letsencrypt\n48K\t/var/log/tuned\n4.0K\t/var/log/private\n4.0K\t/var/log/chrony\n15M\t/var/log",
+        "err": ""
+      },
+      "/var/lib/docker/volumes": {
+        "code": 0,
+        "out": "57G\t/var/lib/docker/volumes/web_sdk__mysql_data\n12M\t/var/lib/docker/volumes/web_sdk__automation_attachment_data\n585M\t/var/lib/docker/volumes/web_sdk__video_script_data\n1.1G\t/var/lib/docker/volumes/web_sdk__ai_video_task_data\n120K\t/var/lib/docker/volumes/heyi_cloudbeaver_workspace\n31M\t/var/lib/docker/volumes/web_sdk__redis_data\n8.0K\t/var/lib/docker/volumes/web_sdk__automation_skill_data\n13M\t/var/lib/docker/volumes/heyi_image_operation_data\n58G\t/var/lib/docker/volumes",
+        "err": ""
+      }
+    },
+    "journal_usage": {
+      "code": 0,
+      "out": "Archived and active journals take up 25.9M in the file system.",
+      "err": ""
+    },
+    "journal_policy": {
+      "/etc/systemd/journald.conf.d/99-heyi-volatile.conf": [
+        "[Journal]",
+        "Storage=volatile",
+        "RuntimeMaxUse=32M",
+        "RuntimeKeepFree=128M",
+        "ForwardToSyslog=no"
+      ]
+    },
+    "container_logs": [
+      {
+        "name": "finance-gift-cost-repair",
+        "bytes": 0
+      },
+      {
+        "name": "ai-commerce-frontend",
+        "bytes": 0
+      },
+      {
+        "name": "ai-commerce-app",
+        "bytes": 0
+      },
+      {
+        "name": "finance-report-basis-repair",
+        "bytes": 0
+      },
+      {
+        "name": "ai-commerce-redis",
+        "bytes": 0
+      },
+      {
+        "name": "ai-commerce-mysql",
+        "bytes": 0
+      },
+      {
+        "name": "heyi-pi-runtime",
+        "bytes": 253636
+      },
+      {
+        "name": "heyi-document-preview",
+        "bytes": 0
+      },
+      {
+        "name": "heyi-commerce-image-processor",
+        "bytes": 0
+      },
+      {
+        "name": "hoyee-erphoyee",
+        "bytes": 0
+      },
+      {
+        "name": "heyi-cloudbeaver",
+        "bytes": 42381
+      }
+    ],
+    "certbot_failure_signals": {
+      "port_80_conflict": true,
+      "rate_limit": false,
+      "challenge_failure": false,
+      "inspected_nonempty": true
+    }
+  },
+  "workers": {
+    "observed_at": "2026-11-05T18:15:07.117202+08:00",
+    "aggregates": {
+      "code": 0,
+      "out": "CLOCK\t2026-11-05 10:15:07\t2026-11-05 10:15:07\nCONNECTIONS\tSHOPEE\tACTIVE\t1\t46\nCONNECTIONS\tTIKTOK_SHOP\tACTIVE\t1\t40\nSYNC\tORDER\tSUCCESS\t87\tNULL\t5\t0\t2026-11-05 10:14:57.084297\t2026-10-01\t2026-10-01\nSYNC\tORDER_LIVE\tSUCCESS\t84\tNULL\t0\t0\t2026-11-05 10:15:05.000000\tNULL\tNULL\nSYNC\tORDER_REPAIR\tSUCCESS\t86\tNULL\t0\t0\t2026-11-05 10:13:11.590113\tNULL\tNULL\nSYNC\tREFUND\tSUCCESS\t78\tNULL\t32\t0\t2026-11-05 10:14:49.000000\tNULL\tNULL\nSYNC\tSETTLEMENT\tSUCCESS\t78\tNULL\t3\t0\t2026-11-05 10:12:40.357501\t2026-10-01\t2026-10-01\nSYNC\tPENDING\tSUCCESS\t36\tNULL\t1\t0\t2026-11-05 10:14:27.294687\tNULL\tNULL\nSYNC\tREFUND\tSYNCING\t8\tNULL\t8\t0\t2026-11-05 07:12:27.000000\tNULL\tNULL\nSYNC\tREFUND\tRATE_LIMITED\t3\tNULL\t2\t3\t2026-11-05 07:14:27.000000\tNULL\tNULL\nSYNC\tPENDING\tSYNCING\t4\tNULL\t4\t0\t2026-11-05 09:14:39.627954\tNULL\tNULL\nSYNC\tSETTLEMENT\tSYNCING\t8\tNULL\t8\t0\t2026-11-05 09:13:41.098452\t2026-10-01\t2026-10-01\nSYNC\tSETTLEMENT\tRUNNING\t3\t3\t0\t0\t2026-11-05 09:14:58.206093\t2026-10-01\t2026-10-01\nSYNC\tORDER\tSYNCING\t2\tNULL\t1\t0\t2026-11-05 10:04:56.806217\t2026-10-01\t2026-10-01\nSYNC\tORDER_LIVE\tSYNCING\t2\tNULL\t0\t0\t2026-11-05 10:13:31.000000\tNULL\tNULL\nCOST_QUEUE\t44\t2026-11-05 10:15:06.184050\nREBUILD\tDONE\t36\nLABEL\t1\t0\t0\t2026-11-05 08:27:08.116072\nLABEL_LEASE\t1\tNULL\nQIANYI_ACCOUNTS\t1\tSUCCESS\t1\t0\t2026-11-05 10:14:54.295645\nQIANYI_CONNECTIONS\t1\tSUCCESS\t72\tNULL\t0\t2026-11-05 10:15:05.302472\nQIANYI_CONNECTIONS\t1\tSYNCING\t2\t2\t0\t2026-11-05 10:10:05.982248\nPACING\tTIKTOK_SHOP\tREFUND\t60\t7\t0\t2026-11-05 11:00:06.763815",
+      "err": ""
+    },
+    "safe_runtime_values": {
+      "ai-commerce-app": {
+        "APP_OSS_BUCKET": "hoyee",
+        "APP_MATERIAL_ARCHIVE_ENABLED": "true",
+        "APP_SHOP_LIVE_PUBLISHING_ENABLED": "true",
+        "APP_SHOPEE_ENABLED": "true",
+        "APP_VIDEO_MAX_CONCURRENT_SUBMISSIONS": "500",
+        "APP_SHOPEE_SANDBOX_ONLY": "false",
+        "APP_OSS_ENABLED": "true",
+        "APP_TIKTOK_SHOP_ENABLED": "true",
+        "APP_OSS_PUBLIC_IMAGES": "true",
+        "APP_VIDEO_SCRIPT_ANALYSIS_CONCURRENCY": "4",
+        "APP_OSS_REGION": "cn-guangzhou",
+        "APP_DISPATCH_ENABLED": "true",
+        "APP_MAX_ACTIVE_TASKS": "80",
+        "APP_PRODUCT_PUBLISHING_PROVIDER": "OFFICIAL",
+        "APP_PRODUCT_WATERMARK_PROVIDER": "AI_WATERMARK_V1",
+        "APP_MAX_MODEL_CALLS": "20",
+        "APP_DISPATCH_WORKER_THREADS": "8",
+        "JAVA_VERSION": "jdk-21.0.12+8"
+      },
+      "heyi-pi-runtime": {
+        "IMAGE_OPERATION_OSS_BUCKET": "test-hoyee",
+        "IMAGE_OPERATION_OSS_MIGRATE": "true",
+        "NODE_VERSION": "22.23.2"
+      }
+    },
+    "artifact_hashes": {
+      "ai-commerce-app:/app/app.jar": {
+        "code": 0,
+        "out": "10313d31edd38a18c74f5375503007334cc0a409574088e5c4e85a72112f8418  /app/app.jar",
+        "err": ""
+      },
+      "ai-commerce-frontend:/usr/share/nginx/html/index.html": {
+        "code": 0,
+        "out": "59034105cfc52dcd8e26c824f4bb1324c4d6815dd8768d061e914e3034d5c266  /usr/share/nginx/html/index.html",
+        "err": ""
+      },
+      "ai-commerce-frontend:/usr/share/nginx/html/finance-workspace.js": {
+        "code": 0,
+        "out": "380526e9cb9974737dca45078915833dfa78e86f5bfdeec2b0a888362e47913b  /usr/share/nginx/html/finance-workspace.js",
+        "err": ""
+      }
+    }
+  },
+  "selected_release_receipts": {
+    "/opt/heyi/releases/finance-gift-zero-20261105/activation.json": {
+      "images": {
+        "ai-commerce-app": "ai-commerce-platform:finance-gift-zero-20261105",
+        "ai-commerce-frontend": "ai-commerce-frontend:finance-gift-zero-20261105"
+      },
+      "rollbackImages": {
+        "ai-commerce-app": "ai-commerce-platform:finance-report-basis-resume-20261105",
+        "ai-commerce-frontend": "ai-commerce-frontend:finance-report-basis-20261105"
+      },
+      "configurationPreserved": true,
+      "schemaChanged": false,
+      "persistentLogs": false,
+      "platformAmountsPreserved": true,
+      "fixedGiftCost": true
+    },
+    "/opt/heyi/releases/finance-gift-zero-20261105/prepared.json": {
+      "sourceImages": {
+        "ai-commerce-app": "sha256:8d0a5cc099d9ac0d05fcfce4b8d55058a0901ada28d81102b2395c5d5fa5637e",
+        "ai-commerce-frontend": "sha256:d869bdcee5342c4ddcdaf337188ee69728d1fc8bc425e4b752bbd327ce6c9da6"
+      },
+      "sourceJarHash": "42a63d0258d6791f6ff3ce6cb33f4c7687e7175797b2c2ee3d37688db03c07cb",
+      "jarHash": "10313d31edd38a18c74f5375503007334cc0a409574088e5c4e85a72112f8418",
+      "unrelatedEntriesPreserved": true
+    },
+    "/opt/heyi/releases/finance-gift-zero-20261105/qa-passed.json": {
+      "baselineBytecodeEqual": true,
+      "unitPassed": true,
+      "unitTests": 25,
+      "mysqlGiftCases": 3
+    },
+    "/opt/heyi/releases/finance-gift-zero-20261105/gift-repair-verification.json": {
+      "startedAt": "2026-11-05T10:10:46.713511516Z",
+      "verificationVersion": 2,
+      "complete": false,
+      "sourceRecordsWritten": false,
+      "syncCheckpointsWritten": false,
+      "ordersScanned": 139451,
+      "giftOrders": 10293,
+      "ordersQueued": 9609,
+      "shopsCompleted": 18,
+      "giftOrdersVerified": 10293,
+      "updatedAt": "2026-11-05T10:16:15.063651323Z"
+    },
+    "/opt/heyi/releases/finance-report-basis-20261105/activation.json": {
+      "images": {
+        "ai-commerce-app": "ai-commerce-platform:finance-report-basis-20261105",
+        "ai-commerce-frontend": "ai-commerce-frontend:finance-report-basis-20261105"
+      },
+      "rollbackImages": {
+        "ai-commerce-app": "ai-commerce-platform:finance-local-month-20261105",
+        "ai-commerce-frontend": "ai-commerce-frontend:finance-local-month-20261105"
+      },
+      "configurationPreserved": true,
+      "schemaChanged": false,
+      "persistentLogs": false,
+      "financialAmountsPreserved": true
+    },
+    "/opt/heyi/releases/finance-report-basis-20261105/prepared.json": {
+      "sourceImages": {
+        "ai-commerce-app": "sha256:d8d3137387bbddb58160779c0c7990988214806c4f6f3563b1391e6f99f9c35a",
+        "ai-commerce-frontend": "sha256:64f094600faf1d8127e2b4d2b75a37c13f9aa245e891566b1dc2e3ae1b4a157d"
+      },
+      "sourceJarHash": "c4e1367960be1245d4793f2870c044eb9b3b5779047cee5a0672548c18d81e65",
+      "jarHash": "8b676d6d8ad3450c26288ec88c39a5cf0936d60f4a02383fffb78ddca91af673",
+      "unrelatedEntriesPreserved": true
+    },
+    "/opt/heyi/releases/finance-report-basis-20261105/qa-passed.json": {
+      "baselineBytecodeEqual": true,
+      "unitTests": 125,
+      "mysqlPassed": true,
+      "mysqlReportCases": 4,
+      "mysqlReceiptCases": 8
+    },
+    "/opt/heyi/releases/finance-report-basis-20261105/date-repair-verification.json": {
+      "startedAt": "2026-11-05T09:05:49.660736039Z",
+      "complete": false,
+      "syncCheckpointsWritten": false,
+      "shopsCompleted": 24,
+      "updatedAt": "2026-11-05T10:15:57.418851947Z"
+    },
+    "/opt/heyi/releases/finance-report-basis-resume-20261105/activation.json": {
+      "image": "ai-commerce-platform:finance-report-basis-resume-20261105",
+      "configurationPreserved": true,
+      "frontendUnchanged": true,
+      "checkpointsReset": false,
+      "markerOnlyFailuresRearmed": 14,
+      "persistentLogs": false
+    },
+    "/opt/heyi/releases/finance-report-basis-resume-20261105/prepared.json": {
+      "sourceImage": "sha256:dc169daa93b5919dd642c8388b5a2401530fcea73d9248ebaaad810dd67805e1",
+      "sourceJarHash": "8b676d6d8ad3450c26288ec88c39a5cf0936d60f4a02383fffb78ddca91af673",
+      "jarHash": "42a63d0258d6791f6ff3ce6cb33f4c7687e7175797b2c2ee3d37688db03c07cb",
+      "unrelatedEntriesPreserved": true
+    },
+    "/opt/heyi/releases/finance-report-basis-resume-20261105/qa-passed.json": {
+      "baselineBytecodeEqual": true,
+      "unitTests": 127,
+      "mysqlPassed": true,
+      "mysqlReportCases": 4,
+      "mysqlReceiptCases": 10
+    },
+    "/opt/heyi/releases/finance-storage-compression-20261105/compression-activation.json": {
+      "redundantBillIndexDropped": true,
+      "automaticOnPageWrites": true,
+      "largeTableRebuilt": false,
+      "rowDataDeleted": false,
+      "persistentLogsAdded": false
+    },
+    "/opt/heyi/releases/finance-storage-compression-20261105/compression-qa.json": {},
+    "/opt/heyi/releases/finance-storage-compression-20261105/cleanup-verification.json": {}
+  },
+  "release_receipt_checked_at": "2026-11-05T18:16:15.909949+08:00",
+  "service_health": {
+    "heyi-pi-runtime": {
+      "code": 0,
+      "out": "200",
+      "err": ""
+    },
+    "heyi-commerce-image-processor": {
+      "code": 0,
+      "out": "200",
+      "err": ""
+    },
+    "heyi-document-preview": {
+      "docker_health": "healthy",
+      "probe_configured": true
+    }
+  },
+  "download_service": {
+    "selected_lines": [
+      "User=heyi-boss",
+      "Group=heyi-boss",
+      "WorkingDirectory=/opt/heyi/desktop-installers/service",
+      "ExecStart=/opt/heyi/desktop-installers/venv/bin/python /opt/heyi/desktop-installers/service/desktop_installers.py",
+      "Restart=on-failure",
+      "StandardOutput=null",
+      "StandardError=null"
+    ]
+  },
+  "final_checks": {
+    "observed_at": "2026-11-05T18:17:23.061370+08:00",
+    "asset_checks": [
+      {
+        "file": "index.html",
+        "source_sha256": "59034105cfc52dcd8e26c824f4bb1324c4d6815dd8768d061e914e3034d5c266",
+        "gzip_exists": true,
+        "gzip_matches": true,
+        "http_exit": 0,
+        "http_matches": true
+      },
+      {
+        "file": "finance-workspace.js",
+        "source_sha256": "380526e9cb9974737dca45078915833dfa78e86f5bfdeec2b0a888362e47913b",
+        "gzip_exists": true,
+        "gzip_matches": true,
+        "http_exit": 0,
+        "http_matches": true
+      },
+      {
+        "file": "finance-charges.js",
+        "source_sha256": "965af9c1a458bb674117b8de638bd03be64bd7a8da454082e414982d96740b9b",
+        "gzip_exists": true,
+        "gzip_matches": true,
+        "http_exit": 0,
+        "http_matches": true
+      },
+      {
+        "file": "assets/templates/finance-brush-cost-template.xlsx",
+        "source_sha256": "f4f7072a3fbc7325b11108fe183084f11f08b44d9f88c2e4d922eaee49d737ba",
+        "gzip_exists": false,
+        "http_exit": 0,
+        "http_matches": true
+      }
+    ],
+    "other_units": [],
+    "cron_summary": [
+      {
+        "file": "/etc/cron.d/e2scrub_all",
+        "job_count": 2,
+        "schedules": [
+          "30 3 * * 0",
+          "10 3 * * *"
+        ]
+      },
+      {
+        "file": "/etc/cron.d/certbot",
+        "job_count": 1,
+        "schedules": [
+          "0 */12 * * *"
+        ]
+      },
+      {
+        "file": "/etc/cron.d/.placeholder",
+        "job_count": 0,
+        "schedules": []
+      }
+    ],
+    "tls_hook_summary": {
+      "nginx_reload": true,
+      "targets_frontend": true
+    },
+    "docker_default_log": {
+      "code": 0,
+      "out": "json-file",
+      "err": ""
+    },
+    "free_bytes": 21655412736
+  },
+  "backup_timer_effective": {
+    "code": 0,
+    "out": "ActiveState=active\nUnitFileState=enabled\nNextElapseUSecRealtime=Fri 2026-11-06 03:34:17 CST\nLastTriggerUSec=Thu 2026-11-05 03:28:58 CST\nRandomizedDelayUSec=15min\nPersistent=no",
+    "err": ""
+  },
+  "database_schema_metadata": {
+    "code": 0,
+    "out": "finance_api_pacing\tplatform,channel,next_allowed_at,interval_seconds,throttle_count,success_count\nfinance_connections\tid,organization_id,user_id,platform,external_shop_id,name,display_name,region,merchant_id,shop_cipher,seller_type,authorization_subject_type,authorization_subject_id,status,enabled,currency,timezone,token_group_id,access_token_encrypted,refresh_token_encrypted,access_token_expires_at,refresh_token_expires_at,scopes_json,created_at,updated_at,group_id\nfinance_cost_rebuilds\torganization_id,shop_id,cursor_id,status,requested_at\nfinance_label_arrivals\torganization_id,order_id,revision,created_at\nfinance_label_state\torganization_id,active_generation,requested_revision,applied_revision,source_revision,error_message,retry_after,rematch_all,updated_at\nfinance_order_cost_jobs\torder_record_id,organization_id,shop_id,priority,requested_at\nfinance_qianyi_accounts\torganization_id,environment,app_id,secret_encrypted,updated_at,enabled,sync_start,revision,status,next_at,last_success_at,lease_token,lease_until,failures,error_message\nfinance_qianyi_connections\torganization_id,shop_id,environment,app_id,secret_encrypted,account_key,remote_shop_id,remote_shop_name,remote_page,cost_currency,cost_basis_verified,enabled,sync_start,revision,status,checkpoint_json,last_success_at,next_at,lease_token,lease_until,failures,error_message,updated_at,source_version,last_receipt_scan_at\nfinance_reporting_months\torganization_id,shop_id,order_id,statement_id,reporting_month,source,reason,confirmed_by,confirmed_at\nfinance_shop_deletions\torganization_id,shop_id,identity_hash,shop_label,status,stage,deleted_rows,failures,requested_by,requested_at,updated_at,next_at,completed_at\nfinance_sync_states\torganization_id,user_id,shop_id,channel,checkpoint_json,status,error_message,next_at,lease_until,last_success_at,coverage_start,failures,lease_token,priority_requested_at,last_progress_at,completed_month,month_completed_at\nMIGRATION_TOTAL\t146\t0\nBINLOG_RETENTION\t2592000",
+    "err": ""
+  },
+  "backup_failure_code_context": [
+    [
+      "        prune()",
+      "        if available() < RESERVE + MAX_ARCHIVE:",
+      "            return 75"
+    ],
+    [
+      "                while compress.poll() is None:",
+      "                    if available() < RESERVE or time.monotonic() > deadline:",
+      "                        return 75"
+    ]
+  ],
+  "external_observation": {
+    "observer": "operator workstation during this audit",
+    "tls_verified": true,
+    "http": {
+      "/": 200,
+      "/actuator/health": 200,
+      "/api/v1/finance/charges": 401,
+      "/api/v1/hr/health": 502,
+      "/erphoyee/": 200
+    },
+    "health_status": "UP",
+    "port_application_probes": [
+      {
+        "port": 3306,
+        "tcp_connect_reported_success": true,
+        "application_response": "timeout",
+        "timeout_seconds": 3,
+        "reachability": "unverified"
+      },
+      {
+        "port": 8080,
+        "tcp_connect_reported_success": true,
+        "application_response": "timeout",
+        "timeout_seconds": 3,
+        "reachability": "unverified"
+      },
+      {
+        "port": 8090,
+        "tcp_connect_reported_success": true,
+        "application_response": "timeout",
+        "timeout_seconds": 3,
+        "reachability": "unverified"
+      },
+      {
+        "port": 18443,
+        "tcp_connect_reported_success": true,
+        "application_response": "timeout",
+        "timeout_seconds": 3,
+        "reachability": "unverified"
+      }
+    ],
+    "cloud_security_group_reviewed": false
+  },
+  "local_repository": {
+    "branch": "main-tree",
+    "head": "011195ca89280ad8b03527b06eb235b3fecfe597",
+    "highest_migration": 146,
+    "preexisting_workspace_changes": true,
+    "commit_merge_tag_push_performed": false
+  },
+  "backup_script_local_sha256": "0df055a80077ac7adbcd66890e961268f17f2fc20ebba6e377d698233a3e77ce"
+}

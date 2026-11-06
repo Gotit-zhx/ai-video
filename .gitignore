@@ -10,8 +10,8 @@ prod.cookies
 
 # Local dependencies and packaged desktop builds
 **/node_modules/
-automation-agent/build/
-automation-agent/release*/
+apps/automation-agent/build/
+apps/automation-agent/release*/
 
 # Local Codex inspection artifacts
 /.codex-*/
@@ -26,7 +26,7 @@ automation-agent/release*/
 
 # Local conversion packages and visual QA captures
 /*.zip
-automation-agent/*ui-check*.png
+apps/automation-agent/*ui-check*.png
 /docs_work/
 
 .watermark.local.env

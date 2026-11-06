@@ -1,0 +1,60 @@
+{
+  "date": "2026-11-05",
+  "baselineCommit": "011195ca89280ad8b03527b06eb235b3fecfe597",
+  "movedFiles": 822,
+  "dependencyManifestsUnchanged": 18,
+  "binaryResourcesUnchanged": 22,
+  "javaSourcesAndMigrationsUnchanged": true,
+  "composeEquivalentExceptBuildContext": true,
+  "syntax": {
+    "pythonFiles": 341,
+    "nodeFiles": 395,
+    "jsonFiles": 28,
+    "shellFiles": 19
+  },
+  "focusedTests": {
+    "recruitment_desktop_node": 88,
+    "ai_boss_workbench_node": 272,
+    "automation_agent_node": 35,
+    "pi_runtime_node": 45,
+    "desktop_python_runtime": 173,
+    "desktop_python_build_manifest": 7,
+    "recruitment_python": 96,
+    "ci_python": 17,
+    "erp_python": 16,
+    "household_python": 32,
+    "document_preview_python": 14,
+    "maintenance_python": 15
+  },
+  "focusedTestTotal": 810,
+  "browserExtensionChecks": "passed",
+  "frontend": {
+    "baselineCases": 802,
+    "baselineFailures": 173,
+    "currentCases": 802,
+    "currentFailures": 171,
+    "newFailures": [],
+    "resolvedFailures": [
+      "Dockerfile packages every root script and stylesheet referenced by index",
+      "Dockerfile.local packages every root script and stylesheet referenced by index"
+    ]
+  },
+  "testRuntimes": {
+    "node": "24.22.1",
+    "python": "3.12.14"
+  },
+  "notRun": [
+    "production deployment",
+    "paid model calls",
+    "official publishing",
+    "Java/Maven full build",
+    "Windows packaged/live-account acceptance"
+  ],
+  "documentation": {
+    "markdownFiles": 272,
+    "relativeLinks": 949,
+    "missingTargets": 0,
+    "missingAnchors": 0
+  },
+  "ciSourcePathsChecked": 46
+}

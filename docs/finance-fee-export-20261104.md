@@ -34,8 +34,8 @@ not persisted to disk; a backend restart clears these temporary jobs. No schema,
 business record, financial sync checkpoint, persistent logging or SKU policy
 changes are introduced.
 
-Release helpers: `scripts/release-finance-fee-export.py` and
-`scripts/release-finance-fee-native.py`.
+Release helpers: `scripts/release/release-finance-fee-export.py` and
+`scripts/release/release-finance-fee-native.py`.
 Final target images: `ai-commerce-platform:finance-fee-native-20261104` and
 `ai-commerce-frontend:finance-fee-native-layout-20261104`.
 Final release directory: `/opt/heyi/releases/finance-fee-native-20261104`;

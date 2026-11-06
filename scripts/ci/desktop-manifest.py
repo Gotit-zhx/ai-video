@@ -7,7 +7,7 @@ import subprocess
 import zipfile
 
 root = Path(__file__).resolve().parents[2]
-desktop = root / "hr-desktop"
+desktop = root / "apps/hr-desktop"
 release = desktop / "release"
 smoke = json.loads((desktop / "test-results/packaged/smoke.json").read_text(encoding="utf-8"))
 if not smoke.get("ok") or smoke.get("platform") != "win32" or not smoke.get("packaged"):
