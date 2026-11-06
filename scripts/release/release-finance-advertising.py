@@ -11,6 +11,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -116,6 +117,10 @@ def preflight_compose(before):
 def prepare():
     require_qa()
     assert not (ROOT / "prepared.json").exists()
+    assert shutil.disk_usage("/").free > 5 * 1024**3, "Insufficient build headroom"
+    for image in IMAGES.values():
+        exists = subprocess.run(["docker", "image", "inspect", image], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        assert exists.returncode != 0, "Refusing to overwrite an existing release image"
     provenance, baseline = read("provenance.json"), read("baseline.json")
     before = {n: core.inspect(n) for n in (APP, FRONT)}
     assert all(before[n]["Image"] == baseline["images"][n] for n in before), "Concurrent image change"
