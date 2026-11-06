@@ -181,7 +181,9 @@ def deploy():
                              ("finance_authorization_sessions", "status='PROCESSING' AND expires_at>UTC_TIMESTAMP(6)"),
                              ("finance_ad_accounts", "status='RUNNING' AND lease_until>UTC_TIMESTAMP(6)"),
                              ("finance_sync_states", "status='RUNNING' AND lease_until>UTC_TIMESTAMP(6)")):
-        assert sql("SELECT EXISTS(SELECT 1 FROM " + table + " WHERE " + condition + " LIMIT 1)") == "0", "Request still active: " + table
+        # The installed drain loop recognizes this prefix and repeats its safe
+        # pause/check cycle if a worker finishes and reclaims between checks.
+        assert sql("SELECT EXISTS(SELECT 1 FROM " + table + " WHERE " + condition + " LIMIT 1)") == "0", "Finance request in progress: " + table
     storage.base.release.idle()
     preserved = {name: core.inspect(name)["Id"] for name in baseline["unrelatedContainers"]}
     rollback = before[APP]["Config"]["Image"]
