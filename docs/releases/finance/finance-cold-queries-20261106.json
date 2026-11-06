@@ -1,0 +1,220 @@
+{
+  "version": "2026.11.6.2",
+  "status": "activated-and-verified",
+  "featureCommit": "27ba7dd1360daf095b7d6da476b0a24dd76b1f31",
+  "baselineImageId": "sha256:8e23c7c1036c174f89eed39c0a5336c969d974e71f2aec8da426bc84f226ecf5",
+  "baselineJarSha256": "a5220302e3d22ba24b000d4afb352edbbe66e868163eb2be4c21ecf885a521bc",
+  "verification": {
+    "unitTests": 35,
+    "mysqlTests": 10,
+    "failures": 0,
+    "skipped": 0,
+    "baselineBytecodeEqual": true,
+    "snapshotConsistency": true,
+    "financialMetricsEqual": true,
+    "backgroundRefreshAfterCommit": true,
+    "coldMonthsVerified": 3,
+    "schemaChanged": false,
+    "globalDatabaseSettingsChanged": false
+  },
+  "measurements": [
+    {
+      "measurements": [
+        {
+          "candidate": false,
+          "financialHash": "77aa16081c17b1a54a2e36f0c4ce434b87aa55f695879073a3ba3fd990b75612",
+          "millis": 78710
+        },
+        {
+          "candidate": true,
+          "financialHash": "77aa16081c17b1a54a2e36f0c4ce434b87aa55f695879073a3ba3fd990b75612",
+          "millis": 27882
+        }
+      ],
+      "month": "2026-08",
+      "productionWrites": false,
+      "sameSnapshot": true,
+      "mode": "dashboard",
+      "equal": true
+    },
+    {
+      "measurements": [
+        {
+          "millis": 57301,
+          "financialHash": "e7f7f8eec5aab697d1b43463a4499dfbf7b75e351c2255ec7e5e9086c044f4d2",
+          "candidate": false
+        },
+        {
+          "millis": 20724,
+          "financialHash": "e7f7f8eec5aab697d1b43463a4499dfbf7b75e351c2255ec7e5e9086c044f4d2",
+          "candidate": true
+        }
+      ],
+      "equal": true,
+      "mode": "dashboard",
+      "sameSnapshot": true,
+      "productionWrites": false,
+      "month": "2026-09"
+    },
+    {
+      "measurements": [
+        {
+          "candidate": false,
+          "financialHash": "383893b93a73f0a6ce730d698a4d220e4e98aecf08e032f3e80dbf61bff40868",
+          "millis": 10600
+        },
+        {
+          "candidate": true,
+          "financialHash": "383893b93a73f0a6ce730d698a4d220e4e98aecf08e032f3e80dbf61bff40868",
+          "millis": 1440
+        }
+      ],
+      "month": "2026-09",
+      "productionWrites": false,
+      "sameSnapshot": true,
+      "mode": "summary",
+      "equal": true
+    },
+    {
+      "sameSnapshot": true,
+      "mode": "dashboard",
+      "equal": true,
+      "measurements": [
+        {
+          "financialHash": "e93d86459db3c8a08bfc32152ed25003ae9341de4935cc68da2454a367fae1b4",
+          "millis": 46982,
+          "candidate": false
+        },
+        {
+          "financialHash": "e93d86459db3c8a08bfc32152ed25003ae9341de4935cc68da2454a367fae1b4",
+          "millis": 26063,
+          "candidate": true
+        }
+      ],
+      "month": "2026-10",
+      "productionWrites": false
+    }
+  ],
+  "concurrentColdDashboardMillis": {
+    "2026-09": 21568,
+    "2026-10": 27212
+  },
+  "measurementEnvironment": {
+    "probeCpuLimit": 1,
+    "probeMemoryMiB": 1024,
+    "redisResultCache": false,
+    "mysqlBufferPoolFlushed": false
+  },
+  "schemaVersion": 147,
+  "diskExpanded": false,
+  "frontendChanged": false,
+  "persistentLogsAdded": false,
+  "artifactSourceCommit": "3ed0dd45687f79e72af184a661eb419db0fec687",
+  "releaseHelperFixCommit": "9519c1244474d9b385e7996ecb19f3567eb3685a",
+  "gitflow": {
+    "productionBranch": "main-tree",
+    "integrationBranch": "develop",
+    "tag": "v2026.11.6.2",
+    "mergeStrategy": "no-ff"
+  },
+  "activation": {
+    "version": "2026.11.6.2",
+    "sourceCommit": "3ed0dd45687f79e72af184a661eb419db0fec687",
+    "completedAt": "2026-11-06T17:34:07.729998+08:00",
+    "image": "ai-commerce-platform:finance-cold-queries-20261106",
+    "imageId": "sha256:4b27e931e273f826233854c7516bf4d1388ee362c196a93e9b0cbdd235fc5ff6",
+    "rollbackImage": "ai-commerce-platform:finance-bi-performance-20261106",
+    "unrelatedContainersPreserved": true,
+    "configurationPreserved": true,
+    "schemaChanged": false,
+    "persistentLogsAdded": false,
+    "syncCheckpointsReset": false
+  },
+  "health": {
+    "observedAt": "2026-11-06T17:42:40.970294+08:00",
+    "checks": {
+      "/": "200",
+      "/actuator/health": "200",
+      "/api/v1/finance/overview": "401",
+      "/api/v1/finance/workspace/charges": "401"
+    },
+    "jarHash": "d854a0b641671b638ea76c81a8e326707e571767d477676ce32ebc40cb346310",
+    "imageId": "sha256:4b27e931e273f826233854c7516bf4d1388ee362c196a93e9b0cbdd235fc5ff6",
+    "configurationPreserved": true,
+    "frontendPreserved": true,
+    "flywayVersion": 147
+  },
+  "restoration": {
+    "restoredSchedules": 310,
+    "checkpointChanges": 0,
+    "idleInvoiceReservationReleased": true
+  },
+  "cleanup": {
+    "observedAt": "2026-11-06T17:41:21.770319+08:00",
+    "removedTemporaryDirectories": [
+      "/opt/heyi/releases/finance-cold-20261106-38d2/probe",
+      "/opt/heyi/releases/finance-cold-20261106-38d2/app-image"
+    ],
+    "privateDrainInputRemoved": true,
+    "disposableTestDatabaseAndUserRemoved": true,
+    "removedImageTag": "ai-commerce-platform:finance-gift-zero-20261105",
+    "retainedBackendImages": [
+      "ai-commerce-platform:finance-cold-queries-20261106",
+      "ai-commerce-platform:finance-bi-performance-20261106",
+      "ai-commerce-platform:brush-source-summary-20261106"
+    ],
+    "freeGiB": 19.62,
+    "businessVolumesChanged": false,
+    "persistentLogsAdded": false
+  },
+  "postCleanup": {
+    "observedAt": "2026-11-06T17:42:41+0800",
+    "appImageId": "sha256:4b27e931e273f826233854c7516bf4d1388ee362c196a93e9b0cbdd235fc5ff6",
+    "appContainerId": "c3d48877c8a5e37c3fda66705ed4336982cc79ada9f7528f2d1ab2c490e2af89",
+    "frontendContainerId": "172ad5da0d517727dc4d75ac7b63179131c64498e81c4c40ba5c3ddfa3da075f",
+    "composeFiles": 250,
+    "backupTimerPersistent": "no",
+    "probeContainers": [],
+    "releaseLockFree": true
+  },
+  "liveColdDashboard": {
+    "month": "2026-09",
+    "millis": 20189,
+    "responseCacheUsed": false,
+    "diskTemporaryTables": 0,
+    "browserEndToEnd": false
+  },
+  "browserAfterRelease": {
+    "verified": false,
+    "reason": "The newly opened verification page showed a login screen; no production account login was performed."
+  },
+  "cacheVersionSample": [
+    {
+      "time": "17:40:40",
+      "revisions": [
+        {
+          "type": "data-revision",
+          "value": 5066
+        },
+        {
+          "type": "revision",
+          "value": 209
+        }
+      ]
+    },
+    {
+      "time": "17:41:00",
+      "revisions": [
+        {
+          "type": "data-revision",
+          "value": 5077
+        },
+        {
+          "type": "revision",
+          "value": 209
+        }
+      ]
+    }
+  ],
+  "sourceDirectory": "/opt/heyi/source/releases/v2026.11.6.2/"
+}
