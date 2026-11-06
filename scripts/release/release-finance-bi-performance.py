@@ -197,7 +197,7 @@ def deploy():
             current = core.inspect(APP)
         except Exception:
             current = None
-        if current is None or current["Config"]["Image"] == IMAGE:
+        if current is None or current["Id"] == before[APP]["Id"] or current["Config"]["Image"] == IMAGE:
             storage.activate(before, APP, rollback)
             core.health(APP)
         raise

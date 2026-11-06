@@ -1,0 +1,140 @@
+{
+  "version": "2026.11.6.1",
+  "status": "active",
+  "activatedAt": "2026-11-06T14:30:25.344637+08:00",
+  "sourceCommit": "88bc7368fb997302ee474fc934b0eeefd31dc98a",
+  "deploymentHelperCommit": "bbffb0a041ea3a21548848bd0528eaf2679f1a0b",
+  "image": "ai-commerce-platform:finance-bi-performance-20261106",
+  "imageId": "sha256:8e23c7c1036c174f89eed39c0a5336c969d974e71f2aec8da426bc84f226ecf5",
+  "jarSha256": "a5220302e3d22ba24b000d4afb352edbbe66e868163eb2be4c21ecf885a521bc",
+  "imageBytes": 482549246,
+  "imageLayers": 3,
+  "measurements": [
+    {
+      "responseBytes": 684067,
+      "costScans": 1,
+      "refreshing": false,
+      "financialHash": "de3fa74355449761339b0ba1c6af383915970bf3e2899624bafa6bed4085728a",
+      "ledgerScans": 1,
+      "millis": 49697,
+      "operation": "cold-month"
+    },
+    {
+      "responseBytes": 684067,
+      "costScans": 0,
+      "refreshing": false,
+      "financialHash": "de3fa74355449761339b0ba1c6af383915970bf3e2899624bafa6bed4085728a",
+      "ledgerScans": 0,
+      "millis": 171,
+      "operation": "repeat-month"
+    },
+    {
+      "responseBytes": 55802,
+      "costScans": 0,
+      "refreshing": true,
+      "financialHash": "aebcb7e51aeab718bbce6ea56cde76c1bee6b628935ac7f92a14a98262280d3c",
+      "ledgerScans": 0,
+      "millis": 204,
+      "operation": "shop-after-20s-and-worker-change"
+    }
+  ],
+  "warmFinancialMetricsEqual": true,
+  "measurementScope": "Read-only backend service probe; not authenticated browser end-to-end timing",
+  "queueBeforeRestart": 71753,
+  "postActivationObservedAt": "2026-11-06T14:44:44.346237+08:00",
+  "postActivationDatabase": {
+    "lockWaits": 0,
+    "queuedCosts": 0,
+    "recentSyncSuccess": 118,
+    "recentSyncProgress": 129
+  },
+  "postActivationContainerStats": [
+    {
+      "BlockIO": "0B / 475kB",
+      "CPUPerc": "5.78%",
+      "Container": "ai-commerce-app",
+      "ID": "3afc3aceaa68",
+      "MemPerc": "5.23%",
+      "MemUsage": "1.566GiB / 29.95GiB",
+      "Name": "ai-commerce-app",
+      "NetIO": "16.2GB / 427MB",
+      "PIDs": "100"
+    },
+    {
+      "BlockIO": "941GB / 8.13TB",
+      "CPUPerc": "9.95%",
+      "Container": "ai-commerce-mysql",
+      "ID": "a4e324f7e344",
+      "MemPerc": "48.50%",
+      "MemUsage": "14.52GiB / 29.95GiB",
+      "Name": "ai-commerce-mysql",
+      "NetIO": "96.1GB / 794GB",
+      "PIDs": "46"
+    },
+    {
+      "BlockIO": "839MB / 25.5GB",
+      "CPUPerc": "0.36%",
+      "Container": "ai-commerce-redis",
+      "ID": "f63a1b73bbc6",
+      "MemPerc": "0.04%",
+      "MemUsage": "13.77MiB / 29.95GiB",
+      "Name": "ai-commerce-redis",
+      "NetIO": "22.4GB / 23.6GB",
+      "PIDs": "6"
+    }
+  ],
+  "restoration": {
+    "restoredSchedules": 316,
+    "checkpointChanges": 0,
+    "idleInvoiceReservationReleased": true
+  },
+  "cleanup": {
+    "completedAt": "2026-11-06T15:06:20.003574+08:00",
+    "removedOwnedPaths": [
+      "probe",
+      "app-image",
+      "__pycache__",
+      "compose-preflight.json",
+      "drain-private.json",
+      "account-drain.json",
+      "qianyi-drain.json"
+    ],
+    "removedBytes": 165210535,
+    "removedImageTags": [
+      "ai-commerce-platform:finance-report-basis-resume-20261105"
+    ],
+    "retainedBackendImages": [
+      "ai-commerce-platform:finance-bi-performance-20261106",
+      "ai-commerce-platform:brush-source-summary-20261106",
+      "ai-commerce-platform:finance-gift-zero-20261105"
+    ],
+    "availableGiB": 19.27,
+    "reservationCounts": {
+      "scheduleMarkers": 0,
+      "accountReservations": 0,
+      "invoiceReservations": 0,
+      "connectionReservations": 0
+    },
+    "scheduleRestoration": {
+      "restoredSchedules": 316,
+      "checkpointChanges": 0,
+      "idleInvoiceReservationReleased": true
+    },
+    "businessVolumesPreserved": true
+  },
+  "tests": {
+    "unit": 54,
+    "mysql": 7,
+    "uiSuites": 4,
+    "failures": 0
+  },
+  "databaseSchemaVersion": 147,
+  "schemaChanged": false,
+  "databaseGlobalSettingsChanged": false,
+  "diskExpanded": false,
+  "persistentLogsAdded": false,
+  "configurationPreserved": true,
+  "frontendPreserved": true,
+  "productionRollbackExecuted": false,
+  "gitTag": "v2026.11.6.1"
+}
