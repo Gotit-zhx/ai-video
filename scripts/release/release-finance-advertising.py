@@ -337,6 +337,12 @@ def drain_deploy():
 
 
 if __name__ == "__main__":
-    with open("/run/lock/heyi-application-release.lock", "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        {"prepare": prepare, "read-verify": read_verify, "drain-deploy": drain_deploy, "verify": verify}[sys.argv[2]]()
+    try:
+        with open("/run/lock/heyi-application-release.lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            {"prepare": prepare, "read-verify": read_verify, "drain-deploy": drain_deploy, "verify": verify}[sys.argv[2]]()
+    except BaseException as failure:
+        # Nested helpers can carry private environment values in command exceptions.
+        # Do not emit their command, traceback or raw stderr into deployment output.
+        print("Advertising release step failed: " + type(failure).__name__, flush=True)
+        raise SystemExit(1)
