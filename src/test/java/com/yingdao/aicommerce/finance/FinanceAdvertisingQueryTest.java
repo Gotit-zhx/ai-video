@@ -16,13 +16,15 @@ class FinanceAdvertisingQueryTest {
         var removed=new LinkedHashMap<>(fee);var db=mock(JdbcTemplate.class);
         when(db.queryForList(anyString(),any(Object[].class))).thenAnswer(call->
                 ((String)call.getArgument(0)).contains("FROM finance_marketing_orders")?List.of(removed):List.of(fee,independent));
-        var repo=new FinanceRepository(db,new ObjectMapper());var advertising=new ArrayList<Map<String,Object>>();
-        var f=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,31),"","","PHP","day");
+        var repo=spy(new FinanceRepository(db,new ObjectMapper()));var advertising=new ArrayList<Map<String,Object>>();
+        doAnswer(call->((java.util.function.Supplier<?>)call.getArgument(1)).get()).when(repo).readSnapshot(eq(180),any());
+        var f=new Filter(LocalDate.of(2026,10,9),LocalDate.of(2026,10,9),"","","PHP","day");
         var operating=repo.dashboardBuckets(new Scope("org","reader"),f,false,advertising);
         assertEquals(1,operating.size());assertEquals("AD",operating.getFirst().get("kind"));
         var report=FinanceAdvertisingReport.build(advertising,List.of(Map.of("id","a","group_id","baby")),f,false,null,"day");
         assertEquals(0,decimal("130").compareTo(decimal(map(report.get("total")).get("amount"))));
         verify(db,times(2)).queryForList(anyString(),any(Object[].class));
+        verify(repo).readSnapshot(eq(180),any());
     }
     @Test void sharedAdvertisingFactsFollowShopAndGroupProjection(){
         Map<String,Object> a=Map.of("shop_id","a","amount",10),b=Map.of("shop_id","b","amount",20),unassigned=Map.of("shop_id","UNASSIGNED","amount",30);
