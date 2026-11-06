@@ -19,7 +19,7 @@ def files():
     result = {}
     for path in sorted(FRONT.rglob("*")):
         rel = path.relative_to(FRONT)
-        if not path.is_file() or path.is_symlink():
+        if not path.is_file() or path.is_symlink() or path.suffix==".md":
             continue
         if (len(rel.parts) == 1 and path.suffix in EXTENSIONS) or rel.parts[0] in DIRECTORIES:
             dest = str(rel)

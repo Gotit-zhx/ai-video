@@ -48,7 +48,7 @@ class CommerceLocalPhotoIntegrationTest {
         var source=new DriverManagerDataSource(System.getenv("HEYI_LOCAL_PHOTO_TEST_URL"),System.getenv().getOrDefault("HEYI_TEST_DB_USER","root"),System.getenv().getOrDefault("HEYI_TEST_DB_PASSWORD",""));
         try(var connection=source.getConnection()) {
             try(var tables=connection.getMetaData().getTables(connection.getCatalog(),null,"%",new String[]{"TABLE"})) {assertFalse(tables.next(),"Only an empty disposable schema is accepted");}
-            for(var file:List.of("V68__batch_execution_checkpoints.sql","V73__batch_model_call_limits.sql","V75__batch_artwork_jobs.sql","V96__batch_artwork_colors.sql","V97__commerce_mockup_derivatives.sql"))
+            for(var file:List.of("V68__batch_execution_checkpoints.sql","V73__batch_model_call_limits.sql","V75__batch_artwork_jobs.sql","V96__batch_artwork_colors.sql","V97__commerce_mockup_derivatives.sql","V100__commerce_matte_guides.sql"))
                 ScriptUtils.executeSqlScript(connection,new ClassPathResource("db/migration/"+file));
             try(var statement=connection.createStatement()) {
                 statement.execute("CREATE TABLE commerce_batch_artwork_checks(job_id VARCHAR(36) PRIMARY KEY,report_json JSON NOT NULL,created_at TIMESTAMP(6) NOT NULL)");
@@ -79,7 +79,7 @@ class CommerceLocalPhotoIntegrationTest {
         db.update("INSERT INTO commerce_batch_artwork_jobs(id,organization_id,execution_id,capture_id,capture_version,kind,variant_index,request_key,status,prompt,model_config_id,model_fingerprint,reference_keys,storage_key,content_sha256,created_at,updated_at) VALUES(?,'org','run','capture',1,?,?,?,'READY','original prompt','original-model','fingerprint','[]',?,?,NOW(6),NOW(6))",id,kind,variant,id,key,key.substring(65));
     }
     @Test void fullWorkerPathCreatesOneImagePerColorAndVariantWithoutAnyModelCallsAndKeepsOriginals()throws Exception {
-        String photo=archive.store("org",png(false)).storageKey(),art=archive.store("org",png(true)).storageKey();
+        String photo=archive.store("org",png(false)).storageKey(),art=archive.store("org",CommerceArtworkLibraryServiceTest.artwork(true)).storageKey();
         var colors=List.of(new CommerceSourceColorResolver.Color("default","原图色",List.of("size-s","size-m"),"image",true),
                 new CommerceSourceColorResolver.Color("cream","米色",List.of("cream-s","cream-m","cream-l"),"color-image",true));
         var selected=new CommerceBatchCreativePlanValidator.Selection("capture",1,"image",List.of(),colors);

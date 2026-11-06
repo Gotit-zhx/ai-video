@@ -97,6 +97,12 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/toolchain
       - run: python3 scripts/ci/run.py frontend
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: frontend-${{ github.run_attempt }}
+          path: target/ci-reports/frontend/summary.json
+          retention-days: 7
   required:
     name: CI required
     if: always()
@@ -111,6 +117,7 @@ jobs:
           import json, os
           n=json.loads(os.environ['NEEDS'])
           assert n['policy']['result']=='success', 'Policy checks failed'
+          assert n['policy']['outputs'].get('runtime') in ['true','false'], 'Missing component decision'
           expected='success' if n['policy']['outputs']['runtime']=='true' else 'skipped'
           assert all(n[k]['result']==expected for k in ['unit','database','frontend']), 'Mandatory checks failed or unexpectedly skipped'
           PY

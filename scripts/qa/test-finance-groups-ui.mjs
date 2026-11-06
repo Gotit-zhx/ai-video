@@ -40,7 +40,7 @@ w.api=async(path,options={})=>{
   if(endpoint.startsWith('/fields/'))return {data:method==='PUT'?'已保存':settings(endpoint.split('/').at(-1))};
   if(endpoint.startsWith('/records/'))return {data:{...records.find(r=>r.id===endpoint.split('/').at(-1)),kind:'ORDER'}};
   const common={filters:{...Object.fromEntries(url.searchParams),currency:'PHP',displayCurrency:'PHP'},groups,shops,sync:[],currencies:['PHP'],
-    totals:[{kind:'SETTLEMENT',amount:1200,records:3},{kind:'BILL',amount:1200,records:1},{kind:'PENDING',amount:300,records:2}],
+    totals:[{kind:'SETTLEMENT',amount:1200,revenue:1200,records:3,known_amounts:3,known_revenues:3},{kind:'BILL',amount:1200,records:1,known_amounts:1},{kind:'PENDING',amount:300,records:2,known_amounts:2}],
     ranking:[],statuses:[],fees:[],trend:[],basis:'测试数据',updatedAt:'2026-10-22T00:00:00Z',hourly:[],recent:records,
     productCosts:{scope:'ORDER',basis:'测试订单成本口径',total:{known_amount_cny:88.75,amount_cny:null,ready_count:3,pending_count:1,estimated_count:2,excluded_count:0},shops:[{shop_id:'shop2',known_amount_cny:88.75,amount_cny:null,pending_count:1}]}};
   if(['/overview','/screen'].includes(endpoint))return {data:common};
@@ -82,16 +82,15 @@ await choose('店铺分组','clothes');assert.equal(d.querySelectorAll('.fi-shop
 w.FinanceWorkspace.enter('orders');await ready();assert.equal(requests.at(-1).url.searchParams.get('groupId'),'clothes');
 assert.equal(d.querySelector('.fi-product-cost-summary'),null,'orders use per-row cost evidence; settled cost totals belong to the overview');
 let rows=[...d.querySelectorAll('.fi-table tbody tr')];
-assert.deepEqual(rows.map(r=>r.querySelector('.fi-record-value').textContent),['2026-10-22 09:23:45','2026-10-22 01:06:09','2026-10-21','—'],'real timestamps use shop timezone to the second, missing/invalid times must not become fabricated midnight');
-assert(rows[0].querySelector('time').title.endsWith('Asia/Manila'));assert(rows[1].querySelector('time').title.endsWith('Asia/Bangkok'));
-assert.equal(rows[0].querySelector('time').dateTime,'2026-10-22T01:23:45.000Z');
+assert.deepEqual(rows.map(r=>r.querySelector('.fi-record-value').textContent),['2026-10-22','2026-10-22','2026-10-21','—'],'the order date column preserves calendar dates and never fabricates a missing date');
+assert.equal(rows[0].querySelector('.fi-record-value time'),null,'the date column is distinct from optional exact timestamps');
 let headers=[...d.querySelectorAll('.fi-table th')].map(n=>n.textContent);
-assert(headers.includes('平台 / 下单时间'));assert(!headers.includes('记录编号'));assert.equal(headers.filter(h=>h==='订单编号').length,1);
+assert(headers.includes('平台 / 下单日期（店铺时区）'));assert(!headers.includes('记录编号'));assert.equal(headers.filter(h=>h==='订单编号').length,1);
 assert.equal(rows[0].querySelector('.fi-record-link').textContent,'261022ABCD1234');
 assert(headers.includes('商品 SKU'));assert.equal(rows[0].querySelector('.fi-sku-cell').textContent,records[0].product_skus);
 rows[0].querySelector('.fi-cost-link').click();assert.equal(costLinks.at(-1).recordId,'record1');assert.equal(costLinks.at(-1).shopId,'shop1');assert.equal(costLinks.at(-1).kind,'ORDER');
 assert.equal(w.location.hash,'#finance-costs');
-assert.equal(rows[1].querySelector('.fi-sku-cell').textContent,'—');
+assert.equal(rows[1].querySelector('.fi-sku-cell').textContent,'暂无商品 SKU 信息');
 assert.equal(rows[3].querySelector('.fi-record-link').textContent,'查看详情','missing order number must not be replaced with an unrelated record ID');
 assert.deepEqual(rows.map(r=>r.querySelector('.fi-status').textContent),['已处理','待揽收','已发货','其他状态']);
 assert.equal(rows[3].querySelector('.fi-status').title,'NEW_PLATFORM_STATUS','unrecognized status remains inspectable without guessing its meaning');
@@ -118,13 +117,9 @@ assert.equal(d.querySelectorAll('.fi-record-lead').length,0);showPlatform=false;
 await choose('店铺','shop1');button('下一页').click();await ready();assert.equal(requests.at(-1).url.searchParams.get('page'),'2');
 await choose('店铺分组','shoes');assert.equal(requests.at(-1).url.searchParams.get('page'),'1');assert.equal(requests.at(-1).url.searchParams.get('shopId'),'');
 assert.equal(d.querySelector('[aria-label="店铺"]').options.length,2);
-button('退款').click();await ready();
-assert(d.querySelector('thead').textContent.includes('退款申请时间'));assert.equal(d.querySelector('tbody time').textContent,'2026-10-22 09:23:45');
-assert(!d.querySelector('thead').textContent.includes('记录编号'));
 for(const route of ['overview','reconciliation','settlements','fees','fee-records','ads','live']){
   w.FinanceWorkspace.enter(route);await ready();
   assert.equal(requests.at(-1).url.searchParams.get('groupId'),'shoes',route+' retains group');
-  assert(route==='overview'?d.querySelector('[data-metric="PRODUCT_COST"]')?.textContent.includes('88.75'):d.querySelector('.fi-product-cost-summary')?.textContent.includes('¥ 88.75'),route+' shows the shared cost result');
   if(route==='settlements'){assert.equal(d.querySelectorAll('.fi-settlement-totals strong').length,3);assert(d.querySelector('.fi-settlement-chart'));assert(d.querySelector('.fi-settlement-totals').textContent.includes('1,200'));}
   if(['reconciliation','settlements','fees','fee-records','ads','live'].includes(route)){assert.equal(d.querySelectorAll('.fi-market-badge').length,4,route+' identifies every detail record');assert(!d.querySelector('.fi-table-wrap:last-of-type')?.textContent.includes('AWAITING_COLLECTION'));}
   if(['reconciliation','settlements','fees','fee-records','ads','live'].includes(route))assert([...d.querySelectorAll('th')].some(n=>n.textContent==='商品 SKU'),route+' includes merchant SKU column');

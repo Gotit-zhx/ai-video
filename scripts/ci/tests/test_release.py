@@ -13,7 +13,7 @@ class ReleaseTest(unittest.TestCase):
     def manifest(self):
         return {"schemaVersion":1,"repository":release.REPOSITORY,"version":"v2026.11.6.2",
             "source":{"commit":"a"*40,"tree":"b"*40,"ref":"refs/heads/release/2026.11.6.2-ops",
-                      "inputs":{k:"a"*64 for k in ["app","frontend","unsupported","source","migrations"]}},"sourceArchiveSha256":"f"*64,
+                      "inputs":{k:"a"*64 for k in ["app","frontend","unsupported","source","operations","migrations"]}},"sourceArchiveSha256":"f"*64,"sourceArchiveBytes":100,"sourceUnpackedBytes":1000,
             "validation":{"result":"passed","unexpectedSkips":0,"containerSmoke":"passed"},"images":{
                 name:{"repository":"ghcr.io/gotit-zhx/ai-video/"+name,"manifestDigest":"sha256:"+"c"*64,
                       "configDigest":"sha256:"+"d"*64,"sourceCommit":"a"*40,"platform":"linux/amd64",

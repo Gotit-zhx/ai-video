@@ -42,11 +42,14 @@ class Engine:
                     self.host.verify(target, maintenance=True)
                 else:
                     self.host.verify(target, maintenance=False)
+                self.store.save(op, "source_sync", sourceChanging=True)
                 self.host.sync_source(target)
-                self.store.save(op, "restoring")
+                # Persist the accepted target before reopening work. A crash
+                # after ungating must finish acceptance, not interrupt new work.
+                self.store.save(op, "restoring", accepted=True)
+                self.store.set_active(target)
                 if gate: self.host.ungate(request); gate = False
                 self.host.verify(target, maintenance=False)
-                self.store.set_active(target)
                 return self.store.save(op, "succeeded", finishedAt=int(time.time()), switched=bool(changed))
             except Exception as error:
                 # Only a short category is public: subprocess output may contain
@@ -60,7 +63,7 @@ class Engine:
                         self.host.compatible(baseline)
                         self.host.activate(baseline, ["app", "frontend"])
                         self.host.verify(baseline, maintenance=True)
-                        self.host.sync_source(baseline)
+                    if op.get("sourceChanging"): self.host.sync_source(baseline)
                     self.host.ungate(request); gate = False
                     self.host.verify(baseline, maintenance=False)
                     self.store.set_active(baseline)
@@ -77,13 +80,22 @@ class Engine:
                 # A crash in ANY write-ahead phase can have happened after a
                 # side effect. Restore the verified baseline unconditionally.
                 try:
+                    if op.get("accepted") and op["phase"] not in {"recovering","needs_attention"}:
+                        target=op["target"]
+                        self.host.compatible(target)
+                        self.host.verify(target,maintenance=self.host.owns_gate(op["id"]))
+                        self.host.ungate(op["id"])
+                        self.host.verify(target,maintenance=False)
+                        self.store.set_active(target)
+                        results.append(self.store.save(op,"succeeded",recovered=True,finishedAt=int(time.time())))
+                        continue
                     self.host.compatible(baseline)
                     if op.get("mayHaveSwitched") or op["phase"] in {"switching", "verifying", "restoring"}:
                         self.host.gate(op["id"])
                         self.host.drain(op["id"])
                         self.host.activate(baseline, ["app", "frontend"])
                         self.host.verify(baseline, maintenance=True)
-                        self.host.sync_source(baseline)
+                    if op.get("sourceChanging"): self.host.sync_source(baseline)
                     self.host.ungate(op["id"])
                     self.host.verify(baseline, maintenance=False)
                     self.store.set_active(baseline)

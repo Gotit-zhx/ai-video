@@ -64,8 +64,8 @@ def dispatch(args, role="local"):
             if existing["target"]["version"]!=args[1] or existing["expectedVersion"]!=args[2]: raise ValueError("Operation ID reused")
             return public_operation(existing)
         if action=="rollback":
-            verified=[o for p in (store.root/"operations").glob("*.json") if (o:=read(p))["phase"]=="succeeded"]
-            if not any(o["target"]["version"]==target["version"] for o in verified): raise ValueError("Rollback version was not previously accepted")
+            from .monitor import retained_versions
+            if target["version"] not in retained_versions(store): raise ValueError("Version is not in the retained verified rollback set")
         with store.exclusive():
             if store.incomplete(): raise RuntimeError("Recover unfinished operation first")
             if store.active()["version"]!=args[2]: raise ValueError("Stale baseline")

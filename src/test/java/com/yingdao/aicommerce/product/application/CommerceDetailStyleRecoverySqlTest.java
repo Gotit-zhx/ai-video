@@ -38,7 +38,7 @@ class CommerceDetailStyleRecoverySqlTest {
         db.update("INSERT INTO commerce_batch_executions(id,organization_id,batch_id,created_by,stage,status,message,lease_token,lease_until,created_at,updated_at) VALUES('run','org','batch','owner','MOCKUP','RUNNING','fixture','lease',DATE_ADD(NOW(6),INTERVAL 20 MINUTE),NOW(6),NOW(6))");
         db.update("""
                 INSERT INTO commerce_batch_artwork_jobs(id,organization_id,execution_id,capture_id,capture_version,kind,variant_index,color_key,request_key,status,prompt,model_config_id,model_fingerprint,reference_keys,storage_key,content_sha256,created_at,updated_at)
-                VALUES('main','org','run','capture',7,'DRAPED_FRONT',1,'black','main','READY','fixture','local','fingerprint','[]',?,?,NOW(6),NOW(6))
+                VALUES('main','org','run','capture',7,'MOCKUP_FRONT',1,'black','main','READY','fixture','local','fingerprint','[]',?,?,NOW(6),NOW(6))
                 """,h.product,h.product.substring(65));
         db.update("INSERT INTO commerce_batch_artwork_checks VALUES('main',?,NOW(6))",h.json.writeValueAsString(Map.of("passed",true,"otherEvidence","keep","sourceStylePreparation",Map.of("attempts",3,"nextAttemptAt",0))));
     }

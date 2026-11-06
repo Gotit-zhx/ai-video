@@ -26,6 +26,10 @@ def canonical(data):
 
 
 def component(path):
+    if path.endswith(".md") or path.startswith(("docs/","frontend/test/","frontend/tests/","ops/heyi-ops/tests/")):
+        return "source"
+    if path.startswith("ops/heyi-ops/") or path=="scripts/heyi-mysql-backup.py" or path.startswith("ops/admin-console/heyi-mysql-backup."):
+        return "operations"
     if path.startswith(("src/main/",)) or path in ("pom.xml", "Dockerfile", "maven-settings.xml", ".dockerignore"):
         return "app"
     if path.startswith("frontend/") and not path.startswith(("frontend/test/", "frontend/tests/")):
@@ -39,7 +43,7 @@ def component(path):
 
 def inventory(ref="HEAD"):
     entries = run("git", "ls-tree", "-r", ref).splitlines()
-    groups = {k: {} for k in ("app", "frontend", "unsupported", "source", "migrations")}
+    groups = {k: {} for k in ("app", "frontend", "unsupported", "source", "operations", "migrations")}
     for entry in entries:
         mode, kind, rest = entry.split(" ", 2)
         oid, path = rest.split("\t", 1)
@@ -71,12 +75,14 @@ def validate_manifest(value, require_smoke=True):
         raise ValueError("Candidate did not pass mandatory validation")
     if require_smoke and value["validation"].get("containerSmoke") != "passed":
         raise ValueError("Candidate container smoke did not pass")
-    if set(source["inputs"]) != {"app","frontend","unsupported","source","migrations"} or not all(re.fullmatch(r"[a-f0-9]{64}",v) for v in source["inputs"].values()):
+    if set(source["inputs"]) != {"app","frontend","unsupported","source","operations","migrations"} or not all(re.fullmatch(r"[a-f0-9]{64}",v) for v in source["inputs"].values()):
         raise ValueError("Invalid component fingerprints")
     if not re.fullmatch(r"refs/heads/(release|hotfix)/[A-Za-z0-9._-]+",source["ref"]):
         raise ValueError("Untrusted source ref")
     if not re.fullmatch(r"[a-f0-9]{64}", value["sourceArchiveSha256"]):
         raise ValueError("Invalid source checksum")
+    if not all(type(value[k]) is int and 0<value[k]<=limit for k,limit in [("sourceArchiveBytes",512*1024**2),("sourceUnpackedBytes",1024**3)]):
+        raise ValueError("Invalid source archive budget")
     for name, info in value["images"].items():
         expected = f"ghcr.io/{REPOSITORY.lower()}/{name}"
         if info["repository"] != expected or not all(DIGEST.fullmatch(info[k]) for k in ("manifestDigest", "configDigest")):

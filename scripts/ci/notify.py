@@ -18,7 +18,7 @@ def api(path,method="GET",body=None):
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 
-def reconcile(alerts,complete):
+def reconcile(alerts,verified_scopes):
     valid=re.compile(r"[a-zA-Z0-9_-]{1,80}\Z")
     for a in alerts:
         if not valid.fullmatch(a["service"]) or not valid.fullmatch(a["type"]) or a["severity"] not in {"warning","critical"}:
@@ -37,22 +37,23 @@ def reconcile(alerts,complete):
         body=key+"\n\n检测时间："+now+"。\n\n故障：`"+alert["service"]+" / "+alert["type"]+"`，等级：`"+alert["severity"]+"`。\n\n请运行 Operations → doctor，或在主机执行 `heyi-ops doctor`。完整业务数据和凭据不进入通知。\n"
         api("issues","POST",{"title":title,"body":body,"labels":[LABEL],"assignees":["Gotit-zhx"]})
     for key,issue in indexed.items():
-        if key not in current and key.startswith("<!-- heyi-ops:") and (complete or key.startswith("<!-- heyi-ops:external:")):
+        scope=key.removeprefix("<!-- heyi-ops:").split(":",1)[0]
+        if key not in current and key.startswith("<!-- heyi-ops:") and scope in verified_scopes:
             api("issues/"+str(issue["number"])+"/comments","POST",{"body":"探测已确认恢复（"+now+"）。"})
             api("issues/"+str(issue["number"]),"PATCH",{"state":"closed","state_reason":"completed"})
 
 
 def main():
-    alerts=[];complete=False
+    alerts=[];complete=False;verified={"external"}
     try:
         with urllib.request.urlopen("https://hoyee.org.cn/actuator/health",timeout=15) as response:
             if response.status!=200 or json.load(response).get("status")!="UP":raise RuntimeError("Not healthy")
     except Exception:alerts.append({"service":"external","type":"https-availability","severity":"critical"})
     try:
         with Remote() as remote:status=remote.call("doctor",timeout=60)
-        alerts.extend(status["alerts"]);complete=True
+        alerts.extend(status["alerts"]);complete=True;verified.update(status["verifiedScopes"]);verified.add("monitoring")
     except Exception:alerts.append({"service":"monitoring","type":"host-probe-failed","severity":"critical"})
-    reconcile(alerts,complete)
+    reconcile(alerts,verified)
     print(json.dumps({"alerts":alerts,"hostProbeComplete":complete},ensure_ascii=False))
 
 

@@ -66,7 +66,9 @@ class CommerceDesignHttpIntegrationTest {
         var capture=call("/api/v1/product-captures",Map.of("sourceUrl","https://shopee.ph/a-i.123.456","title","QA商品","images",List.of(Map.of("url","https://cdn.example.com/ref.png","role","MAIN"))),201);
         String captureId=capture.path("id").asText();assertFalse(captureId.isBlank());
         var created=call("/api/v1/commerce-designs",Map.of("captureId",captureId,"captureVersion",capture.path("version").asLong(),"mode","STOCK_MARKETING","variants",1,"brief","保留服装结构","rightsEvidence","QA使用权记录"),200);
-        String design=created.get(0).path("id").asText(),imageId=capture.path("images").get(0).path("id").asText();String generation="/api/v1/commerce-designs/"+design+"/generation";
+        captureId=created.get(0).path("captureId").asText();
+        String design=created.get(0).path("id").asText(),imageId=json.readTree(created.get(0).path("sourceImagesJson").asText()).get(0).path("imageId").asText();String generation="/api/v1/commerce-designs/"+design+"/generation";
+        clearInvocations(downloader,gateway);
         var request=Map.of("imageIds",List.of(imageId),"confirmed",true);
         assertEquals("OUTPUT_ARCHIVED",call(generation,request,200).path("status").asText());
         assertEquals("OUTPUT_ARCHIVED",call(generation,request,200).path("status").asText());
@@ -86,7 +88,7 @@ class CommerceDesignHttpIntegrationTest {
         var now=java.time.Instant.now();
         templates.insert(new com.yingdao.aicommerce.product.domain.CommerceTemplateVersion("asset-template",org,"asset-template-root",1,"WORKFLOW","QA","{\"mode\":\"STOCK_MARKETING\"}",actor,now));
         batches.insert(new com.yingdao.aicommerce.product.domain.CommerceBatch("asset-batch",org,"QA","asset-template","asset-key","asset-hash","DRAFT",actor,now));
-        batches.insertItem(new com.yingdao.aicommerce.product.domain.CommerceBatchItem("asset-item",org,"asset-batch",captureId,capture.path("version").asLong(),"qa-shop","QA",1,"DRAFT",now));
+        batches.insertItem(new com.yingdao.aicommerce.product.domain.CommerceBatchItem("asset-item",org,"asset-batch",captureId,created.get(0).path("captureVersion").asLong(),"qa-shop","QA",1,"DRAFT",now));
         String assetsPath="/api/v1/commerce-batches/asset-batch/design-assets";
         String targetsPath="/api/v1/commerce-designs/"+design+"/batch-targets";
         var targets=call(targetsPath,null,200);assertEquals(1,targets.size());assertEquals("asset-item",targets.get(0).path("itemId").asText());assertEquals(1,targets.get(0).path("nextImagePosition").asInt());
@@ -111,6 +113,8 @@ class CommerceDesignHttpIntegrationTest {
         templates.insert(new com.yingdao.aicommerce.product.domain.CommerceTemplateVersion("creative-other-org","other-org","creative-other-root",1,"PRINT_LAYOUT","QA","{}",actor,now));
         batches.insert(new com.yingdao.aicommerce.product.domain.CommerceBatch("creative-batch",org,"QA","creative-workflow","creative-key","creative-hash","DRAFT",actor,now));
         for(int i=1;i<=2;i++) batches.insertItem(new com.yingdao.aicommerce.product.domain.CommerceBatchItem("creative-item-"+i,org,"creative-batch",captureId,sourceVersion,"shop-"+i,"QA",1,"DRAFT",now));
+        db.update("INSERT INTO commerce_batch_creation_modes(batch_id,organization_id,mode) VALUES('creative-batch',?,'CREATIVE_ONLY')",org);
+        clearInvocations(downloader,models,gateway);
         String path="/api/v1/commerce-batches/creative-batch/creative-plan",start="/api/v1/commerce-batches/creative-batch/execution";
         var empty=call(path,null,200); assertEquals(0,empty.path("version").asInt()); assertEquals(1,empty.path("sources").size());
         call(start,Map.of("confirmed",true,"creativePlanVersion",0,"maxModelCalls",0),409);
@@ -138,7 +142,7 @@ class CommerceDesignHttpIntegrationTest {
                 .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(Map.of("confirmed",true,"creativePlanVersion",2,"maxModelCalls",0)))).build();
         var one=http.sendAsync(startRequest,HttpResponse.BodyHandlers.ofString());
         var two=http.sendAsync(startRequest,HttpResponse.BodyHandlers.ofString());
-        var first=one.get();var second=two.get();assertEquals(200,first.statusCode());assertEquals(200,second.statusCode());
+        var first=one.get();var second=two.get();assertEquals(200,first.statusCode(),first.body());assertEquals(200,second.statusCode(),second.body());
         assertEquals(json.readTree(first.body()).path("data").path("id"),json.readTree(second.body()).path("data").path("id"));
         var pinned=call(path,null,200);assertTrue(pinned.path("locked").asBoolean());assertEquals(2,pinned.path("version").asInt());
         assertEquals("creative-layout-v1",pinned.path("plan").path("printTemplateSnapshotId").asText());
@@ -149,14 +153,15 @@ class CommerceDesignHttpIntegrationTest {
     }
     record CreativeFixture(String batch,String run,String sourceImage) {}
     byte[] artworkPng()throws Exception {
-        var output=new ByteArrayOutputStream();var image=new BufferedImage(96,96,BufferedImage.TYPE_INT_RGB);
-        var g=image.createGraphics();g.setColor(java.awt.Color.WHITE);g.fillRect(0,0,96,96);g.setColor(java.awt.Color.BLUE);g.fillRect(32,32,32,32);g.dispose();
+        var output=new ByteArrayOutputStream();var image=new BufferedImage(96,96,BufferedImage.TYPE_INT_ARGB);
+        var g=image.createGraphics();g.setColor(java.awt.Color.BLUE);g.fillRect(32,32,32,32);g.dispose();
         ImageIO.write(image,"png",output);return output.toByteArray();
     }
     CreativeFixture creativeFixture(int variants,int calls)throws Exception {
         call("/api/v1/auth/login",Map.of("organizationCode","heyi","phone","13800000000","password","disposable-test-only"),200);
         byte[] png=artworkPng();
         when(models.imageConnection(anyString())).thenReturn(Optional.of(new ModelConfigService.RuntimeModelConnection("batch-model","https://mock-model.invalid","image-model","IMAGES","CUSTOM","test-only")));
+        when(models.transparentArtworkConnection(anyString())).thenReturn(Optional.of(new ModelConfigService.RuntimeModelConnection("batch-model","https://mock-model.invalid","image-model","IMAGES","CUSTOM","test-only")));
         when(downloader.download("https://cdn.example.com/batch-source.png")).thenReturn(new MarketplaceImageDownloader.ImageBinary(png,"image/png",".png"));
         var generated=new CommerceDesignImageGateway.Response(new CommerceDesignImageGateway.Artifact(Base64.getEncoder().encodeToString(png),"image/png","image-model","edit",""),null);
         when(gateway.generateArtwork(anyString(),anyString(),any(),anyList())).thenReturn(generated);
@@ -168,12 +173,16 @@ class CommerceDesignHttpIntegrationTest {
         var batch=call("/api/v1/commerce-batches/creative-only",Map.of("name","仅创作自动链路","printTemplateSnapshotId",template.path("snapshotId").asText(),"captureIds",List.of(capture.path("id").asText())),200);
         assertTrue(batch.path("items").get(0).path("shopId").isNull(),"Creative mode must not fabricate a shop");
         String id=batch.path("id").asText();
+        String fixedCapture=batch.path("items").get(0).path("captureId").asText();
+        long fixedVersion=batch.path("items").get(0).path("captureVersion").asLong();
+        String fixedImage=db.queryForObject("SELECT image_id FROM commerce_source_copy_images WHERE capture_id=? AND source_image_id=?",String.class,fixedCapture,capture.path("images").get(0).path("id").asText());
         call("/api/v1/commerce-batches/"+id+"/creative-plan",Map.of("expectedVersion",0,"printTemplateSnapshotId",template.path("snapshotId").asText(),"variantsPerPrint",variants,
-                "sources",List.of(Map.of("captureId",capture.path("id").asText(),"version",capture.path("version").asLong(),"imageId",capture.path("images").get(0).path("id").asText(),"cleanupAreas",List.of(Map.of("x",0.25,"y",0.25,"width",0.5,"height",0.5))))),200);
+                "sources",List.of(Map.of("captureId",fixedCapture,"version",fixedVersion,"imageId",fixedImage,"cleanupAreas",List.of(Map.of("x",0.25,"y",0.25,"width",0.5,"height",0.5))))),200);
         // This fixture covers recovery of the persisted, model-rendered workflow. Newly saved plans
         // default to local photo composition, whose own integration tests cover the reduced call count.
         db.update("UPDATE commerce_batch_creative_plans SET plan_json=JSON_REMOVE(plan_json,'$.renderPolicy','$.outputPolicy') WHERE batch_id=?",id);
         var run=call("/api/v1/commerce-batches/"+id+"/execution",Map.of("confirmed",true,"creativePlanVersion",1,"maxModelCalls",calls),200);
+        clearInvocations(downloader); // Source ingestion may inspect title-reference images; the workflow assertions begin here.
         return new CreativeFixture(id,run.path("id").asText(),Base64.getEncoder().encodeToString(png));
     }
     void verifyCreativeModelCalls(int variants){
@@ -278,7 +287,7 @@ class CommerceDesignHttpIntegrationTest {
         multipart.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"original.png\"\r\nContent-Type: image/png\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
         multipart.write(artworkPng());multipart.write(("\r\n--"+boundary+"--\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
         var upload=HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+port+"/api/v1/product-captures/"+capture+"/images/"+image+"/source-file?version="+version))
-                .header("Content-Type","multipart/form-data; boundary="+boundary).POST(HttpRequest.BodyPublishers.ofByteArray(multipart.toByteArray())).build();
+                .header("X-Commerce-Module","FISSION").header("Content-Type","multipart/form-data; boundary="+boundary).POST(HttpRequest.BodyPublishers.ofByteArray(multipart.toByteArray())).build();
         assertEquals(401,HttpClient.newHttpClient().send(upload,HttpResponse.BodyHandlers.ofString()).statusCode());
         var uploaded=http.send(upload,HttpResponse.BodyHandlers.ofString());assertEquals(200,uploaded.statusCode(),uploaded.body());
         String saved=json.readTree(uploaded.body()).path("data").path("contentSha256").asText();

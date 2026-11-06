@@ -5,7 +5,8 @@
   "allowedSkips": {
     "FinanceOrderChargesTest#suppliedWorkbookPreservesAllTwentyFiveRecords": "私有业务工作簿；合成解析回归仍必需。",
     "FinanceLabelInvoiceTest#suppliedInvoiceReconcilesWithoutLoadingFullWorkbook": "私有贴单费工作簿；合成解析回归仍必需。",
-    "CommerceSurfacePrintTemplateTest#verifiesActualBrowserExportsWhenRequested": "历史真实素材和浏览器导出未入库；合成渲染契约仍必需。"
+    "CommerceSurfacePrintTemplateTest#verifiesActualBrowserExportsWhenRequested": "历史真实素材和浏览器导出未入库；合成渲染契约仍必需。",
+    "CommerceSceneBackgroundComposerTest#actualGarmentFixtureCanBeRenderedForVisualReview": "需未入库的真实服装/场景图片进行人工视觉验收；合成背景保护测试仍必需。"
   },
   "excludedQaScripts": {
     "test-product-watermark-model.mjs": "需要已授权的真实模型/容器及独立验收；禁止在 PR CI 读取生产容器或调用付费模型。",

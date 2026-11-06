@@ -44,6 +44,11 @@ class Artifacts:
         commit=api("git/commits/"+head)
         if len(commit["parents"])!=2: raise ValueError("Formal tag is not a Gitflow merge")
         candidate=commit["parents"][1]["sha"]
+        advertised={a["name"]:a["size"] for a in api("releases/tags/candidate-"+candidate)["assets"]}
+        if not 0<advertised.get("release.json",0)<=1024*1024 or not 0<advertised.get("source.tar.gz",0)<=512*1024**2:
+            raise ValueError("Missing or oversized candidate assets")
+        if shutil.disk_usage(self.root).free<14*GIB+advertised["source.tar.gz"]+1024**2:
+            raise RuntimeError("Insufficient space to download candidate assets")
         staging_root=self.root/"staging"; staging_root.mkdir(parents=True,exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="prepare-",dir=staging_root) as temporary:
             folder=Path(temporary)
@@ -59,8 +64,9 @@ class Artifacts:
             verify=["--repo",REPOSITORY,"--signer-workflow",WORKFLOW,"--deny-self-hosted-runners"]
             command("gh","attestation","verify",str(manifest),*verify,"--source-digest",candidate,"--source-ref",source_ref,env=env,timeout=120)
             source=folder/"source.tar.gz"
-            if source.stat().st_size>512*1024*1024 or sha(source.read_bytes())!=target["sourceArchiveSha256"]: raise ValueError("Source checksum/size failed")
+            if source.stat().st_size!=target["sourceArchiveBytes"] or sha(source.read_bytes())!=target["sourceArchiveSha256"]: raise ValueError("Source checksum/size failed")
             budget=sum(i["compressedBytes"]+i["unpackedBytes"] for i in target["images"].values())
+            budget+=2*target["sourceArchiveBytes"]+target["sourceUnpackedBytes"]
             if shutil.disk_usage(self.root).free<14*GIB+budget: raise RuntimeError("Insufficient pull/unpack budget plus 14 GiB reserve")
             docker=folder/"docker";docker.mkdir(mode=0o700);env["DOCKER_CONFIG"]=str(docker)
             # This token exists only for this prefetch command and is removed

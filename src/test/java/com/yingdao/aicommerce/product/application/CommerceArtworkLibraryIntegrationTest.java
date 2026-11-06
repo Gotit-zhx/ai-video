@@ -90,9 +90,9 @@ class CommerceArtworkLibraryIntegrationTest {
         job("failed-later", "org", "self", "VARIATE", "FAILED", 9, bytes, true);
         job("retried-later", "org", "self", "VARIATE", "RETRIED", 9, bytes, true);
         job("product-photo", "org", "self", "MOCKUP", "READY", 9, bytes, true);
+        freezeCatalogue(); // Later generation never modifies the frozen library.
         job("reused-copy", "org", "self", "VARIATE_G1", "READY", 9, bytes, true);
         db.update("UPDATE commerce_batch_artwork_jobs SET model_config_id='SAVED_ARTWORK' WHERE id='reused-copy'");
-        freezeCatalogue();
         var page = service.list(0, "", user);
         assertEquals(List.of("z-latest"), page.items().stream().map(CommerceArtworkLibraryService.Item::id).toList());
         assertFalse(page.hasMore());

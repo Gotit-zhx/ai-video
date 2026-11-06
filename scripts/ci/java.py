@@ -31,7 +31,7 @@ CONTRACTS = {
     "HEYI_MAPPER_TEST_URL": "heyi_mapper_test",
     "HEYI_IDENTITY_RECOVERY_TEST_URL": "heyi_identity_recovery_test",
     "CAPTURE_RECOLLECT_TEST_DB": "capture_recollect_test",
-    "MODULE_MIGRATION_URL": "heyi_module_migration_test",
+    "MODULE_MIGRATION_URL": "module_isolation_test_ci",
     "HEYI_LOCAL_PHOTO_TEST_URL": "heyi_local_photo_test",
     "HEYI_DETAIL_STYLE_RECOVERY_TEST_URL": "heyi_detail_style_recovery_test",
     "HEYI_LAUNCH_TEST_URL": "heyi_launch_test",
@@ -136,11 +136,15 @@ def integration(classes, database, shard):
         if failures: raise RuntimeError("Required DB classes failed: "+json.dumps(failures))
     finally:
         for name in (mysql, redis):
-            subprocess.run(["docker", "rm", "-f", "-v", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            result=subprocess.run(["docker","inspect",name],capture_output=True,text=True)
+            if result.returncode==0:
+                info=json.loads(result.stdout)[0]
+                if info["Config"].get("Labels",{}).get("org.heyi.owner")=="ci-"+suffix:
+                    subprocess.run(["docker", "rm", "-f", "-v", info["Id"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,check=True)
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(); p.add_argument("mode", choices=("unit", "integration", "inventory")); p.add_argument("--shard", type=int, default=0); p.add_argument("--shards", type=int, default=1)
+    p = argparse.ArgumentParser(); p.add_argument("mode", choices=("unit", "integration", "inventory")); p.add_argument("--shard", type=int, default=0); p.add_argument("--shards", type=int, default=1); p.add_argument("--classes", default="")
     a = p.parse_args(); sources, database = inventory()
     if a.mode == "inventory": print(json.dumps(database, indent=2))
     elif a.mode == "unit":
@@ -148,5 +152,9 @@ if __name__ == "__main__":
         print(json.dumps(maven(selected, ROOT / "target/ci-reports/unit")))
     else:
         selected = [name for i, name in enumerate(sorted(database)) if i % a.shards == a.shard]
+        if a.classes:
+            requested=set(a.classes.split(","))
+            if not requested.issubset(database):raise ValueError("Unknown required DB test")
+            selected=[name for name in selected if name in requested]
         if not selected: raise ValueError("Empty DB shard")
         integration(selected, database, "db-"+str(a.shard))

@@ -14,7 +14,7 @@ def release(version, image):
 
 
 class Host:
-    def __init__(self): self.marker = None; self.version = "v1.0.0"; self.backlog = 174000; self.fail = None; self.calls = []
+    def __init__(self): self.marker = None; self.version = "v1.0.0"; self.sourceVersion="v1.0.0"; self.image="old"; self.backlog = 174000; self.fail = None; self.calls = []
     def check(self, name):
         self.calls.append(name)
         if self.fail == name: self.fail = None; raise RuntimeError("injected")
@@ -27,10 +27,13 @@ class Host:
         if self.marker not in (None, owner): raise Busy("Foreign gate")
         self.marker = None
     def drain(self, owner): self.check("drain")
-    def activate(self, target, changed): self.version = target["version"]; self.check("activate")
+    def activate(self, target, changed): self.version = target["version"]; self.image=target["images"]["app"]["configDigest"]; self.check("activate")
     def verify(self, target, maintenance=False):
-        self.check("verify"); assert self.version == target["version"]
-    def sync_source(self, target): self.check("source")
+        self.check("verify"); assert self.image == target["images"]["app"]["configDigest"]
+    def sync_source(self, target): self.sourceVersion=target["version"]; self.check("source")
+    def owns_gate(self,owner):
+        if self.marker not in {None,owner}:raise Busy("Foreign gate")
+        return self.marker==owner
 
 
 class EngineTest(unittest.TestCase):
@@ -64,6 +67,7 @@ class EngineTest(unittest.TestCase):
     def test_crash_during_switch_is_recovered_using_durable_baseline(self):
         self.store.save({"id":self.request,"baseline":self.old,"target":self.new,"expectedVersion":"v1.0.0"},"switching")
         self.host.marker = self.request; self.host.version = "v1.0.1"
+        self.host.image="new"
         self.assertEqual("recovered", self.engine.recover()[0]["phase"])
         self.assertIsNone(self.host.marker); self.assertEqual("v1.0.0", self.host.version)
     def test_lock_serializes_other_processes(self):
@@ -78,6 +82,25 @@ class EngineTest(unittest.TestCase):
     def test_changed_payload_cannot_reuse_idempotency_key(self):
         self.engine.deploy(self.request, self.new, "v1.0.0")
         with self.assertRaises(ValueError): self.engine.deploy(self.request, release("v1.0.2","other"), "v1.0.0")
+    def test_activation_failure_after_side_effect_restores_previous_container(self):
+        self.host.fail="activate"
+        result=self.engine.deploy(self.request,self.new,"v1.0.0")
+        self.assertEqual("rolled_back",result["phase"]);self.assertEqual("old",self.host.image)
+        self.assertIsNone(self.host.marker)
+    def test_accepted_crash_finishes_restoration_without_interrupting_new_work(self):
+        self.host.image="new";self.host.version="v1.0.1";self.host.sourceVersion="v1.0.1"
+        self.store.save({"id":self.request,"baseline":self.old,"target":self.new,"accepted":True,"mayHaveSwitched":True},"restoring")
+        result=self.engine.recover()[0]
+        self.assertEqual("succeeded",result["phase"]);self.assertTrue(result["recovered"])
+        self.assertNotIn("activate",self.host.calls);self.assertNotIn("drain",self.host.calls)
+    def test_docs_only_release_changes_source_without_switch_or_gate(self):
+        result=self.engine.deploy(self.request,release("v1.0.1","old"),"v1.0.0")
+        self.assertEqual("succeeded",result["phase"]);self.assertFalse(result["switched"])
+        self.assertEqual("v1.0.1",self.host.sourceVersion);self.assertNotIn("activate",self.host.calls)
+    def test_docs_source_failure_restores_source_pointer(self):
+        self.host.fail="source"
+        result=self.engine.deploy(self.request,release("v1.0.1","old"),"v1.0.0")
+        self.assertEqual("aborted",result["phase"]);self.assertEqual("v1.0.0",self.host.sourceVersion)
 
 
 if __name__ == "__main__": unittest.main()

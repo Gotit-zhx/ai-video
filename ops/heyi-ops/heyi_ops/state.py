@@ -5,6 +5,7 @@ import json
 import os
 import re
 import time
+import tempfile
 from pathlib import Path
 
 TERMINAL = {"succeeded", "rolled_back", "aborted", "recovered"}
@@ -13,12 +14,14 @@ REQUEST = re.compile(r"[a-f0-9]{32}\Z")
 
 def atomic(path, value):
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + "." + str(os.getpid()) + ".tmp")
-    with temporary.open("x", encoding="utf-8") as f:
-        os.chmod(temporary, 0o600)
-        json.dump(value, f, sort_keys=True, separators=(",", ":")); f.write("\n")
-        f.flush(); os.fsync(f.fileno())
-    os.replace(temporary, path)
+    fd,name=tempfile.mkstemp(prefix=path.name+".",suffix=".tmp",dir=path.parent)
+    temporary=Path(name)
+    try:
+        with os.fdopen(fd,"w",encoding="utf-8") as f:
+            json.dump(value,f,sort_keys=True,separators=(",",":"));f.write("\n")
+            f.flush();os.fsync(f.fileno())
+        os.replace(temporary,path)
+    finally:temporary.unlink(missing_ok=True)
     fd = os.open(path.parent, os.O_RDONLY)
     try: os.fsync(fd)
     finally: os.close(fd)

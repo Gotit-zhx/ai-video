@@ -46,18 +46,23 @@ def sha(value): return hashlib.sha256(value).hexdigest()
 def inspect(name): return json.loads(command("docker", "inspect", name))[0]
 
 
-def configuration(info):
+def configuration(info, env_keys=None):
     host = info["HostConfig"]; config = info["Config"]
+    environment=dict(v.split("=",1) for v in config.get("Env") or [])
+    if env_keys is not None:
+        defaults=dict(v.split("=",1) for v in inspect(info["Image"])["Config"].get("Env") or [])
+        tracked=set(env_keys)|{k for k,v in environment.items() if defaults.get(k)!=v}
+        environment={k:v for k,v in environment.items() if k in tracked}
     return {
-        "env": sorted(config.get("Env") or []), "entrypoint": config.get("Entrypoint"),
+        "env": environment, "entrypoint": config.get("Entrypoint"),
         "command": config.get("Cmd"), "user": config.get("User"), "workingDir": config.get("WorkingDir"),
         "mounts": sorted(({k:m.get(k) for k in ("Type","Source","Destination","RW","Propagation")} for m in info["Mounts"]), key=lambda m:m["Destination"]),
-        "networks": sorted(info["NetworkSettings"]["Networks"]),
+        "networks": {name:sorted(a for a in net.get("Aliases") or [] if a not in {info["Id"],info["Id"][:12]}) for name,net in info["NetworkSettings"]["Networks"].items()},
         "resources": {k:host.get(k) for k in ("PortBindings","Memory","MemorySwap","NanoCpus","PidsLimit","CapAdd","CapDrop","SecurityOpt","ReadonlyRootfs","Ulimits","RestartPolicy","LogConfig","ExtraHosts","Dns","ShmSize","Init")},
     }
 
 
-def config_hash(info): return sha(json.dumps(configuration(info),sort_keys=True).encode())
+def config_hash(info, env_keys=None): return sha(json.dumps(configuration(info,env_keys),sort_keys=True).encode())
 
 
 class Host:
@@ -85,15 +90,25 @@ class Host:
 
     def preflight(self, target, baseline, rollback=False, restart=False):
         self.compatible(target)
+        if not (rollback or restart) and target["source"]["inputs"]["operations"]!=read(self.root/"baseline.json")["operationsInputs"]:
+            raise RuntimeError("Control plane or backup changes require explicit host maintenance")
         if target["source"]["inputs"]["unsupported"] != baseline["source"]["inputs"]["unsupported"]:
             raise RuntimeError("Changes include services outside automatic CD")
-        if shutil.disk_usage(self.root).free < 14*GIB: raise RuntimeError("Less than 14 GiB free")
+        if shutil.disk_usage(self.root).free < 14*GIB+target["sourceUnpackedBytes"]: raise RuntimeError("Insufficient space for source plus 14 GiB reserve")
+        if not (rollback or restart):
+            req=urllib.request.Request("https://api.github.com/repos/Gotit-zhx/ai-video/git/ref/heads/main-tree",headers={"User-Agent":"heyi-ops","Accept":"application/vnd.github+json"})
+            with urllib.request.urlopen(req,timeout=15) as response:head=json.load(response)["object"]["sha"]
+            if head!=read(self.root/"releases"/target["version"]/"verified.json")["productionCommit"]:
+                raise RuntimeError("A newer production head superseded this request")
         if self.marker.exists(): raise Busy("A maintenance gate already exists")
         contract = read(self.root / "baseline.json")
+        source_current=Path(self.config["sourceRoot"])/"current"
+        if source_current.resolve().name!=baseline["version"]:
+            raise RuntimeError("Current source pointer drift")
         for service, name in SERVICES.items():
             info = inspect(name)
             if info["Image"] != baseline["images"][service]["configDigest"]: raise RuntimeError("Active image drift")
-            if config_hash(info) != contract["configurationHashes"][service]: raise RuntimeError("Runtime configuration drift")
+            if config_hash(info,contract["environmentKeys"][service]) != contract["configurationHashes"][service]: raise RuntimeError("Runtime configuration drift")
             image = target["images"][service]
             if inspect(image["repository"]+"@"+image["manifestDigest"])["Id"] != image["configDigest"]:
                 raise RuntimeError("Prefetched image config digest mismatch")
@@ -116,6 +131,14 @@ class Host:
         existing = read(self.marker)
         if existing and existing.get("owner") != owner: raise Busy("Refusing to remove another operation's gate")
         self.marker.unlink(missing_ok=True)
+        fd=os.open(self.control,os.O_RDONLY)
+        try:os.fsync(fd)
+        finally:os.close(fd)
+
+    def owns_gate(self,owner):
+        value=read(self.marker)
+        if value and value.get("owner")!=owner:raise Busy("Foreign maintenance gate")
+        return bool(value)
 
     def request(self, path, *, authenticated=False):
         headers = {}
@@ -178,7 +201,8 @@ class Host:
             info=inspect(container)
             if not info["State"]["Running"] or info["State"]["OOMKilled"] or info["Image"]!=target["images"][name]["configDigest"]:
                 raise RuntimeError("Runtime image or health mismatch")
-            if config_hash(info)!=read(self.root/"baseline.json")["configurationHashes"][name]:
+            contract=read(self.root/"baseline.json")
+            if config_hash(info,contract["environmentKeys"][name])!=contract["configurationHashes"][name]:
                 raise RuntimeError("Configuration changed during activation")
         self.compatible(target)
         code,_=self.request("/api/v1/finance/shops")
@@ -200,17 +224,29 @@ class Host:
         if sha(archive.read_bytes())!=target["sourceArchiveSha256"]: raise RuntimeError("Source archive checksum mismatch")
         if not directory.exists():
             staging=directory.with_name(version+".extracting")
-            if staging.exists(): shutil.rmtree(staging)  # sole owned deterministic staging path
+            if staging.exists():
+                owner=read(staging/".heyi-owned.json",{})
+                if owner.get("archiveSha256")!=target["sourceArchiveSha256"]:raise Busy("Unknown source staging ownership")
+                shutil.rmtree(staging)
             staging.mkdir(parents=True)
+            atomic(staging/".heyi-owned.json",{"archiveSha256":target["sourceArchiveSha256"]})
+            files={}
             with tarfile.open(archive) as tar:
+                unpacked=0
                 for member in tar:
                     parts=Path(member.name).parts
-                    if member.name.startswith("/") or ".." in parts or not (member.isfile() or member.isdir()):
+                    if member.name.startswith("/") or ".." in parts or member.name in {".heyi-owned.json",".heyi-source.json"} or not (member.isfile() or member.isdir()):
                         raise ValueError("Unsafe source archive entry")
+                    unpacked+=member.size
+                    if unpacked>target["sourceUnpackedBytes"]:raise ValueError("Source archive exceeded its unpack budget")
+                    if member.isfile():files[member.name]=sha(tar.extractfile(member).read())
                 tar.extractall(staging,filter="data")
-            atomic(staging/".heyi-source.json",{"version":version,"tree":target["source"]["tree"],"archiveSha256":target["sourceArchiveSha256"]})
+            atomic(staging/".heyi-source.json",{"version":version,"tree":target["source"]["tree"],"archiveSha256":target["sourceArchiveSha256"],"files":files})
             staging.rename(directory)
         receipt=read(directory/".heyi-source.json")
         if not receipt or receipt["archiveSha256"]!=target["sourceArchiveSha256"]: raise RuntimeError("Existing source differs")
+        actual={str(p.relative_to(directory)):p for p in directory.rglob("*") if p.is_file() and str(p.relative_to(directory)) not in {".heyi-source.json",".heyi-owned.json"}}
+        if set(actual)!=set(receipt.get("files",{})) or any(p.is_symlink() or sha(p.read_bytes())!=receipt["files"][name] for name,p in actual.items()):
+            raise RuntimeError("Source files differ from the verified archive")
         current=Path(self.config["sourceRoot"])/"current"; temporary=current.with_name(".current-next")
         temporary.unlink(missing_ok=True); temporary.symlink_to(directory); temporary.replace(current)

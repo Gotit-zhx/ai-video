@@ -66,10 +66,11 @@ def build(version,baseline=None):
             assets=(output/"asset-manifest.json").read_bytes();public=json.loads(assets)
             info.update(assetManifestSha256=release.sha(assets),smokeAssets={p:public[p]["sha256"] for p in ["index.html","app.js","finance-workspace.js","finance-charges.js"]})
         images[component]=info;changed.append(component)
-    source_archive=gzip.compress(subprocess.check_output(["git","archive","--format=tar",source["commit"]],cwd=ROOT),mtime=0)
+    source_tar=subprocess.check_output(["git","archive","--format=tar",source["commit"]],cwd=ROOT)
+    source_archive=gzip.compress(source_tar,mtime=0)
     (output/"source.tar.gz").write_bytes(source_archive)
     manifest={"schemaVersion":1,"repository":release.REPOSITORY,"version":version,"source":source,
-              "images":images,"sourceArchiveSha256":release.sha(source_archive),
+              "images":images,"sourceArchiveSha256":release.sha(source_archive),"sourceArchiveBytes":len(source_archive),"sourceUnpackedBytes":len(source_tar),
               "validation":{"result":"passed","unexpectedSkips":0,"ciRunId":os.environ["GITHUB_RUN_ID"],
                             "workflow":".github/workflows/ci.yml","containerSmoke":"pending"}}
     release.validate_manifest(manifest, require_smoke=False)
