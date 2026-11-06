@@ -232,10 +232,19 @@ def deploy():
     for table, condition in (("product_publish_workflows", "status IN ('PENDING','RUNNING')"),
                              ("finance_authorization_sessions", "status='PROCESSING' AND expires_at>UTC_TIMESTAMP(6)"),
                              ("finance_ad_accounts", "status='RUNNING' AND lease_until>UTC_TIMESTAMP(6)"),
-                             ("finance_sync_states", "status='RUNNING' AND lease_until>UTC_TIMESTAMP(6)"),
-                             ("finance_order_cost_jobs", "1=1")):
+                             ("finance_sync_states", "status='RUNNING' AND lease_until>UTC_TIMESTAMP(6)")):
         assert sql("SELECT EXISTS(SELECT 1 FROM " + table + " WHERE " + condition + " LIMIT 1)") == "0", "Finance request in progress: " + table
     storage.base.release.idle()
+    # The unchanged cost worker commits derived results and queued-job deletion
+    # in one bounded transaction. Graceful shutdown retains its durable backlog;
+    # an unfinished batch rolls back and can be processed after restart.
+    with zipfile.ZipFile(ROOT / "build/previous.jar") as old, zipfile.ZipFile(ROOT / "app-image/app.jar") as new:
+        for family in ("FinanceCostWorker", "FinanceOrderCosts"):
+            name = "BOOT-INF/classes/com/yingdao/aicommerce/finance/" + family + ".class"
+            assert old.read(name) == new.read(name), "Cost worker changed; review shutdown compatibility"
+    write("cost-backlog.json", {"queuedBeforeRestart": int(sql("SELECT COUNT(*) FROM finance_order_cost_jobs")),
+        "workerClassesPreserved": True, "transactionTimeoutSeconds": 30, "maxBatchSize": 100,
+        "releaseDeletedQueuedJobs": False, "backlogRetainedForExistingWorker": True})
     preserved = {c["Name"]: c["Id"] for c in json.loads(core.run("docker", "inspect", *core.run("docker", "ps", "-q").decode().split()))
                  if c["Name"].lstrip("/") not in (APP, FRONT)}
     rollback = {n: before[n]["Config"]["Image"] for n in before}
