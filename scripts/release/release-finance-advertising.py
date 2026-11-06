@@ -119,6 +119,8 @@ def prepare():
     provenance, baseline = read("provenance.json"), read("baseline.json")
     before = {n: core.inspect(n) for n in (APP, FRONT)}
     assert all(before[n]["Image"] == baseline["images"][n] for n in before), "Concurrent image change"
+    assert all(before[n]["Id"] == baseline["containerIds"][n] for n in before), "Concurrent container change"
+    assert all(config_hash(before[n]) == baseline["configurationHashes"][n] for n in before), "Concurrent configuration change"
     assert jar_hash() == baseline["jarHash"], "Concurrent JAR change"
     previous = ROOT / "build/previous.jar"
     assert sha(previous.read_bytes()) == baseline["jarHash"]
@@ -180,6 +182,9 @@ def prepare():
 
 def read_verify():
     receipt = read("prepared.json")
+    current = core.inspect(APP)
+    assert current["Config"]["Image"] in (IMAGES[APP], read("baseline.json")["imageTags"][APP]), "Concurrent backend change"
+    assert sql("SELECT MAX(CAST(version AS UNSIGNED)) FROM flyway_schema_history WHERE success=1") == "147"
     jar = ROOT / "app-image/app.jar"
     assert sha(jar.read_bytes()) == receipt["jarHash"]
     runtime = ROOT / "build/verify-runtime"
