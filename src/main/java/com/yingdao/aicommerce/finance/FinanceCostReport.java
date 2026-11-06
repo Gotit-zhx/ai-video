@@ -97,17 +97,20 @@ public final class FinanceCostReport {
               AND o.kind='ORDER' AND o.source='API' AND o.order_id=t.order_id
             WHERE r.kind='BILL' AND
             """+firstSettlement("t",true)+" AND ";
+        // Confirmed settlements require a nonempty order_id. Selecting a redundant
+        // external_id fallback would force a clustered-row read for every order.
         return """
-            SELECT DISTINCT o.id order_record_id,r.organization_id,r.shop_id,COALESCE(NULLIF(r.order_id,''),r.external_id) reference
+            SELECT DISTINCT o.id order_record_id,r.organization_id,r.shop_id,%s reference
             FROM finance_records r LEFT JOIN finance_records o
               ON o.organization_id=r.organization_id AND o.shop_id=r.shop_id
               AND o.kind='ORDER' AND o.source='API' AND o.order_id=r.order_id
             WHERE r.kind='%s' AND
-            """.formatted(kind)+(kind.equals("PENDING")?"1=0":kind.equals("SETTLEMENT")?firstSettlement("r",false):hasSettlement("r","r.order_id"))+" AND "+FinanceOrderCharges.normalOrder("r")+" AND ";
+            """.formatted(kind.equals("SETTLEMENT")?"r.order_id":"COALESCE(NULLIF(r.order_id,''),r.external_id)",kind)
+                +(kind.equals("PENDING")?"1=0":kind.equals("SETTLEMENT")?firstSettlement("r",false):hasSettlement("r","r.order_id"))+" AND "+FinanceOrderCharges.normalOrder("r")+" AND ";
     }
     public Map<String,Object> summary(Scope scope,Filter filter,String kind){
         String selected=scopeKind(kind,false);
-        var result=summary(scope,selected,repo.query(scope,filter,"r"));
+        var result=summary(scope,filter,selected,repo.query(scope,filter,"r"));
         if("SETTLED_ORDER".equals(selected))new FinanceActualCosts(repo).attachReturns(scope,filter,result);
         return result;
     }
@@ -144,11 +147,33 @@ public final class FinanceCostReport {
     static final List<String> COST_SUMS=List.of("order_count","missing_order_count","excluded_count","ready_count","actual_count","estimated_count","pending_count","queued_count","product_queued_count","label_queued_count","known_amount_cny","pending_known_amount_cny","label_cost_cny","charges_pending","label_matched_count","label_missing_count");
     private Map<String,Object> summary(Scope scope,String kind,FinanceRepository.Query q){
         String selected=text(kind).toUpperCase(Locale.ROOT);
-        var perShop=repo.jdbc().queryForList("SELECT x.shop_id,"+AGGREGATE+" FROM ("+related(selected)+q.where()+") x"
+        return summary(scope,selected,summaryRows(selected,q));
+    }
+    private List<Map<String,Object>> summaryRows(String selected,FinanceRepository.Query q){
+        return repo.jdbc().queryForList("SELECT x.shop_id,"+AGGREGATE+" FROM ("+related(selected)+q.where()+") x"
             +" LEFT JOIN finance_order_costs c ON c.order_record_id=x.order_record_id"
             +" LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=x.order_record_id"
             +FinanceLabelCosts.join("x.organization_id","x.shop_id","x.reference")+" GROUP BY x.shop_id",q.args().toArray());
-        return summary(scope,selected,perShop);
+    }
+    private Map<String,Object> summary(Scope scope,Filter filter,String selected,FinanceRepository.Query q){
+        // These relations assign each deduplicated order to one first-settlement
+        // day. Refund-occurrence and explicit-bill relations can span days and
+        // must retain their original whole-range DISTINCT.
+        if(!Set.of("SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED","SETTLEMENT").contains(selected))
+            return summary(scope,selected,q);
+        return repo.readSnapshot(180,()->{
+            // DISTINCT retains order identities, much wider than daily dashboard
+            // buckets; one-day partitions keep its temporary tables bounded.
+            var chunks=repo.aggregateWindows(filter,q,"r.record_date",1,part->summaryRows(selected,part));
+            var byShop=new LinkedHashMap<String,Map<String,Object>>();
+            for(var row:chunks){
+                var shop=byShop.computeIfAbsent(text(row.get("shop_id")),id->new LinkedHashMap<>(Map.of("shop_id",id)));
+                for(String field:COST_SUMS){var value=decimal(row.get(field));if(value!=null)shop.merge(field,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));else shop.putIfAbsent(field,null);}
+                var amount=decimal(row.get("amount_cny"));if(amount!=null)shop.merge("amount_cny",amount,(a,b)->((BigDecimal)a).add((BigDecimal)b));
+            }
+            byShop.values().forEach(row->{if(number(row.get("pending_count"))>0)row.put("amount_cny",null);});
+            return summary(scope,selected,new ArrayList<>(byShop.values()));
+        });
     }
     private Map<String,Object> summary(Scope scope,String selected,List<Map<String,Object>> perShop){
         var total=new LinkedHashMap<String,Object>();
@@ -196,7 +221,7 @@ public final class FinanceCostReport {
         q=FinanceRecordSearch.orders(q,Set.of("BILL","RECONCILIATION").contains(selected)?"o.order_id":"r.order_id",numbers);
         String from=" FROM ("+related(selected)+q.where()+") x";
         // The exact same deduplicated relation supplies the summary and page count.
-        var costs=summary(scope,selected,q);
+        var costs=text(recordId).isBlank()?summary(scope,filter,selected,q):summary(scope,selected,q);
         if(text(recordId).isBlank()&&"SETTLED_ORDER".equals(selected)&&FinanceRecordSearch.numbers(numbers).isEmpty())
             new FinanceActualCosts(repo).attachReturns(scope,filter,costs);
         long total=number(map(costs.get("total")).get(selectedStatus.equals("PENDING")?"pending_count":"order_count"));

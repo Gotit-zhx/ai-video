@@ -137,15 +137,18 @@ class FinanceQianyiIntegrationTest extends FinanceActualCostsIntegrationTest {
         integration=new FinanceQianyi(repo,finance,upstream,cipher);
         var source=FinanceQianyiEvidenceTest.receipt();
         page(source,false);
-        verify(finance,times(1)).invalidateAfterCommit(any());
+        verify(finance,times(1)).refreshAfterCommit(any());
+        verify(finance,never()).invalidateAfterCommit(any());
         clearInvocations(finance);
         var before=document();
         page(source,true);
         assertEquals(before.get("updated_at"),document().get("updated_at"));
         verify(finance,never()).invalidateAfterCommit(any());
+        verify(finance,never()).refreshAfterCommit(any());
         source.put("returnStatus","CLOSE");source.put("updateTime",1788670000000L);
         page(source,true);
-        verify(finance,times(1)).invalidateAfterCommit(any());
+        verify(finance,times(1)).refreshAfterCommit(any());
+        verify(finance,never()).invalidateAfterCommit(any());
         assertEquals("CLOSED",document().get("cost_status"));
     }
     @Test void aSlowShopDoesNotHoldAnotherShopOrAllowDuplicateLeases()throws Exception{
