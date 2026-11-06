@@ -91,6 +91,75 @@ class FinanceReadCacheTest {
         cache.invalidate(k.scope());
         cache.facts(k,()->Map.of("payload","x".repeat(16*1024*1024)));assertNull(cache.findFacts(k));
     }
+    @Test void largeDisplayResponseIsCompressedWithoutChangingDecimalValuesOrStoredBound(){
+        var k=key("one","PHP",false);var calls=new AtomicInteger();
+        var large=new LinkedHashMap<>(data("123456789012345678.123456"));large.put("payload","费用明细".repeat(150_000));
+        cache.get(k,()->{calls.incrementAndGet();return large;});
+        var hit=cache.get(k,()->{fail("large response should be cached");return null;});
+        assertEquals(new BigDecimal("123456789012345678.123456"),decimal(hit.get("amount")));
+        assertEquals(large.get("payload"),hit.get("payload"));assertEquals(1,calls.get());
+        assertTrue(values.values().stream().anyMatch(v->v.startsWith("gz:")));
+        assertTrue(values.values().stream().allMatch(v->v.getBytes(java.nio.charset.StandardCharsets.UTF_8).length<=524_288));
+        cache.invalidate(k.scope());
+        var oversized=Map.<String,Object>of("payload","x".repeat(4*1024*1024));
+        cache.get(k,()->oversized);cache.get(k,()->{calls.incrementAndGet();return data("2");});
+        assertEquals(2,calls.get(),"decoded response cap remains enforced even for compressible data");
+    }
+    @Test void completedMonthFactsSurviveShopSwitchesAndSoftUpdatesWithoutRenewingTheirAge(){
+        now.set(java.time.Instant.parse("2026-11-06T04:00:00Z").toEpochMilli());
+        var k=key("one","",false);long built=now.get();
+        cache.facts(k,()->data("12.345678"));cache.get(k,()->cache.findFacts(k));
+        now.addAndGet(1_000);cache.refresh(k.scope());
+        var stale=cache.get(k,()->data("2"));assertEquals(true,map(stale.get("cache")).get("refreshing"));
+        assertTrue(tasks.isEmpty(),"worker bursts do not immediately schedule another historical calculation");
+        now.set(built+20_000);assertNotNull(cache.findFacts(k));
+        cache.prime(k,()->data("3"));assertTrue(tasks.isEmpty(),"idle prewarming waits for the historical freshness interval");
+        cache.get(k,()->data("3"));assertEquals(1,tasks.size());
+        assertEquals(built,number(cache.findFacts(k).get("_financeFactsBuilt")));
+        now.set(built+60_001);assertNull(cache.findFacts(k));
+        assertEquals(new BigDecimal("12.345678"),decimal(cache.get(k,()->data("4")).get("amount")));
+        tasks.remove().run();
+        now.set(built+240_002);
+        assertThrows(IllegalStateException.class,()->cache.get(k,()->{throw new IllegalStateException("offline");}));
+    }
+    @Test void historicalProjectionUsesBoundedPriorFactsWhileCompanyRefreshIsRunning()throws Exception{
+        now.set(java.time.Instant.parse("2026-11-06T04:00:00Z").toEpochMilli());
+        var k=key("one","",false);long built=now.get();cache.facts(k,()->data("1"));now.addAndGet(61_000);
+        var started=new CountDownLatch(1);var release=new CountDownLatch(1);
+        try(var worker=Executors.newSingleThreadExecutor()){
+            var refresh=worker.submit(()->cache.facts(k,()->{started.countDown();try{release.await(3,TimeUnit.SECONDS);}catch(InterruptedException e){throw new RuntimeException(e);}return data("2");}));
+            try{
+                assertTrue(started.await(2,TimeUnit.SECONDS));
+                var old=assertTimeoutPreemptively(java.time.Duration.ofMillis(500),()->cache.findFacts(k));
+                assertEquals(new BigDecimal("1"),decimal(old.get("amount")));assertEquals(built,number(old.get("_financeFactsBuilt")));
+                cache.invalidate(k.scope());assertNull(cache.findFacts(k),"configuration changes still fence old data immediately");
+            }finally{release.countDown();}
+            refresh.get(3,TimeUnit.SECONDS);
+        }
+    }
+    @Test void coldNarrowerLookupDoesNotJoinAnUncachedCompanyScan()throws Exception{
+        var k=key("one","",false);var started=new CountDownLatch(1);var release=new CountDownLatch(1);
+        try(var worker=Executors.newSingleThreadExecutor()){
+            var wide=worker.submit(()->cache.facts(k,()->{started.countDown();try{release.await(3,TimeUnit.SECONDS);}catch(InterruptedException e){throw new RuntimeException(e);}return data("1");}));
+            try{
+                assertTrue(started.await(2,TimeUnit.SECONDS));
+                assertNull(assertTimeoutPreemptively(java.time.Duration.ofMillis(500),()->cache.findFacts(k)));
+            }finally{release.countDown();}
+            wide.get(3,TimeUnit.SECONDS);assertNotNull(cache.findFacts(k));
+        }
+    }
+    @Test void decodedFactsAreImmutableAndUseAByteBoundInsteadOfOnlyCountingEntries(){
+        var a=key("one","",false);var b=key("two","",false);
+        var source=new LinkedHashMap<String,Object>(Map.of("amount",new BigDecimal("0.123456")));
+        cache.facts(a,()->Map.of("rows",List.of(source),"payload","a".repeat(9*1024*1024)));
+        String address=values.keySet().stream().filter(k->k.endsWith(":facts")).findFirst().orElseThrow();
+        source.put("amount",new BigDecimal("999"));clearInvocations(ops);
+        var hit=cache.findFacts(a);assertEquals(new BigDecimal("0.123456"),rows(hit.get("rows")).getFirst().get("amount"));
+        assertThrows(UnsupportedOperationException.class,()->rows(hit.get("rows")).getFirst().put("amount",0));
+        verify(ops,never()).get(address);
+        cache.facts(b,()->Map.of("payload","b".repeat(9*1024*1024)));clearInvocations(ops);
+        assertNotNull(cache.findFacts(a));verify(ops).get(address);
+    }
     @Test void rawReadFailureDoesNotPoisonTheNextAttempt(){
         var k=key("one","",false);
         assertThrows(IllegalStateException.class,()->cache.facts(k,()->{throw new IllegalStateException("unavailable");}));

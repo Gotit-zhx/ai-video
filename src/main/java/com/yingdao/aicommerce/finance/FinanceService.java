@@ -178,10 +178,12 @@ public class FinanceService {
         if(sharedSnapshots==null)return;
         LocalDate today=LocalDate.now(ZoneId.of("Asia/Shanghai"));
         var month=FinanceCalendar.previousMonth(Instant.now());
-        for(boolean live:List.of(false,true))for(boolean cny:List.of(false,true)){
+        // Warm the two default RMB views. Native-currency projections reuse the
+        // same facts without occupying a second worker waiting for identical SQL.
+        for(boolean live:List.of(true,false)){
             var filter=new Filter(live?today:month.atDay(1),live?today:month.atEndOfMonth(),"","","","day");
-            sharedSnapshots.prime(new FinanceSnapshotCache.Key(s,filter,cny,"",live),
-                    ()->live?buildScreen(s,filter,cny,""):buildDashboard(s,filter,cny,"",false));
+            sharedSnapshots.prime(new FinanceSnapshotCache.Key(s,filter,true,"",live),
+                    ()->live?buildScreen(s,filter,true,""):buildDashboard(s,filter,true,"",false));
         }
     }
     public Map<String,Object> reconciliationContext(Scope s,Filter requested,boolean cny,String snapshotId){
