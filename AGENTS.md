@@ -1,84 +1,61 @@
-# Production storage and release rules
+# 项目开发与协作约束
 
-For production operations, use the latest release document,
-`docs/finance-gift-zero-20261105.md` (active backend:
-`ai-commerce-platform:finance-gift-zero-20261105`; frontend:
-`ai-commerce-frontend:finance-gift-zero-20261105`). Exact merchant SKU GIFT,
-case-insensitive with surrounding whitespace trimmed, has fixed zero product
-cost and needs no cost mapping. Other SKUs in mixed orders retain their normal
-cost requirements. Original ERP evidence is retained. Unknown costs must not
-appear as confirmed zero. The settled-order amount card is original order value,
-not platform net settlement, and is not used to calculate profit.
-The historical GIFT scan finished for 86 shops and 1,197,175 source orders;
-14,245 GIFT orders passed, with zero pending GIFT cost jobs at final acceptance.
-See gift-final-verification.json in the production GIFT release directory.
-Do not rerun that completed one-shot scan.
-Date and receipt rules remain in `docs/finance-report-basis-20261105.md`.
-Date inputs use complete
-shop-local calendar months independently of the browser timezone. Operational
-timestamps display Beijing time. TikTok LOCAL uses shop-local payment_time balance
-entry dates; CROSS_BORDER preserves the independently verified Statement Date.
-ATC plus four new October original files have been independently compared;
-historical migration completion must be checked in date-repair-verification.json.
-Independent Shopee Adjustment reconciliation remains pending. Native LZ4
-write-time compression is enabled on five main finance
-tables; do not turn this into recurring large-table OPTIMIZE. The redundant
-idx_finance_bill was dropped (V147); idx_finance_reconcile_tx covers its prefix.
-The cost-dedupe rollback uses the previously filesystem-verified compact image.
-The report-basis release supersedes `docs/qianyi-receipt-display-20261105.md`:
-Qianyi list/detail/export share the same labels, with 未匹配到返程状态 for unknown
-evidence. Exact Thai reverse-delivery events are recognized. Empty completion
-markers are not pagination cursors; the receipt-resume fix preserves real cursors.
-Do not equate forward DELIVERED or returnStatus=FINISH alone with reverse signed
-delivery. Original brush-cost template acceptance is in
-`docs/finance-brush-original-template-20261105.md`. Brush-cost
-download uses the user's original eleven-column 母婴刷单费.xlsx layout, including
-both positional month headers, with all original data cleared. 代刷费CNY is the
-existing brush fee; no extra service-fee field or financial rule is added.
-Source-order lookup remains documented in
-`docs/finance-source-orders-20261105.md`. All official orders are
-queryable by shop-local creation date, including cancelled and unsettled orders;
-exact source-order numbers search across dates while preserving company/shop/group
-restrictions. The separate settled view and financial calculations retain their
-existing settlement basis. Qianyi receipt dates are independent of settlement dates.
-Group/shop cascading remains documented in `docs/finance-group-shops-20261104.md`.
-Finance group and platform
-filters immediately restrict shop options and clear obsolete shop selections,
-including monthly label invoices. Cost-import acceptance is in
-`docs/finance-cost-dedupe-20261104.md`. Cost imports keep one
-entry when warehouse, model, month and numeric unit price are identical; different
-prices for the same key still require review. Fee export acceptance remains in
-`docs/finance-fee-export-20261104.md`. Fee-matrix exports always
-retain native currency in separate currency sheets, regardless of the dashboard's
-CNY display. Receipt recognition remains in
-`docs/qianyi-reverse-phrases-20261104.md`. Return-cost totals are in
-`docs/qianyi-return-total-20261104.md`. Shared-pattern SKU and
-cost-page behavior is in `docs/sku-shared-cost-total-20261104.md`. Prior SKU acceptance is in
-`docs/product-sku-naming-20261104.md`; financial synchronization and receipt rules
-remain documented in `docs/finance-qianyi-receipt-20261103.md`; storage safeguards remain in
-`docs/storage-cleanup-20261102.md`. Preserve credentials, runtime configuration,
-business volumes, synchronization checkpoints, rate limits, and current
-financial calculation rules.
+本文件规定仓库的通用开发、Git 协作和生产操作边界。业务细节、活动版本和历史验收统一查对应文档。
 
-- Never add persistent application or diagnostic logs. Short-lived operational
-  output and small release verification receipts are sufficient.
-- Do not grow application images by indefinitely layering complete JARs over
-  previous releases. Before building an overlay, run
-  `scripts/compact-release-image.py --prepare SOURCE UNIQUE_TARGET`; use the
-  returned immutable `baseImage` as the Dockerfile base. It checks image layer
-  count/size and verifies the full filesystem and metadata if compaction is
-  needed. Never export a running container or one with business volumes.
-- Keep the active image and two verified recent rollback versions. Remove older
-  application/frontend image tags only after activation and verification.
-  Preserve all container-referenced images and unrelated service images. Never
-  delete Docker/containerd directories manually or prune volumes.
-- After release verification, delete staging JARs, class copies, test schemas,
-  private test environment files, and uploaded archives. Preserve Compose files
-  referenced by running containers, required release helpers, and verification
-  receipts. A historical deployment folder may still contain live configuration.
-- Automatic order-cost recalculation must update its current result without
-  appending complete before/after JSON snapshots. Manual cost configuration and
-  explicit import records remain available. Do not remove original finance data
-  as a storage optimization.
-- Keep backup bounds and `Persistent=false` for the daily backup timer. Do not
-  trigger missed backups during deployment.
+## 项目入口
+
+- 项目范围与启动：[README.md](README.md)。
+- 文档分类与业务规则：[文档中心](docs/README.md)。
+- 目录归类与模块图：[项目组织结构](docs/guides/project-structure.md)；语言与依赖版本：[技术栈](docs/guides/technology-stack.md)。
+- 服务边界与代码位置：[架构说明](docs/guides/architecture.md)。
+- 环境、配置及测试：[开发指南](docs/guides/development.md)。
+- 权限及接口：[接口导航](docs/guides/api.md)。
+- 发布、回滚及备份：[运维指南](docs/guides/operations.md)。生产操作前核对实际容器、镜像标识、运行配置及最新验收回执，不将历史文档中的镜像名称直接视为当前状态。
+
+## 多会话并行协作
+
+- 本项目由多个会话同时开发、维护与运维；会话可能共享工作区、Git 状态和生产服务器，不得假定当前会话独占项目。
+- 修改前重新读取相关文件和工作区差异，按最小范围编辑；保留其他会话的新改动、暂存内容和运行任务，不擅自切换共享工作区分支、重置文件或将其他会话的改动混入本次提交。
+- 对同一生产资源的发布、回滚、迁移、配置调整、数据修复和清理须协调串行执行；操作前核对实际基线、其他会话正在进行的维护及最新回执，不能仅因名称含 `repair`、`qa` 或“临时”就停止容器、进程或删除目录。
+- 每个会话记录本次修改与验证范围、进行中的维护及接手入口；历史快照和其他会话的结论不能替代操作前的现场复核。
+
+## 开发与数据保护
+
+- 仅修改当前任务涉及的内容，保留已有未提交改动，不覆盖或丢弃其他工作。
+- 凭据、密钥、Cookie、私有环境文件和完整业务导出不得进入 Git、公开文档或诊断输出。变更加密密钥时必须具备已有密文的兼容或迁移方案。
+- 数据库结构通过新增 Flyway 迁移演进，不修改、重命名已应用的迁移，不以修复校验和掩盖差异。数据库集成测试只连接可销毁的隔离测试库。
+- 默认保留现有业务口径、权限隔离、同步检查点、租约及限流。明确要求变更业务规则时，同步更新实现、测试和对应说明；清理存储或优化性能不能顺带改变财务计算。
+- 查询和报表明确已入库数据的覆盖范围；区分缺失、待补齐、未知与真实零值，不宣称尚未同步的数据已完整可查或对账完成。
+- 自动订单成本重算更新当前结果，不追加完整前后 JSON 快照；人工配置、显式导入记录和原始财务数据继续保留。
+- 按变更运行必要检查，明确记录通过、失败、跳过及未验证边界；修改行为时同步更新常驻说明和相关验收记录。
+
+## Gitflow 提交与合并（强制）
+
+所有 Git 提交、合并、打标签和推送必须严格遵循 Gitflow。生产分支通常为 `main` 或既有的 `master`，集成分支通常为 `develop`；角色名称以项目已明确的配置为准。
+
+| 分支 | 来源 | 用途及合并目标 |
+| --- | --- | --- |
+| 生产分支 `main/master` | 已确认的生产历史 | 保持可发布状态，只接收完成验证的发布或紧急修复合并 |
+| 集成分支 `develop` | 已确认的开发基线 | 汇总下一版本，只接收符合下述流程的合并 |
+| `feature/<主题>` | `develop` | 功能、普通缺陷、文档和重构；完成验证后合入 `develop` |
+| `release/<版本>` | 已达到发版范围的 `develop` | 只做发布准备及必要修复；完成后合入生产分支并打版本标签，再合回 `develop` |
+| `hotfix/<版本或主题>` | 生产分支对应的已发布版本 | 紧急线上修复；完成后合入生产分支并打版本标签，再合回 `develop`；有活动发布分支时按下一条处理 |
+
+- 若存在活动的 `release/*`，紧急修复还必须进入该发布分支，再随发布合回 `develop`；开发立即需要时可同时合回 `develop`。
+- 日常开发提交必须位于相应支持分支，不直接向生产或集成分支提交开发改动；功能不得绕过发布流程直接合入生产分支。
+- 按 Gitflow 使用 `--no-ff` 合并保留分支关系；遵守已配置的分支保护和验证要求，不用压缩合并或重写共享历史绕过流程。
+- 正式发布和紧急修复在生产分支的对应提交创建版本标签；记录版本、提交及制品的对应关系，完成所有合回后再清理已合并的临时分支。
+- 提交前检查当前分支、工作区和暂存差异，确认分支基点及目标正确；只暂存本次任务文件，按独立变更组织提交并说明目的。
+- 生产/集成分支尚未建立或角色未明确时，先明确初始化方案及现有分支映射，再执行提交、合并、打标签或推送。不得擅自改名旧分支、强推共享分支或丢弃现有改动；可继续完成不依赖分支迁移的编辑与校验。
+
+## 生产发布与存储
+
+以下约束适用于任务范围内的生产操作；普通开发及文档整理不触发部署、数据变更或备份。
+
+- 激活前核对实际运行基线、完整 Compose 文件链、环境、挂载及工作器状态。保留凭据、业务卷、同步计划、检查点、租约和上游限流，验证后恢复本次暂停的工作。
+- 构建叠加镜像前执行 `python3 scripts/compact-release-image.py --prepare SOURCE UNIQUE_TARGET`，使用返回的不可变 `baseImage` 作为基础镜像。不得通过反复叠加完整 JAR 导致镜像无限增长，不导出运行中或挂有业务卷的容器。
+- 保留活动镜像及两个已验证的近期回滚版本。回滚必须核对旧应用与当前数据库结构、接口和制品的兼容性；镜像回滚不等于数据回滚，不删库或改写迁移历史来回滚应用。
+- 仅在激活验收后删除明确无引用的旧应用/前端镜像标签，保留所有容器引用及无关服务镜像。不手工删除 Docker/containerd 目录，不清理业务卷。
+- 清理前列明路径与归属，仅删除本次任务创建、用途明确且无运行引用的暂存 JAR、类副本、测试库、私有测试环境文件和上传包。保留运行中 Compose、必需发布脚本、配置、业务原件及小型验收回执；历史部署目录不能按日期整目录删除。
+- 日志必须脱敏。本地开发可使用控制台输出；生产沿用现有已验收的日志策略，临时诊断使用有界短期输出和小型回执。任务明确调整持久日志策略时，必须同时规定容量上限、保留期限和清理方式，不保存完整请求/响应或密钥。
+- 保持备份的数量、体积和执行时长上限，日常备份定时器维持 `Persistent=false`；部署不触发漏跑补备份。备份与恢复另按明确的操作范围及隔离验证流程执行。

@@ -45,7 +45,7 @@ $env:PATH = "$pythonRoot;$pythonRoot\Scripts;$env:PATH"
 $python = Join-Path $pythonRoot 'python.exe'
 Run-Checked 'npm.cmd' @('install', '--global', 'pnpm@11.25.0')
 
-Push-Location (Join-Path $PSScriptRoot '..\..\hr-desktop')
+Push-Location (Join-Path $PSScriptRoot '..\..\apps\hr-desktop')
 try {
     Run-Checked 'pnpm.cmd' @('install', '--frozen-lockfile')
     Run-Checked 'node.exe' @('node_modules/electron/install.js')
@@ -63,7 +63,7 @@ try {
         'test_recruitment_demands.py', 'test_passive_pool.py',
         'test_hr_sourcing.py', 'test_resume_identity.py', 'test_desktop_bridge.py'
     )) {
-        Run-Checked $python @('-m', 'unittest', 'discover', '-s', '../scripts/boss-agent', '-p', $testFile)
+        Run-Checked $python @('-m', 'unittest', 'discover', '-s', '../../services/recruitment', '-p', $testFile)
     }
     Run-Checked $python @('runtime/test_portable.py')
     Run-Checked $python @('runtime/test_direct_network.py')
@@ -80,7 +80,7 @@ try {
     $process = Start-Process -FilePath $app -ArgumentList '--self-test' -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw "Packaged smoke failed: $($process.ExitCode)" }
     if (!(Test-Path "$env:HEYI_TEST_OUTPUT\smoke.json")) { throw 'Missing packaged smoke result' }
-    Run-Checked $python @('../scripts/ci/desktop-manifest.py')
+    Run-Checked $python @('../../scripts/ci/desktop-manifest.py')
     # Upload installers and results only, without duplicate unpacked binaries.
     Remove-Item 'release\win-unpacked' -Recurse -Force
 } finally {

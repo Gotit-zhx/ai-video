@@ -46,7 +46,7 @@ not an end-to-end browser latency claim.
 
 Active backend and frontend tags: `qianyi-return-total-20261104`.
 Directory: `/opt/heyi/releases/qianyi-return-total-20261104`.
-Helper: `scripts/release-qianyi-return-total.py`.
+Helper: `scripts/release/release-qianyi-return-total.py`.
 Only `FinanceQianyiReturns`, the new `FinanceQianyiReturnCostSummary`,
 `frontend/finance-qianyi.js` and `frontend/index.html` are replaced.
 There is no migration or data backfill.

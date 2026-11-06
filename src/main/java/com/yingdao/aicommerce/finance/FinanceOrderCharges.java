@@ -146,7 +146,12 @@ public class FinanceOrderCharges {
         var rules=List.<Map<String,Object>>of();
         var count=repo.jdbc().queryForMap("SELECT COUNT(*) records,COALESCE(SUM(matched_shop_id IS NULL),0) unmatched,COALESCE(SUM(service_fee_cny),0) service_fee_cny FROM finance_charge_rows WHERE organization_id=? AND group_id=?",s.organizationId(),group);
         var sourceQuery=FinanceRecordSearch.orders(new FinanceRepository.Query("organization_id=? AND group_id=?",List.of(s.organizationId(),group)),"order_id",numbers);
-        long recordTotal=number(repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_charge_rows WHERE "+sourceQuery.where(),Long.class,sourceQuery.args().toArray()));
+        var sourceSummary=repo.jdbc().queryForMap("""
+            SELECT COUNT(*) records,COUNT(NULLIF(principal_native,0)) principal_rows,
+              COALESCE(SUM(NULLIF(service_fee_cny,0)),0) service_fee_cny
+            FROM finance_charge_rows WHERE
+            """+sourceQuery.where(),sourceQuery.args().toArray());
+        long recordTotal=number(sourceSummary.get("records"));
         var sourceArgs=new ArrayList<>(sourceQuery.args());sourceArgs.add((Math.max(1,page)-1L)*50);
         var rows=repo.jdbc().queryForList("SELECT * FROM finance_charge_rows WHERE "+sourceQuery.where()+" ORDER BY import_id,source_row LIMIT 50 OFFSET ?",sourceArgs.toArray());
         for(var r:rows){
@@ -168,6 +173,7 @@ public class FinanceOrderCharges {
         var marked=repo.jdbc().queryForMap("SELECT COUNT(*) orders,COALESCE(SUM(m.service_fee_cny),0) service_fee_cny,COALESCE(SUM(m.service_fee_cny IS NULL),0) conflicts FROM finance_marketing_orders m JOIN finance_connections c ON c.organization_id=m.organization_id AND c.id=m.shop_id AND c.status<>'REMOVED' WHERE m.organization_id=? AND EXISTS(SELECT 1 FROM finance_charge_rows x WHERE x.organization_id=m.organization_id AND x.matched_shop_id=m.shop_id AND x.order_id=m.order_id AND x.group_id=?)",s.organizationId(),group);
         var result=new LinkedHashMap<String,Object>(Map.of("imports",imports,"rules",rules,"rows",rows,"totals",count,"marked",marked,"page",Math.max(1,page),"pageSize",50,"groupId",group));
         result.put("recordTotal",recordTotal);
+        result.put("sourceSummary",sourceSummary);
         if(filter!=null){
             var scoped=new Filter(filter.start(),filter.end(),filter.shopId(),filter.platform(),"","day",group);
             var costs=new FinanceCostReport(repo).summary(s,scoped,"SETTLED_ORDER");

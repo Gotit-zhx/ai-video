@@ -101,17 +101,22 @@
       if(!state.group){el('p','请先在财务店铺管理建立分组。',content,'fi-empty');return;}
       if(!data){el('p','正在读取…',content);return;}
       const shown=data.filters||scope;
-      el('p',`结算日期：${shown.start} 至 ${shown.end} · 金额固定人民币 · 按首次结算每单统计一次`,content,'fq-description');
+      el('p','核对表合计：非零本金统计笔数，非零代刷费求和，覆盖全部查询页。',content,'fq-description');
 
       const metrics=el('div',null,content,'fc-metrics');
-      const period=data.periodMarked||data.marked;
-      for(const [name,value] of [['范围内已结算刷单',period?.orders||0],['范围内刷单费（¥）',money(period?.service_fee_cny??0)],['累计已标记订单',data.marked?.orders||0],['来源待匹配 / 待核对',data.totals.unmatched||0]]){
+      const summary=data.sourceSummary;
+      for(const [name,value,note] of [
+        ['范围内刷单合计',summary?Number(summary.principal_rows).toLocaleString('zh-CN'):'待更新','本金原币非零的记录笔数'],
+        ['范围内刷单费合计（¥）',summary?money(summary.service_fee_cny):'待更新','代刷费非零金额求和（人民币）'],
+        ['累计已标记订单',data.marked?.orders||0],['来源待匹配 / 待核对',data.totals.unmatched||0]]){
         const box=el('div',null,metrics,'fc-metric');el('span',name,box);el('strong',value,box);
+        if(note)el('small',note,box);
       }
       el('p','刷单订单不计入经营汇总，刷单费单独统计。原始订单、结算及对账记录保留。',content,'fq-description');
-      el('p',`来源共 ${data.totals.records} 条，累计去重刷单费 ¥ ${money(data.marked?.service_fee_cny??0)}。下方文件和核对记录保留全部来源，不随结算日期隐藏；未匹配、未结算及范围外订单不计入上方期间金额。`,content,'fq-description');
+      el('p',`来源共 ${data.totals.records} 条，累计去重刷单费 ¥ ${money(data.marked?.service_fee_cny??0)}。上方两项合计与下方核对表使用相同的费用分组和订单编号查询，按来源行统计全部分页；平台、店铺及结算日期不筛除来源行。`,content,'fq-description');
+      if(data.periodMarked)el('p',`独立期间统计：首次结算日期 ${shown.start} 至 ${shown.end}，按所选平台、店铺已结算刷单 ${data.periodMarked.orders||0} 笔，去重刷单费 ¥ ${money(data.periodMarked.service_fee_cny??0)}。`,content,'fq-description');
       if(canManage&&Number(data.totals.unmatched)>0)button(content,'重新匹配',async()=>{await request('/charges/rematch',{method:'POST',...json({groupId:state.group})});await refresh();});
-      if(Number(data.marked?.conflicts)>0)el('p',`${data.marked.conflicts} 笔订单存在不同刷单费来源，合计仅包含已确认部分；请核对并移除错误来源。`,content,'fq-callout');
+      if(Number(data.marked?.conflicts)>0)el('p',`${data.marked.conflicts} 笔订单存在不同刷单费来源，累计去重刷单费仅包含已确认部分，核对表合计保留各来源行金额；请核对并移除错误来源。`,content,'fq-callout');
       const files=el('section',null,content,'fq-section');el('h4','导入文件',files);
       table(files,['文件','来源行数','操作'],data.imports.map(f=>[f.source_name,f.row_count,canManage?button(null,'移除',()=>confirmRemoval('移除费用来源','只撤销这个文件的来源。同单仍有其他来源时保留标签；没有其他来源时自动恢复正常经营汇总。',()=>request('/charges/imports/'+encodeURIComponent(f.id)+'?'+new URLSearchParams({groupId:state.group}),{method:'DELETE'}))):'—']));
       const orders=el('section',null,content,'fq-section');el('h4','订单核对',orders);

@@ -68,7 +68,7 @@ The production query plan used `idx_qianyi_receipt_qualified`.
 ## Shopee missing-income transport correction
 
 The preceding calendar-month repair is documented in
-`finance-calendar-month-20261103.md`. The intervening missing-first release
+`releases/finance/finance-calendar-month-20261103.md`. The intervening missing-first release
 prioritizes missing previous-month income before normal automatic refresh, while
 manual requests retain first priority. It examines 30 income rows per page,
 skips only complete matching BILL/SETTLEMENT pairs and batches up to 20 escrow
@@ -96,7 +96,7 @@ Active images:
 - `ai-commerce-frontend:finance-qianyi-receipt-20261103`
 
 Release directory: `/opt/heyi/releases/finance-qianyi-receipt-20261103`.
-Helper: `scripts/release-finance-qianyi-receipt.py`.
+Helper: `scripts/release/release-finance-qianyi-receipt.py`.
 
 Only the FinanceQianyi, FinanceQianyiClient, FinanceQianyiWorker,
 FinanceQianyiEvidence, FinanceQianyiReturns, FinanceQianyiReceipt and

@@ -72,7 +72,7 @@ are not silently renamed. Publishing providers use the saved merchant SKU.
 ## Release
 
 Initial backend image: `ai-commerce-platform:product-sku-naming-20261104`.
-Helper: `scripts/release-product-sku-naming.py`.
+Helper: `scripts/release/release-product-sku-naming.py`.
 Directory: `/opt/heyi/releases/product-sku-naming-20261104`.
 
 The overlay contains only ProductCaptureService, ProductSkuNaming,
@@ -105,7 +105,7 @@ overrides and its imported helper dependency chain.
 ## Follow-up activation and real marketplace acceptance
 
 Current backend: `ai-commerce-platform:product-sku-pattern-option-20261104`.
-Helper: `scripts/release-product-sku-pattern-option.py`.
+Helper: `scripts/release/release-product-sku-pattern-option.py`.
 Directory: `/opt/heyi/releases/product-sku-pattern-option-20261104`.
 
 The pure-white grouping fix passed 75 naming/capture tests. The baseline policy

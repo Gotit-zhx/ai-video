@@ -1494,6 +1494,55 @@ class FinanceConfigurationIntegrationTest {
         assertNull(repo.detail(owner,id(owner,row)).get("record_date"));
     }
     BigDecimal bucketTotal(String kind){return repo.dashboardBuckets(owner,filter).stream().filter(r->kind.equals(r.get("kind"))).map(r->decimal(r.get("amount"))).filter(Objects::nonNull).reduce(BigDecimal.ZERO,BigDecimal::add);}
+    @Test void brushSourceTotalsCoverAllQueryPages(){
+        String group=service.saveGroup(owner,null,"跨页核对");
+        var charges=new FinanceOrderCharges(repo,service);
+        var csv=new StringBuilder("订单编号,店铺,实际订单金额,代刷费CNY\n");
+        for(int i=0;i<55;i++)csv.append("BRUSH-").append(i).append(",未匹配店铺,")
+            .append(i<52?100:0).append(',').append(i==0?0:7).append('\n');
+        repo.transaction(()->charges.upload(owner,"u",group,csv.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8),"pages.csv"));
+        for(int page:List.of(1,2,3)){
+            var response=charges.workspace(owner,group,page,grouped(group));
+            var total=map(response.get("sourceSummary"));
+            assertEquals(55,number(response.get("recordTotal")));
+            assertEquals(55,number(total.get("records")));
+            assertEquals(52,number(total.get("principal_rows")),"counts source rows rather than summing native currencies");
+            assertEquals(0,decimal(total.get("service_fee_cny")).compareTo(decimal("378")));
+            assertEquals(page==1?50:page==2?5:0,rows(response.get("rows")).size());
+            assertEquals(0,number(map(response.get("periodMarked")).get("orders")),"unsettled sources retain a separate period scope");
+        }
+    }
+    @Test void brushSourceTotalsPreserveCompanyGroupAndExactNumberScope(){
+        String group=service.saveGroup(owner,null,"当前组"),sibling=service.saveGroup(owner,null,"其他组"),foreign=service.saveGroup(other,null,"其他公司");
+        var charges=new FinanceOrderCharges(repo,service);
+        byte[] current=("订单编号,店铺,实际订单金额,代刷费CNY\nBRUSH-001,未匹配,10,7\nBRUSH-001-EXTRA,未匹配,0,11\nBRUSH-002,未匹配,20,0\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        repo.transaction(()->charges.upload(owner,"u",group,current,"current.csv"));
+        repo.transaction(()->charges.upload(owner,"u",sibling,chargeCsv("BRUSH-001","未匹配","99"),"sibling.csv"));
+        repo.transaction(()->charges.upload(other,"other",foreign,chargeCsv("BRUSH-001","未匹配","88"),"foreign.csv"));
+        var exact=charges.workspace(owner,group,1,null,"BRUSH-001");
+        assertEquals(1,number(exact.get("recordTotal")));
+        assertEquals(1,number(map(exact.get("sourceSummary")).get("principal_rows")));
+        assertEquals(0,decimal(map(exact.get("sourceSummary")).get("service_fee_cny")).compareTo(decimal("7")));
+        var multiple=charges.workspace(owner,group,1,null,"BRUSH-001\nBRUSH-002");
+        assertEquals(2,number(multiple.get("recordTotal")));
+        assertEquals(2,number(map(multiple.get("sourceSummary")).get("principal_rows")));
+        assertThrows(BusinessException.class,()->charges.workspace(other,group,1,null,"BRUSH-001"));
+        assertEquals(0,decimal(map(charges.workspace(other,foreign,1,null,"BRUSH-001").get("sourceSummary")).get("service_fee_cny")).compareTo(decimal("88")));
+    }
+    @Test void brushSourceTotalsKeepPrincipalAndFeeZerosIndependent(){
+        String group=service.saveGroup(owner,null,"零金额");var charges=new FinanceOrderCharges(repo,service);
+        byte[] file=("订单编号,店铺,实际订单金额,代刷费CNY\nONLY-FEE,未匹配,0,7\nONLY-PRINCIPAL,未匹配,10,0\nBOTH-ZERO,未匹配,0,0\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        repo.transaction(()->charges.upload(owner,"u",group,file,"zeros.csv"));
+        for(var expected:List.of(List.of("ONLY-FEE","0","7"),List.of("ONLY-PRINCIPAL","1","0"),List.of("BOTH-ZERO","0","0"),List.of("NOT-PRESENT","0","0"))){
+            var response=charges.workspace(owner,group,1,null,expected.getFirst());var total=map(response.get("sourceSummary"));
+            assertEquals(Long.parseLong(expected.get(1)),number(total.get("principal_rows")));
+            assertEquals(0,decimal(total.get("service_fee_cny")).compareTo(decimal(expected.get(2))));
+            assertEquals(expected.getFirst().equals("NOT-PRESENT")?0:1,number(response.get("recordTotal")));
+        }
+        var all=map(charges.workspace(owner,group,1).get("sourceSummary"));
+        assertEquals(1,number(all.get("principal_rows")));
+        assertEquals(0,decimal(all.get("service_fee_cny")).compareTo(decimal("7")));
+    }
     @Test void marketingTagsExcludeSummaryButPreserveLedgerAndUndoOnlyLastSource(){
         String group=service.saveGroup(owner,null,"母婴"),shop=groupedShop(owner,"charge-shop",group);
         record(owner,shop,"ORDER","order1",new BigDecimal("100"),Map.of());

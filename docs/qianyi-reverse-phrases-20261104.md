@@ -32,7 +32,7 @@ no checkpoint or source record changes during that probe.
 
 ## Release procedure
 
-Helper: `scripts/release-qianyi-reverse-phrases.py`.
+Helper: `scripts/release/release-qianyi-reverse-phrases.py`.
 Target backend: `ai-commerce-platform:qianyi-reverse-phrases-20261104`.
 Release directory: `/opt/heyi/releases/qianyi-reverse-phrases-20261104`.
 Only `FinanceQianyiReceipt.class` changes, over the exact live

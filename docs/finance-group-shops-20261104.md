@@ -26,7 +26,7 @@ HEAD. No date or financial calculation behavior was changed for this release.
 
 Frontend: `ai-commerce-frontend:finance-group-shops-20261104`.
 Backend remains `ai-commerce-platform:finance-cost-dedupe-20261104`.
-Release helper: `scripts/release-finance-group-shops.py`.
+Release helper: `scripts/release/release-finance-group-shops.py`.
 Release root: `/opt/heyi/releases/finance-group-shops-20261104`.
 
 Only `index.html`, `finance-workspace.js`, `finance-label-costs.js` and
