@@ -194,7 +194,7 @@ public class FinanceReadCache {
             return prefix(key.scope())+revision+":"+selection(key);
         }catch(RuntimeException unavailable){return null;}
     }
-    static String prefix(Scope scope){return "heyi:finance:snapshot:v15-shared-facts:{"+scope.organizationId()+":"+scope.userId()+"}:";}
+    static String prefix(Scope scope){return "heyi:finance:snapshot:v17-advertising-commissions:{"+scope.organizationId()+":"+scope.userId()+"}:";}
     private static String revisionKey(Scope scope){return prefix(scope)+"revision";}
     private static String dataRevisionKey(Scope scope){return prefix(scope)+"data-revision";}
     private String dataRevision(Scope scope){return Objects.toString(redis.opsForValue().get(dataRevisionKey(scope)),"0");}

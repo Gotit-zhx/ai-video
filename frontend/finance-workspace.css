@@ -72,6 +72,9 @@
 .finance-workspace .fi-cost-link,.fc-workspace .fi-cost-link{min-height:0;padding:0;border:0;border-radius:2px;background:transparent;color:var(--fi-blue,#4169d8);font:inherit;font-variant-numeric:tabular-nums;text-align:inherit;cursor:pointer;text-decoration:underline;text-decoration-color:currentColor;text-underline-offset:3px}
 .finance-workspace .fi-cost-link:hover,.fc-workspace .fi-cost-link:hover{opacity:.8}
 .fi-metrics.fi-metrics-expanded{grid-template-columns:repeat(4,minmax(0,1fr))}
+.fi-metrics.fi-ad-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}
+.fi-ad-metrics .fi-metric-value strong{overflow-wrap:anywhere;min-width:0}
+@media(max-width:800px){.fi-metrics.fi-ad-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .fi-metrics-expanded .fi-metric{min-height:118px;padding:15px 17px}
 .fi-metrics-expanded .fi-metric-value strong{font-size:28px;overflow-wrap:anywhere;min-width:0}
 .fi-metric.is-profit{background:#eef3ff;border-color:#cbd8ff}

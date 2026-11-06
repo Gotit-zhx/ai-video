@@ -61,7 +61,7 @@ public class FinanceFx {
         for(var row:rows){
             List<Object> key=Arrays.stream(dimensions).map(row::get).toList();
             var target=result.computeIfAbsent(key,k->{var m=new LinkedHashMap<String,Object>();for(String d:dimensions)m.put(d,row.get(d));m.put("currency","CNY");return m;});
-            for(String field:List.of("amount","revenue","records","known_amounts","known_revenues","impressions","clicks","conversions")){
+            for(String field:List.of("amount","revenue","records","known_amounts","known_revenues","known_impressions","known_clicks","known_conversions","impressions","clicks","conversions")){
                 BigDecimal value=Set.of("amount","revenue").contains(field)?quote.convert(row.get(field),text(row.get("currency"))):decimal(row.get(field));
                 if(value!=null)target.merge(field,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));
                 else target.putIfAbsent(field,null);
