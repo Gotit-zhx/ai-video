@@ -77,10 +77,10 @@ class FinanceActualCostsIntegrationTest extends FinanceConfigurationIntegrationT
         assertTrue(actual.returns(owner,period(10),"returned").isEmpty());
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_return_cost_receipts",Integer.class),"old evidence retained without contributing to totals");
         var report=new FinanceCostReport(repo);var summary=report.dashboardSummary(owner,period(10),report.dashboardFacts(owner,period(10)));
-        assertEquals("QIANYI",summary.get("returnSource"));assertEquals(true,summary.get("returnProcessing"),"unbound shop cannot claim complete return coverage");
+        assertEquals("QIANYI",summary.get("returnSource"));assertEquals(false,summary.get("returnProcessing"));assertEquals(false,summary.get("returnCostReversalEnabled"),"return evidence is diagnostic and does not alter operating profit");
         var totals=List.of(new LinkedHashMap<String,Object>(Map.of("kind","SETTLEMENT","records",1,"known_amounts",1,"amount",decimal("80"),"revenue",decimal("100"),"known_revenues",1)));
         var profit=FinanceProfitReport.calculate(new ArrayList<>(totals),summary,"CNY",null);
-        assertNull(profit.get("amount"));assertEquals(true,profit.get("returnCostsPending"));
+        assertNotNull(profit.get("amount"));assertEquals(false,profit.get("returnCostsPending"));
         service.removeShop(owner,shop);finishDeletion(shop);
         assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_return_cost_receipts",Integer.class));
     }

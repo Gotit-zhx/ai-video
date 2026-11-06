@@ -50,10 +50,12 @@ class CommerceArtworkLibraryIntegrationTest {
             }
         }
         db = new JdbcTemplate(source);
+        String migration=new ClassPathResource("db/migration/V113__commerce_module_isolation.sql").getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        db.execute(migration.substring(migration.indexOf("CREATE TABLE commerce_material_library_entries")).split(";",2)[0]);
     }
 
     @BeforeEach void fixture() {
-        for (String table : List.of("commerce_batch_artwork_checks", "commerce_batch_artwork_jobs", "commerce_batch_execution_events", "commerce_batch_executions", "commerce_batches"))
+        for (String table : List.of("commerce_material_library_entries", "commerce_batch_artwork_checks", "commerce_batch_artwork_jobs", "commerce_batch_execution_events", "commerce_batch_executions", "commerce_batches"))
             db.update("DELETE FROM " + table);
         archive = new CommerceImageArchive(storage.toString());
         service = new CommerceArtworkLibraryService(db, archive);
@@ -90,6 +92,7 @@ class CommerceArtworkLibraryIntegrationTest {
         job("product-photo", "org", "self", "MOCKUP", "READY", 9, bytes, true);
         job("reused-copy", "org", "self", "VARIATE_G1", "READY", 9, bytes, true);
         db.update("UPDATE commerce_batch_artwork_jobs SET model_config_id='SAVED_ARTWORK' WHERE id='reused-copy'");
+        freezeCatalogue();
         var page = service.list(0, "", user);
         assertEquals(List.of("z-latest"), page.items().stream().map(CommerceArtworkLibraryService.Item::id).toList());
         assertFalse(page.hasMore());
@@ -102,6 +105,7 @@ class CommerceArtworkLibraryIntegrationTest {
         job("own-legacy", "org", "self", "VARIATE", "READY", 1, nativeBytes, false);
         job("coworker-new", "org", "team", "VARIATE", "READY", 2, nativeBytes, true);
         job("old-opaque", "org", "self", "VARIATE", "READY", 3, CommerceArtworkLibraryServiceTest.artwork(false), false);
+        freezeCatalogue();
         var external = CommerceArtworkLibraryServiceTest.user("org", "u", true, List.of("product:view"));
         assertEquals(List.of("own-legacy"), service.list(0, "", external).items().stream().map(CommerceArtworkLibraryService.Item::id).toList());
         assertEquals(List.of("coworker-new"), service.list(0, "", user).items().stream().map(CommerceArtworkLibraryService.Item::id).toList());
@@ -116,6 +120,7 @@ class CommerceArtworkLibraryIntegrationTest {
             var bytes = new ByteArrayOutputStream(); ImageIO.write(image, "png", bytes);
             job("print-" + n, "org", "self", "VARIATE", "READY", n, bytes.toByteArray(), true);
         }
+        freezeCatalogue();
         var first = service.list(0, "春季", user); var second = service.list(1, "春季", user);
         assertEquals(24, first.items().size()); assertTrue(first.hasMore());
         assertEquals(3, second.items().size()); assertFalse(second.hasMore());
@@ -124,4 +129,11 @@ class CommerceArtworkLibraryIntegrationTest {
         assertTrue(service.list(0, "%", user).items().isEmpty());
         assertTrue(service.list(0, "' OR 1=1 --", user).items().isEmpty());
     }
+    private void freezeCatalogue() throws Exception {
+        // V113 snapshots the historical catalogue. New generation jobs do not
+        // implicitly become reusable library entries after module isolation.
+        String migration=new ClassPathResource("db/migration/V113__commerce_module_isolation.sql").getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        db.execute(migration.substring(migration.indexOf("INSERT INTO commerce_material_library_entries")).split(";",2)[0]);
+    }
+
 }

@@ -1,0 +1,11 @@
+[Unit]
+Description=Probe Heyi services every minute
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=60
+AccuracySec=5
+Persistent=false
+
+[Install]
+WantedBy=timers.target

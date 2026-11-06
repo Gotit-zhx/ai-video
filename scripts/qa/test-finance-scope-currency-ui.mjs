@@ -78,7 +78,7 @@ function change(label,value){
   input.dispatchEvent(new w.Event('change'));
 }
 async function choose(label,value){change(label,value);await ready();}
-const reports=()=>reads.filter(r=>['/overview','/screen','/reconciliation'].includes(r.endpoint));
+const reports=()=>reads.filter(r=>['/overview','/records','/screen','/reconciliation'].includes(r.endpoint));
 const lastReport=()=>reports().at(-1);
 function assertScopeRequest(shopId,displayCurrency){
   const q=lastReport().q;

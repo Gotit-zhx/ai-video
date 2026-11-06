@@ -2,6 +2,8 @@
 
 核对日期：2026-11-06。服务器 `8.163.34.81` 于 **11:33 完成项目同步与刷单合计发布，11:36 复核**，本次制品、源码、恢复及清理证据见[发布验收记录](../releases/infrastructure/project-sync-20261106.md)。主机和通用入口见[服务器运维交接](server-handoff.md)；11 月 5 日的[只读核查回执](../releases/infrastructure/server-deployment-audit-20261105.md)保留历史事实。生产操作先读 [AGENTS.md](../../AGENTS.md)，并重新读取实际运行基线。
 
+统一 CI/CD 正在按[GitHub Actions 与统一运维](cicd.md)实施，是否已安装、启用及验收以[一期实施回执](../releases/infrastructure/devops-phase1-20261106.md)为准。
+
 ## 最近现场核实的版本
 
 截至 2026-11-06 11:36（北京时间），当前前后端均为 `brush-source-summary-20261106`，版本 `2026.11.6`。此前 gift-zero、原始刷单费模板等记录继续作为对应时间的业务与验收证据。

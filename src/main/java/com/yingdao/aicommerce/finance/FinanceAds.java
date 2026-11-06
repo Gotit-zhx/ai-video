@@ -82,7 +82,7 @@ public class FinanceAds {
             throw bad("TikTok 广告接口返回错误 "+text(response.get("code"))+"，请核对报表权限和授权有效期");
         return map(response.get("data"));
     }
-    @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->{try{tick();if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance ad sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance ad dispatcher temporarily unavailable",e);}},60,30,java.util.concurrent.TimeUnit.SECONDS);}
+    @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->{try{com.yingdao.aicommerce.ops.MaintenanceGate.runIfOpen(this::tick);if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance ad sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance ad dispatcher temporarily unavailable",e);}},60,30,java.util.concurrent.TimeUnit.SECONDS);}
     @PreDestroy public void stop(){worker.shutdownNow();}
     public void tick(){
         var accounts=repo.jdbc().queryForList("SELECT * FROM finance_ad_accounts a WHERE enabled=TRUE AND "+visibleAccount()+" AND next_at<=UTC_TIMESTAMP(6)"

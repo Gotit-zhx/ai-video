@@ -45,7 +45,7 @@ class CommerceLocalPhotoIntegrationTest {
     final CommerceCaptureSourceArchiveService sourceArchives=mock(CommerceCaptureSourceArchiveService.class);
 
     @BeforeAll static void schema()throws Exception {
-        var source=new DriverManagerDataSource(System.getenv("HEYI_LOCAL_PHOTO_TEST_URL"),"root","");
+        var source=new DriverManagerDataSource(System.getenv("HEYI_LOCAL_PHOTO_TEST_URL"),System.getenv().getOrDefault("HEYI_TEST_DB_USER","root"),System.getenv().getOrDefault("HEYI_TEST_DB_PASSWORD",""));
         try(var connection=source.getConnection()) {
             try(var tables=connection.getMetaData().getTables(connection.getCatalog(),null,"%",new String[]{"TABLE"})) {assertFalse(tables.next(),"Only an empty disposable schema is accepted");}
             for(var file:List.of("V68__batch_execution_checkpoints.sql","V73__batch_model_call_limits.sql","V75__batch_artwork_jobs.sql","V96__batch_artwork_colors.sql","V97__commerce_mockup_derivatives.sql"))

@@ -135,11 +135,11 @@ class VideoScriptParallelAnalysisTest {
 
         assertThatThrownBy(() -> service().retry("script", principal("org-b", "user-a")))
                 .isInstanceOf(BusinessException.class).hasMessageContaining("不存在");
-        assertThatThrownBy(() -> service().retry("script", principal("org-a", "user-b")))
+        assertThatThrownBy(() -> service().retry("script", new PlatformPrincipal("user-b","org-a","org-a","13800000001","regular-user","password",false,List.of("USER"),List.of("video:script:view","video:script:manage"))))
                 .isInstanceOf(BusinessException.class).hasMessageContaining("无权");
         assertThatThrownBy(() -> service().reanalyze("script", principal("org-b", "user-a")))
                 .isInstanceOf(BusinessException.class).hasMessageContaining("不存在");
-        assertThatThrownBy(() -> service().reanalyze("script", principal("org-a", "user-b")))
+        assertThatThrownBy(() -> service().reanalyze("script", new PlatformPrincipal("user-b","org-a","org-a","13800000001","regular-user","password",false,List.of("USER"),List.of("video:script:view","video:script:manage"))))
                 .isInstanceOf(BusinessException.class).hasMessageContaining("无权");
         verify(scripts, never()).update(isNull(), any(Wrapper.class));
         verifyNoInteractions(processor);

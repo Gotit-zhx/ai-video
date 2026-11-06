@@ -76,7 +76,7 @@ class CommerceGrokSceneWorkflowTest {
         var result=h.execute("MOCKUP");assertEquals("UNKNOWN",result.pendingStatus());
         verify(h.gateway,times(1)).generateProductPreview(eq(CommerceSceneBackgroundAssets.PROMPT),eq("scene-capture"),eq(GROK),argThat(refs->refs.size()==2),eq(true));
         verify(h.models,never()).selectCommerceMockupRuntimeConnection(any());verify(h.models,never()).transparentArtworkConnection(anyString());verify(h.models,never()).imageConnection(anyString());
-        verify(h.db).update(contains("status='UNKNOWN'"),eq("scene-capture"));
+        verify(h.db).update(contains("status='UNKNOWN'"),eq("模型调用结果未知，禁止盲目重复提交"),eq("scene-capture"));
     }
     @Test void changedGrokFingerprintStopsBeforeClaimOrProviderCall()throws Exception{
         var h=harness();var j=job(h,"capture","PREPARED");j.put("model_fingerprint","changed");h.jobs.add(j);

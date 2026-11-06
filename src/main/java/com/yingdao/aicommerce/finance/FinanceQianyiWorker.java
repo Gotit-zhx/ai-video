@@ -19,7 +19,7 @@ public class FinanceQianyiWorker {
         // Independent shops can wait on HTTP concurrently; the client still
         // applies one shared request-rate limit and leases serialize each shop.
         for(int i=0;i<CONCURRENCY;i++)worker.scheduleWithFixedDelay(()->{
-            try{tick();}catch(RuntimeException ignored){/* Durable per-connection state is retried on the next tick. */}
+            try{com.yingdao.aicommerce.ops.MaintenanceGate.runIfOpen(this::tick);}catch(RuntimeException ignored){/* Durable per-connection state is retried on the next tick. */}
         },40+i,1,TimeUnit.SECONDS);
     }
     @PreDestroy public void stop(){worker.shutdownNow();}

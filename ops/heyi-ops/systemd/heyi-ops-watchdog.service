@@ -1,0 +1,11 @@
+[Unit]
+Description=Recover only inactivity-disabled GitHub monitoring
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/heyi-ops watchdog
+TimeoutStartSec=45
+UMask=0077
+StandardOutput=null
+StandardError=null

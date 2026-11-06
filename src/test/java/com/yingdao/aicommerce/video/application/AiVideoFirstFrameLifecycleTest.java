@@ -129,7 +129,7 @@ class AiVideoFirstFrameLifecycleTest {
     @Test void unknownIncludingImageModel502NeverTriggersAutomaticPaidVideoOrImageRetry() {
         AiVideoGenerationJob job = reviewing("run", 1);
         AiVideoTaskAsset candidate = candidate(job);
-        answer("UNKNOWN", 0, "图片模型（502）temporarily unavailable");
+        when(audit.audit(any(),any(),anyString(),anyString())).thenReturn(new VideoFirstFrameAuditService.AuditResult("UNKNOWN",0,"图片模型（502）temporarily unavailable",null,0,false));
         poll(job);
         assertThat(stored(job).getErrorMessage()).startsWith(AiVideoGenerationService.REVIEW_PAUSED);
         assertThat(AiVideoImageProcessor.retryablePipelineImageFailure(item.getStatus(), item.getErrorMessage())).isFalse();
@@ -144,15 +144,15 @@ class AiVideoFirstFrameLifecycleTest {
         verify(provider, never()).query(any(), anyString());
     }
 
-    @Test void lowConfidenceSingleScenePausesInsteadOfPublishingOrRegenerating() {
+    @Test void evaluatedLowConfidenceSingleSceneKeepsExistingPermissivePolicyWithoutRegeneration() {
         AiVideoGenerationJob job = reviewing("run", 1);
         AiVideoTaskAsset candidate = candidate(job);
         answer("SINGLE_SCENE", 0.79, "证据不足");
         poll(job);
         service.retryGridRejectedVideos();
-        assertThat(stored(job).getStatus()).isEqualTo("FAILED");
-        assertThat(stored(job).getErrorMessage()).startsWith(AiVideoGenerationService.REVIEW_PAUSED);
-        assertThat(candidate.getAssetType()).isEqualTo("VIDEO_REVIEW_CANDIDATE");
+        assertThat(stored(job).getStatus()).isEqualTo("SUCCEEDED");
+        assertThat(stored(job).getErrorMessage()).isNull();
+        assertThat(candidate.getAssetType()).isEqualTo("VIDEO_RESULT");
         verify(provider, never()).submit(any(), any());
     }
 

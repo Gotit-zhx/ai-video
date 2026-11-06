@@ -43,7 +43,7 @@ async function boot(saved,route='overview'){
   const settle=async()=>{for(let n=0;n<100;n++){await new Promise(r=>setTimeout(r,5));if(d.querySelector('main').getAttribute('aria-busy')==='false')return;}throw Error('UI timeout');};
   const select=async(label,value)=>{const e=d.querySelector(`[aria-label="${label}"]`);assert(e,label);e.value=value;assert.equal(e.value,value);e.dispatchEvent(new w.Event('change'));await settle();};
   const click=async(text,host=d)=>{const b=[...host.querySelectorAll('button')].find(e=>e.textContent.trim()===text);assert(b,text);b.click();await settle();};
-  const lastReport=()=>reads.filter(r=>/\/(overview|reconciliation|screen)$/.test(r.pathname)).at(-1);
+  const lastReport=()=>reads.filter(r=>/\/(overview|records|reconciliation|screen)$/.test(r.pathname)).at(-1);
   w.FinanceWorkspace.enter(route);await settle();
   return {dom,w,d,reads,downloads,settle,select,click,lastReport};
 }

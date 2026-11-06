@@ -1,0 +1,17 @@
+[Unit]
+Description=Heyi verified deployment %i
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/heyi-ops execute %i
+ExecStopPost=/usr/local/sbin/heyi-ops recover
+TimeoutStartSec=1200
+TimeoutStopSec=600
+KillMode=control-group
+UMask=0077
+StandardOutput=null
+StandardError=null
+PrivateTmp=true
+ProtectHome=true

@@ -1,11 +1,11 @@
-FROM maven:3.9-eclipse-temurin-21 AS build
+FROM maven:3.9.11-eclipse-temurin-21@sha256:6fdc855a6ed81d288ca7ca37ac6ff5e9308b612485c0801d70b25a858c83d237 AS build
 WORKDIR /workspace
 COPY pom.xml .
 COPY maven-settings.xml .
 COPY src src
-RUN --mount=type=cache,target=/root/.m2 mvn -B -s maven-settings.xml clean package
+RUN --mount=type=cache,target=/root/.m2 mvn -B -ntp -DskipTests clean package
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:21.0.9_10-jre-noble@sha256:d3eb69add1874bc785382d6282db53a67841f602a1139dee6c4a1221d8c56568
 WORKDIR /app
 RUN sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list.d/ubuntu.sources \
     && apt-get update \

@@ -1,0 +1,11 @@
+[Unit]
+Description=Bounded Heyi local health checks
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/heyi-ops monitor
+TimeoutStartSec=55
+UMask=0077
+StandardOutput=null
+StandardError=null

@@ -31,10 +31,11 @@ test('general previews bypass old local redirects even with server-provided URLs
 function harness(assets = []) {
   const links = [];
   const timers = [];
+  const streamed=[];
   let click;
   const context = {
-    URL,
-    window: { location: new URL('https://hoyee.org.cn/#workspace'), setTimeout: fn => timers.push(fn), alert: message => { throw new Error(message); } },
+    URL,activeAiVideoDownload:null,aiVideoDownloadResults:new Map(),handleSessionExpired(){},renderAiVideoDownloadState(){},
+    window: { HeyVideoDownloads:{async run(files){streamed.push(...files);return {succeeded:files.map(f=>f.id),failed:[]};}},location: new URL('https://hoyee.org.cn/#workspace'), setTimeout: fn => timers.push(fn), alert: message => { throw new Error(message); } },
     document: {
       querySelector: selector => {
         assert.equal(selector, '#batch-download-videos');
@@ -47,16 +48,17 @@ function harness(assets = []) {
       body: { appendChild() {} },
     },
     selectedAiVideoTaskId: 'task/one',
-    aiVideoTaskDetail: { task: { name: '测试任务' }, assets },
+    aiVideoTaskDetail: { task: { id:'task/one',name: '测试任务' }, assets },
   };
   vm.createContext(context);
   vm.runInContext([
     between('function aiVideoAssetUrl(', 'function reusableMediaKey('),
     between('async function downloadImageAsset(', 'function enableAssetWheelZoom('),
+    between('function aiVideoDownloadFiles()', 'function renderAiVideoDownloadState()'),
     between('document.querySelector("#batch-download-videos").addEventListener(', 'document.querySelector("#garment-card-grid").addEventListener("change"'),
   ].join('\n'), context);
   const button = { disabled: false, textContent: '下载视频' };
-  return { links, button, download: (url, filename = '视频成片') => context.downloadImageAsset(button, url, filename), click: () => click({ currentTarget: button }) };
+  return { links,streamed, button, download: (url, filename = '视频成片') => context.downloadImageAsset(button, url, filename), click: () => click({ currentTarget: button }) };
 }
 
 test('provider signed URLs remain byte-for-byte unchanged and open without replacing the platform', async () => {
@@ -84,26 +86,16 @@ test('only same-origin platform APIs receive download parameters', async () => {
   }
 });
 
-test('one completed video downloads its asset directly without preparing a ZIP', async () => {
-  const h = harness([{ id: 'image', assetType: 'STORYBOARD_GRID' }, { id: 'asset/one', assetType: 'VIDEO_RESULT', createdAt: '2026-09-18' }]);
-  await h.click();
-  assert.equal(h.links.length, 1);
-  const url = new URL(h.links[0].href);
-  assert.equal(url.pathname, '/api/v1/ai-video-tasks/task%2Fone/assets/asset%2Fone');
-  assert.equal(url.searchParams.get('download'), 'true');
-  assert.equal(url.searchParams.get('filename'), '测试任务-成片');
-  assert.doesNotMatch(h.button.textContent, /ZIP/);
-  assert.equal(h.links[0].target, '_blank');
-  assert.equal(h.links[0].rel, 'noopener');
+test('one completed video enters the bounded downloader with its exact asset URL and filename', async () => {
+  const h=harness([{id:'image',assetType:'STORYBOARD_GRID'},{id:'asset/one',assetType:'VIDEO_RESULT',createdAt:'2026-09-18'}]);
+  await h.click();assert.equal(h.streamed.length,1);assert.equal(h.links.length,0);
+  const url=new URL(h.streamed[0].url);
+  assert.equal(url.pathname,'/api/v1/ai-video-tasks/task%2Fone/assets/asset%2Fone');
+  assert.equal(url.searchParams.get('download'),'true');assert.equal(url.searchParams.get('filename'),'测试任务-01-成片.mp4');
 });
-
-test('multiple completed videos keep the ZIP download and no-result tasks do not navigate', async () => {
-  const h = harness([{ id: 'a', assetType: 'VIDEO_RESULT' }, { id: 'b', assetType: 'VIDEO_RESULT' }]);
-  await h.click();
-  assert.equal(h.links.length, 1);
-  assert.equal(h.links[0].href, '/api/v1/ai-video-tasks/task%2Fone/video-results.zip');
-  assert.equal(h.button.textContent, '正在准备 ZIP…');
-  const empty = harness([{ id: 'candidate', assetType: 'VIDEO_REVIEW_CANDIDATE' }]);
-  await empty.click();
-  assert.equal(empty.links.length, 0);
+test('multiple completed videos use individual downloads and no-result tasks do not navigate',async()=>{
+ const h=harness([{id:'a',assetType:'VIDEO_RESULT'},{id:'b',assetType:'VIDEO_RESULT'}]);
+ await h.click();assert.deepEqual(h.streamed.map(f=>f.id),['a','b']);assert.equal(h.links.length,0);
+ assert.ok(h.streamed.every(f=>!f.url.includes('.zip')));
+ const empty=harness([{id:'candidate',assetType:'VIDEO_REVIEW_CANDIDATE'}]);await empty.click();assert.equal(empty.streamed.length,0);
 });

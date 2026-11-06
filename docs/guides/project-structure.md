@@ -28,7 +28,7 @@ ai-video/
 │   ├── maintenance/             修复、恢复、清理及专项维护
 │   ├── local/                   本地回调白名单隧道
 │   ├── build/                   静态资源构建工具
-│   ├── ci/                      桌面 CI、打包与验收辅助程序
+│   ├── ci/                      服务/桌面 CI、制品与验收辅助程序
 │   ├── video/                   既有视频专项运维入口
 │   ├── compact-release-image.py 保持稳定路径的镜像压缩保护
 │   └── heyi-mysql-backup.py     保持稳定路径的备份实现
@@ -39,7 +39,7 @@ ai-video/
 ├── ops/                         系统服务、备份、反代与管理配置
 ├── config/                      私有配置的公开模板
 ├── docs/                        开发、业务、发布、设计、研究与历史文档
-├── .github/                     GitHub Actions 桌面构建
+├── .github/                     GitHub Actions 服务 CI/CD、巡检与桌面构建
 ├── .circleci/                   显式触发的备用 Windows 构建
 ├── pom.xml / maven-settings.xml Maven 构建入口
 ├── Dockerfile*                  主系统后端镜像入口

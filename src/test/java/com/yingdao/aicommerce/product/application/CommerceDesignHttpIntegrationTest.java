@@ -39,7 +39,7 @@ class CommerceDesignHttpIntegrationTest {
     static Path archive;
     @DynamicPropertySource static void properties(DynamicPropertyRegistry r)throws Exception{
         archive=Files.createTempDirectory("heyi-design-http-");
-        r.add("spring.datasource.url",()->System.getenv("HEYI_DESIGN_HTTP_DB"));r.add("spring.datasource.username",()->"root");r.add("spring.datasource.password",()->"");
+        r.add("spring.datasource.url",()->System.getenv("HEYI_DESIGN_HTTP_DB"));r.add("spring.datasource.username",()->System.getenv().getOrDefault("HEYI_TEST_DB_USER","root"));r.add("spring.datasource.password",()->System.getenv().getOrDefault("HEYI_TEST_DB_PASSWORD",""));
         r.add("spring.data.redis.host",()->"127.0.0.1");r.add("spring.data.redis.port",()->System.getenv("HEYI_DESIGN_HTTP_REDIS_PORT"));r.add("spring.data.redis.password",()->"");
         r.add("app.commerce-image-storage",()->archive.toString());r.add("app.commerce-design-generation-enabled",()->true);
         r.add("app.dispatch.enabled",()->false);r.add("app.shop-auth.live-publishing-enabled",()->false);

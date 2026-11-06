@@ -20,6 +20,7 @@
     <properties>
         <java.version>21</java.version>
         <mybatis-plus.version>3.5.17</mybatis-plus.version>
+        <ci.reportsDirectory>${project.build.directory}/surefire-reports</ci.reportsDirectory>
     </properties>
 
     <dependencies>
@@ -109,6 +110,13 @@
 
     <build>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <reportsDirectory>${ci.reportsDirectory}</reportsDirectory>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>

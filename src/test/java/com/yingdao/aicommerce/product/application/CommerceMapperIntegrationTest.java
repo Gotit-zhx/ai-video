@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @EnabledIfEnvironmentVariable(named="HEYI_MAPPER_TEST_URL",matches="jdbc:mysql://127\\.0\\.0\\.1:[0-9]+/heyi_mapper_test.*")
 class CommerceMapperIntegrationTest {
     @Test void mysqlMigrationsAndRecordMappingsRoundTrip() throws Exception {
-        var ds=new UnpooledDataSource("com.mysql.cj.jdbc.Driver",System.getenv("HEYI_MAPPER_TEST_URL"),"root","");
+        var ds=new UnpooledDataSource("com.mysql.cj.jdbc.Driver",System.getenv("HEYI_MAPPER_TEST_URL"),System.getenv().getOrDefault("HEYI_TEST_DB_USER","root"),System.getenv().getOrDefault("HEYI_TEST_DB_PASSWORD",""));
         try(var connection=ds.getConnection()){
             try(var tables=connection.getMetaData().getTables("heyi_mapper_test",null,"%",new String[]{"TABLE"})){
                 assertFalse(tables.next(),"Integration test requires a fresh empty database");

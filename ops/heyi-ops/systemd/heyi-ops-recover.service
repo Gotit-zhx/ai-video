@@ -1,0 +1,15 @@
+[Unit]
+Description=Recover interrupted Heyi deployments
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/heyi-ops recover
+TimeoutStartSec=600
+UMask=0077
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target
