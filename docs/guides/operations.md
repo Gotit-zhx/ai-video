@@ -1,26 +1,27 @@
 # 发布、回滚与运维交接
 
-核对日期：2026-11-05。通用发布规则与当日现场状态分别维护：**18:09—18:19 已只读核查服务器 `8.163.34.81`**，主机、服务、Compose、目录、证书、备份及待办见[服务器运维交接](server-handoff.md)，检查范围及原始脱敏证据见[基础设施核查回执](../releases/infrastructure/server-deployment-audit-20261105.md)。执行生产操作先读 [AGENTS.md](../../AGENTS.md)，并重新读取实际运行基线。
+核对日期：2026-11-06。服务器 `8.163.34.81` 于 **11:33 完成项目同步与刷单合计发布，11:36 复核**，本次制品、源码、恢复及清理证据见[发布验收记录](../releases/infrastructure/project-sync-20261106.md)。主机和通用入口见[服务器运维交接](server-handoff.md)；11 月 5 日的[只读核查回执](../releases/infrastructure/server-deployment-audit-20261105.md)保留历史事实。生产操作先读 [AGENTS.md](../../AGENTS.md)，并重新读取实际运行基线。
 
 ## 最近现场核实的版本
 
-截至 2026-11-05 18:19（北京时间），当前前后端均已更新为 `finance-gift-zero-20261105`，晚于上午[原始刷单费模板](../finance-brush-original-template-20261105.md)的验收。该旧记录保留其业务及历史验收意义，不再作为当前镜像基线。
+截至 2026-11-06 11:36（北京时间），当前前后端均为 `brush-source-summary-20261106`，版本 `2026.11.6`。此前 gift-zero、原始刷单费模板等记录继续作为对应时间的业务与验收证据。
 
 | 服务 | 现场活动镜像 / ID 前缀 | 两个近期有发布回执的保留回滚候选 |
 | --- | --- | --- |
-| Java 后端 | `ai-commerce-platform:finance-gift-zero-20261105` / `e3feb07e208e` | `finance-report-basis-resume-20261105`、`finance-report-basis-20261105`（同仓库前缀） |
-| Web 前端 | `ai-commerce-frontend:finance-gift-zero-20261105` / `964389c70971` | `finance-report-basis-20261105`、`finance-local-month-20261105`（同仓库前缀） |
+| Java 后端 | `ai-commerce-platform:brush-source-summary-20261106` / `c3e2d6a090bc` | `finance-gift-zero-20261105`、`finance-report-basis-resume-20261105`（同仓库前缀） |
+| Web 前端 | `ai-commerce-frontend:brush-source-summary-20261106` / `a86f6307e654` | `finance-gift-zero-20261105`、`finance-report-basis-20261105`（同仓库前缀） |
 
-标签、完整镜像 ID 及既有发布回执已核对；本轮没有执行回滚，操作前仍须验证数据库与制品兼容性。生产已应用 V147，本地最高 V146，且晚间版本缺少本地对应发布输入及 Git revision 映射；详见[源码与发布缺口](server-handoff.md#43-下一次发布前的缺口)。后续发布必须更新本表及文档中心，重新核对容器引用再决定保留范围；通用保护规则变化时再更新 AGENTS。
+标签、完整镜像 ID、源提交 `7ccbd80108651878dbcdcaa3e68c5d0115df61cc`、配置保留和 V147 已核对。仓库已补齐 V147，当前制品有 Git revision 标签和文件哈希；11 月 5 日记录的源码缺口按当时语境阅读。本轮没有执行回滚，操作前仍须验证届时的数据库与制品兼容性。后续发布更新本表及文档中心，并重新核对容器引用；通用保护规则变化时再更新 AGENTS。
 
 相关生产路径：
 
-- 当前前后端回执：`/opt/heyi/releases/finance-gift-zero-20261105/`。
-- 前序回执：`/opt/heyi/releases/finance-report-basis-20261105/`、`/opt/heyi/releases/finance-report-basis-resume-20261105/`。
+- 当前前后端回执：`/opt/heyi/releases/project-sync-20261106/`。
+- 当前源码与文档：`/opt/heyi/source/current`，版本目录 `/opt/heyi/source/releases/v2026.11.6/`；与历史 Compose 的 `/opt/heyi/current` 分别使用。
+- 回滚回执：`/opt/heyi/releases/finance-gift-zero-20261105/`、`finance-report-basis-resume-20261105/`、`finance-report-basis-20261105/`。
 - 共享广告凭据：`/opt/heyi/shared/finance-ads/`，通过只读挂载提供，文档只记录位置。
 - 其他旧发布目录可能仍提供 Compose、辅助脚本或配置依赖，不能按日期批量删除。
 
-本次 app 和 frontend 分别引用 244、236 份 Compose 文件；完整有序路径见[脱敏 JSON](../releases/infrastructure/server-deployment-audit-20261105.json)。两个财务修复容器仍在运行，证书续期和日常备份失败、HR 路由 502 等接手事项见[交接优先级](server-handoff.md#1-接手时先处理什么)，本轮未修复或中断现场维护。
+本次 app 和 frontend 分别引用 246、238 份 Compose 文件；完整有序路径见[当前脱敏 JSON](../releases/infrastructure/project-sync-20261106.json)。原两个一次性修复容器已结束；成本持久队列仍由现有工作器处理，本轮未清空或重排。证书续期、Aegis、HR 路由及备份恢复能力等仍按[接手事项](server-handoff.md)跟进。
 
 ## 接管后的只读基线
 
@@ -78,7 +79,7 @@ docker inspect --format '{{range .Mounts}}{{println .Type .Destination}}{{end}}'
 
 ## 备份与恢复
 
-2026-11-05 现场发现最近一次日常备份失败，完整命名归档只见 11 月 3 日的一份；timer 仍启用，不能据此视为备份健康。生效 drop-in、退出码含义、容量门槛及恢复缺口见[备份现场交接](server-handoff.md#9-备份恢复与容量边界)。本轮未触发备份或恢复。
+11 月 5 日核查时备份失败且只见一份归档；11 月 6 日例行任务已于 03:51:10 成功退出，当前保留 11 月 3 日和 11 月 6 日两份归档。本次发布未触发备份或恢复，也未重测归档完整性、隔离恢复及异地副本。生效 drop-in、退出码含义与容量门槛见[备份现场交接](server-handoff.md#9-备份恢复与容量边界)。
 
 仓库服务配置在 `ops/admin-console/heyi-mysql-backup.service` / `.timer`，脚本为 `scripts/heyi-mysql-backup.py`。定时基准为北京时间每天 03:20，随机延迟最多 15 分钟；`Persistent=false`，超时边界 3900 秒，标准输出和错误为 null。
 
@@ -103,8 +104,8 @@ MySQL 之外还需分别交接持久卷、OSS 对象、招聘 SQLite/私有资�
 
 排障仍需遵守 [AGENTS.md](../../AGENTS.md) 的数据、限流和存储约束。
 
-## 后续上游发布记录（2026-11-06 同步）
+## 上游历史验收补录（2026-11-06）
 
-上述现场检查时间、镜像 ID 和服务器交接证据保持原样。随后合入的[GIFT 发布记录](../releases/finance/finance-gift-zero-20261105.md)注明 2026-11-05 18:53—18:55 的最终验收及回滚清理：前后端均为 `finance-gift-zero-20261105`；后端回滚为 `finance-report-basis-resume-20261105`、`finance-local-month-20261105`，前端为 `finance-report-basis-20261105`、`finance-local-month-20261105`。这是较晚的仓库记录，不冒充本次重新核验的现场状态；操作前仍需读取真实容器及回执。
+11 月 5 日的现场检查及源证据保留原样。随后同步的[GIFT 发布记录](../releases/finance/finance-gift-zero-20261105.md)描述该日 18:53—18:55 的最终验收与当时回滚清理，属于历史发布事实；11 月 6 日当前镜像与回滚保留以上表及本次发布回执为准。
 
 新增日期修复、GIFT 一次性扫描、原生压缩和索引维护约束见[当前财务规则](../business/finance/current-rules.md)。不要重新启动已完成的 GIFT 扫描；历史日期修复是否结束以最新凭据为准，不在本次拉取合并中执行维护程序。
