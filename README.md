@@ -2,7 +2,7 @@
 
 面向电商运营、AI 图片与视频生产、财务分析和招聘管理的多租户平台。
 
-文档核对日期：**2026-11-06（北京时间）**。上游默认分支为 `main-tree`；个人 fork 按 Gitflow 使用 `main-tree` 发布基线、`develop` 集成及 `feature/*` 开发分支，见[协作流程](docs/guides/development.md#gitflow-与个人-fork)。服务器于当日 11:33 完成 `2026.11.6` 发布，当前前后端为 `brush-source-summary-20261106`；源码、测试及运行边界见[发布验收](docs/releases/infrastructure/project-sync-20261106.md)，不等同于全部业务重新验收。
+文档核对日期：**2026-11-06（北京时间）**。上游默认分支为 `main-tree`；个人 fork 按 Gitflow 使用 `main-tree` 发布基线、`develop` 集成及 `feature/*` 开发分支，见[协作流程](docs/guides/development.md#gitflow-与个人-fork)。服务器于当日 14:30 完成 `2026.11.6.1` 后端性能发布，后端为 `finance-bi-performance-20261106`，前端沿用 `brush-source-summary-20261106`；源码、测试及运行边界见[性能发布验收](docs/releases/finance/finance-bi-performance-20261106.md)，不等同于全部业务重新验收。
 
 ## 接手入口
 
@@ -16,7 +16,7 @@
 | 接管服务器、确认现场版本与故障待办 | [服务器运维交接](docs/guides/server-handoff.md) |
 | 查业务规则及历次验收 | [文档索引](docs/README.md) |
 
-生产操作先读 [AGENTS.md](AGENTS.md)、[运维指南](docs/guides/operations.md)和[2026-11-06 发布验收](docs/releases/infrastructure/project-sync-20261106.md)。发布记录中的镜像、时间和测试结果只代表该次发布；旧记录不能直接作为当前部署命令。
+生产操作先读 [AGENTS.md](AGENTS.md)、[运维指南](docs/guides/operations.md)和[当前发布验收](docs/releases/finance/finance-bi-performance-20261106.md)。发布记录中的镜像、时间和测试结果只代表该次发布；旧记录不能直接作为当前部署命令。
 
 项目目录及模块组织图见[项目组织结构](docs/guides/project-structure.md)，完整依赖版本及来源见[技术栈清单](docs/guides/technology-stack.md)。独立组件入口：[客户端](apps/README.md)、[服务](services/README.md)、[工程脚本](scripts/README.md)、[实验](experiments/README.md)。
 

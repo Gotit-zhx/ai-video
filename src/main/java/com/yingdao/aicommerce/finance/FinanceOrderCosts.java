@@ -11,6 +11,10 @@ public final class FinanceOrderCosts {
     public FinanceOrderCosts(FinanceRepository repo){this.repo=repo;}
     public record Context(String shopId,String groupId,String region,String timezone,String bookId,
                           List<Map<String,Object>> costs,Map<String,Object> settings,Map<String,Object> mappings){}
+    record CatalogKey(String organization,String group){}
+    record Catalog(String id,List<Map<String,Object>> costs){}
+    record Lookup(String warehouse,Map<String,Map<String,Object>> codes,Map<String,Set<String>> normalized,
+                  Set<String> allCodes,Map<String,List<Map<String,Object>>> explicitBySku){}
     static boolean giftSku(Object sku){return "GIFT".equalsIgnoreCase(text(sku).trim());}
     static boolean hasGift(Map<String,Object> raw){
         return FinanceProductSkus.fromOrder("TIKTOK_SHOP",raw).stream().anyMatch(FinanceOrderCosts::giftSku)
@@ -40,7 +44,28 @@ public final class FinanceOrderCosts {
         return null;
     }
     static Map<String,Object> calculate(Map<String,Object> order,Map<String,Object> raw,Context context){
-        String status=text(order.get("status")),warehouse=resolveWarehouse(context);
+        return calculate(order,raw,context,null);
+    }
+    static Lookup lookup(Context context){
+        String warehouse=resolveWarehouse(context);
+        var codes=new LinkedHashMap<String,Map<String,Object>>();var normalized=new LinkedHashMap<String,Set<String>>();
+        var allCodes=new LinkedHashSet<String>();
+        for(var cost:context.costs()){
+            if(!text(cost.get("manualId")).isBlank())continue;
+            String code=text(cost.get("sku"));allCodes.add(code);
+            normalized.computeIfAbsent(FinanceCostWorkspace.normalizedSku(code),k->new LinkedHashSet<>()).add(code);
+            if(warehouse.equals(text(cost.get("warehouse"))))codes.put(code,cost);
+        }
+        var explicitBySku=new HashMap<String,List<Map<String,Object>>>();
+        for(var entry:context.mappings().entrySet()){
+            var mapping=map(entry.getValue());String suffix=":"+text(mapping.get("warehouse"));
+            if(context.groupId().equals(text(mapping.get("groupId")))&&!text(mapping.get("manualCostId")).isBlank()&&entry.getKey().endsWith(suffix))
+                explicitBySku.computeIfAbsent(entry.getKey().substring(0,entry.getKey().length()-suffix.length()),k->new ArrayList<>()).add(mapping);
+        }
+        return new Lookup(warehouse,codes,normalized,allCodes,explicitBySku);
+    }
+    static Map<String,Object> calculate(Map<String,Object> order,Map<String,Object> raw,Context context,Lookup prepared){
+        String status=text(order.get("status")),warehouse=prepared==null?resolveWarehouse(context):prepared.warehouse();
         var rules=map(context.settings().get("rules"));
         boolean excluded=Set.of("UNPAID","CANCELLED","CANCELED").contains(status);
         var out=new LinkedHashMap<String,Object>();
@@ -56,20 +81,8 @@ public final class FinanceOrderCosts {
         out.put("costMonth",month);
         boolean tk="TIKTOK_SHOP".equals(order.get("platform"));
         var items=rows(raw.get(tk?"line_items":"item_list"));var lines=new ArrayList<Map<String,Object>>();
-        var codes=new LinkedHashMap<String,Map<String,Object>>();var normalized=new LinkedHashMap<String,Set<String>>();
-        var allCodes=new LinkedHashSet<String>();
-        for(var cost:context.costs()){
-            if(!text(cost.get("manualId")).isBlank())continue;
-            String code=text(cost.get("sku"));allCodes.add(code);
-            normalized.computeIfAbsent(FinanceCostWorkspace.normalizedSku(code),k->new LinkedHashSet<>()).add(code);
-            if(warehouse.equals(text(cost.get("warehouse"))))codes.put(code,cost);
-        }
-        var explicitBySku=new HashMap<String,List<Map<String,Object>>>();
-        for(var entry:context.mappings().entrySet()){
-            var mapping=map(entry.getValue());String suffix=":"+text(mapping.get("warehouse"));
-            if(context.groupId().equals(text(mapping.get("groupId")))&&!text(mapping.get("manualCostId")).isBlank()&&entry.getKey().endsWith(suffix))
-                explicitBySku.computeIfAbsent(entry.getKey().substring(0,entry.getKey().length()-suffix.length()),k->new ArrayList<>()).add(mapping);
-        }
+        var index=prepared==null?lookup(context):prepared;
+        var codes=index.codes();var normalized=index.normalized();var allCodes=index.allCodes();var explicitBySku=index.explicitBySku();
         BigDecimal known=BigDecimal.ZERO;int matched=0,fallback=0;
         var seen=new HashMap<String,String>();
         for(var item:items){
@@ -157,16 +170,22 @@ public final class FinanceOrderCosts {
         return out;
     }
     Context context(String organization,String shopId){
+        return context(organization,shopId,new HashMap<>());
+    }
+    Context context(String organization,String shopId,Map<CatalogKey,Catalog> catalogs){
         var shops=repo.jdbc().queryForList("SELECT group_id,region,timezone FROM finance_connections WHERE organization_id=? AND id=? AND status<>'REMOVED'",organization,shopId);
         if(shops.isEmpty())return null;var shop=shops.getFirst();String group=text(shop.get("group_id"));
-        var books=repo.jdbc().queryForList("SELECT id,data_json FROM finance_cost_books WHERE organization_id=? AND group_id=? ORDER BY created_at DESC,id DESC LIMIT 1",organization,group);
+        var catalog=catalogs.computeIfAbsent(new CatalogKey(organization,group),key->{
+            var books=repo.jdbc().queryForList("SELECT id,data_json FROM finance_cost_books WHERE organization_id=? AND group_id=? ORDER BY created_at DESC,id DESC LIMIT 1",organization,group);
+            return books.isEmpty()?new Catalog("",List.of()):new Catalog(text(books.getFirst().get("id")),FinanceCostSources.allCosts(decode(books.getFirst().get("data_json"))));
+        });
         var settings=repo.jdbc().queryForList("SELECT data_json FROM finance_cost_settings WHERE organization_id=? AND shop_id=?",organization,shopId);
         var mappings=new LinkedHashMap<String,Object>();
         for(var m:repo.jdbc().queryForList("SELECT product_id,sku_id,warehouse,data_json FROM finance_cost_mappings WHERE organization_id=? AND shop_id=?",organization,shopId))
             mappings.put(shopId+":"+m.get("product_id")+":"+m.get("sku_id")+":"+m.get("warehouse"),decode(m.get("data_json")));
         String zone=text(shop.get("timezone"));if(zone.isBlank())zone=timezoneFor(text(shop.get("region")));
-        return new Context(shopId,group,text(shop.get("region")),zone,books.isEmpty()?"":text(books.getFirst().get("id")),
-                books.isEmpty()?List.of():FinanceCostSources.allCosts(decode(books.getFirst().get("data_json"))),settings.isEmpty()?Map.of():decode(settings.getFirst().get("data_json")),mappings);
+        return new Context(shopId,group,text(shop.get("region")),zone,catalog.id(),catalog.costs(),
+                settings.isEmpty()?Map.of():decode(settings.getFirst().get("data_json")),mappings);
     }
     Context labelContext(String organization,String shopId){
         var shops=repo.jdbc().queryForList("SELECT group_id,region,timezone FROM finance_connections WHERE organization_id=? AND id=? AND status<>'REMOVED'",organization,shopId);
@@ -259,10 +278,32 @@ public final class FinanceOrderCosts {
         repo.jdbc().update(prefix+String.join(",",Collections.nCopies(rows.size(),tuple))+suffix,
             rows.stream().flatMap(Arrays::stream).toArray());
     }
+    List<String> candidateJobs(int limit,int page){
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("Enumerate cost-job candidates before starting the calculation transaction");
+        int size=Math.min(100,Math.max(1,limit));
+        // The ordered secondary-index range must remain unlocked: its gap locks
+        // otherwise block unrelated synchronization INSERTs for the whole batch.
+        return repo.jdbc().queryForList("SELECT order_record_id FROM finance_order_cost_jobs ORDER BY priority,requested_at,order_record_id LIMIT ? OFFSET ?",
+                String.class,size,Math.min(3,Math.max(0,page))*size);
+    }
+    List<Map<String,Object>> claimJobs(List<String> ids){
+        if(ids.isEmpty())return List.of();
+        if(ids.size()>100)throw new IllegalArgumentException("At most 100 cost jobs per transaction");
+        return repo.jdbc().queryForList("SELECT * FROM finance_order_cost_jobs FORCE INDEX(PRIMARY) WHERE order_record_id IN ("
+                +String.join(",",Collections.nCopies(ids.size(),"?"))+") ORDER BY priority,requested_at,order_record_id FOR UPDATE SKIP LOCKED",ids.toArray());
+    }
     Set<String> processBatch(int limit){
-        var jobs=repo.jdbc().queryForList("SELECT * FROM finance_order_cost_jobs ORDER BY priority,requested_at,order_record_id LIMIT ? FOR UPDATE SKIP LOCKED",Math.min(100,Math.max(1,limit)));
+        // Existing explicit repair callers already own their transaction. Retain
+        // their locking read so candidate enumeration cannot establish an older
+        // repeatable-read snapshot before the jobs are actually locked.
+        return processJobs(repo.jdbc().queryForList("SELECT * FROM finance_order_cost_jobs ORDER BY priority,requested_at,order_record_id LIMIT ? FOR UPDATE SKIP LOCKED",Math.min(100,Math.max(1,limit))));
+    }
+    Set<String> processBatch(List<String> candidates){return processJobs(claimJobs(candidates));}
+    private Set<String> processJobs(List<Map<String,Object>> jobs){
         if(jobs.isEmpty())return Set.of();
         var contexts=new HashMap<String,Context>();var labelContexts=new HashMap<String,Context>();
+        var catalogs=new HashMap<CatalogKey,Catalog>();var lookups=new HashMap<String,Lookup>();
         var writable=new HashMap<String,Boolean>();var changed=new LinkedHashSet<String>();
         var records=new HashMap<String,Map<String,Object>>();
         String slots=String.join(",",Collections.nCopies(jobs.size(),"?"));
@@ -284,9 +325,9 @@ public final class FinanceOrderCosts {
             var raw=decode(order.get("raw_json"));String sourceHash=sourceHash(repo,raw,text(order.get("status")));
             var old=decode(order.get("cost_data"));
             boolean labelOnly=number(job.get("priority"))==2&&sourceHash.equals(text(order.get("cost_source_hash")))&&old.containsKey("status")&&old.containsKey("lines");
-            Context context=labelOnly?labelContexts.computeIfAbsent(key,k->labelContext(organization,shop)):contexts.computeIfAbsent(key,k->context(organization,shop));
+            Context context=labelOnly?labelContexts.computeIfAbsent(key,k->labelContext(organization,shop)):contexts.computeIfAbsent(key,k->context(organization,shop,catalogs));
             if(context==null)continue;
-            var product=labelOnly?old:actual.containsKey(recordId)?actual.get(recordId):calculate(order,raw,context);
+            var product=labelOnly?old:actual.containsKey(recordId)?actual.get(recordId):calculate(order,raw,context,lookups.computeIfAbsent(key,k->lookup(context)));
             var label=new LinkedHashMap<String,Object>();label.put("amount_cny",order.get("invoice_label_amount"));
             label.put("pending_count",order.get("invoice_label_pending"));label.put("shipment_count",order.get("invoice_label_shipments"));
             var result=FinanceLabelCosts.overlay(product,label);

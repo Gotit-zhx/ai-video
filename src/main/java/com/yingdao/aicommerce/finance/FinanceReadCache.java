@@ -29,12 +29,17 @@ public class FinanceReadCache {
                 return 1
                 """,Long.class);
     private static final long FRESH_MS=15_000,MAX_STALE_MS=60_000;
+    private static final long HISTORICAL_FRESH_MS=60_000,HISTORICAL_MAX_STALE_MS=180_000;
     private static final Duration RETENTION=Duration.ofMinutes(5);
     private static final int RESPONSE_LIMIT=524_288,FACTS_LIMIT=16*1024*1024,FACTS_STORED_LIMIT=2*1024*1024;
+    private static final int RESPONSE_DECODED_LIMIT=4*1024*1024;
     private final StringRedisTemplate redis;private final ObjectMapper json;private final LongSupplier clock;
     private final Executor executor;private final ExecutorService ownedExecutor;
     private final ConcurrentHashMap<String,CompletableFuture<Map<String,Object>>> pending=new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Scope,UUID> dirtyScopes=new ConcurrentHashMap<>();
+    private record LocalFacts(Map<String,Object> envelope,int decodedBytes){}
+    private final LinkedHashMap<String,LocalFacts> localFacts=new LinkedHashMap<>(8,.75f,true);
+    private int localFactsBytes;
     @org.springframework.beans.factory.annotation.Autowired
     public FinanceReadCache(StringRedisTemplate redis,ObjectMapper json){
         this(redis,json,System::currentTimeMillis,new ThreadPoolExecutor(2,2,0,TimeUnit.SECONDS,
@@ -51,11 +56,11 @@ public class FinanceReadCache {
         var cached=read(address);
         if(cached!=null){
             long age=Math.max(0,clock.getAsLong()-number(cached.get("built")));
-            if(age<=MAX_STALE_MS){
+            if(age<=maxStaleMillis(key)){
                 String revision;
                 try{revision=dataRevision(key.scope());}catch(RuntimeException unavailable){return withoutFactRevision(load.get());}
-                boolean stale=age>FRESH_MS||!revision.equals(Objects.toString(cached.get("dataRevision"),"0"));
-                if(stale)background(address,key,load);
+                boolean stale=age>freshMillis(key)||!revision.equals(Objects.toString(cached.get("dataRevision"),"0"));
+                if(stale&&refreshDue(key,age))background(address,key,load);
                 return response(cached,stale);
             }
         }
@@ -66,16 +71,24 @@ public class FinanceReadCache {
         var cached=read(address);
         String revision;
         try{revision=dataRevision(key.scope());}catch(RuntimeException unavailable){return;}
-        if(cached==null||clock.getAsLong()-number(cached.get("built"))>FRESH_MS
-                ||!revision.equals(Objects.toString(cached.get("dataRevision"),"0")))background(address,key,load);
+        long age=cached==null?Long.MAX_VALUE:Math.max(0,clock.getAsLong()-number(cached.get("built")));
+        if(cached==null||(!historical(key)||age>=freshMillis(key))&&(age>freshMillis(key)
+                ||!revision.equals(Objects.toString(cached.get("dataRevision"),"0"))))background(address,key,load);
     }
-    /** Raw daily amounts are shared for at most fifteen seconds after calculation.
+    private boolean historical(FinanceSnapshotCache.Key key){
+        var currentMonth=Instant.ofEpochMilli(clock.getAsLong()).atZone(ZoneId.of("Asia/Shanghai")).toLocalDate().withDayOfMonth(1);
+        return !key.live()&&key.filter().end().isBefore(currentMonth);
+    }
+    private long freshMillis(FinanceSnapshotCache.Key key){return historical(key)?HISTORICAL_FRESH_MS:FRESH_MS;}
+    private long maxStaleMillis(FinanceSnapshotCache.Key key){return historical(key)?HISTORICAL_MAX_STALE_MS:MAX_STALE_MS;}
+    private boolean refreshDue(FinanceSnapshotCache.Key key,long age){return !historical(key)||age>=FRESH_MS;}
+    /** Current/live facts last fifteen seconds; completed months last sixty seconds.
      * Soft changes retain the original revision and timestamp; configuration changes
      * still fence the address immediately. Transforming a snapshot never renews it. */
     Map<String,Object> facts(FinanceSnapshotCache.Key key,Supplier<Map<String,Object>> load){
         String address=factsAddress(key);
         if(address==null)return load.get();
-        var cached=freshFacts(address,key.scope());
+        var cached=freshFacts(address,key);
         if(cached!=null)return cached;
         var future=new CompletableFuture<Map<String,Object>>();
         var existing=pending.putIfAbsent(address,future);
@@ -88,7 +101,7 @@ public class FinanceReadCache {
             }
         }
         try{
-            cached=freshFacts(address,key.scope());
+            cached=freshFacts(address,key);
             if(cached!=null){future.complete(cached);return cached;}
             String revision;
             try{revision=dataRevision(key.scope());}catch(RuntimeException unavailable){revision="unavailable";}
@@ -97,9 +110,11 @@ public class FinanceReadCache {
             try{
                 byte[] raw=json.writeValueAsString(envelope).getBytes(StandardCharsets.UTF_8);
                 String value=raw.length<=FACTS_LIMIT?compressFacts(raw):null;
-                if(value!=null&&value.length()<=FACTS_STORED_LIMIT)
-                    redis.execute(SAVE,List.of(address,prefix(key.scope())+"facts-entries"),value,"60",
+                if(value!=null&&value.length()<=FACTS_STORED_LIMIT){
+                    redis.execute(SAVE,List.of(address,prefix(key.scope())+"facts-entries"),value,Long.toString(RETENTION.toSeconds()),
                             Long.toString(clock.getAsLong()),"16");
+                    rememberFacts(address,decodeEnvelope(raw),raw.length);
+                }
             }catch(RuntimeException unavailable){/* The successful consistent database read remains usable. */}
             var stamped=stampFacts(envelope);future.complete(stamped);return stamped;
         }catch(Throwable failure){
@@ -111,10 +126,17 @@ public class FinanceReadCache {
     }
     Map<String,Object> findFacts(FinanceSnapshotCache.Key key){
         String address=factsAddress(key);if(address==null)return null;
-        var cached=freshFacts(address,key.scope());if(cached!=null)return cached;
         var running=pending.get(address);
+        var prior=running==null?null:localFacts(address,maxStaleMillis(key));
+        if(prior!=null)return stampFacts(prior);
+        var cached=freshFacts(address,key);if(cached!=null)return cached;
         if(running==null)return null;
-        try{return running.join();}catch(CompletionException failure){return null;}
+        // A narrower request can use the previous bounded snapshot while the
+        // company refresh runs, instead of joining its long database query.
+        cached=availableFacts(address,maxStaleMillis(key));if(cached!=null)return cached;
+        // This is an optional wider snapshot, not the requested query's own
+        // single flight. A cold shop request must not wait for a company scan.
+        return null;
     }
     private String factsAddress(FinanceSnapshotCache.Key key){
         String address=address(key);if(address==null)return null;
@@ -122,15 +144,49 @@ public class FinanceReadCache {
         // is running. The envelope keeps its original revision for stale marking.
         return address+":facts";
     }
-    private Map<String,Object> freshFacts(String address,Scope scope){
+    private Map<String,Object> freshFacts(String address,FinanceSnapshotCache.Key key){
+        return availableFacts(address,freshMillis(key));
+    }
+    private Map<String,Object> availableFacts(String address,long maxAge){
+        var local=localFacts(address,maxAge);if(local!=null)return stampFacts(local);
         var cached=read(address,FACTS_STORED_LIMIT,true);
         if(cached==null||cached.get("dataRevision")==null
-                ||Math.max(0,clock.getAsLong()-number(cached.get("built")))>FRESH_MS)return null;
+                ||Math.max(0,clock.getAsLong()-number(cached.get("built")))>maxAge)return null;
         // Cost/label workers can commit while a monthly read is running. Requiring
         // their newest revision here made a just-finished snapshot unusable for
         // currency/shop changes and restarted the same SQL after almost every batch.
         // Its revision remains attached so the response explicitly reports staleness.
         return stampFacts(cached);
+    }
+    private Map<String,Object> localFacts(String address,long maxAge){
+        synchronized(localFacts){
+            var entry=localFacts.get(address);
+            if(entry==null||Math.max(0,clock.getAsLong()-number(entry.envelope().get("built")))>maxAge)return null;
+            return entry.envelope();
+        }
+    }
+    private Map<String,Object> decodeEnvelope(byte[] raw){
+        return map(json.readerFor(Map.class).with(tools.jackson.databind.DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).readValue(raw));
+    }
+    private void rememberFacts(String address,Map<String,Object> envelope,int bytes){
+        if(bytes>FACTS_LIMIT||envelope.get("dataRevision")==null)return;
+        var entry=new LocalFacts(map(immutable(envelope)),bytes);
+        synchronized(localFacts){
+            var previous=localFacts.put(address,entry);if(previous!=null)localFactsBytes-=previous.decodedBytes();
+            localFactsBytes+=bytes;
+            while(localFacts.size()>4||localFactsBytes>FACTS_LIMIT){
+                var iterator=localFacts.entrySet().iterator();var oldest=iterator.next();
+                localFactsBytes-=oldest.getValue().decodedBytes();iterator.remove();
+            }
+        }
+    }
+    private static Object immutable(Object value){
+        if(value instanceof Map<?,?> source){
+            var copy=new LinkedHashMap<String,Object>();source.forEach((key,item)->copy.put(text(key),immutable(item)));
+            return Collections.unmodifiableMap(copy);
+        }
+        if(value instanceof List<?> source)return Collections.unmodifiableList(source.stream().map(FinanceReadCache::immutable).toList());
+        return value;
     }
     private static Map<String,Object> stampFacts(Map<String,Object> envelope){
         var data=new LinkedHashMap<>(map(envelope.get("data")));
@@ -194,7 +250,7 @@ public class FinanceReadCache {
             return prefix(key.scope())+revision+":"+selection(key);
         }catch(RuntimeException unavailable){return null;}
     }
-    static String prefix(Scope scope){return "heyi:finance:snapshot:v15-shared-facts:{"+scope.organizationId()+":"+scope.userId()+"}:";}
+    static String prefix(Scope scope){return "heyi:finance:snapshot:v16-bounded-history:{"+scope.organizationId()+":"+scope.userId()+"}:";}
     private static String revisionKey(Scope scope){return prefix(scope)+"revision";}
     private static String dataRevisionKey(Scope scope){return prefix(scope)+"data-revision";}
     private String dataRevision(Scope scope){return Objects.toString(redis.opsForValue().get(dataRevisionKey(scope)),"0");}
@@ -206,23 +262,30 @@ public class FinanceReadCache {
         catch(Exception impossible){throw new IllegalStateException(impossible);}
     }
     private Map<String,Object> read(String address){
-        return read(address,RESPONSE_LIMIT,false);
+        return read(address,RESPONSE_LIMIT,false,RESPONSE_DECODED_LIMIT);
     }
     private Map<String,Object> read(String address,int limit,boolean compressed){
+        return read(address,limit,compressed,FACTS_LIMIT);
+    }
+    private Map<String,Object> read(String address,int limit,boolean compressed,int decodedLimit){
         try{
             String value=redis.opsForValue().get(address);
             if(value==null||value.length()>limit)return null;
-            if(compressed){
-                if(!value.startsWith("gz:"))return null;
+            int decodedBytes=value.getBytes(StandardCharsets.UTF_8).length;
+            if(compressed&&!value.startsWith("gz:"))return null;
+            if(value.startsWith("gz:")){
                 try(var gzip=new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(Base64.getDecoder().decode(value.substring(3))))){
-                    byte[] raw=gzip.readNBytes(FACTS_LIMIT+1);
-                    if(raw.length>FACTS_LIMIT)return null;
+                    byte[] raw=gzip.readNBytes(decodedLimit+1);
+                    if(raw.length>decodedLimit)return null;
+                    decodedBytes=raw.length;
                     value=new String(raw,StandardCharsets.UTF_8);
                 }
             }
             var envelope=map(json.readerFor(Map.class)
                     .with(tools.jackson.databind.DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).readValue(value));
-            return envelope.get("data") instanceof Map<?,?>&&envelope.get("built") instanceof Number?envelope:null;
+            if(!(envelope.get("data") instanceof Map<?,?>)||!(envelope.get("built") instanceof Number))return null;
+            if(compressed)rememberFacts(address,envelope,decodedBytes);
+            return envelope;
         }catch(RuntimeException|java.io.IOException unavailable){return null;}
     }
     private static Map<String,Object> response(Map<String,Object> envelope,boolean refreshing){
@@ -260,8 +323,9 @@ public class FinanceReadCache {
             var envelope=Map.<String,Object>of("built",built,"data",loaded,
                     "dataRevision",revision==null?"unavailable":revision);
             try{
-                String value=json.writeValueAsString(envelope);
-                if(revision!=null&&value.getBytes(StandardCharsets.UTF_8).length<=RESPONSE_LIMIT){
+                byte[] raw=json.writeValueAsBytes(envelope);
+                String value=raw.length>RESPONSE_DECODED_LIMIT?null:raw.length>65_536?compressFacts(raw):new String(raw,StandardCharsets.UTF_8);
+                if(revision!=null&&value!=null&&value.getBytes(StandardCharsets.UTF_8).length<=RESPONSE_LIMIT){
                     save(address,key.scope(),value);
                     // The UI resolves an automatic currency / FX snapshot after its first response.
                     // Save that equivalent key too, without collapsing different explicit filters.
@@ -275,7 +339,7 @@ public class FinanceReadCache {
                 }
             }catch(RuntimeException unavailable){/* A cache failure must not hide a successful database read. */}
             boolean refreshing=true;
-            try{refreshing=clock.getAsLong()-built>FRESH_MS||!Objects.equals(revision,dataRevision(key.scope()));}catch(RuntimeException unavailable){/* Retry on the next refresh. */}
+            try{refreshing=clock.getAsLong()-built>freshMillis(key)||!Objects.equals(revision,dataRevision(key.scope()));}catch(RuntimeException unavailable){/* Retry on the next refresh. */}
             future.complete(response(envelope,refreshing));
         }catch(Throwable failure){future.completeExceptionally(failure);}
         finally{pending.remove(address,future);}

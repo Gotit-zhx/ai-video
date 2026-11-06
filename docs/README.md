@@ -30,7 +30,7 @@
 
 ## 当前生产规则与验收
 
-以下十一份业务规则/验收文件保留根目录原路径，由本索引统一导航；它们描述各自日期的业务和验收，不固定当前部署。**2026-11-06 11:33 已发布 `2026.11.6`，前后端均为 `brush-source-summary-20261106`**；源码、测试、回滚和清理见[当日发布验收](releases/infrastructure/project-sync-20261106.md)，运行入口及遗留事项见[服务器运维交接](guides/server-handoff.md)。生产操作先读[运维指南](guides/operations.md)和 [AGENTS.md](../AGENTS.md)。
+以下十一份业务规则/验收文件保留根目录原路径，由本索引统一导航；它们描述各自日期的业务和验收，不固定当前部署。**2026-11-06 14:30 已发布后端 `2026.11.6.1`：后端为 `finance-bi-performance-20261106`，前端保持 `brush-source-summary-20261106`**；源码、测试、回滚和清理见[性能发布验收](releases/finance/finance-bi-performance-20261106.md)，运行入口及遗留事项见[服务器运维交接](guides/server-handoff.md)。生产操作先读[运维指南](guides/operations.md)和 [AGENTS.md](../AGENTS.md)。
 
 | 主题 | 固定入口 |
 | --- | --- |
