@@ -25,7 +25,7 @@ public class FinanceCostWorker {
             long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(2);
             for(int i=0;i<10&&System.nanoTime()<deadline;i++){
                 if(i%5==0)transactions.execute(status->costs.seedAndFill());
-                var organizations=transactions.execute(status->costs.processBatch(100));
+                var organizations=processNextBatch();
                 if(organizations!=null)changed.addAll(organizations);
                 if(organizations==null||organizations.isEmpty())break;
             }
@@ -33,5 +33,17 @@ public class FinanceCostWorker {
         }catch(RuntimeException error){
             org.slf4j.LoggerFactory.getLogger(getClass()).warn("Standard cost batch deferred: {}",error.getClass().getSimpleName());
         }
+    }
+    Set<String> processNextBatch(){
+        for(int page=0;page<4;page++){
+            // The autocommit enumeration must precede the repeatable-read
+            // transaction. Financial facts are first read after primary-key
+            // claims, so an intervening committed update cannot be lost.
+            var candidates=costs.candidateJobs(100,page);
+            if(candidates.isEmpty())return Set.of();
+            var changed=transactions.execute(status->costs.processBatch(candidates));
+            if(changed!=null&&!changed.isEmpty())return changed;
+        }
+        return Set.of();
     }
 }

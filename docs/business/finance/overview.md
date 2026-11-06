@@ -123,6 +123,8 @@ GMV Max 需在广告账户连接弹窗填写可选的广告平台店铺 ID（不
 
 ## 历史部署演进及验证边界
 
+2026-11-06 的有界压缩缓存、历史查询复用与成本队列优化方案及测量见[财务 BI 性能说明](../../guides/finance-performance.md)，实际上线状态见[性能发布记录](../../releases/finance/finance-bi-performance-20261106.md)。
+
 以下 V117 起的记录用于说明实现来源，不是当前可直接执行的发布步骤；后续已增加到 V146。最新制品、依赖与操作流程见[运维指南](../../guides/operations.md)，所有测试数字仅代表各自记录中的验证范围。
 
 迁移 `V117__finance_bi.sql` 新增六张财务表；`V118__finance_independent_configuration.sql` 新增财务专用店铺、授权会话和字段偏好表，关闭原来从商品运营关联的财务同步。旧财务数据保留但不参与新独立店铺的统计；商品运营店铺和凭据不修改。广告授权仍独立，关联选项仅来自财务店铺。独立配置发布使用 `scripts/release/release-finance-configuration.py`，备份财务表并校验商品运营凭据未变化；最初专用发布脚本 `scripts/release/release-finance-bi.py` 在现网镜像上增加 finance 包及迁移，覆盖四个已审阅前端文件；验证所有其他 JAR 项和其他运行容器保持不变。

@@ -1,6 +1,6 @@
 # 历史发布与验收记录
 
-更新日期：2026-11-05。按业务领域保存仍有追溯价值的发布、故障修复和验收证据。记录中的活动镜像、数量、测试与未完成项都适用于该次时间，不代表今天的部署。当前版本及发布规则见[运维指南](../guides/operations.md)，业务入口见[业务说明](../business/README.md)。
+更新日期：2026-11-06。按业务领域保存仍有追溯价值的发布、故障修复和验收证据。记录中的活动镜像、数量、测试与未完成项都适用于该次时间，不代表今天的部署。当前版本及发布规则见[运维指南](../guides/operations.md)，业务入口见[业务说明](../business/README.md)。
 
 生产固定引用的最新十一份规则/验收文档仍位于 `docs/` 根目录，见[当前入口](../README.md#当前生产规则与验收)。历史 helper 可能仍被线上 Compose 链依赖，本次只移动文档。
 
@@ -8,6 +8,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [finance-bi-performance-20261106.md](finance/finance-bi-performance-20261106.md) | BI 两级缓存、成本队列优化与上线验收 |
 | [finance-atc-date-audit-20261105.md](finance/finance-atc-date-audit-20261105.md) | ATC October date-basis audit — 2026-11-05 |
 | [finance-gift-zero-20261105.md](finance/finance-gift-zero-20261105.md) | GIFT 固定零成本与金额说明（2026-11-05） |
 | [finance-local-month-release-20261105.md](finance/finance-local-month-release-20261105.md) | Local-calendar queries and storage compression — 2026-11-05 |
@@ -200,6 +201,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [project-sync-20261106.md](infrastructure/project-sync-20261106.md) | 项目同步、刷单核对表跨页合计的候选验证、发布及交接记录 |
 | [server-deployment-audit-20261105.md](infrastructure/server-deployment-audit-20261105.md) | 阿里云服务器只读现场核查、部署基线、证书/备份失败及运维接手边界；含脱敏 JSON 回执 |
 | [ui-localization-20260921.md](infrastructure/ui-localization-20260921.md) | UI localization for marketplace operations |
 | [production-operator-release-20260917.md](infrastructure/production-operator-release-20260917.md) | 测试版本发布到正式环境：角色页面与运营权限 |

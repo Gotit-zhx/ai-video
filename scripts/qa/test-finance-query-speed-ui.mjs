@@ -72,10 +72,13 @@ overviewGate=new Promise(r=>releaseOverview=r);recordsGate=new Promise(r=>releas
 button('上一页').click();await pause();
 const firstOverview=releaseOverview,firstRecords=releaseRecords;
 overviewGate=null;recordsGate=null;
-const start=d.querySelector('[aria-label="开始日期"]');start.value='2026-10-01';start.dispatchEvent(new w.Event('change'));await ready();
+const start=d.querySelector('[aria-label="开始日期"]');
+const previousDay=new Date(start.value+'T00:00:00Z');previousDay.setUTCDate(previousDay.getUTCDate()-1);
+const changedStart=previousDay.toISOString().slice(0,10);
+start.value=changedStart;start.dispatchEvent(new w.Event('change'));await ready();
 const latest=d.querySelector('tbody tr');firstRecords();firstOverview();await pause();
 assert.equal(d.querySelector('tbody tr'),latest);
-assert.equal(d.querySelector('[aria-label="开始日期"]').value,'2026-10-01');
+assert.equal(d.querySelector('[aria-label="开始日期"]').value,changedStart);
 const choose=(label,value)=>{const n=d.querySelector(`[aria-label="${label}"]`);n.value=value;n.dispatchEvent(new w.Event('change'));};
 const shopValues=()=>[...d.querySelector('[aria-label="店铺"]').options].map(n=>n.value);
 choose('店铺分组','baby');await ready();choose('店铺','baby-ph');await ready();
