@@ -206,6 +206,8 @@
 | 文档 | 内容 |
 | --- | --- |
 | [devops-phase1-20261106.md](infrastructure/devops-phase1-20261106.md) | GitHub Actions 与自动化运维一期实施及验收状态 |
+| [devops-phase1-acceptance-20261107.json](infrastructure/devops-phase1-acceptance-20261107.json) | 已完成的 v4 接管与 CI/通知摘要；后续闭环见 Release 附件 |
+| [server-handoff-before-cicd-20261107.md](infrastructure/server-handoff-before-cicd-20261107.md) | CI/CD 接管前各次现场交接的历史快照 |
 | [project-sync-20261106.md](infrastructure/project-sync-20261106.md) | 项目同步、刷单核对表跨页合计的候选验证、发布及交接记录 |
 | [server-deployment-audit-20261105.md](infrastructure/server-deployment-audit-20261105.md) | 阿里云服务器只读现场核查、部署基线、证书/备份失败及运维接手边界；含脱敏 JSON 回执 |
 | [ui-localization-20260921.md](infrastructure/ui-localization-20260921.md) | UI localization for marketplace operations |

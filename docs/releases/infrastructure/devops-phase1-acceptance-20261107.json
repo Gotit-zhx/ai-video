@@ -1,0 +1,96 @@
+{
+  "configurationEquivalent": true,
+  "containerPaused": {
+    "ai-commerce-app": false,
+    "ai-commerce-frontend": false
+  },
+  "elapsedSeconds": 26,
+  "images": {
+    "app": {
+      "composeFiles": [
+        "/opt/heyi/ops/compose/base.json",
+        "/opt/heyi/ops/compose/production.json",
+        "/opt/heyi/ops/releases/v2026.11.7.4/images.json"
+      ],
+      "configDigest": "sha256:3d3a6f4d6307adc3e5ee653e1852d5f128b07a86fc4916748e8763ea0e6de6cd",
+      "containerId": "d37bc285782e8b18f01763d3deafce426253494198f3fcd5b344c9d12536e36d",
+      "dockerImageId": "sha256:4070261f788e2e1521dad431e78609c98dfce2f98bb9c5060af334f7ca3716d7",
+      "logging": "none",
+      "manifestDigest": "sha256:4070261f788e2e1521dad431e78609c98dfce2f98bb9c5060af334f7ca3716d7"
+    },
+    "frontend": {
+      "composeFiles": [
+        "/opt/heyi/ops/compose/base.json",
+        "/opt/heyi/ops/compose/production.json",
+        "/opt/heyi/ops/releases/v2026.11.7.4/images.json"
+      ],
+      "configDigest": "sha256:a33e888de618299a7a9aba639b1a51b07bd16cf065652adc782096f19fe764a9",
+      "containerId": "1478023396a3d01512543837c4c00e91ce0049192bac2734a39d706c1c493e51",
+      "dockerImageId": "sha256:ddea0f67a282d99e3a8113fb62f4509c1a29486a41360791024ec5f9166c5e59",
+      "logging": "none",
+      "manifestDigest": "sha256:ddea0f67a282d99e3a8113fb62f4509c1a29486a41360791024ec5f9166c5e59"
+    }
+  },
+  "legacyRestorationFlags": {
+    "ingressRestored": true,
+    "reservationsReleased": true
+  },
+  "maintenance": false,
+  "operation": {
+    "adoption": true,
+    "createdAt": 1794031438,
+    "finishedAt": 1794031464,
+    "id": "b02c54ba4a4dd28c1871dec0f6f96336",
+    "phase": "succeeded",
+    "switched": true,
+    "updatedAt": 1794031464,
+    "version": "v2026.11.7.4"
+  },
+  "otherContainerIdsUnchanged": {
+    "ai-commerce-mysql": true,
+    "ai-commerce-redis": true,
+    "heyi-cloudbeaver": true,
+    "heyi-commerce-image-processor": true,
+    "heyi-document-preview": true,
+    "heyi-pi-runtime": true,
+    "hoyee-erphoyee": true
+  },
+  "ownedLeaseReservations": {
+    "finance_ad_accounts": 0,
+    "finance_label_worker_lock": 0,
+    "finance_qianyi_accounts": 0,
+    "finance_qianyi_connections": 0,
+    "finance_sync_states": 0
+  },
+  "schemaFingerprintUnchanged": true,
+  "sourceVersion": "v2026.11.7.4",
+  "version": "v2026.11.7.4",
+  "candidate": "6eae41f74aa0e7eead91dcd6332f5f0a98e77867",
+  "productionMerge": "8fa5bfe70804674cbf6b34627f8950cf862df2a0",
+  "imageSource": "867724c20bcfaf4e33d94291841d0065edd30c9f",
+  "ci": {
+    "candidateRun": 42344494752,
+    "prRun": 42344607007,
+    "javaClasses": 327,
+    "javaTests": 3639,
+    "allowedSkips": 4,
+    "unexpectedSkips": 0,
+    "frontendTests": 735,
+    "uiSuites": 32,
+    "opsTests": 53,
+    "policyTests": 25
+  },
+  "standardDeployRun": 42345874985,
+  "monitoringRun": 42345878180,
+  "cdEnabled": true,
+  "opsEnabled": true,
+  "selfHealingEnabled": true,
+  "emailConfirmedByMaintainer": true,
+  "notificationTestIssue": 4,
+  "notificationDedupVerified": true,
+  "watchdogManualDisableRespected": true,
+  "tlsExpiryBeijing": "2027-02-05T11:04:47+08:00",
+  "finalClosureReceipt": "GitHub Release v2026.11.7.5 / final-acceptance.json",
+  "adoptionObservedAt": 1794031571,
+  "evidenceCompiledAt": "2026-11-07T06:32:03.325801+00:00"
+}
