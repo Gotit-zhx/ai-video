@@ -15,7 +15,8 @@
 | 登录、权限及接口查找 | [接口导航](guides/api.md) |
 | 发布、回滚、备份和排障 | [运维指南](guides/operations.md) |
 | GitHub Actions、统一发布入口和巡检 | [CI/CD 与统一运维](guides/cicd.md)（启用状态见一期验收记录） |
-| 服务器现状、目录、证书、备份、维护任务及接管待办 | [服务器运维交接](guides/server-handoff.md)（含 2026-11-07 上线更新） |
+| 服务器现状、目录、证书、备份、维护任务及接管待办 | [服务器运维交接](guides/server-handoff.md)（含 v7 调度修复与回滚限制） |
+| 一期最终交接、调度故障与回滚资格隔离 | [自动化运维一期收尾](releases/infrastructure/devops-phase1-closure-20261107.md) |
 | 桌面构建与备份约定 | [桌面构建说明](guides/desktop-build-backup.md) |
 
 ## 按用途查找
@@ -31,7 +32,7 @@
 
 ## 当前生产规则与验收
 
-以下十一份业务规则/验收文件保留根目录原路径，由本索引统一导航；它们描述各自日期的业务和验收，不固定当前部署。**2026-11-07 14:04 已完成 v2026.11.7.4 的统一运维接管，Java/Web 使用已验证的私有 GHCR 镜像，自动发布、巡检、通知和有限自愈已启用。** 当前应用摘要、配置和回滚见[运维指南](guides/operations.md)，分类交接见[服务器运维交接](guides/server-handoff.md)，证据见[一期验收](releases/infrastructure/devops-phase1-20261106.md)。纯文档版本只推进源码，最新版本看 `heyi-ops status` 和正式 Release。广告业务接入仍按其独立发布处理，不能从本次运行验收推断账户/数据已完成。生产操作先读 [AGENTS.md](../AGENTS.md)。
+以下十一份业务规则/验收文件保留根目录原路径，由本索引统一导航；它们描述各自日期的业务和验收，不固定当前部署。**自动发布、巡检、通知和有限自愈已启用；v2026.11.7.7 已修复首次接管引入的定时调度缺陷，v3/v4/v5 禁止回滚。** 当前应用摘要、配置和回滚见[运维指南](guides/operations.md)，分类交接见[服务器运维交接](guides/server-handoff.md)，证据见[一期收尾](releases/infrastructure/devops-phase1-closure-20261107.md)。纯文档 v8 复用 v7 应用，最新版本看 `heyi-ops status` 和正式 Release。广告业务接入仍按其独立发布处理，不能从运行验收推断账户/数据已完成。生产操作先读 [AGENTS.md](../AGENTS.md)。
 
 | 主题 | 固定入口 |
 | --- | --- |
