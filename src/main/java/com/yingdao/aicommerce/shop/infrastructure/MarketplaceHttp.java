@@ -47,7 +47,7 @@ public class MarketplaceHttp {
                 .build());
     }
 
-    MarketplaceHttp(ObjectMapper objectMapper, HttpClient client) {
+    public MarketplaceHttp(ObjectMapper objectMapper, HttpClient client) {
         this.objectMapper = objectMapper;
         this.client = client;
     }

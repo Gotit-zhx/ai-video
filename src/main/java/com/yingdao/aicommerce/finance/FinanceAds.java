@@ -4,6 +4,7 @@ import com.yingdao.aicommerce.shop.application.ShopCredentialCipher;
 import com.yingdao.aicommerce.shop.infrastructure.MarketplaceHttp;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
@@ -19,6 +20,10 @@ public class FinanceAds {
     private final java.util.concurrent.ScheduledExecutorService worker=java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"finance-ad-sync");t.setDaemon(true);return t;});
     public FinanceAds(FinanceRepository repo,FinanceService finance,MarketplaceHttp http,ShopCredentialCipher cipher){
         this.repo=repo;this.finance=finance;this.http=http;this.cipher=cipher;
+    }
+    @Autowired
+    public FinanceAds(FinanceRepository repo,FinanceService finance,FinanceAdHttp transport,ShopCredentialCipher cipher){
+        this(repo,finance,transport.transport(),cipher);
     }
     public List<Map<String,Object>> list(Scope s){
         return repo.jdbc().queryForList("SELECT advertiser_id,name,shop_id,currency,enabled,status,error_message,next_at,last_success_at,gmv_store_id,gmv_status,gmv_error,timezone"

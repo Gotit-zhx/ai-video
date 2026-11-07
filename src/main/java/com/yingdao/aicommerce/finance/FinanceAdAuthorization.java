@@ -3,6 +3,7 @@ package com.yingdao.aicommerce.finance;
 import com.yingdao.aicommerce.shop.application.ShopCredentialCipher;
 import com.yingdao.aicommerce.shop.application.ShopIntegrationSettings;
 import com.yingdao.aicommerce.shop.infrastructure.MarketplaceHttp;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -33,6 +34,13 @@ public class FinanceAdAuthorization {
         this.repo=repo;this.ads=ads;this.http=http;this.cipher=cipher;this.settings=settings;
         this.shopAuthorization=shopAuthorization;this.transactions=new TransactionTemplate(manager);
         this.applicationSettings=applicationSettings;
+    }
+    @Autowired
+    public FinanceAdAuthorization(FinanceRepository repo,FinanceAds ads,FinanceAdHttp transport,
+            ShopCredentialCipher cipher,ShopIntegrationSettings settings,
+            FinanceShopAuthorization shopAuthorization,PlatformTransactionManager manager,
+            FinanceAdApplicationSettings applicationSettings){
+        this(repo,ads,transport.transport(),cipher,settings,shopAuthorization,manager,applicationSettings);
     }
     String callbackUrl(){return settings.callbackBaseUrl()+"/api/v1/shop-authorizations/callback/tiktok_ads";}
     String aad(Scope s){return "finance-ads-app:"+s.userId();}

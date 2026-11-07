@@ -45,7 +45,7 @@ class FinanceAdAuthorizationTest {
         var auth=authorization();
         when(http.postJson(any(),anyMap(),anyString())).thenThrow(new MarketplaceApiException("secret=unit-only-private-secret auth_code=unit-only-code",new HttpTimeoutException("unit-only-private-token")));
         String result=auth.complete(state,"unit-only-code",null);
-        assertTrue(result.startsWith("false:"));assertTrue(result.contains("[TIMEOUT]"));assertFalse(result.contains("unit-only"));
+        assertTrue(result.startsWith("false:"));assertTrue(result.contains("[TOKEN_EXCHANGE][TIMEOUT]"));assertFalse(result.contains("unit-only"));
         verify(http,times(1)).postJson(any(),anyMap(),anyString());verifyNoInteractions(ads,manager);
         verify(db).update(contains("status='FAILED'"),argThat((String message)->message.contains("[TIMEOUT]")&&!message.contains("unit-only")),eq("session"));
     }
@@ -67,6 +67,15 @@ class FinanceAdAuthorizationTest {
         var auth=authorization();grant();when(ads.get(anyString(),anyString(),anyMap())).thenReturn(Map.of("list",List.of()));
         assertTrue(auth.complete(state,"unit-only-code",null).contains("[ACCOUNT_INFO]"));
         verify(ads,never()).connectVerified(any(),anyString(),anyString(),anyString(),anyString(),anyMap(),any());verifyNoInteractions(manager);
+    }
+    @Test void accountLookupTimeoutRetainsItsStageAndNeverReplaysTheTokenExchange(){
+        var auth=authorization();grant();
+        when(ads.get(anyString(),anyString(),anyMap())).thenThrow(new MarketplaceApiException("unit-only-token",new HttpTimeoutException("unit-only-url")));
+        String result=auth.complete(state,"unit-only-code",null);
+        assertTrue(result.contains("[ACCOUNT_INFO][TIMEOUT]"));assertFalse(result.contains("unit-only"));
+        verify(http,times(1)).postJson(any(),anyMap(),anyString());
+        verify(ads,never()).connectVerified(any(),anyString(),anyString(),anyString(),anyString(),anyMap(),any());
+        verifyNoInteractions(manager);
     }
     @Test void invalidCallbackDoesNotExchangeCodeAndReusedStateCannotBeRetried(){
         var auth=authorization();
