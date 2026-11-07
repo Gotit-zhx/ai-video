@@ -25,14 +25,14 @@ class FinanceDashboardCacheIntegrationTest extends FinanceConfigurationIntegrati
             for(boolean cny:List.of(false,true)){
                 var actual=cached.dashboard(owner,selected,cny,"fixed");
                 var direct=new FinanceService(repo,null,null,fx).dashboard(owner,selected,cny,"fixed");
-                for(String key:List.of("totals","ranking","fees","statuses","trend","profit","productCosts","reportingMonths","currencies"))
+                for(String key:List.of("totals","ranking","fees","statuses","trend","profit","productCosts","reportingMonths","currencies","advertising"))
                     assertEquals(direct.get(key),actual.get(key),key+" "+selected);
             }
         }
-        verify(counted,times(1)).dashboardBuckets(eq(owner),any(),eq(false));
+        verify(counted,times(1)).dashboardBuckets(eq(owner),any(),eq(false),anyList());
         cached.refreshCostSnapshots(owner);
         cached.dashboard(owner,new Filter(all.start(),all.end(),a,"","","day"),true,"fixed");
-        verify(counted,times(2)).dashboardBuckets(eq(owner),any(),eq(false));
+        verify(counted,times(2)).dashboardBuckets(eq(owner),any(),eq(false),anyList());
     }
 
     @Test void unassignedPlatformExpensesAreFilteredBySqlInsteadOfDroppedFromAProjection(){
@@ -48,6 +48,6 @@ class FinanceDashboardCacheIntegrationTest extends FinanceConfigurationIntegrati
         var actual=cached.dashboard(owner,selected,true,"fixed");
         var direct=new FinanceService(repo,null,null,fx).dashboard(owner,selected,true,"fixed");
         assertEquals(direct.get("totals"),actual.get("totals"));
-        verify(counted,times(2)).dashboardBuckets(eq(owner),any(),eq(false));
+        verify(counted,times(2)).dashboardBuckets(eq(owner),any(),eq(false),anyList());
     }
 }

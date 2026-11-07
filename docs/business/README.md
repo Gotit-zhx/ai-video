@@ -4,6 +4,8 @@
 
 ## 财务
 
+[广告费用统计与分析](finance/advertising.md) 说明账单广告费、独立投放及分组/店铺统计。
+
 [当前日期、GIFT 与维护规则](finance/current-rules.md) 汇总本次上游财务变更；专题概览和成本说明继续保留。
 
 | 文档 | 内容 |

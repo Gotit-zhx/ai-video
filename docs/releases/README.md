@@ -9,6 +9,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [finance-bi-performance-20261106.md](finance/finance-bi-performance-20261106.md) | BI 两级缓存、成本队列优化与上线验收 |
+| [finance-cold-queries-20261106.md](finance/finance-cold-queries-20261106.md) | 冷查询分段聚合、后台提交刷新及 v2026.11.6.2 验收 |
 | [finance-atc-date-audit-20261105.md](finance/finance-atc-date-audit-20261105.md) | ATC October date-basis audit — 2026-11-05 |
 | [finance-gift-zero-20261105.md](finance/finance-gift-zero-20261105.md) | GIFT 固定零成本与金额说明（2026-11-05） |
 | [finance-local-month-release-20261105.md](finance/finance-local-month-release-20261105.md) | Local-calendar queries and storage compression — 2026-11-05 |

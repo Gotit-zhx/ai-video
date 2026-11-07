@@ -117,15 +117,19 @@ public class FinanceAdAuthorization {
         if(repo.jdbc().update("UPDATE finance_authorization_sessions SET status='PROCESSING' WHERE id=? AND status='PENDING' AND expires_at>UTC_TIMESTAMP(6)",sessionId)!=1)
             throw bad("广告授权链接已过期或使用，请重新生成");
         Scope s=new Scope(text(session.get("organization_id")),text(session.get("user_id")));
+        var stage=FinanceAdFailures.Stage.CALLBACK;
         try{
             if(!text(providerError).isBlank()||text(code).isBlank()||code.length()>4096)throw bad("广告授权未完成");
+            stage=FinanceAdFailures.Stage.CONFIGURATION;
             var context=repo.read(text(session.get("context_json")));var app=sessionApplication(s,context);
             if(!Objects.equals(app.get("revision"),context.get("revision")))throw bad("广告应用配置已变更");
             String secret=applicationSecret(s,app);
+            stage=FinanceAdFailures.Stage.TOKEN_EXCHANGE;
             var result=http.postJson(URI.create("https://business-api.tiktok.com/open_api/v1.3/oauth2/access_token/"),Map.of(),
                     repo.write(Map.of("app_id",app.get("app_id"),"secret",secret,"auth_code",code)));
             var grant=successful(result);String token=text(grant.get("access_token"));
             if(token.length()<10||token.length()>4096)throw bad("平台没有返回广告授权令牌");
+            stage=FinanceAdFailures.Stage.ACCOUNT_DISCOVERY;
             var ids=new LinkedHashSet<String>();
             Object rawIds=grant.get("advertiser_ids");
             if(rawIds instanceof List<?> list)list.forEach(id->ids.add(text(id)));
@@ -138,15 +142,17 @@ public class FinanceAdAuthorization {
             String target=text(context.get("advertiserId"));
             if(!target.isBlank()){if(!ids.contains(target))throw bad("本次授权没有包含指定广告账户");ids.retainAll(Set.of(target));}
             var info=new LinkedHashMap<String,Map<String,Object>>();
+            stage=FinanceAdFailures.Stage.ACCOUNT_INFO;
             var idList=new ArrayList<>(ids);
             for(int i=0;i<idList.size();i+=100){
                 var batch=idList.subList(i,Math.min(i+100,idList.size()));
                 rows(ads.get("/advertiser/info/",token,Map.of("advertiser_ids",repo.write(batch),
-                        "fields",repo.write(List.of("advertiser_id","advertiser_name","currency","timezone")))).get("list"))
+                        "fields",repo.write(FinanceAds.ADVERTISER_FIELDS))).get("list"))
                     .forEach(row->{String id=text(row.get("advertiser_id"));if(ids.contains(id))info.put(id,row);});
             }
             if(!info.keySet().equals(ids))throw bad("未能确认全部授权账户，未保存");
             // Validate first, then persist all accounts atomically; never partly attach a grant.
+            stage=FinanceAdFailures.Stage.ACCOUNT_SAVE;
             transactions.executeWithoutResult(status->{
                 if("SERVER".equals(context.get("applicationSource"))){
                     if(!Objects.equals(application(s).get("revision"),context.get("revision")))throw bad("广告应用配置已变更");
@@ -166,13 +172,13 @@ public class FinanceAdAuthorization {
             });
             return redirect(true,"已连接 "+ids.size()+" 个广告账户，广告数据开始同步");
         }catch(RuntimeException e){
-            String message="广告授权未完成，请检查广告应用、回调地址、账户与报表权限后重新生成链接";
+            String message=FinanceAdFailures.message(stage,e);
             repo.jdbc().update("UPDATE finance_authorization_sessions SET status='FAILED',error_message=? WHERE id=?",message,sessionId);
             return redirect(false,message);
         }
     }
     static Map<String,Object> successful(Map<String,Object> response){
-        if(!response.containsKey("code")||number(response.get("code"))!=0)throw bad("广告平台未完成授权请求");
+        if(!response.containsKey("code")||number(response.get("code"))!=0)throw new FinanceAdFailures.ProviderFailure(response.get("code"));
         return map(response.get("data"));
     }
 }

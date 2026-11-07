@@ -83,7 +83,7 @@ public final class FinanceProfitReport {
         result.put("knownOperatingCost",known!=null&&shipping!=null?known.add(shipping):null);
         result.put("operatingCostBasis","营业成本 = 商品成本 + 物流贴单成本。商品成本优先使用实际出库凭据；样品成本属于商品成本子项，不重复加计。千易售后退款用于核对，不重复扣减利润。");
         result.put("status",state);result.put("estimated",estimated);result.put("notes",notes);
-        result.put("formula","利润额 = 销售收入 − 已结算平台费用（含物流及调整）− 广告消耗 − 营业成本");
+        result.put("formula","利润额 = 销售收入 − 已结算平台费用（含物流及调整、账单广告费）− 独立广告消耗 − 营业成本");
         result.put("settlementBasis","TikTok 销售收入取 revenue_amount（Excel 的 Total Revenue）；商家优惠和退款已体现在收入中，不再作为平台费用重复扣减。Shopee 同样扣除商品折扣与退款后展示收入。佣金、税费、物流及平台调整逐项保留原字段；销售收入减这些分项等于平台净结算。");
         result.put("refundBasis","退款对利润的影响以平台结算记录为准，不再重复扣减按退款日期汇总的确认退款金额。");
         result.put("basis","按查询范围内的结算账单日期统计；商品和贴单成本按订单首次结算日期计入一次。贴单金额取导入订单费用明细的金额或仓库账单操作费（人民币），按参考号绑定并去重，不再采用分组或国家单价。");

@@ -4,6 +4,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [finance-advertising-development-20261106.md](finance-advertising-development-20261106.md) | 广告费用统计开发、验证范围与多会话合并边界 |
 | [2026-09-04-test-merge.md](2026-09-04-test-merge.md) | 2026-09-04 测试分支合并记录 |
 | [main-tree-20261020.md](main-tree-20261020.md) | main-tree 整合记录（2026-10-20） |
 | [production-source-20261010.md](production-source-20261010.md) | 线上源码核对快照 · 2026-10-10（历史） |

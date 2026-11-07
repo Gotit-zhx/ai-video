@@ -1,29 +1,29 @@
 # 发布、回滚与运维交接
 
-核对日期：2026-11-06。服务器 `8.163.34.81` 于 **14:30 完成财务 BI 性能后端发布，15:06 完成暂存清理**，本次制品、测量、恢复和清理见[性能发布记录](../releases/finance/finance-bi-performance-20261106.md)。11:33 的[项目同步记录](../releases/infrastructure/project-sync-20261106.md)保留其历史证据。主机和通用入口见[服务器运维交接](server-handoff.md)；11 月 5 日的[只读核查回执](../releases/infrastructure/server-deployment-audit-20261105.md)保留历史事实。生产操作先读 [AGENTS.md](../../AGENTS.md)，并重新读取实际运行基线。
+核对日期：2026-11-06。服务器 `8.163.34.81` 于 **17:34 完成财务 BI 冷查询修复，17:41 完成暂存清理**，本次制品、测量、恢复和清理见[冷查询发布记录](../releases/finance/finance-cold-queries-20261106.md)。14:30 的[第一轮性能记录](../releases/finance/finance-bi-performance-20261106.md)保留历史事实。11:33 的[项目同步记录](../releases/infrastructure/project-sync-20261106.md)保留其历史证据。主机和通用入口见[服务器运维交接](server-handoff.md)；11 月 5 日的[只读核查回执](../releases/infrastructure/server-deployment-audit-20261105.md)保留历史事实。生产操作先读 [AGENTS.md](../../AGENTS.md)，并重新读取实际运行基线。
 
 统一 CI/CD 正在按[GitHub Actions 与统一运维](cicd.md)实施，是否已安装、启用及验收以[一期实施回执](../releases/infrastructure/devops-phase1-20261106.md)为准。
 
 ## 最近现场核实的版本
 
-截至 2026-11-06 15:06（北京时间），后端为 `finance-bi-performance-20261106`，版本 `2026.11.6.1`；前端保持 `brush-source-summary-20261106`。此前 gift-zero、原始刷单费模板等记录继续作为对应时间的业务与验收证据。
+截至 2026-11-06 17:42（北京时间），后端为 `finance-cold-queries-20261106`，版本 `2026.11.6.2`；前端保持 `brush-source-summary-20261106`。此前 gift-zero、原始刷单费模板等记录继续作为对应时间的业务与验收证据。
 
 | 服务 | 现场活动镜像 / ID 前缀 | 两个近期有发布回执的保留回滚候选 |
 | --- | --- | --- |
-| Java 后端 | `ai-commerce-platform:finance-bi-performance-20261106` / `8e23c7c1036c` | `brush-source-summary-20261106`、`finance-gift-zero-20261105`（同仓库前缀） |
+| Java 后端 | `ai-commerce-platform:finance-cold-queries-20261106` / `4b27e931e273` | `finance-bi-performance-20261106`、`brush-source-summary-20261106`（同仓库前缀） |
 | Web 前端 | `ai-commerce-frontend:brush-source-summary-20261106` / `a86f6307e654` | `finance-gift-zero-20261105`、`finance-report-basis-20261105`（同仓库前缀） |
 
-标签、完整镜像 ID、后端源提交 `88bc7368fb997302ee474fc934b0eeefd31dc98a`、配置保留和 V147 已核对；前端继续对应原源提交 `7ccbd80108651878dbcdcaa3e68c5d0115df61cc`。仓库已补齐 V147，当前制品有 Git revision 标签和文件哈希；11 月 5 日记录的源码缺口按当时语境阅读。本轮没有执行回滚，操作前仍须验证届时的数据库与制品兼容性。后续发布更新本表及文档中心，并重新核对容器引用；通用保护规则变化时再更新 AGENTS。
+标签、完整镜像 ID、后端源提交 `3ed0dd45687f79e72af184a661eb419db0fec687`、配置保留和 V147 已核对；前端继续对应原源提交 `7ccbd80108651878dbcdcaa3e68c5d0115df61cc`。仓库已补齐 V147，当前制品有 Git revision 标签和文件哈希；11 月 5 日记录的源码缺口按当时语境阅读。本轮没有执行回滚，操作前仍须验证届时的数据库与制品兼容性。后续发布更新本表及文档中心，并重新核对容器引用；通用保护规则变化时再更新 AGENTS。
 
 相关生产路径：
 
-- 当前后端回执：`/opt/heyi/releases/finance-bi-performance-20261106-38d2/`；前端及前一次发布回执：`/opt/heyi/releases/project-sync-20261106/`。
-- 当前源码与文档：`/opt/heyi/source/current`，版本目录 `/opt/heyi/source/releases/v2026.11.6.1/`；与历史 Compose 的 `/opt/heyi/current` 分别使用。
-- 回滚回执：`/opt/heyi/releases/project-sync-20261106/`、`finance-gift-zero-20261105/`、`finance-report-basis-20261105/`。旧 helper 目录继续按运行引用保留。
+- 当前后端回执：`/opt/heyi/releases/finance-cold-20261106-38d2/`；前端及前一次发布回执：`/opt/heyi/releases/project-sync-20261106/`。
+- 当前源码与文档：`/opt/heyi/source/current`，版本目录 `/opt/heyi/source/releases/v2026.11.6.2/`；与历史 Compose 的 `/opt/heyi/current` 分别使用。
+- 回滚回执：`/opt/heyi/releases/finance-bi-performance-20261106-38d2/`、`project-sync-20261106/`；前端还保留 `finance-gift-zero-20261105/`、`finance-report-basis-20261105/`。旧 helper 目录继续按运行引用保留。
 - 共享广告凭据：`/opt/heyi/shared/finance-ads/`，通过只读挂载提供，文档只记录位置。
 - 其他旧发布目录可能仍提供 Compose、辅助脚本或配置依赖，不能按日期批量删除。
 
-本次 app 和 frontend 分别引用 248、238 份 Compose 文件；原有有序链见[项目同步 JSON](../releases/infrastructure/project-sync-20261106.json)，app 在其后追加性能发布目录的 `compose.ai-commerce-app.json` 与 `.ports.yaml`。操作前仍读取真实标签。原两个一次性修复容器已结束；本次保留 71,753 项成本积压，14:44 观察到已处理至 0，并非部署清空队列。证书续期、Aegis、HR 路由及备份恢复能力等仍按[接手事项](server-handoff.md)跟进。
+本次 app 和 frontend 分别引用 250、238 份 Compose 文件；原有有序链见[项目同步 JSON](../releases/infrastructure/project-sync-20261106.json)，app 在其后追加两轮性能发布的覆盖文件。操作前仍读取真实标签。冷查询发布恢复本次暂停的 310 项计划，检查点未重置；验收时成本队列 6 项、行锁等待 0，本次租约与标记残留为 0。清理后可用空间约 19.62 GiB，未扩盘。证书续期、Aegis、HR 路由及备份恢复能力等仍按[接手事项](server-handoff.md)跟进。
 
 ## 接管后的只读基线
 

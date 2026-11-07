@@ -164,6 +164,15 @@ public class FinanceService {
         snapshots.invalidateCompany(s.organizationId());dashboardFacts.invalidateCompany(s.organizationId());
         if(sharedSnapshots!=null)sharedSnapshots.refresh(companyScope(s.organizationId()));
     }
+    /** Source/cost worker commits advance freshness without fencing every historical
+     * month. Manual configuration, authorization and removals use hard invalidation. */
+    void refreshAfterCommit(Scope s){
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive())
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){
+                @Override public void afterCommit(){refreshCostSnapshots(s);}
+            });
+        else refreshCostSnapshots(s);
+    }
     public Map<String,Object> dashboard(Scope s,Filter requested,boolean cny,String snapshotId){
         var key=new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId),false);
         java.util.function.Supplier<Map<String,Object>> load=()->buildDashboard(s,requested,cny,snapshotId,false);
@@ -210,7 +219,8 @@ public class FinanceService {
         String trendGranularity=reportingMonths.stream().anyMatch(r->Boolean.TRUE.equals(r.get("included")))?"month":requested.granularity();
         var buckets=rows(facts.get("buckets"));
         var allRanking=aggregate(buckets,"shop_id","kind");
-        List<String> codes=allRanking.stream().map(r->text(r.get("currency"))).distinct().sorted().toList();
+        List<String> codes=java.util.stream.Stream.concat(allRanking.stream(),(live?List.<Map<String,Object>>of():rows(facts.get("advertising"))).stream())
+                .map(r->text(r.get("currency"))).distinct().sorted().toList();
         String currency=requested.currency().isBlank()?(cny||codes.isEmpty()?"":codes.getFirst()):requested.currency();
         Filter f=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),currency,requested.granularity(),requested.groupId());
         var ranking=allRanking.stream().filter(r->currency.isBlank()||currency.equals(text(r.get("currency")))).toList();
@@ -242,6 +252,7 @@ public class FinanceService {
         if(cny)out.put("fx",quote.metadata());
         out.put("currencies",codes);out.put("totals",totals);out.put("trend",new ArrayList<>(points.values()));
         out.put("shops",shops(s));out.put("groups",groups(s));
+        if(!live)out.put("advertising",FinanceAdvertisingReport.build(rows(facts.get("advertising")),rows(out.get("shops")),f,cny,quote,trendGranularity));
         out.put("dateBasis",FinanceCalendar.contract());
         out.put("dateWindows",FinanceCalendar.windows(f,rows(out.get("shops"))));
         var fees=live?List.<Map<String,Object>>of():aggregate(selected.stream().filter(r->"FEE".equals(r.get("kind"))).toList(),"category","kind");
@@ -275,19 +286,20 @@ public class FinanceService {
         var wider=factsKey.equals(companyKey)?null:sharedSnapshots==null?dashboardFacts.find(companyKey):sharedSnapshots.findFacts(companyKey);
         // Unassigned expenses may span platforms, which the existing daily buckets
         // combine. Preserve the SQL platform filter rather than infer their platform.
-        if(wider!=null&&!all.platform().isBlank()&&rows(wider.get("buckets")).stream()
+        if(wider!=null&&!all.platform().isBlank()&&java.util.stream.Stream.concat(rows(wider.get("buckets")).stream(),rows(wider.get("advertising")).stream())
                 .anyMatch(row->"UNASSIGNED".equals(text(row.get("shop_id")))))wider=null;
         // The bounded cold read contains multiple queries; a per-query-sized total
         // transaction deadline previously discarded complete month computations.
         java.util.function.Supplier<Map<String,Object>> read=()->repo.readSnapshot(180,()->{
-            var buckets=new ArrayList<>(repo.dashboardBuckets(s,all,live));
+            var advertising=new ArrayList<Map<String,Object>>();
+            var buckets=new ArrayList<>(repo.dashboardBuckets(s,all,live,live?null:advertising));
             var orders=costReport.dashboardFacts(s,all);
             if(!live){
                 buckets.removeIf(row->Set.of("ORDER","REFUND").contains(text(row.get("kind"))));
                 buckets.addAll(orders.stream().filter(row->number(row.get("records"))>0).toList());
                 buckets.addAll(repo.settledOrderBuckets(s,all,"REFUND"));
             }
-            return Map.of("buckets",dailyFactRows(buckets),"orders",dailyFactRows(orders),
+            return Map.of("buckets",dailyFactRows(buckets),"orders",dailyFactRows(orders),"advertising",dailyFactRows(advertising),
                     "reportingMonths",live?List.of():new FinanceReportingMonths(repo).coverage(s,all));
         });
         var facts=wider==null?(sharedSnapshots==null?dashboardFacts.get(factsKey,read):sharedSnapshots.facts(factsKey,read)):
@@ -319,6 +331,7 @@ public class FinanceService {
                 &&(filter.groupId().isBlank()||filter.groupId().equals("UNGROUPED"))&&filter.platform().isBlank())
             selected.add("UNASSIGNED");
         var narrowed=new LinkedHashMap<String,Object>(Map.of("buckets",rows(facts.get("buckets")).stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
+                "advertising",rows(facts.get("advertising")).stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
                 "orders",rows(facts.get("orders")).stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
                 "reportingMonths",reportingMonths));
         for(String key:List.of("_financeDataRevision","_financeFactsBuilt"))
@@ -335,7 +348,7 @@ public class FinanceService {
             var total=totals.computeIfAbsent(key,k->{
                 var m=new LinkedHashMap<String,Object>();for(String d:dimensions)m.put(d,row.get(d));m.put("currency",row.get("currency"));return m;
             });
-            for(String field:List.of("amount","revenue","records","known_amounts","known_revenues","impressions","clicks","conversions")){
+            for(String field:List.of("amount","revenue","records","known_amounts","known_revenues","known_impressions","known_clicks","known_conversions","impressions","clicks","conversions")){
                 BigDecimal value=decimal(row.get(field));
                 if(value==null)total.putIfAbsent(field,null);
                 else total.merge(field,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));

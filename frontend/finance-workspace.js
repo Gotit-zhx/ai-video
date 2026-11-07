@@ -177,7 +177,7 @@
     action('刷新','refresh',actions,()=>{filters.fxSnapshot='';return load();});
     if(view==='shops'){if(canManage())action('连接店铺','plus',actions,()=>authorizeDialog(),'fi-primary');}
     else if(view==='expense-ledger'){action('成本管理','chart',actions,()=>navigate('costs'));}
-    else if(view!=='costs'&&!qianyiView()){action('字段设置','fee',actions,()=>fieldsDialog(currentFieldView()));if(canManage())action('导入账单','plus',actions,()=>importDialog());action('导出报表','download',actions,()=>exportDialog(view==='settlements'?selectedKind:''),'fi-primary');}
+    else if(view!=='costs'&&!qianyiView()){action('字段设置','fee',actions,()=>fieldsDialog(currentFieldView()));if(canManage())action('导入账单','plus',actions,()=>importDialog());action('导出报表','download',actions,()=>exportDialog(['settlements','ads'].includes(view)?selectedKind:''),'fi-primary');}
     if(view!=='shops')globalThis.FinanceFeeExports?.mount(actions,{request,
       identity:()=>typeof currentUser==='undefined'?'':JSON.stringify([currentUser?.organizationId,currentUser?.userId]),
       isPending:()=>root.classList.contains('fi-selection-pending'),
@@ -205,10 +205,10 @@
         button('上月整月',bar,()=>selectMonth(previousMonth()));
       }
       const date=el('div',null,bar,'fi-date-range');el('span',allOrderView()?(detailNumbers()?'下单日期（编号查询不限日期）':'下单日期（店铺时区）'):view==='live'?'订单业务日':view==='ads'?'广告日期':'结算日期（店铺报表）',date);dateInput(date,'开始日期',filters.start,'start');el('span','—',date);dateInput(date,'结束日期',filters.end,'end');
-      const note=el('div','统计日期按店铺当地时间；同步时间按北京时间显示。',bar,'fi-calendar-note');note.setAttribute('role','note');
+      const note=el('div',view==='ads'?'账单广告费按店铺报表日期，独立广告按广告账户报表日期；同步时间按北京时间显示。':'统计日期按店铺当地时间；同步时间按北京时间显示。',bar,'fi-calendar-note');note.setAttribute('role','note');
       const selected=data?.shops?.find(shop=>shop.id===filters.shopId);
       el('span',selected?' 当前店铺：'+selected.timezone+'。':' 多店铺分别取各自当地日期，再汇总。',note);
-      if(!allOrderView())el('span',' 账单日期与付款时间分别保留；千易收货独立按北京时间。',note);
+      if(!allOrderView()&&view!=='ads')el('span',' 账单日期与付款时间分别保留；千易收货独立按北京时间。',note);
     }
     const state=el('div','正在读取财务数据…',root,'fi-state');state.setAttribute('role','status');state.setAttribute('aria-live','polite');
     return el('div',null,root,'fi-content');
@@ -257,6 +257,19 @@
     }
   }
   function total(kind){return data?.totals?.find(r=>r.kind===kind);}
+  function adHasRecords(row){return !!row&&row.hasRecords!==false&&(row.records==null||Number(row.records)>0);}
+  function adAmount(row){return !adHasRecords(row)?null:row.complete===false?(Number(row.known_amounts)===0?null:row.knownAmount):row.amount;}
+  function adAmountText(row){return adHasRecords(row)?number(adAmount(row))+(row.complete===false?' · 已知部分':''):'暂无记录';}
+  function shopAds(id){return data?.advertising?.shops?.find(row=>row.shop_id===id);}
+  function groupAds(id){return data?.advertising?.groups?.find(row=>row.group_id===id);}
+  function advertisingCoverage(parent){
+    const report=data?.advertising;if(!report)return;
+    const count=(report.shops||[]).filter(row=>row.shop_id!=='UNASSIGNED'&&adHasRecords(row)).length;
+    let note='广告数据范围：'+number(count)+' 家店铺有已入库广告费用，共 '+number(report.total.records)+' 条；未记录的店铺不代表实际消耗为零。';
+    if(!adHasRecords(report.independent))note+=' 当前范围暂无独立广告报表或导入消耗，实际投放费用尚未完整核实。';
+    if(view==='ads'&&!data.adAccountError&&Array.isArray(data.adAccounts)&&!data.adAccounts.length)note+=' 当前公司尚未连接广告账户。';
+    footnote(parent,note);
+  }
   function sum(kind){const row=total(kind);return ['SETTLEMENT','BILL'].includes(kind)?row&&Number(row.known_revenues)===Number(row.records)?row.revenue:null:row?.amount;}
   function operatingAmount(profit=data?.profit,known=false){
     if(!profit)return null;
@@ -272,20 +285,22 @@
     const partialCost=operatingAmount()==null&&operatingAmount(profit,true)!=null;
     const settled=total('SETTLEMENT'),settledPending=Math.max(0,Number(settled?.records||0)-Number(settled?.known_revenues||0));
     const partialSettlement=profit?.settledGrossAmount==null&&settledPending>0;
-    const definitions=[['SETTLEMENT','销售收入','销售收入 · 按结算账单日期','wallet','settlements'],['ORDER','已结算订单金额','原订单金额合计，按首次结算日期归属；非平台净结算，不参与利润计算。','shop','orders'],['FEE','已结算平台费用','已结算订单的佣金、物流、税费及平台调整；逐项可查','fee','fee-records'],['AD','广告消耗','当前期间已同步 / 已导入费用','ad','ads'],['OPERATING_COST','营业成本',partialCost?'仅已算部分 · 查看商品、贴单、样品及退货退款明细':'商品成本 + 物流贴单成本 · 查看样品及退货退款明细','chart',''],['PROFIT','利润额',profit?.amount==null?'数据待补齐 · 查看计算口径':profit.estimated?'暂估 · 查看费用完整性':'扣除平台费用、广告及营业成本','wallet','']];
+    const definitions=[['SETTLEMENT','销售收入','销售收入 · 按结算账单日期','wallet','settlements'],['ORDER','已结算订单金额','原订单金额合计，按首次结算日期归属；非平台净结算，不参与利润计算。','shop','orders'],['FEE','已结算平台费用','已结算订单的佣金、物流、税费及平台调整；逐项可查','fee','fee-records'],['AD','广告费用','当前期间已同步 / 已导入费用','ad','ads'],['OPERATING_COST','营业成本',partialCost?'仅已算部分 · 查看商品、贴单、样品及退货退款明细':'商品成本 + 物流贴单成本 · 查看样品及退货退款明细','chart',''],['PROFIT','利润额',profit?.amount==null?'数据待补齐 · 查看计算口径':profit.estimated?'暂估 · 查看费用完整性':'扣除平台费用、广告及营业成本','wallet','']];
     definitions.forEach(([kind,label,description,symbol,route],i)=>{
-      const amount=kind==='SETTLEMENT'?profit?.settledGrossAmount??(partialSettlement&&Number(settled?.known_revenues)>0?settled.revenue:null):kind==='OPERATING_COST'?operatingAmount()??operatingAmount(profit,true):kind==='PROFIT'?profit?.amount:total(kind)?.amount;
+      const amount=kind==='SETTLEMENT'?profit?.settledGrossAmount??(partialSettlement&&Number(settled?.known_revenues)>0?settled.revenue:null):kind==='OPERATING_COST'?operatingAmount()??operatingAmount(profit,true):kind==='PROFIT'?profit?.amount:kind==='AD'&&data.advertising?adAmount(data.advertising.total):total(kind)?.amount;
       const n=button('',cards,()=>{if(kind==='PROFIT'){profitDialog();return;}if(kind==='OPERATING_COST'){operatingCostDialog();return;}selectedKind=kind;if(kind==='ORDER')orderScope='SETTLED';navigate(route);},'fi-metric'+(i===0?' is-featured':'')+(kind==='PROFIT'?' is-profit':''));
       n.dataset.updateKey='metric:'+kind;n.dataset.metric=kind;
       if(kind==='PROFIT'&&amount!=null&&Number(amount)<0)n.classList.add('is-negative');
       n.style.setProperty('--accent',colors[i%colors.length]);const title=el('div',null,n,'fi-metric-label');el('span',label,title);icon(symbol,el('span',null,title,'fi-metric-icon'));
       if(kind==='SETTLEMENT'&&partialSettlement)el('span','部分金额',title,'fi-partial-badge');
       if(kind==='OPERATING_COST'&&partialCost)el('span','部分金额',title,'fi-partial-badge');
+      if(kind==='AD'&&data.advertising?.total?.complete===false)el('span','已知部分',title,'fi-partial-badge');
       if(kind==='OPERATING_COST'&&profit?.labelConfiguration?.missingShops?.length)el('span','贴单账单待补齐',title,'fi-partial-badge');
       const value=el('div',null,n,'fi-metric-value');el('strong',number(amount),value);el('small',data.filters.displayCurrency||data.filters.currency||'',value);
       if(kind==='SETTLEMENT'&&partialSettlement)el('div','已核算 '+number(settled.known_revenues||0)+' / '+number(settled.records)+' 笔 · 待补 '+number(settledPending)+' 笔',n,'fi-settlement-coverage');
+      if(kind==='AD'&&data.advertising)el('div','其中广告佣金：'+adAmountText(data.advertising.commission),n,'fi-metric-note');
       metricCalculation(n,kind,amount);
-      const foot=el('div',null,n,'fi-metric-note');el('span',description,foot);icon('arrow',foot);
+      const foot=el('div',null,n,'fi-metric-note');el('span',kind==='AD'&&data.advertising?'平台账单广告费（含广告佣金）+ 独立广告消耗':description,foot);icon('arrow',foot);
     });
   }
   async function operatingCostDialog(){
@@ -369,10 +384,10 @@
       el('p',`当前有 ${number(pending)} 笔已结算订单的商品成本待补齐，营业成本仅含已算部分，暂不展示完整利润。`,d.body,'fi-record-warning');
       button('核对 '+number(pending)+' 笔待补齐订单',d.body,()=>{d.d.close();openCosts({kind:'SETTLED_ORDER',costStatus:'PENDING'});},'fi-record-link');
     }
-    el('p','利润额 = 销售收入 − 已结算平台费用（含物流及调整）− 广告消耗 − 营业成本',d.body,'fi-profit-formula');
+    el('p','利润额 = 销售收入 − 已结算平台费用（含物流及调整、账单广告费）− 独立广告消耗 − 营业成本',d.body,'fi-profit-formula');
     table(d.body,['计算项目','金额（'+profit.currency+'）'],[
       ['销售收入',number(profit.settledGrossAmount)],
-      ['减：已结算平台费用（含物流及调整）',number(profit.platformFees)],['减：广告消耗',number(profit.advertising)],
+      ['减：已结算平台费用（含物流及调整）',number(profit.platformFees)],['减：独立广告消耗',number(profit.advertising)],
       [button('减：营业成本',null,()=>{d.d.close();operatingCostDialog();},'fi-cost-link'),number(operatingAmount(profit))],
       [profit.estimated?'利润额（暂估）':'利润额',number(profit.amount)]
     ]);
@@ -419,11 +434,11 @@
       tick();clockTimer=setInterval(tick,1000);
     }
   }
-  function trend(parent,keys,title,subtitle,span=8){
+  function trend(parent,keys,title,subtitle,span=8,points=data.trend){
     const {n}=card(parent,title,subtitle,span);
-    plot(n,title,()=>({xAxis:{...axis('category'),data:data.trend.map(r=>r.period),boundaryGap:false},yAxis:axis(),legend:{...base().legend,data:keys.map(([k,label])=>label)},
-      series:keys.map(([key,name],i)=>({name,type:'line',data:data.trend.map(r=>r[key]??null),smooth:false,connectNulls:true,showSymbol:data.trend.filter(r=>r[key]!=null).length<2,
-        lineStyle:{width:2.5},areaStyle:i===0?{color:{type:'linear',x:0,y:0,x2:0,y2:1,colorStops:[{offset:0,color:colors[0]+'28'},{offset:1,color:colors[0]+'01'}]}}:undefined}))}),keys.some(([k])=>data.trend.some(r=>r[k]!=null)));
+    plot(n,title,()=>({xAxis:{...axis('category'),data:points.map(r=>r.period),boundaryGap:false},yAxis:axis(),legend:{...base().legend,data:keys.map(([k,label])=>label)},
+      series:keys.map(([key,name],i)=>({name,type:'line',data:points.map(r=>r[key]??null),smooth:false,connectNulls:!keys.some(([k])=>k.startsWith('AD_')),showSymbol:points.filter(r=>r[key]!=null).length<2,
+        lineStyle:{width:2.5},areaStyle:i===0?{color:{type:'linear',x:0,y:0,x2:0,y2:1,colorStops:[{offset:0,color:colors[0]+'28'},{offset:1,color:colors[0]+'01'}]}}:undefined}))}),keys.some(([k])=>points.some(r=>r[k]!=null)));
   }
   function donut(parent,title,subtitle,items,span=4){
     const {n}=card(parent,title,subtitle,span);const nonzero=items.filter(i=>i.value>0);
@@ -466,9 +481,10 @@
   function costAmountText(row,selection){return row?costLink('¥ '+number(Number(row.pending_count)>0?row.known_amount_cny:row.amount_cny)+(Number(row.pending_count)>0?' · 已算部分':''),selection):'—';}
   states.DATE_PENDING='结算日期待确认';
   function overview(parent){
-    parent.style.display='grid';parent.style.gap='15px';meta(parent);metricCards(parent);
+    parent.style.display='grid';parent.style.gap='15px';meta(parent);metricCards(parent);advertisingCoverage(parent);
     productCostSummary(parent,data?.productCosts,true);
     if(data?.profit)footnote(parent,data.profit.formula+'。退款影响以平台结算为准，不再重复扣减确认退款；利润按已同步和已录入费用计算，未录入费用会影响最终结果。');
+    if(data?.advertising)footnote(parent,data.advertising.profitBasis);
     if(data.sync.some(s=>!['ORDER_LIVE','ORDER_REPAIR'].includes(s.channel)&&Number(s.window_start)>0))
       footnote(parent,'历史回补尚未完成，所选期间的金额与笔数可能继续补齐。可在「财务店铺管理」查看各项同步进度。');
     const pendingDates=data.sync.reduce((n,s)=>n+Number(s.pending_date_bills||0),0);
@@ -478,16 +494,18 @@
     trend(grid,[['SETTLEMENT_GROSS','销售收入'],['ORDER','已结算订单金额']],'收入与结算趋势','按结算账单日期统计，跨月订单计入结算月份');ranking(grid);
     donut(grid,'费用构成','仅展示正向费用；退款与负向调整见明细',data.fees.map(r=>({name:feeName(r.category),value:Number(r.amount)||0})));
     const status=data.statuses.filter(r=>r.kind==='ORDER');donut(grid,'订单状态','订单数分布 · 已取消与待付款单独展示',status.map(r=>({name:statusName(r.status),value:Number(r.records)})));
-    trend(grid,[['AD','广告消耗'],['COST','物流贴单成本']],'广告与物流贴单成本','商品成本优先按实际出库计价，缺少凭据时按商家 SKU 标准成本',4);
+    const adPoints=new Map((data.advertising?.trend||[]).map(row=>[row.period,row]));
+    const adTrend=data.advertising?data.trend.map(row=>({...row,AD:adPoints.get(row.period)?.AD_TOTAL??null})):data.trend;
+    trend(grid,[['AD','广告费用'],['COST','物流贴单成本']],'广告与物流贴单成本','广告包含平台账单广告费、广告佣金及独立广告消耗；按各自费用日期统计',4,adTrend);
     const grouped=card(grid,'分组经营明细','按店铺所属类目汇总 · 归属调整后历史数据随店铺统计',12);groupSummary(grouped.n);
     const table=card(grid,'店铺经营明细','从汇总下钻到每一家店铺',12);storeSummary(table.n);
     footnote(parent,data.basis+' 广告充值不是广告消耗，GMV Max 归因收入不是净利润。');
   }
   function storeSummary(parent){
-    const ids=[...new Set([...data.ranking.map(r=>r.shop_id),...(data.productCosts?.shops||[]).map(r=>r.shop_id)])];
-    table(parent,['店铺','已结算订单数','订单金额','销售收入','已结算平台费用','广告消耗','营业成本 · 商品（人民币）','营业成本 · 贴单（人民币）'],ids.map(id=>{
+    const ids=[...new Set([...data.ranking.map(r=>r.shop_id),...(data.productCosts?.shops||[]).map(r=>r.shop_id),...(data.advertising?.shops||[]).map(r=>r.shop_id)])];
+    table(parent,['店铺','已结算订单数','订单金额','销售收入','已结算平台费用','广告费用','其中广告佣金','营业成本 · 商品（人民币）','营业成本 · 贴单（人民币）'],ids.map(id=>{
       const rows=data.ranking.filter(r=>r.shop_id===id),get=k=>rows.find(r=>r.kind===k);
-      return [shopName(id),number(get('ORDER')?.records),number(get('ORDER')?.amount),number(get('SETTLEMENT')?.settled_gross_amount),number(get('FEE')?.amount),number(get('AD')?.amount),costAmountText(shopCost(id),{shopId:id,kind:'SETTLED_ORDER'}),'¥ '+number(shopCost(id)?.label_cost_cny||0)];
+      return [shopName(id),number(get('ORDER')?.records),number(get('ORDER')?.amount),number(get('SETTLEMENT')?.settled_gross_amount),number(get('FEE')?.amount),data.advertising?adAmountText(shopAds(id)):number(get('AD')?.amount),adAmountText(shopAds(id)?.commission),costAmountText(shopCost(id),{shopId:id,kind:'SETTLED_ORDER'}),'¥ '+number(shopCost(id)?.label_cost_cny||0)];
     }),'启用财务店铺同步后，经营数据将自动汇总。');
   }
   function groupSummary(parent){
@@ -501,10 +519,11 @@
       else if(row.kind==='SETTLEMENT')kind.missingGross=true;
     }
     for(const cost of data.productCosts?.shops||[]){const shop=data.shops.find(s=>s.id===cost.shop_id),id=shop?.group_id||'',currency=data.filters?.displayCurrency||data.filters?.currency||shop?.currency||'CNY',key=id+':'+currency;if(![...grouped.values()].some(g=>g.id===id))grouped.set(key,{id,currency,kinds:{}});}
+    for(const row of data.advertising?.groups||[]){const id=row.group_id||'',key=id+':'+row.currency;if(!grouped.has(key))grouped.set(key,{id,currency:row.currency,kinds:{}});}
     const groupCost=id=>{const rows=(data.productCosts?.shops||[]).filter(r=>(data.shops.find(s=>s.id===r.shop_id)?.group_id||'')===id);return rows.length?{pending_count:rows.reduce((a,r)=>a+Number(r.pending_count||0),0),known_amount_cny:rows.reduce((a,r)=>a+Number(r.known_amount_cny||0),0),amount_cny:rows.reduce((a,r)=>a+Number(r.amount_cny||0),0),label_cost_cny:rows.reduce((a,r)=>a+Number(r.label_cost_cny||0),0)}:null;};
-    table(parent,['分组','币种','已结算订单数','订单金额','销售收入','已结算平台费用','广告消耗','营业成本 · 商品（人民币）','营业成本 · 贴单（人民币）'],[...grouped.values()].map(g=>[
+    table(parent,['分组','币种','已结算订单数','订单金额','销售收入','已结算平台费用','广告费用','其中广告佣金','营业成本 · 商品（人民币）','营业成本 · 贴单（人民币）'],[...grouped.values()].map(g=>[
       button(groupName(g.id),null,()=>selectFilters({groupId:g.id||'UNGROUPED',shopId:''}),'fi-action-link'),
-      g.currency,number(g.kinds.ORDER?.records),number(g.kinds.ORDER?.amount),number(g.kinds.SETTLEMENT?.missingGross?null:g.kinds.SETTLEMENT?.settledGross),...['FEE','AD'].map(k=>number(g.kinds[k]?.amount)),costAmountText(groupCost(g.id),{groupId:g.id||'UNGROUPED',kind:'SETTLED_ORDER'}),'¥ '+number(groupCost(g.id)?.label_cost_cny||0)
+      g.currency,number(g.kinds.ORDER?.records),number(g.kinds.ORDER?.amount),number(g.kinds.SETTLEMENT?.missingGross?null:g.kinds.SETTLEMENT?.settledGross),number(g.kinds.FEE?.amount),data.advertising?adAmountText(groupAds(g.id)):number(g.kinds.AD?.amount),adAmountText(groupAds(g.id)?.commission),costAmountText(groupCost(g.id),{groupId:g.id||'UNGROUPED',kind:'SETTLED_ORDER'}),'¥ '+number(groupCost(g.id)?.label_cost_cny||0)
     ]),'按类目建立店铺分组后，可在这里查看分组经营表现。');
   }
   function table(parent,headers,rows,empty='当前范围暂无记录',keys=[]){
@@ -716,25 +735,82 @@
     const {n,h}=card(parent,'广告账户','TikTok 广告独立授权；仅专属一个店铺的账户才绑定店铺',12);
     const actions=el('div',null,h,'fi-actions');
     if(canManage())action('复制广告授权链接','link',actions,()=>adsDialog({},true),'fi-primary');
-    table(n,['广告账户','归属','币种','状态','最近同步','操作'],accounts.filter(a=>!filters.groupId||(a.shop_id?inGroup(data.shops.find(s=>s.id===a.shop_id)||{}):filters.groupId==='UNGROUPED')).map(account=>{
+    const displayed=accounts.filter(a=>!filters.groupId||(a.shop_id?inGroup(data.shops.find(s=>s.id===a.shop_id)||{}):filters.groupId==='UNGROUPED'));
+    if(displayed.length<accounts.length){
+      footnote(n,'公司已连接 '+number(accounts.length)+' 个广告账户，当前分组显示 '+number(displayed.length)+' 个；未分配或其他分组的账户可切换至全部查看。');
+      button('查看全部广告账户',actions,()=>selectFilters({groupId:'',shopId:''}));
+    }
+    table(n,['广告账户','归属','币种','状态','最近同步','操作'],displayed.map(account=>{
       const controls=el('div',null,null,'fi-actions');if(canManage()){button(account.enabled?'暂停':'启用',controls,async()=>{await request('/ads/'+account.advertiser_id,json('PUT',{enabled:!account.enabled}));load();});button('更新授权',controls,()=>adsDialog(account));}else el('span','只读',controls,'fi-muted');
       const status=el('div');status.append(badge(account.status));if(account.error_message)el('small',account.error_message,status);if(account.gmv_store_id)el('small','GMV Max · '+(states[account.gmv_status]||account.gmv_status)+(account.gmv_error?' · '+account.gmv_error:''),status);
       return [account.name+' · '+account.advertiser_id,account.shop_id?shopName(account.shop_id):'未分配店铺',account.currency,status,account.last_success_at?new Date(account.last_success_at).toLocaleString('zh-CN',{timeZone:displayZone}):'尚未完成',controls];
-    }),'尚未连接广告账户。复制广告授权链接，由账户管理员打开并授权，数据将在「广告分析」展示。',accounts.map(a=>a.advertiser_id));
+    }),accounts.length?'当前分组没有广告账户。':'尚未连接广告账户。复制广告授权链接，由账户管理员打开并授权，数据将在「广告分析」展示。',displayed.map(a=>a.advertiser_id));
   }
   function adsView(parent,records){
     parent.style.display='grid';parent.style.gap='15px';meta(parent);
-    productCostSummary(parent);
-    const grid=el('div',null,parent,'fi-chart-grid');trend(grid,[['AD','广告总消耗']],'广告费用趋势','广告账户报表金额 · GMV Max 分析不重复计入总消耗',8);
-    const t=total('AD'),stats=card(grid,'投放概览','当前币种与筛选',4);
-    table(stats.n,['指标','数值'],[['广告消耗',number(t?.amount)],['曝光量',number(t?.impressions)],['点击量',number(t?.clicks)],['点击率',t?.impressions?number(Number(t.clicks)/Number(t.impressions)*100)+'%':'—'],['平均点击成本',t?.clicks?number(Number(t.amount)/Number(t.clicks)):'—']]);
-    const gmv=total('AD_GMV');const gmvCard=card(parent,'GMV Max 专项分析','独立口径，不与账户广告消耗相加；归因收入含自然流量影响',12);table(gmvCard.n,['专项消耗','归因收入','SKU 订单数','归因 ROI'],[[number(gmv?.amount),number(gmv?.revenue),number(gmv?.conversions),gmv?.amount?number(Number(gmv.revenue)/Number(gmv.amount)):'—']]);
-    const detailKinds=el('div',null,parent,'fi-tabs');if(!['AD','AD_GMV'].includes(selectedKind))selectedKind='AD';
-    for(const k of ['AD','AD_GMV'])button(kinds[k]+'明细',detailKinds,()=>{selectedKind=k;page=1;load();}).setAttribute('aria-pressed',String(k===selectedKind));
-    const detail=card(parent,selectedKind==='SETTLEMENT'?'结算明细':kinds[selectedKind]+'明细','当前筛选 · 共 '+number(records.total)+' 条',12);action('字段设置','fee',detail.h,()=>fieldsDialog(selectedKind,records.fieldSettings));renderFieldsTable(detail.n,records.items,records.fieldSettings);
+    const report=data.advertising,currency=data.filters.displayCurrency||data.filters.currency||'';
+    if(!report)footnote(parent,'广告分类统计待更新；下方暂显示独立广告报表，不能视为全部广告费用。');
+    advertisingCoverage(parent);
+    const metrics=el('div',null,parent,'fi-metrics fi-ad-metrics');
+    for(const [key,label,note] of [['total','广告费用合计','平台账单广告费（含广告佣金）+ 独立广告消耗'],['settlement','平台账单广告费','含广告佣金，已包含在平台净结算中'],['independent','独立广告消耗','广告账户报表及导入费用'],['unassigned','未分配店铺费用','单独保留，不强行分摊']]){
+      const item=report?.[key]||(key==='independent'?total('AD'):null),box=el('section',null,metrics,'fi-metric');box.dataset.adMetric=key;
+      const heading=el('div',null,box,'fi-metric-label');el('span',label,heading);
+      if(item?.complete===false)el('span','已知部分',heading,'fi-partial-badge');
+      const amount=el('div',null,box,'fi-metric-value');el('strong',number(adAmount(item)),amount);el('small',currency,amount);el('div',note,box,'fi-metric-note');
+      if(!adHasRecords(item))el('div','暂无记录',box,'fi-metric-note');
+      if(key==='settlement'&&report)el('div','其中广告佣金：'+adAmountText(report.commission)+' '+currency,box,'fi-metric-note');
+    }
+    if(report&&!report.total.hasRecords)footnote(parent,'当前筛选暂无已同步或导入的广告费用。可在财务店铺管理检查广告授权和同步，或导入对应费用。');
+    const grid=el('div',null,parent,'fi-chart-grid');
+    trend(grid,report?[['AD_TOTAL','广告费用合计'],['AD_SETTLEMENT','平台账单广告费'],['AD_INDEPENDENT','独立广告消耗']]:[['AD','独立广告消耗']],
+      '广告费用趋势','按各自费用日期统计 · 负向返还保留 · 无记录日期不补造金额',8,report?.trend||data.trend);
+    const t=report?.performance||total('AD'),stats=card(grid,'投放概览','曝光、点击及转化仅取独立广告报表；缺失指标不补零',4);
+    const coverage=(field,known,row=t)=>number(row?.[field])+(row&&Number(row[known]||0)<Number(row.records||0)&&row[field]!=null?' · 已知部分':'');
+    const percentage=value=>value==null?'—':number(value)+'%';
+    table(stats.n,['指标','数值'],[['独立广告消耗',adAmountText(t)],['曝光量',coverage('impressions','known_impressions')],['点击量',coverage('clicks','known_clicks')],
+      ['转化量',coverage('conversions','known_conversions')],['点击率',percentage(t?.clickThroughRate)],['平均点击成本',number(t?.costPerClick)],
+      ['千次曝光成本',number(t?.costPerThousand)],['平均转化成本',number(t?.costPerConversion)],['点击转化率',percentage(t?.conversionRate)]]);
+    if(report){
+      const categories=card(grid,'广告费用构成','充值和无法单独识别的混合字段不作为已确认广告消耗',12);
+      table(categories.n,['来源','费用类别','金额（'+currency+'）','费用记录数'],report.categories.map(row=>[
+        row.sourceType==='SETTLEMENT'?'平台结算账单':'独立投放',row.category,adAmountText(row),number(row.records)]));
+      const grouped=card(grid,'分组广告消耗','按店铺所属类目汇总，未归属费用单列',12);
+      table(grouped.n,['分组 / 类别','平台账单广告费','其中广告佣金','独立广告消耗','广告费用合计（'+currency+'）'],report.groups.map(row=>[
+        button(groupName(row.group_id),null,()=>selectFilters({groupId:row.group_id||'UNGROUPED',shopId:''}),'fi-action-link'),
+        adAmountText(row.settlement),adAmountText(row.commission),adAmountText(row.independent),adAmountText(row)]));
+      const stores=card(grid,'店铺广告消耗','仅列有广告费用记录的店铺；无记录不代表零消耗，未分配账户不摊到其他店铺',12);
+      table(stores.n,['店铺','分组 / 类别','平台账单广告费','其中广告佣金','独立广告消耗','广告费用合计（'+currency+'）'],report.shops.map(row=>[
+        row.shop_id==='UNASSIGNED'?shopName(row.shop_id):button(shopName(row.shop_id),null,()=>selectFilters({shopId:row.shop_id}),'fi-action-link'),
+        groupName(row.group_id),adAmountText(row.settlement),adAmountText(row.commission),adAmountText(row.independent),adAmountText(row)]));
+    }
+    const gmv=report?.gmv||total('AD_GMV'),gmvCard=card(parent,'GMV Max 专项分析','分析子集，不与广告费用合计相加；归因收入不是平台结算收入或利润',12);
+    table(gmvCard.n,['专项消耗（'+currency+'）','归因收入','SKU 订单数','归因 ROI'],[[adAmountText(gmv),coverage('revenue','known_revenues',gmv),coverage('conversions','known_conversions',gmv),number(gmv?.roi)]]);
+    const accounts=(data.adAccounts||[]).filter(account=>{
+      if(filters.platform&&filters.platform!=='TIKTOK_SHOP')return false;
+      if(filters.currency&&account.currency!==filters.currency)return false;
+      if(filters.shopId&&account.shop_id!==filters.shopId)return false;
+      return account.shop_id?inGroup(data.shops.find(shop=>shop.id===account.shop_id)||{}):!filters.groupId||filters.groupId==='UNGROUPED';
+    });
+    const health=card(parent,'广告数据同步','账户维护在财务店铺管理完成；这里展示同步状态和可用范围',12);
+    if(data.adAccountError)footnote(health.n,'广告账户状态暂时读取失败；费用统计和明细仍展示已入库数据，可点击刷新重试。');
+    table(health.n,['广告账户','归属店铺','报表币种 / 时区','状态','最近同步'],accounts.map(account=>{
+      const status=el('span',states[account.status]||account.status||'未知');
+      if(account.error_message)el('small',account.error_message,status);
+      if(account.gmv_store_id)el('small','GMV Max · '+(states[account.gmv_status]||account.gmv_status||'未知')+(account.gmv_error?' · '+account.gmv_error:''),status);
+      return [account.name||account.advertiser_id,account.shop_id?shopName(account.shop_id):'未分配店铺',account.currency+' / '+(account.timezone||'时区待确认'),status,
+        dateTimeCell(account.last_success_at,displayZone)||'尚未完成'];
+    }),'当前范围没有已连接广告账户；平台账单广告费和已导入费用仍按实际记录统计。');
+    const detailKinds=el('div',null,parent,'fi-tabs');if(!['AD','FEE','AD_GMV'].includes(selectedKind))selectedKind='AD';
+    for(const k of ['AD','FEE','AD_GMV'])button(k==='FEE'?'平台账单广告费明细':kinds[k]+'明细',detailKinds,()=>{selectedKind=k;page=1;load();}).setAttribute('aria-pressed',String(k===selectedKind));
+    const detail=card(parent,selectedKind==='FEE'?'平台账单广告费明细':kinds[selectedKind]+'明细','当前筛选 · 共 '+number(records.total)+' 条 · 编号查询仅过滤明细，期间汇总不受分页影响',12);
+    if(selectedKind==='AD')el('p','这里列出独立广告账户报表和导入费用；平台账单广告费在相邻页签查看。',detail.n,'fi-muted');
+    action('字段设置','fee',detail.h,()=>fieldsDialog(selectedKind,records.fieldSettings));action('导出 Excel','download',detail.h,()=>exportDialog(selectedKind));
+    numberSearch(detail.n,detailNumbers(),value=>{numberQueries[view+':'+currentFieldView()]=value;page=1;load();},'费用记录 / 订单 / 账单编号');
+    renderFieldsTable(detail.n,records.items,records.fieldSettings);
     const pager=el('div',null,detail.n,'fi-pagebar');el('span',`第 ${records.page} 页 · 每页 ${records.pageSize} 条`,pager);const controls=el('div',null,pager,'fi-actions');
     button('上一页',controls,()=>{page--;load();}).disabled=page<=1;button('下一页',controls,()=>{page++;load();}).disabled=page*records.pageSize>=records.total;
-    footnote(parent,'广告归因收入与平台结算收入口径不同；暂不据此计算净利润。未分配账户费用仅计入全店汇总，不强行分摊。');
+    footnote(parent,report?.basis||'广告归因收入与平台结算收入口径不同，不作为净利润。');
+    if(report){footnote(parent,report.profitBasis);footnote(parent,report.coverageNote);}
   }
   function dialog(title){
     const d=el('dialog',null,document.body,'fi-dialog');const head=el('div',null,d,'fi-dialog-head');el('h3',title,head);button('×',head,()=>d.close(),'fi-close').setAttribute('aria-label','关闭');
@@ -826,7 +902,7 @@
     d.submit('重新生成并复制',generate);
     if(copyImmediately)try{await generate();}catch(e){d.feedback.textContent=e.message;}
   }
-  function currentFieldView(){return view==='reconciliation'?'RECONCILIATION':view==='overview'?'ALL':view==='ads'?(selectedKind==='AD_GMV'?'AD_GMV':'AD'):selectedKind;}
+  function currentFieldView(){return view==='reconciliation'?'RECONCILIATION':view==='overview'?'ALL':view==='ads'?(['AD','FEE','AD_GMV'].includes(selectedKind)?selectedKind:'AD'):selectedKind;}
   function skuCell(row){
     const items=row.product_sku_details||[];
     if(items.some(item=>!item.sellerSku)){
@@ -986,14 +1062,16 @@
   }
   function exportDialog(fixedType=''){
     const selection={...filters,numbers:detailNumbers(),orderScope:allOrderView()?'ALL':'SETTLED'},identity=()=>typeof currentUser==='undefined'?'':JSON.stringify([currentUser?.organizationId,currentUser?.userId]),owner=identity();
-    const d=dialog(fixedType?'导出'+kinds[fixedType]:'导出财务报表');
+    const advertisingExport=view==='ads',ledgerAds=advertisingExport&&fixedType==='FEE';
+    if(ledgerAds)selection.advertisingOnly='true';
+    const d=dialog(ledgerAds?'导出平台账单广告费':fixedType?'导出'+kinds[fixedType]:'导出财务报表');
     el('p',`${selection.start} 至 ${selection.end} · 当前分组、店铺、平台和币种筛选 · 全部符合条件的记录（不限当前页）`,d.body,'fi-muted');
     if(selection.orderScope==='ALL')el('p','导出订单时按下单日期，包含已取消、未结算及跨月结算订单。',d.body,'fi-muted');
     if(selection.orderScope==='ALL'&&selection.numbers)el('p','当前为完整订单号查询：导出覆盖全部下单日期。',d.body,'fi-muted');
     if(selection.numbers)el('p','仅导出已查询的订单 / 账单编号：'+selection.numbers,d.body,'fi-muted');
     const type=select(d.body,'导出类型',fixedType?[[fixedType,kinds[fixedType]]]:[['ALL','全部财务明细'],...Object.entries(kinds),['RECONCILIATION','结算对账']],fixedType||currentFieldView(),()=>{});
     const configure=button('配置导出字段',d.body,()=>fieldsDialog(type.value));
-    const format=select(d.body,'文件格式',[['xlsx','Excel（含结算对账与统计口径）'],['csv','CSV 明细']],'xlsx',()=>{});
+    const format=select(d.body,'文件格式',[['xlsx',advertisingExport?'Excel（广告明细与统计口径）':'Excel（含结算对账与统计口径）'],['csv','CSV 明细']],'xlsx',()=>{});
     const progress=el('span','正在生成报表，请稍候…',d.body,'fi-loading');progress.hidden=true;progress.setAttribute('role','status');
     const submit=d.submit('下载报表',async()=>{
       if(!allowed()||identity()!==owner)throw Error('登录信息已变化，请重新打开导出');
@@ -1007,7 +1085,7 @@
         const blob=await response.blob();if(!d.d.isConnected)return;
         if(!allowed()||identity()!==owner)throw Error('登录信息已变化，请重新打开导出');
         const url=URL.createObjectURL(blob),a=el('a',null,d.body);
-        a.href=url;a.download=`${kinds[selectedType]||(selectedType==='RECONCILIATION'?'结算对账':'财务报表')}-${selection.start}-${selection.end}.${selectedFormat}`;
+        a.href=url;a.download=`${ledgerAds?'平台账单广告费':kinds[selectedType]||(selectedType==='RECONCILIATION'?'结算对账':'财务报表')}-${selection.start}-${selection.end}.${selectedFormat}`;
         a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);d.d.close();
       }catch(e){if(d.d.isConnected)throw Error(timedOut?'导出超时，请缩小日期或店铺范围后重试':e.message);}
       finally{
@@ -1158,21 +1236,23 @@
         ensureCharts().then(()=>{if(run===generation&&run===mountedGeneration&&active&&mountedView===view)paintCharts();})
           .catch(()=>{if(run===generation&&active)notify('图表暂未加载，明细仍可查看。',true);});
         const isRecordView=view!=='overview';
-        const allowedKinds=view==='ads'?['AD','AD_GMV']:recordKinds();
+        const allowedKinds=view==='ads'?['AD','FEE','AD_GMV']:recordKinds();
         if(isRecordView&&!allowedKinds.includes(selectedKind))selectedKind=allowedKinds[0];
         activeLoadKey=selectionKey();
         const kind=selectedKind;
-        const recordQuery=resolved=>'/records?'+query({...resolved,kind,page:selectedPage,includeProductCosts:'false',numbers});
+        const recordQuery=resolved=>'/records?'+query({...resolved,kind,page:selectedPage,includeProductCosts:'false',numbers,...(view==='ads'&&kind==='FEE'?{advertisingOnly:'true'}:{})});
         const resolvedCurrency=selection.currency||selection.displayCurrency==='CNY';
         const resolvedFx=selection.displayCurrency!=='CNY'||selection.fxSnapshot;
-        const [response,prefetched]=await Promise.all([read('/overview?'+query()),
-          isRecordView&&resolvedCurrency&&resolvedFx?read(recordQuery()):null]);
+        const [response,prefetched,adAccounts]=await Promise.all([read('/overview?'+query()),
+          isRecordView&&resolvedCurrency&&resolvedFx?read(recordQuery()):null,view==='ads'?read('/ads').then(items=>({items})).catch(error=>{
+            if(signal.aborted)throw error;return {items:[],error:true};
+          }):null]);
         if(run!==generation||!active)return;
         const resolved={currency:response.filters.currency||'',fxSnapshot:response.fx?.id||''};
         const records=isRecordView?(prefetched||await read(recordQuery(resolved))):null;
         if(run!==generation||!active)return;
         // Publish the resolved scope, amounts and rows together, after every read has finished.
-        data=response;Object.assign(filters,resolved);
+        data=adAccounts?{...response,adAccounts:adAccounts.items,adAccountError:adAccounts.error}:response;Object.assign(filters,resolved);
         const body=shell(next);
         if(view==='overview')overview(body);else if(view==='ads')adsView(body,records);else recordView(body,run,records);
       }else{
