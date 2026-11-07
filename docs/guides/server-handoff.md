@@ -2,7 +2,7 @@
 
 现场核查：**2026-11-05 18:09—18:19（北京时间）**，服务器 `8.163.34.81`。本文是该时段的运行快照；排队数量、修复进度、磁盘余量和版本会继续变化。接手后的发布规则见[运维指南](operations.md)，本次检查范围见[基础设施核查记录](../releases/infrastructure/server-deployment-audit-20261105.md)，完整的脱敏配置文件路径、镜像 ID、挂载与状态见[机器可读回执](../releases/infrastructure/server-deployment-audit-20261105.json)。
 
-**后续更新：2026-11-06 17:34 已发布后端 `2026.11.6.2`，后端为 `finance-cold-queries-20261106`，前端保持 `brush-source-summary-20261106`。** 最新性能、回滚和清理见[冷查询验收](../releases/finance/finance-cold-queries-20261106.md)。14:30 的[第一轮性能发布](../releases/finance/finance-bi-performance-20261106.md)及 11:33 的[源码同步和备份记录](../releases/infrastructure/project-sync-20261106.md)保留历史事实；以下原核查章节保留原观察时间。
+**后续更新：2026-11-07 09:18 已激活 `2026.11.6.3`，后端和前端均为 `finance-advertising-20261106`。** 报表验收通过，真实广告授权仍受服务器至官方接口连接失败影响，待办、回滚及清理见[广告发布记录](../releases/finance/finance-advertising-20261106.md)。11 月 6 日的[冷查询验收](../releases/finance/finance-cold-queries-20261106.md)、[第一轮性能发布](../releases/finance/finance-bi-performance-20261106.md)及[源码同步和备份记录](../releases/infrastructure/project-sync-20261106.md)保留历史事实；以下原核查章节保留原观察时间。
 
 本次通过 SSH 只读检查现场，并从运维机检查主站访问。没有部署、重启、停领任务、修改配置或业务数据，也没有触发备份、续期、恢复、模型调用或平台发布。凭据只用于认证，不写入本文或回执。已有发布回执中的测试结果不是本轮重新执行的测试。
 
