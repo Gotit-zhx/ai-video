@@ -11,6 +11,7 @@ npm --prefix scripts/ci/qa ci --ignore-scripts
 python3 scripts/ci/java.py unit
 python3 scripts/ci/java.py integration
 python3 scripts/ci/run.py frontend
+python3 scripts/ci/container.py
 python3 -m unittest discover -s scripts/ci/tests -v
 python3 -m unittest discover -s ops/heyi-ops/tests -v
 ```
@@ -32,13 +33,19 @@ python3 -m unittest discover -s ops/heyi-ops/tests -v
 
 正式候选只构建一次；不要重跑相同提交来覆盖镜像或候选附件。修正失败候选应在支持分支产生新提交。候选保存为 `candidate-<完整提交>` 的预发布，正式版本仅在生产 `--no-ff` 合并提交打 `v年.月.日[.序号]` 标签。候选分支名称为 `release/<版本>-<主题>` 或 `hotfix/<版本>-<主题>`。
 
+`HEYI_CD_ENABLED` 和 `HEYI_OPS_ENABLED` 仓库变量是接通开关，默认缺失时不执行生产发布、回滚或巡检。首次迁移先通过 Production deployment 的 `prepare` 模式验证并预取正式制品，再由 root 提交 `heyi-ops adopt VERSION LEGACY_VERSION OPERATION_ID`。验收前不打开开关。初始化账号使用 `bootstrap.py identities`，只接收两份独立 Ed25519 公钥，强制命令与 sudoers 均由 root 管理。
+
+首次迁移另外核对旧标签所有源码文件与现场快照，通过不启动的配置探针验证固定 Compose 等价性。旧 Java 尚无维护协议，因此仅在其网络命名空间临时将新 8080 连接转到 503 响应器，并让前端停止接收业务请求；已有连接必须结束。空闲财务工作器只预留本次 UUID 的租约，不改变计划时间或检查点；外来及未知租约会阻止迁移。安全点确认后短暂冻结旧应用以关闭检查与领取之间的竞争，再执行有界优雅停止。恢复逻辑随版本化执行器永久安装，不依赖上传目录。此首次迁移模块必须完成隔离演练后才能在生产启用。
+
+完整容器测试在内部 Docker 网络运行独立探针，不依赖宿主机端口映射，也不访问生产或外部 API。CI 还在 GitHub 临时 Linux 机执行真实 systemd 单元测试，验证提交进程退出后继续完成，以及执行器被终止后的 ExecStopPost 恢复。合成诊断只在临时测试环境有界保存，上传内容仍只有摘要。
+
 `release.json` 保存源码提交/树、组件指纹、迁移指纹、源码包校验值、OCI manifest digest、镜像 config digest、空间预算、前端资源指纹和验证结果。标签树必须等于候选树，不能在验收后再提交回执来改变正式候选；回执进入 GitHub Release 附件及服务器。
 
 仅文档变更复用已有镜像、同步源码并跳过容器切换。其他常驻服务、桌面应用、配置目录或 Compose 的变更会阻止普通自动上线。运维执行器与备份脚本另有 `operations` 指纹；这类更改必须先完成明确的主机维护和基线更新，再进入应用发布，不能仅同步源码就声称运维程序已更新。
 
 ## 生产控制面
 
-程序源码位于 `ops/heyi-ops`；生产入口为 `/usr/local/sbin/heyi-ops`。固定配置 `/etc/heyi-ops/config.json`，状态根目录 `/opt/heyi/ops`，共享锁继续使用 `/opt/heyi/operations/.project-release.lock`。
+程序源码位于 `ops/heyi-ops`；生产入口为 `/usr/local/sbin/heyi-ops`。固定配置 `/etc/heyi-ops/config.json`，状态根目录 `/opt/heyi/ops`。为兼容并行会话，按固定顺序先取 `/run/lock/heyi-application-release.lock`，再取旧 `/opt/heyi/operations/.project-release.lock`；两者都成功才可改变生产状态，不删除锁文件。
 
 | 命令 | 用途 |
 | --- | --- |

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -169,7 +170,12 @@ class Host:
             else:
                 status={"protocol":1,"maintenance":True,"activeRequests":0,"activeWorkers":0}
             counters = self.counters()
-            safe = status.get("protocol")==1 and status.get("maintenance") is True and status.get("activeRequests")==0 and status.get("activeWorkers")==0 and not any(counters.values())
+            edge=command("docker","exec",SERVICES["frontend"],"wget","-qO-","http://127.0.0.1/_heyi/nginx-status",timeout=10).decode()
+            counts=re.search(r"Reading:\s*(\d+)\s+Writing:\s*(\d+)",edge)
+            # The status request itself is the sole allowed writer. Existing
+            # downloads and independent proxied business requests finish first.
+            edge_idle=bool(counts) and int(counts[1])==0 and int(counts[2])<=1
+            safe = status.get("protocol")==1 and status.get("maintenance") is True and status.get("activeRequests")==0 and status.get("activeWorkers")==0 and not any(counters.values()) and edge_idle
             quiet = quiet+1 if safe else 0
             if quiet>=2: return
             time.sleep(2)
@@ -207,6 +213,10 @@ class Host:
         self.compatible(target)
         code,_=self.request("/api/v1/finance/shops")
         if code!=(503 if maintenance else 401): raise RuntimeError("Maintenance/authentication contract failed")
+        code,body=self.request("/_heyi/ops/status",authenticated=True)
+        control=json.loads(body) if code==200 else {}
+        if control.get("protocol")!=1 or control.get("maintenance")!=maintenance:
+            raise RuntimeError("Private maintenance protocol failed")
         # Use the pinned domain and loopback resolution, retaining TLS verification.
         for resource in ("/", "/asset-manifest.json"):
             data=command("curl","--fail","--silent","--show-error","--max-time","15","--resolve",
@@ -232,11 +242,13 @@ class Host:
             atomic(staging/".heyi-owned.json",{"archiveSha256":target["sourceArchiveSha256"]})
             files={}
             with tarfile.open(archive) as tar:
-                unpacked=0
+                unpacked=0;seen=set()
                 for member in tar:
                     parts=Path(member.name).parts
-                    if member.name.startswith("/") or ".." in parts or member.name in {".heyi-owned.json",".heyi-source.json"} or not (member.isfile() or member.isdir()):
+                    normalized=str(Path(member.name))
+                    if member.name.startswith("/") or ".." in parts or normalized in {".",".heyi-owned.json",".heyi-source.json"} or normalized in seen or not (member.isfile() or member.isdir()):
                         raise ValueError("Unsafe source archive entry")
+                    seen.add(normalized)
                     unpacked+=member.size
                     if unpacked>target["sourceUnpackedBytes"]:raise ValueError("Source archive exceeded its unpack budget")
                     if member.isfile():files[member.name]=sha(tar.extractfile(member).read())
@@ -245,7 +257,9 @@ class Host:
             staging.rename(directory)
         receipt=read(directory/".heyi-source.json")
         if not receipt or receipt["archiveSha256"]!=target["sourceArchiveSha256"]: raise RuntimeError("Existing source differs")
-        actual={str(p.relative_to(directory)):p for p in directory.rglob("*") if p.is_file() and str(p.relative_to(directory)) not in {".heyi-source.json",".heyi-owned.json"}}
+        entries=list(directory.rglob("*"))
+        if directory.is_symlink() or any(p.is_symlink() for p in entries):raise RuntimeError("Source directory contains a symlink")
+        actual={str(p.relative_to(directory)):p for p in entries if p.is_file() and str(p.relative_to(directory)) not in {".heyi-source.json",".heyi-owned.json"}}
         if set(actual)!=set(receipt.get("files",{})) or any(p.is_symlink() or sha(p.read_bytes())!=receipt["files"][name] for name,p in actual.items()):
             raise RuntimeError("Source files differ from the verified archive")
         current=Path(self.config["sourceRoot"])/"current"; temporary=current.with_name(".current-next")

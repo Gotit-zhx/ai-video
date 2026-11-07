@@ -51,6 +51,9 @@ def main():
     except Exception:alerts.append({"service":"external","type":"https-availability","severity":"critical"})
     try:
         with Remote() as remote:status=remote.call("doctor",timeout=60)
+        if status.get("plannedMaintenance"):
+            alerts=[a for a in alerts if a["service"]!="external"]
+            verified.discard("external")
         alerts.extend(status["alerts"]);complete=True;verified.update(status["verifiedScopes"]);verified.add("monitoring")
     except Exception:alerts.append({"service":"monitoring","type":"host-probe-failed","severity":"critical"})
     reconcile(alerts,verified)

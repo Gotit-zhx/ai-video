@@ -6,6 +6,7 @@ import os
 import re
 import time
 import tempfile
+import stat
 from pathlib import Path
 
 TERMINAL = {"succeeded", "rolled_back", "aborted", "recovered"}
@@ -36,17 +37,22 @@ class Busy(RuntimeError): pass
 
 
 class Store:
-    def __init__(self, root, lock):
+    def __init__(self, root, lock, compatibility_lock=None):
         self.root, self.lock = Path(root), Path(lock)
+        self.locks=[self.lock]
+        if compatibility_lock and Path(compatibility_lock)!=self.lock:self.locks.append(Path(compatibility_lock))
 
     @contextlib.contextmanager
     def exclusive(self):
-        self.lock.parent.mkdir(parents=True, exist_ok=True)
-        with self.lock.open("a") as f:
-            try: fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError: raise Busy("Another maintenance operation owns the shared lock") from None
-            try: yield
-            finally: fcntl.flock(f, fcntl.LOCK_UN)
+        with contextlib.ExitStack() as stack:
+            for path in self.locks:
+                path.parent.mkdir(parents=True,exist_ok=True)
+                fd=os.open(path,os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+                f=stack.enter_context(os.fdopen(fd,"a"));info=os.fstat(f.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid():raise Busy("Invalid maintenance lock ownership")
+                try:fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                except BlockingIOError:raise Busy("Another maintenance operation owns the shared lock") from None
+            yield
 
     def path(self, request):
         if not REQUEST.fullmatch(request): raise ValueError("Invalid operation ID")

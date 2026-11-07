@@ -30,14 +30,20 @@ class Remote:
         return json.loads(result.stdout)
 
 
-def deploy(version,rollback=False):
+def deploy(version,rollback=False,prepare_only=False):
     if not re.fullmatch(r"v\d+(?:\.\d+){2,3}",version):raise ValueError("Invalid version")
     # Re-run attempts use different IDs, duplicate polls/submissions use one ID.
     import hashlib
     operation=hashlib.sha256((os.environ["GITHUB_RUN_ID"]+":"+os.environ["GITHUB_RUN_ATTEMPT"]+":"+version).encode()).hexdigest()[:32]
     with Remote() as remote:
-        baseline=remote.call("status")["version"]
         if not rollback:remote.call("stage",version,payload={"pullToken":os.environ["GH_TOKEN"]})
+        if prepare_only:
+            output=Path("target/deployment");output.mkdir(parents=True,exist_ok=True)
+            result={"version":version,"phase":"prepared","productionChanged":False}
+            (output/"receipt.json").write_text(json.dumps(result)+"\n")
+            print(json.dumps(result));return
+        baseline=remote.call("status")["version"]
+        if not baseline:raise RuntimeError("Initial adoption is not accepted yet")
         result=remote.call("rollback" if rollback else "deploy",version,baseline,operation)
         deadline=time.monotonic()+1200
         while time.monotonic()<deadline:
@@ -53,5 +59,5 @@ def deploy(version,rollback=False):
 
 if __name__=="__main__":
     import argparse
-    p=argparse.ArgumentParser();p.add_argument("version");p.add_argument("--rollback",action="store_true")
-    a=p.parse_args();deploy(a.version,a.rollback)
+    p=argparse.ArgumentParser();p.add_argument("version");mode=p.add_mutually_exclusive_group();mode.add_argument("--rollback",action="store_true");mode.add_argument("--prepare-only",action="store_true")
+    a=p.parse_args();deploy(a.version,a.rollback,a.prepare_only)

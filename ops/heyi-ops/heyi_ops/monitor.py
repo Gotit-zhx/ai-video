@@ -11,6 +11,9 @@ from .state import atomic, read, Busy
 
 def diagnose(config, store, host):
     alerts=[]; containers={};verified={"disk","app","deployment"}
+    operations=store.incomplete();marker=read(host.marker,{})
+    planned=any(op["id"]==marker.get("owner") and op["phase"] in {"switching","verifying","source_sync","restoring","recovering"}
+        and time.time()-op["updatedAt"]<300 and time.time()-op["createdAt"]<1200 for op in operations)
     for name in config["permanentContainers"]:
         try:
             info=inspect(name); state=info["State"]
@@ -55,15 +58,19 @@ def diagnose(config, store, host):
         verified.update({"database","finance-sync"})
         if stale: alerts.append({"service":"finance-sync","type":"stale-lease","severity":"warning"})
     except Exception: alerts.append({"service":"database","type":"probe-failed","severity":"critical"})
-    for op in store.incomplete():
+    for op in operations:
         if op["phase"]=="needs_attention" or time.time()-op["updatedAt"]>1200:
             alerts.append({"service":"deployment","type":"recovery-required","severity":"critical"})
     watchdog=read(store.root/"watchdog.json",{})
     if watchdog.get("state") and watchdog["state"] not in {"failed","credential_missing"}:verified.add("monitoring-workflow")
     if watchdog.get("state") in {"credential_missing","failed"}:
         alerts.append({"service":"monitoring-workflow","type":watchdog["state"],"severity":"warning"})
+    if planned:
+        suppressed={"app","ai-commerce-app","ai-commerce-frontend"}
+        alerts=[a for a in alerts if a["service"] not in suppressed]
+        verified-=suppressed
     return {"observedAt":int(time.time()),"version":(store.active() or {}).get("version"),
-        "maintenance":host.marker.exists(),"appHealthy":app_ok,"containers":containers,
+        "maintenance":host.marker.exists(),"plannedMaintenance":planned,"appHealthy":app_ok,"containers":containers,
         "freeBytes":free,"certificateExpiresAt":expiry,"backup":{k:backup.get(k) for k in ("outcome","finishedAt","lastSuccess")},
         "activeWorkers":counters,"costBacklog":backlog,"alerts":alerts,"verifiedScopes":sorted(verified)}
 
@@ -77,7 +84,9 @@ def monitor(config,store,host):
 
 def _monitor(config,store,host):
     snapshot=diagnose(config,store,host); state=read(store.root/"monitor-state.json",{})
-    if snapshot["appHealthy"]:
+    if snapshot.get("plannedMaintenance"):
+        pass  # Neither a recovery nor a new incident while a bounded switch runs.
+    elif snapshot["appHealthy"]:
         state.update(consecutiveFailures=0,attempted=False)
     else:
         state["consecutiveFailures"]=state.get("consecutiveFailures",0)+1
@@ -98,12 +107,11 @@ def _monitor(config,store,host):
                 operation=secrets.token_hex(16)
                 state.update(attempted=True,lastAttempt=int(time.time()),operation=operation)
                 atomic(store.root/"monitor-state.json",state)
+                active=store.active()
+                atomic(store.root/"requests"/(operation+".json"),{"id":operation,"version":active["version"],
+                    "expectedVersion":active["version"],"rollback":False,"restart":True,"createdAt":int(time.time())})
                 try:
-                    command("systemd-run","--quiet","--unit=heyi-ops-heal-"+operation,
-                            "--property=Type=oneshot","--property=TimeoutStartSec=600",
-                            "--property=StandardOutput=null","--property=StandardError=null",
-                            "--property=ExecStopPost=/usr/local/sbin/heyi-ops recover",
-                            "/usr/local/sbin/heyi-ops","heal",operation)
+                    command("systemctl","start","--no-block","heyi-ops-executor@"+operation+".service")
                     snapshot["selfHealing"]="queued"
                 except Exception: snapshot["selfHealing"]="queue_failed"
     atomic(store.root/"monitor-state.json",state);atomic(store.root/"health.json",snapshot)
@@ -126,6 +134,7 @@ def retained_versions(store):
 def cleanup(config,store):
     if store.incomplete(): raise Busy("Cleanup blocked by incomplete maintenance")
     keep=set(retained_versions(store));protected_operations=set()
+    if not keep:raise Busy("Cleanup requires an accepted active release")
     current_source=(Path(config["sourceRoot"])/"current").resolve()
     if current_source.exists():keep.add(current_source.name)
     operations={p.stem:read(p) for p in (store.root/"operations").glob("*.json")}
@@ -145,12 +154,12 @@ def cleanup(config,store):
         manifest=read(store.root/"releases"/version/"release.json",{})
         protected.update(i["configDigest"] for i in manifest.get("images",{}).values())
     from .artifacts import Artifacts
-    candidates=[p for p in (store.root/"releases").iterdir() if p.is_dir() and p.name not in keep and (p/"verified.json").is_file()]
+    candidates=[p for p in (store.root/"releases").iterdir() if p.is_dir() and not p.is_symlink() and p.name not in keep and (p/"verified.json").is_file()]
     atomic(store.root/"cleanup-plan.json",{"createdAt":int(time.time()),"retainedVersions":sorted(keep),
         "candidates":[{"path":str(p),"owner":"heyi-ops verified release","evidence":str(p/"verified.json")} for p in candidates]})
     removed=[];removed_refs=set();skipped=[]
     for directory in (store.root/"releases").iterdir():
-        if not directory.is_dir() or directory.name in keep or not (directory/"verified.json").is_file(): continue
+        if not directory.is_dir() or directory.is_symlink() or directory.name in keep or not (directory/"verified.json").is_file(): continue
         was_accepted=any(o["phase"]=="succeeded" and o["target"]["version"]==directory.name for o in operations.values())
         if not was_accepted and time.time()-read(directory/"verified.json")["verifiedAt"]<86400:continue
         if any(m==directory or directory in m.parents for m in mounts):skipped.append(directory.name);continue
@@ -159,7 +168,12 @@ def cleanup(config,store):
         for image in manifest["images"].values():
             if image["configDigest"] in protected|in_use: continue
             ref=image["repository"]+"@"+image["manifestDigest"]
-            if ref not in removed_refs:command("docker","image","rm",ref);removed_refs.add(ref)
+            if ref not in removed_refs:
+                available=command("docker","image","ls","--quiet","--no-trunc",ref).decode().split()
+                if available:
+                    if available!=[image["configDigest"]]:raise RuntimeError("Image identity drift during cleanup")
+                    command("docker","image","rm",ref)
+                removed_refs.add(ref)
         source=Path(config["sourceRoot"])/"releases"/directory.name
         metadata=read(source/".heyi-source.json",{})
         if source.exists() and metadata.get("files") and not any(m==source or source in m.parents for m in mounts):

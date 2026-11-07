@@ -30,7 +30,7 @@ def component(path):
         return "source"
     if path.startswith("ops/heyi-ops/") or path=="scripts/heyi-mysql-backup.py" or path.startswith("ops/admin-console/heyi-mysql-backup."):
         return "operations"
-    if path.startswith(("src/main/",)) or path in ("pom.xml", "Dockerfile", "maven-settings.xml", ".dockerignore"):
+    if path.startswith(("src/main/",)) or path in ("pom.xml", "Dockerfile", "maven-settings.xml", ".dockerignore", "scripts/ci/VerifyDependencies.java", "scripts/ci/dependencies.sha256"):
         return "app"
     if path.startswith("frontend/") and not path.startswith(("frontend/test/", "frontend/tests/")):
         return "frontend"

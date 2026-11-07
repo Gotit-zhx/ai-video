@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   monitor:
-    if: github.repository == 'Gotit-zhx/ai-video' && inputs.action != 'rollback'
+    if: github.repository == 'Gotit-zhx/ai-video' && vars.HEYI_OPS_ENABLED == 'true' && inputs.action != 'rollback'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: monitoring
@@ -41,7 +41,7 @@ jobs:
           HEYI_KNOWN_HOSTS: ${{ secrets.HEYI_KNOWN_HOSTS }}
         run: python3 scripts/ci/notify.py
   rollback:
-    if: github.repository == 'Gotit-zhx/ai-video' && inputs.action == 'rollback'
+    if: github.repository == 'Gotit-zhx/ai-video' && vars.HEYI_CD_ENABLED == 'true' && inputs.action == 'rollback'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     environment: production

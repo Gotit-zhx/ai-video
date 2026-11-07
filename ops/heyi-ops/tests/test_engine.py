@@ -75,6 +75,12 @@ class EngineTest(unittest.TestCase):
             other = Store(self.store.root, self.store.lock)
             with self.assertRaises(Busy):
                 with other.exclusive(): pass
+    def test_legacy_lock_contention_releases_the_primary_lock(self):
+        primary=self.store.root/"primary";legacy=self.store.root/"legacy"
+        with Store(self.store.root,legacy).exclusive():
+            with self.assertRaises(Busy):
+                with Store(self.store.root,primary,legacy).exclusive():pass
+            with Store(self.store.root,primary).exclusive():pass
     def test_foreign_marker_is_not_removed(self):
         self.host.marker = "f"*32
         with self.assertRaises(RuntimeError): self.engine.deploy(self.request, self.new, "v1.0.0")
@@ -101,6 +107,25 @@ class EngineTest(unittest.TestCase):
         self.host.fail="source"
         result=self.engine.deploy(self.request,release("v1.0.1","old"),"v1.0.0")
         self.assertEqual("aborted",result["phase"]);self.assertEqual("v1.0.0",self.host.sourceVersion)
+    def test_crashed_unhealthy_candidate_uses_persisted_safe_point(self):
+        self.store.save({"id":self.request,"baseline":self.old,"target":self.new,
+            "safePointReached":True,"mayHaveSwitched":True},"switching")
+        self.host.marker=self.request;self.host.image="new";self.host.fail="drain"
+        self.assertEqual("recovered",self.engine.recover()[0]["phase"])
+        self.assertNotIn("drain",self.host.calls);self.assertEqual("old",self.host.image)
+    def test_lost_gate_requires_new_safe_point(self):
+        self.store.save({"id":self.request,"baseline":self.old,"target":self.new,
+            "safePointReached":True,"mayHaveSwitched":True},"switching")
+        self.host.image="new";self.host.fail="drain"
+        with self.assertRaises(RuntimeError):self.engine.recover()
+        self.assertNotIn("activate",self.host.calls)
+        self.assertEqual("needs_attention",read(self.store.path(self.request))["phase"])
+    def test_failed_revalidation_after_acceptance_drains_before_rollback(self):
+        self.store.save({"id":self.request,"baseline":self.old,"target":self.new,
+            "accepted":True,"sourceChanging":True,"mayHaveSwitched":True,"safePointReached":True},"restoring")
+        self.host.image="new";self.host.sourceVersion="v1.0.1";self.host.fail="verify"
+        self.assertEqual("recovered",self.engine.recover()[0]["phase"])
+        self.assertIn("drain",self.host.calls);self.assertEqual("v1.0.0",self.host.sourceVersion)
 
 
 if __name__ == "__main__": unittest.main()

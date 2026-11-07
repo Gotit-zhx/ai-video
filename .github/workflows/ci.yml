@@ -103,10 +103,43 @@ jobs:
           name: frontend-${{ github.run_attempt }}
           path: target/ci-reports/frontend/summary.json
           retention-days: 7
+  container:
+    needs: policy
+    if: needs.policy.outputs.runtime == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - run: python3 scripts/ci/container.py
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: container-smoke-${{ github.run_attempt }}
+          path: target/ci-reports/container/summary.json
+          retention-days: 7
+  systemd:
+    needs: policy
+    if: needs.policy.outputs.runtime == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 scripts/ci/systemd_test.py
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: systemd-recovery-${{ github.run_attempt }}
+          path: target/ci-reports/systemd/summary.json
+          retention-days: 7
   required:
     name: CI required
     if: always()
-    needs: [policy, unit, database, frontend]
+    needs: [policy, unit, database, frontend, container, systemd]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -119,5 +152,5 @@ jobs:
           assert n['policy']['result']=='success', 'Policy checks failed'
           assert n['policy']['outputs'].get('runtime') in ['true','false'], 'Missing component decision'
           expected='success' if n['policy']['outputs']['runtime']=='true' else 'skipped'
-          assert all(n[k]['result']==expected for k in ['unit','database','frontend']), 'Mandatory checks failed or unexpectedly skipped'
+          assert all(n[k]['result']==expected for k in ['unit','database','frontend','container','systemd']), 'Mandatory checks failed or unexpectedly skipped'
           PY

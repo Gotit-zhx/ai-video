@@ -6,7 +6,7 @@ Requires=docker.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/heyi-ops execute %i
-ExecStopPost=/usr/local/sbin/heyi-ops recover
+ExecStopPost=/usr/local/sbin/heyi-ops finalize %i
 TimeoutStartSec=1200
 TimeoutStopSec=600
 KillMode=control-group

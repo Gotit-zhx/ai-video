@@ -11,7 +11,7 @@ class Engine:
         with self.store.exclusive():
             previous = read(self.store.path(request))
             if previous:
-                if previous["target"]["version"] != target["version"] or previous["expectedVersion"] != expected_version:
+                if previous["target"]["version"] != target["version"] or previous["expectedVersion"] != expected_version or previous.get("rollback",False)!=rollback or previous.get("restart",False)!=restart:
                     raise ValueError("Idempotency key reused for a different request")
                 if previous["phase"] in {"succeeded", "rolled_back", "aborted", "recovered"}: return previous
                 raise Busy("Operation must be recovered before retry")
@@ -35,7 +35,7 @@ class Engine:
                     self.host.gate(request); gate = True
                     self.store.save(op, "draining")
                     self.host.drain(request)
-                    self.store.save(op, "switching", mayHaveSwitched=True)
+                    self.store.save(op, "switching", mayHaveSwitched=True, safePointReached=True)
                     switched = True
                     self.host.activate(target, changed)
                     self.store.save(op, "verifying")
@@ -76,23 +76,31 @@ class Engine:
         with self.store.exclusive():
             results = []
             for op in self.store.incomplete():
+                if op.get('adoption'):raise Busy('Recover the initial adoption through its persistent handler')
                 baseline = op["baseline"]
                 # A crash in ANY write-ahead phase can have happened after a
                 # side effect. Restore the verified baseline unconditionally.
                 try:
                     if op.get("accepted") and op["phase"] not in {"recovering","needs_attention"}:
                         target=op["target"]
-                        self.host.compatible(target)
-                        self.host.verify(target,maintenance=self.host.owns_gate(op["id"]))
-                        self.host.ungate(op["id"])
-                        self.host.verify(target,maintenance=False)
-                        self.store.set_active(target)
-                        results.append(self.store.save(op,"succeeded",recovered=True,finishedAt=int(time.time())))
-                        continue
+                        try:
+                            self.host.compatible(target)
+                            self.host.verify(target,maintenance=self.host.owns_gate(op["id"]))
+                            self.host.ungate(op["id"])
+                            self.host.verify(target,maintenance=False)
+                            self.store.set_active(target)
+                            results.append(self.store.save(op,"succeeded",recovered=True,finishedAt=int(time.time())))
+                            continue
+                        except Exception as error:
+                            # If accepted work was reopened, reacquire the gate
+                            # and prove a fresh safe point before reverting it.
+                            self.store.save(op,"recovering",errorType=type(error).__name__)
                     self.host.compatible(baseline)
                     if op.get("mayHaveSwitched") or op["phase"] in {"switching", "verifying", "restoring"}:
+                        already_gated=self.host.owns_gate(op["id"])
                         self.host.gate(op["id"])
-                        self.host.drain(op["id"])
+                        if not (already_gated and op.get("safePointReached") and not op.get("accepted")):
+                            self.host.drain(op["id"])
                         self.host.activate(baseline, ["app", "frontend"])
                         self.host.verify(baseline, maintenance=True)
                     if op.get("sourceChanging"): self.host.sync_source(baseline)
