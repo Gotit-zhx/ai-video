@@ -1,5 +1,6 @@
 """Finish one already-prepared deployment even if the operator's SSH session closes."""
 import datetime
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,13 @@ import sys
 
 os.umask(0o077)
 root = Path(sys.argv[1]).resolve()
+lock = open(root / "deployment-runner.lock", "a")
+try:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    raise SystemExit(2)
+if (root / "deployment-result.json").exists():
+    raise SystemExit(2)
 allowed = {
     "Original schedules restored; in-flight leases and checkpoints were not discarded.",
     "Qianyi reservations released; configuration and checkpoints preserved.",
@@ -27,8 +35,6 @@ def write(name, data):
 result = {"startedAtUtc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
           "runnerPid": os.getpid(), "phase": "drain-deploy", "messages": []}
 try:
-    if (root / "deployment-result.json").exists():
-        raise RuntimeError("A deployment result already exists")
     process = subprocess.Popen([sys.executable, "-B", str(root / "release-finance-advertising.py"),
                                 str(root), "drain-deploy"], stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
