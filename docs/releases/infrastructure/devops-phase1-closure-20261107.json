@@ -1,0 +1,324 @@
+{
+  "schemaVersion": 1,
+  "observedAt": 1794039595,
+  "evidenceScope": "Observed v7 baseline and rollback quarantine before freezing the v8 documentation candidate; final v8 result is an append-only Release attachment.",
+  "applicationVersion": "v2026.11.7.7",
+  "plannedDocumentationVersion": "v2026.11.7.8",
+  "sourceVersion": "v2026.11.7.7",
+  "controller": "20bb15739b2f8601d1f87c4e342ed15747936466",
+  "operationsInputs": "bc10973187b5f04595eb9a6695c83ea1038250b85a16c4e9e74b14c82b2a9534",
+  "productionCommit": "27ddaa730c434ccc7a187eb6cf8fdbb5a952293c",
+  "schemaVersionObserved": "147",
+  "schemaUnchanged": true,
+  "configurationMatchesBaseline": {
+    "app": true,
+    "frontend": true
+  },
+  "appHealthy": true,
+  "maintenance": false,
+  "incompleteOperations": [],
+  "containers": {
+    "ai-commerce-app": {
+      "composeFiles": [
+        "/opt/heyi/ops/compose/base.json",
+        "/opt/heyi/ops/compose/production.json",
+        "/opt/heyi/ops/releases/v2026.11.7.7/images.json"
+      ],
+      "id": "5b46c432629ec5018a7b1987a6e5ecf2dcae0d84a4c42d81f1674288fb1c9aca",
+      "image": "ghcr.io/gotit-zhx/ai-video/app@sha256:5db37670c5f7f70a9df8030b4b9f71cffffcc920ed6198581d0b3c3ead71034a",
+      "logging": "none",
+      "paused": false,
+      "running": true
+    },
+    "ai-commerce-frontend": {
+      "composeFiles": [
+        "/opt/heyi/ops/compose/base.json",
+        "/opt/heyi/ops/compose/production.json",
+        "/opt/heyi/ops/releases/v2026.11.7.4/images.json"
+      ],
+      "id": "1478023396a3d01512543837c4c00e91ce0049192bac2734a39d706c1c493e51",
+      "image": "ghcr.io/gotit-zhx/ai-video/frontend@sha256:ddea0f67a282d99e3a8113fb62f4509c1a29486a41360791024ec5f9166c5e59",
+      "logging": "none",
+      "paused": false,
+      "running": true
+    },
+    "ai-commerce-mysql": {
+      "composeFiles": [
+        "/opt/heyi/current/compose.yaml",
+        "/opt/heyi/releases/finance-storage-recovery-20261102/compose.mysql.json"
+      ],
+      "id": "a4e324f7e344dcac83115a490b265320e6d8e8a30359ca0cc7e7eb2f6663a409",
+      "image": "mysql:8.4",
+      "logging": "none",
+      "paused": false,
+      "running": true
+    },
+    "ai-commerce-redis": {
+      "composeFiles": [
+        "/opt/heyi/current/compose.yaml",
+        "/opt/heyi/releases/finance-storage-recovery-20261102/compose.ai-commerce-redis.json",
+        "/opt/heyi/releases/finance-storage-recovery-20261102/compose.ai-commerce-redis.ports.yaml"
+      ],
+      "id": "f63a1b73bbc6e04f35d9e131cd1479123069e067cfdd0f4089aa272af4f237db",
+      "image": "redis:8-alpine",
+      "logging": "none",
+      "paused": false,
+      "running": true
+    },
+    "heyi-cloudbeaver": {
+      "composeFiles": [
+        "/opt/heyi/admin-console/docker-compose.yml"
+      ],
+      "id": "7a0bfc1a0bcd31ab87a06b1ddc2cc3ce1085e7db9c253c53fdcc866b1b349786",
+      "image": "dbeaver/cloudbeaver:26.1.4",
+      "logging": "json-file",
+      "paused": false,
+      "running": true
+    },
+    "heyi-commerce-image-processor": {
+      "composeFiles": [
+        "/opt/heyi/deployments/release-20260827-1200/compose.yaml",
+        "/opt/heyi/deployments/release-20260827-1200/compose.release.yaml",
+        "/opt/heyi/deployments/release-20260827-1200/hotfix20/compose.hotfix20.yaml",
+        "/opt/heyi/deployments/release-20260828-local-current1/compose.local-current1.yaml",
+        "/opt/heyi/deployments/oss-links-72h-20260904/compose.oss-links.yaml",
+        "/opt/heyi/deployments/oss-direct-20260904/compose.oss-direct.yaml",
+        "/opt/heyi/deployments/oss-direct-signer-20260904/compose.oss-direct-signer.yaml",
+        "/opt/heyi/deployments/oss-direct-signer-20260904/compose.enable-signer.yaml",
+        "/opt/heyi/deployments/oss-public-images-20260904/compose.public-images.yaml",
+        "/opt/heyi/deployments/oss-public-images-v2-20260904/compose.public-images.yaml",
+        "/opt/heyi/deployments/release-606a944-20260904/compose.release.yaml",
+        "/opt/heyi/deployments/vision-0ff6347-20260904/compose.vision.yaml",
+        "/opt/heyi/deployments/image-recovery-601d632-20260904/compose.image-recovery.yaml",
+        "/opt/heyi/deployments/image-stage-ui-12c56cb-20260904/compose.image-stage-ui.yaml",
+        "/opt/heyi/deployments/timeout-1000-1c09e00-20260904/compose.timeout.yaml",
+        "/opt/heyi/deployments/company-footer-20260905/compose.company-footer.yaml",
+        "/opt/heyi/deployments/usa-grid-recovery-20260915/private/live-images.json",
+        "/opt/heyi/deployments/usa-grid-recovery-20260915/private/app-release.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.image-ledger-storage.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.preview-layout.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.pipeline-continuation.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.manual-fields.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.monitor-steps.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.asset-cards.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.login-redesign.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.login-clean.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.layout-portal.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.layout-audio-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.group-copies-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.motion-restore-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.quiet-motion-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-dependencies-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.storage-resilience-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.retry-download-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-budget-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-review-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-normalize-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.media-fallback-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.driver-stream-deadline-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.provider-download-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.provider-download-v2-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.dayan-storage-v3-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.dayan-storage-v4-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.dayan-storage-v5-20260918.json",
+        "/opt/heyi/deployments/commerce-release-20260920/compose.release.json",
+        "/opt/heyi/deployments/drape-stall-20260921/heyi-commerce-image-processor/compose.json",
+        "/opt/heyi/deployments/drape-style-20260922/compose.processor.json",
+        "/root/drape-source-print-20260922/compose.processor.json"
+      ],
+      "id": "52d27a9fac9ce7077d1075f1aac8ad5e81ec3e68adccd3e1f0f0f051d13a7e84",
+      "image": "sha256:0caa2d97cde678836aa7bcbb7563ea3d7f1e74c49e8dfa4f7cfe47a6747e79a0",
+      "logging": "json-file",
+      "paused": false,
+      "running": true
+    },
+    "heyi-document-preview": {
+      "composeFiles": [
+        ""
+      ],
+      "id": "9ef19254b5654a8117dfb273fd31dc04bcebc26e60d85c0418642a2bd4630a20",
+      "image": "sha256:fb7b6dc9a5e152a1eb2710f8b9dd38c7ea50267f3f80073fd38c5bf40893560f",
+      "logging": "json-file",
+      "paused": false,
+      "running": true
+    },
+    "heyi-pi-runtime": {
+      "composeFiles": [
+        "/opt/heyi/deployments/release-20260827-1200/compose.yaml",
+        "/opt/heyi/deployments/release-20260827-1200/compose.release.yaml",
+        "/opt/heyi/deployments/release-20260827-1200/hotfix20/compose.hotfix20.yaml",
+        "/opt/heyi/deployments/release-20260828-local-current1/compose.local-current1.yaml",
+        "/opt/heyi/deployments/oss-links-72h-20260904/compose.oss-links.yaml",
+        "/opt/heyi/deployments/oss-direct-20260904/compose.oss-direct.yaml",
+        "/opt/heyi/deployments/oss-direct-signer-20260904/compose.oss-direct-signer.yaml",
+        "/opt/heyi/deployments/oss-direct-signer-20260904/compose.enable-signer.yaml",
+        "/opt/heyi/deployments/oss-public-images-20260904/compose.public-images.yaml",
+        "/opt/heyi/deployments/oss-public-images-v2-20260904/compose.public-images.yaml",
+        "/opt/heyi/deployments/release-606a944-20260904/compose.release.yaml",
+        "/opt/heyi/deployments/vision-0ff6347-20260904/compose.vision.yaml",
+        "/opt/heyi/deployments/image-recovery-601d632-20260904/compose.image-recovery.yaml",
+        "/opt/heyi/deployments/image-stage-ui-12c56cb-20260904/compose.image-stage-ui.yaml",
+        "/opt/heyi/deployments/timeout-1000-1c09e00-20260904/compose.timeout.yaml",
+        "/opt/heyi/deployments/company-footer-20260905/compose.company-footer.yaml",
+        "/opt/heyi/deployments/usa-grid-recovery-20260915/private/live-images.json",
+        "/opt/heyi/deployments/usa-grid-recovery-20260915/private/app-release.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.image-ledger-storage.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.preview-layout.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.pipeline-continuation.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.manual-fields.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.monitor-steps.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.asset-cards.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.login-redesign.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.login-clean.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.layout-portal.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.layout-audio-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.group-copies-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.motion-restore-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.quiet-motion-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-dependencies-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.storage-resilience-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.retry-download-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-budget-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-review-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.watch-normalize-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.media-fallback-20260918.json",
+        "/opt/heyi/deployments/test-to-prod-20260917/compose.driver-stream-deadline-20260918.json",
+        "/opt/heyi/deployments/shopee-size-chart-20260921/compose.pi.json",
+        "/opt/heyi/deployments/shopee-attributes-20260921/compose.pi.json",
+        "/opt/heyi/deployments/shopee-attributes-compact-20260921/compose.pi.json",
+        "/opt/heyi/deployments/image-download-retry-20260921/compose.pi.json",
+        "/opt/heyi/deployments/drape-style-20260922/compose.pi.json",
+        "/opt/heyi/deployments/model-details-20260922/compose.pi.json",
+        "/opt/heyi/deployments/detail-grid-20260922/compose.pi.json",
+        "/opt/heyi/deployments/detail-grid-style-20260922/compose.pi.json",
+        "/root/detail-style-recovery-20260922/compose.pi.json",
+        "/root/detail-garment-fidelity-20260922/compose.pi.json",
+        "/opt/heyi/releases/video-grid-recovery-20260928/compose.heyi-pi-runtime.json",
+        "/opt/heyi/releases/video-recovery-20260929/heyi-pi-runtime.compose.json",
+        "/opt/heyi/releases/video-recovery-20260929/runtime-final.compose.json",
+        "/opt/heyi/releases/hr-pi-sdk-progress-20261008/compose.pi.json",
+        "/opt/heyi/releases/capture-templates-20261010/compose.heyi-pi-runtime.json",
+        "/opt/heyi/releases/hr-priority-20261012/compose.structured.json",
+        "/opt/heyi/releases/hr-recovery-20261012/compose.heyi-pi-runtime.json",
+        "/opt/heyi/releases/visual-product-title-20261014/compose.heyi-pi-runtime.json",
+        "/opt/heyi/releases/video-pipeline-20261015/compose.heyi-pi-runtime.activate.json",
+        "/opt/heyi/releases/video-fidelity-restore-20261015/compose.json",
+        "/opt/heyi/releases/main-image-style-20261019/compose.heyi-pi-runtime.json",
+        "/opt/heyi/releases/main-image-style-progress-20261019/compose.heyi-pi-runtime.json",
+        "/opt/heyi/releases/main-image-timeout-20261019-fbfe7f3/compose-timeout.json",
+        "/opt/heyi/releases/main-image-preserve-20261019-363b26d/compose.heyi-pi-runtime.json",
+        "/opt/heyi/releases/banana-default-20261019-86ec17d/compose.heyi-pi-runtime.json",
+        "/opt/heyi/releases/main-image-colors-oss-20261019-2694be5/compose.heyi-pi-runtime.json",
+        "/opt/heyi/releases/image-operation-oss-20261020-23c97c4/compose.oss-reader-only.json",
+        "/opt/heyi/releases/image-operation-oss-20261020-23c97c4/compose.oss.json",
+        "/opt/heyi/releases/image-operation-oss-20261020-5df7990/compose.oss-reader-only.json",
+        "/opt/heyi/releases/image-operation-oss-20261020-5df7990/compose.oss.json"
+      ],
+      "id": "dcf65a18235c4f6226dd99fbbe4d09bb68b1a85572a52c88af06242ae2e711b7",
+      "image": "heyi-pi-runtime:image-operation-oss-20261020-v2",
+      "logging": "json-file",
+      "paused": false,
+      "running": true
+    },
+    "hoyee-erphoyee": {
+      "composeFiles": [
+        "/opt/heyi/erphoyee/current/compose.yaml"
+      ],
+      "id": "6a3175125d40217729463d3b23012f791a400c674538476483304529ed74063c",
+      "image": "hoyee-erphoyee:20260908",
+      "logging": "json-file",
+      "paused": false,
+      "running": true
+    }
+  },
+  "images": {
+    "app": {
+      "repository": "ghcr.io/gotit-zhx/ai-video/app",
+      "manifestDigest": "sha256:5db37670c5f7f70a9df8030b4b9f71cffffcc920ed6198581d0b3c3ead71034a",
+      "configDigest": "sha256:3adc5ef71f16e1047fcff09162f925a3fa9e5a8293e5f06a2529f0e2f0b7f019",
+      "sourceCommit": "20bb15739b2f8601d1f87c4e342ed15747936466"
+    },
+    "frontend": {
+      "repository": "ghcr.io/gotit-zhx/ai-video/frontend",
+      "manifestDigest": "sha256:ddea0f67a282d99e3a8113fb62f4509c1a29486a41360791024ec5f9166c5e59",
+      "configDigest": "sha256:a33e888de618299a7a9aba639b1a51b07bd16cf065652adc782096f19fe764a9",
+      "sourceCommit": "867724c20bcfaf4e33d94291841d0065edd30c9f"
+    }
+  },
+  "validation": {
+    "ciRun": 42350908694,
+    "candidateRun": 42350904561,
+    "deploymentRun": 42351828774,
+    "deploymentOperation": "a863eafe9fc23d19f9ae1500fd1f3224",
+    "deploymentSeconds": 43,
+    "appChangedFrontendReused": true,
+    "realRecurringSchedulerRegressionPassed": true,
+    "originalTasksResumed": true,
+    "originalPreprocessingComplete": true,
+    "fullMarketplaceUploadCompletionVerified": false,
+    "manualBusinessRowUpdates": false
+  },
+  "rollbackQuarantine": {
+    "versions": [
+      "v2026.11.7.3",
+      "v2026.11.7.4",
+      "v2026.11.7.5"
+    ],
+    "reason": "Confirmed periodic scheduler lifecycle defect; eligibility revoked, original attestation remains historical evidence.",
+    "finishedAt": 1794039537,
+    "originalVerificationBytesPreserved": true,
+    "originalManifestsAndReceiptsPreserved": true,
+    "containerIdsUnchanged": true,
+    "imagesDeleted": false,
+    "restrictedGatewayChecks": [
+      {
+        "version": "v2026.11.7.3",
+        "request": "72a8c95b2fc9c36d229e05e324055dd3",
+        "returncode": 1,
+        "response": {
+          "error": "RuntimeError",
+          "message": "Operation rejected or failed; consult heyi-ops doctor"
+        },
+        "rejected": true
+      },
+      {
+        "version": "v2026.11.7.4",
+        "request": "92451713fe544c1afa7557fa69f7953e",
+        "returncode": 1,
+        "response": {
+          "error": "RuntimeError",
+          "message": "Operation rejected or failed; consult heyi-ops doctor"
+        },
+        "rejected": true
+      },
+      {
+        "version": "v2026.11.7.5",
+        "request": "35aaa76b3b1f5f4e60d52167da825dfb",
+        "returncode": 1,
+        "response": {
+          "error": "RuntimeError",
+          "message": "Operation rejected or failed; consult heyi-ops doctor"
+        },
+        "rejected": true
+      }
+    ],
+    "path": "/opt/heyi/ops/quarantine/20261107-upload-scheduler",
+    "healthyManagedImageCombinations": 1
+  },
+  "notifications": {
+    "issue": 4,
+    "emailConfirmedByMaintainer": true,
+    "dedupVerified": true,
+    "testIssueClosed": true,
+    "githubScheduledCadenceIndependentlyVerified": false
+  },
+  "cleanup": {
+    "ownedBytesRemoved": 103159431,
+    "hotfixOwnedBytesRemoved": 86768207,
+    "businessVolumesRemoved": false
+  },
+  "finalReceipts": [
+    "GitHub Release v2026.11.7.5 / final-acceptance.json",
+    "GitHub Release v2026.11.7.8 / final-acceptance.json"
+  ]
+}
