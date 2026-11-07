@@ -31,3 +31,10 @@ class FailedReceipts(unittest.TestCase):
     def test_assets_cannot_be_attached_to_other_commands(self):
         with self.assertRaises(ValueError):
             self.remote.call('doctor',payload={'pullToken':'synthetic'},assets={'release.json':b'{}','source.tar.gz':b'x'})
+    def test_oci_frames_have_fixed_names_and_deterministic_order(self):
+        assets={'frontend.oci.tar':b'front','release.json':b'{}','app.oci.tar':b'app','source.tar.gz':b'source'}
+        with patch('remote.subprocess.run',return_value=SimpleNamespace(returncode=0,stdout=b'{"prepared":true}')) as command:
+            self.remote.call('stage','v1.0.0',payload={'pullToken':'synthetic'},assets=assets)
+        header,data=command.call_args.kwargs['input'].split(b'\n',1)
+        self.assertEqual({'app':3,'frontend':5},json.loads(header)['imageArchives'])
+        self.assertEqual(b'{}sourceappfront',data)

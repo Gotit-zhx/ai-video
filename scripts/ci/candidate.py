@@ -14,6 +14,15 @@ def main(action):
     if action=="publish":
         value=release.validate_manifest(json.loads((output/"release.json").read_text()))
         if value["validation"]["containerSmoke"]!="passed":raise ValueError("Container smoke did not pass")
+        import sys,tempfile
+        sys.path.insert(0,str(release.ROOT/'ops/heyi-ops'))
+        from heyi_ops.oci import export_archive,validate_archive
+        for name,image in value['images'].items():
+            if image['sourceCommit']!=value['source']['commit']:continue
+            with tempfile.TemporaryDirectory(prefix='heyi-oci-validation-') as temporary:
+                archive=Path(temporary)/'image.tar';export_archive(image,archive,os.environ['GH_TOKEN'])
+                validate_archive(archive,image)
+            print(json.dumps({'component':name,'ociTransport':'verified'}))
         tag="candidate-"+sha
         result=subprocess.run(["gh","release","view",tag,"--repo",release.REPOSITORY],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         if result.returncode==0:raise RuntimeError("Candidate already published; do not overwrite immutable assets")

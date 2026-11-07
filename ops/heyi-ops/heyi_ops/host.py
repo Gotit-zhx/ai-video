@@ -47,6 +47,27 @@ def sha(value): return hashlib.sha256(value).hexdigest()
 def inspect(name): return json.loads(command("docker", "inspect", name))[0]
 
 
+def image_config_digest(info):
+    """Classic Docker reports config IDs; containerd may report manifest IDs."""
+    descriptor=info.get('Descriptor')
+    if not descriptor:return info['Id']
+    for depth in range(2):
+        value=descriptor['digest']
+        if not re.fullmatch(r'sha256:[a-f0-9]{64}',value) or descriptor.get('size',0)>1024**2:
+            raise ValueError('Invalid local image descriptor')
+        raw=command('ctr','-n','moby','content','get',value,timeout=15)
+        if len(raw)>1024**2 or 'sha256:'+sha(raw)!=value:raise ValueError('Local image manifest checksum differs')
+        manifest=json.loads(raw)
+        if 'config' in manifest:
+            result=manifest['config']['digest']
+            if not re.fullmatch(r'sha256:[a-f0-9]{64}',result):raise ValueError('Invalid local config digest')
+            return result
+        matches=[d for d in manifest.get('manifests',[]) if d.get('platform',{}).get('architecture')==info['Architecture'] and d.get('platform',{}).get('os')==info['Os']]
+        if len(matches)!=1:raise ValueError('Ambiguous local platform')
+        descriptor=matches[0]
+    raise ValueError('Unsupported local manifest nesting')
+
+
 def configuration(info, env_keys=None):
     host = info["HostConfig"]; config = info["Config"]
     environment=dict(v.split("=",1) for v in config.get("Env") or [])
@@ -108,10 +129,10 @@ class Host:
             raise RuntimeError("Current source pointer drift")
         for service, name in SERVICES.items():
             info = inspect(name)
-            if info["Image"] != baseline["images"][service]["configDigest"]: raise RuntimeError("Active image drift")
+            if image_config_digest(inspect(info['Image'])) != baseline["images"][service]["configDigest"]: raise RuntimeError("Active image drift")
             if config_hash(info,contract["environmentKeys"][service]) != contract["configurationHashes"][service]: raise RuntimeError("Runtime configuration drift")
             image = target["images"][service]
-            if inspect(image["repository"]+"@"+image["manifestDigest"])["Id"] != image["configDigest"]:
+            if image_config_digest(inspect(image["repository"]+"@"+image["manifestDigest"])) != image["configDigest"]:
                 raise RuntimeError("Prefetched image config digest mismatch")
         actual = set(command("docker", "ps", "--format", "{{.Names}}").decode().splitlines())
         expected = set(self.config["permanentContainers"])
@@ -205,7 +226,7 @@ class Host:
             time.sleep(2)
         for name,container in SERVICES.items():
             info=inspect(container)
-            if not info["State"]["Running"] or info["State"]["OOMKilled"] or info["Image"]!=target["images"][name]["configDigest"]:
+            if not info["State"]["Running"] or info["State"]["OOMKilled"] or image_config_digest(inspect(info['Image']))!=target["images"][name]["configDigest"]:
                 raise RuntimeError("Runtime image or health mismatch")
             contract=read(self.root/"baseline.json")
             if config_hash(info,contract["environmentKeys"][name])!=contract["configurationHashes"][name]:

@@ -31,7 +31,9 @@ python3 -m unittest discover -s ops/heyi-ops/tests -v
 
 第三方 Actions 固定完整提交 SHA。PR 没有生产凭据；镜像发布用 `GITHUB_TOKEN`。生产预取只接收当前任务的短期读取令牌，经 SSH 标准输入传入，独立 systemd 切换前删除临时认证文件。保存的回滚镜像无需长期 GHCR 密钥。
 
-发布清单和源码包由 GitHub 托管 Runner 下载，经同一受限 SSH 的标准输入传给 `stage`，避免生产机跨境下载 GitHub 大文件超时。入口只接收固定的两个文件名和有界长度；服务器重新核对 GitHub 资产大小、正式标签/候选关系、清单来源证明及源码 SHA-256，再拉取并验证 GHCR 镜像。传输完成不代表制品已受信任，截断、追加字节和尺寸不符均会拒绝。
+发布清单、源码包和服务器尚未缓存的镜像由 GitHub 托管 Runner 下载，经同一受限 SSH 的标准输入传给 `stage`，避免生产机跨境下载 GitHub/GHCR 大文件超时。镜像传输使用原始 registry manifest/config/layer 组成的 OCI 归档，不重建或重新压缩镜像；部署继续引用同一个 manifest digest。入口只接收固定文件名和有界长度；服务器重新核对 GitHub 资产大小、正式标签/候选关系、来源证明、源码 SHA-256、OCI 完整图和每个 blob，再导入 Docker。只允许本版本两个镜像的名称，截断、追加字节、额外文件或摘要不符均会拒绝。
+
+Docker 的经典存储和 containerd 存储可能报告不同含义的 `inspect.Id`。运维入口显式解析本地 manifest 的 config digest，分别核对发布清单中的两种摘要；清理时同时保护容器引用的 manifest 与 config 标识。已缓存镜像通过固定的 `image-cache COMPONENT MANIFEST_HEX CONFIG_HEX` 只读探针跳过重复传输。
 
 新 GHCR 包的可见性不能依赖默认值。候选任务先检查两个包的 Private 状态及仓库关联；包尚不存在时，仅推送不含任何应用文件的 scratch 初始化镜像。设置私有性后重试发布任务，才允许构建应用镜像。已有候选标签不覆盖；失败任务如果已经生成应用镜像，需要新提交生成新的候选身份。
 

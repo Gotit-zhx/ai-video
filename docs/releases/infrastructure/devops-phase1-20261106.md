@@ -32,6 +32,8 @@
 
 2026-11-07，候选 `e4ee485` 和 `v2026.11.7.1` 已通过 CI、私有 GHCR 及来源证明验证，主机控制面完成安装。两次 prepare 在生产机下载约 30 MB GitHub 源码包时超过 180 秒上限，未进入容器切换；随后通过 `hotfix/2026.11.7.2-devops-transport` 补充受限 SSH 传输，仍保留服务器独立验证。通知测试两次复用 Issue #4，维护者已确认收到 GitHub 邮件，测试事件已关闭。
 
+`v2026.11.7.2` 的源码传输和清单验证已通过；GHCR 大层下载同样受限，300 秒预取再次安全超时，应用未切换。服务器零层空镜像试验确认 Docker 29 containerd 存储可按原始 manifest 导入 OCI，且其 `inspect.Id` 为 manifest 摘要。后续 `hotfix/2026.11.7.3-devops-oci-transport` 补齐 OCI 传输与 config 摘要核对；空镜像测试产物按归属清除。
+
 ## 现场只读基线
 
 2026-11-06 新建本次专属私有目录 `/opt/heyi/operations/devops-phase1-20261106-capture-1acb41`，导出主应用 248、前端 238 份实际 Compose 链并核对容器身份未变。环境值仅保留在服务器私有文件，未进入 Git 或日志。
