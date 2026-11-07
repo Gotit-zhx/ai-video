@@ -1,0 +1,10 @@
+{
+  "project": "XTLS/Xray-core",
+  "version": "v26.10.31",
+  "architecture": "linux-amd64",
+  "archive": "Xray-linux-64.zip",
+  "archiveSha256": "e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214",
+  "binarySha256": "cc4b84d3069569f297a61f04b914f2bb37e9d202fd7b84cb50def1fc30fd40e1",
+  "binaryBytes": 35151996,
+  "geoDatabasesRequired": false
+}

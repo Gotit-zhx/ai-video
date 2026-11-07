@@ -55,6 +55,37 @@ class FinanceAdHttpTest {
         verifyNoInteractions(direct);
     }
 
+    @Test void mountedSettingsCanSelectProxyWithoutChangingApplicationCredentials() throws Exception {
+        var file=temporary.resolve("application-proxy.properties");
+        Files.writeString(file,"app-id=12345678\napp-secret=unit-only-application-secret\n");
+        var settings=new FinanceAdApplicationSettings("","",file.toString());var before=settings.current();
+        Files.writeString(file,"app-id=12345678\napp-secret=unit-only-application-secret\nproxy-host=127.0.0.1\nproxy-port=3128\n");
+        var direct=mock(MarketplaceHttp.class);
+        var transport=new FinanceAdHttp(direct,new ObjectMapper(),"",0,file.toString());
+        try{
+            assertNotSame(direct,transport.transport());
+            assertEquals(before,settings.current(),"Adding network settings must not change the grant revision or app secret");
+        }finally{transport.stop();}
+    }
+
+    @Test void existingCredentialFileWithoutNetworkKeysKeepsDirectAccess() throws Exception {
+        var file=temporary.resolve("application-direct.properties");Files.writeString(file,"app-id=12345678\napp-secret=unit-only-secret\n");
+        var direct=mock(MarketplaceHttp.class);
+        assertSame(direct,new FinanceAdHttp(direct,new ObjectMapper(),"",0,file.toString()).transport());
+    }
+
+    @Test void malformedPrivateFileNeverLeaksItsContents() throws Exception {
+        var file=temporary.resolve("application-invalid.properties");Files.writeString(file,"proxy-port=unit-only-secret\n");
+        var failure=assertThrows(IllegalArgumentException.class,()->new FinanceAdHttp(mock(MarketplaceHttp.class),new ObjectMapper(),"",0,file.toString()));
+        assertFalse(failure.getMessage().contains("unit-only"));assertNull(failure.getCause());
+    }
+
+    @Test void explicitProxySettingsOverrideTheOptionalPrivateFile(){
+        var direct=mock(MarketplaceHttp.class);
+        var transport=new FinanceAdHttp(direct,new ObjectMapper(),"127.0.0.1",3128,temporary.resolve("missing-file").toString());
+        try{assertNotSame(direct,transport.transport());}finally{transport.stop();}
+    }
+
     @Test void springInjectsOneAdvertisingTransportIntoAuthorizationAndReportingWithoutChangingSharedClient() throws Exception {
         var direct=mock(MarketplaceHttp.class);
         try(var context=new AnnotationConfigApplicationContext()){

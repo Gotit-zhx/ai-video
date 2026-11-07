@@ -32,7 +32,7 @@ def component(path):
         return 'unsupported'
     if path.endswith(".md") or path.startswith(("docs/","frontend/test/","frontend/tests/","ops/heyi-ops/tests/")):
         return "source"
-    if path.startswith("ops/heyi-ops/") or path in {"scripts/heyi-mysql-backup.py","scripts/ci/release.py"} or path.startswith("ops/admin-console/heyi-mysql-backup."):
+    if path.startswith(("ops/heyi-ops/", "ops/finance-ad-proxy/")) or path in {"scripts/heyi-mysql-backup.py","scripts/ci/release.py"} or path.startswith("ops/admin-console/heyi-mysql-backup."):
         return "operations"
     if path.startswith(("src/main/",)) or path in ("pom.xml", "Dockerfile", "maven-settings.xml", ".dockerignore", "scripts/ci/VerifyDependencies.java", "scripts/ci/dependencies.sha256"):
         return "app"
