@@ -8,6 +8,8 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [finance-ad-vmess-validation-20261107.md](finance/finance-ad-vmess-validation-20261107.md) | 单进程代理候选；第一条节点失败，第二条节点通过本机与 ECS HTTPS 验证，永久接入待发布 |
+| [finance-ad-connection-repair-20261107.md](finance/finance-ad-connection-repair-20261107.md) | 广告连接候选、63 项回归、临时真实令牌交换及正式环境恢复；长期代理待配置 |
 | [finance-advertising-20261106.md](finance/finance-advertising-20261106.md) | v2026.11.6.3 广告统计上线、运行验收及真实授权连接待办（11 月 7 日激活） |
 | [finance-bi-performance-20261106.md](finance/finance-bi-performance-20261106.md) | BI 两级缓存、成本队列优化与上线验收 |
 | [finance-cold-queries-20261106.md](finance/finance-cold-queries-20261106.md) | 冷查询分段聚合、后台提交刷新及 v2026.11.6.2 验收 |
