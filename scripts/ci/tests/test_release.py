@@ -39,6 +39,7 @@ class ReleaseTest(unittest.TestCase):
         for p in ["services/pi-runtime/index.js","apps/hr-desktop/main.cjs","compose.yaml","unknown.bin"]:
             self.assertEqual("unsupported",release.component(p))
         self.assertEqual("source",release.component("docs/guides/operations.md"))
+        self.assertEqual('operations',release.component('scripts/ci/release.py'))
     def test_required_test_skip_and_missing_report_fail(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)

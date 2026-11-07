@@ -104,7 +104,7 @@ class Legacy:
             for line in Path('/proc/'+str(info['State']['Pid'])+'/net/'+name).read_text().splitlines()[1:]:
                 fields=line.split()
                 if fields[1].rsplit(':',1)[1].upper()=='1F90' and fields[3]=='01':return False
-        processes=command('docker','top',SERVICES['frontend'],'-eo','args').decode()
+        processes=command('docker','top',SERVICES['frontend'],'-eo','pid,args').decode()
         return 'worker process is shutting down' not in processes
     def drain(self):
         deadline=time.monotonic()+self.host.config.get('drainTimeoutSeconds',180);quiet=0
