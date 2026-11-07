@@ -33,6 +33,7 @@ public class WorkflowStreamConsumer {
             LoggerFactory.getLogger(WorkflowStreamConsumer.class);
     private static final String GROUP = "heyi-workflow-workers";
 
+    private volatile boolean pendingRecovered;
     private final StringRedisTemplate redisTemplate;
     private final WorkflowExecutionCoordinator coordinator;
     private final Executor executor;
@@ -74,7 +75,7 @@ public class WorkflowStreamConsumer {
                 throw exception;
             }
         }
-        recoverOwnPending();
+        if(!com.yingdao.aicommerce.ops.MaintenanceGate.instance().closed())recoverPendingOnce();
     }
 
     private boolean hasBusyGroupCause(Throwable exception) {
@@ -91,7 +92,12 @@ public class WorkflowStreamConsumer {
 
     @Scheduled(fixedDelayString = "${app.dispatch.poll-delay:500}")
     void poll() {
+        recoverPendingOnce();
         submit(read(ReadOffset.lastConsumed()));
+    }
+
+    private void recoverPendingOnce() {
+        if(!pendingRecovered){recoverOwnPending();pendingRecovered=true;}
     }
 
     private void recoverOwnPending() {

@@ -23,6 +23,18 @@
         <ci.reportsDirectory>${project.build.directory}/surefire-reports</ci.reportsDirectory>
     </properties>
 
+    <dependencyManagement>
+        <dependencies>
+            <!-- credentials-java permits a Tea version range; preserve the
+                 verified production runtime until an explicit SDK upgrade. -->
+            <dependency>
+                <groupId>com.aliyun</groupId>
+                <artifactId>tea</artifactId>
+                <version>1.4.2</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>

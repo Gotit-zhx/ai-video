@@ -97,7 +97,7 @@ public class RecruitmentAiController {
     public SseEmitter generateStream(@AuthenticationPrincipal PlatformPrincipal user, @RequestBody Map<String,Object> body) {
         var clean=demandInput(user,body);
         var emitter=new SseEmitter(330000L);
-        Thread worker=Thread.ofVirtual().unstarted(()->{
+        var tracked=com.yingdao.aicommerce.ops.MaintenanceGate.accepted(()->{
             try {
                 streamDemand(user,clean,event->{
                     try {emitter.send(SseEmitter.event().name((String)event.get("event"))
@@ -107,10 +107,11 @@ public class RecruitmentAiController {
                 emitter.complete();
             } catch(Exception error) {emitter.completeWithError(error);}
         });
+        Thread worker=Thread.ofVirtual().unstarted(tracked);
         emitter.onTimeout(worker::interrupt);
         emitter.onError(ignored->worker.interrupt());
         emitter.onCompletion(worker::interrupt);
-        worker.start();
+        tracked.start(worker);
         return emitter;
     }
 

@@ -26,7 +26,7 @@ public class CommercePrintReferenceWorker {
         for (var work : jobs.pending(capacity)) {
             var running = new Active(work, UUID.randomUUID().toString());
             if (active.putIfAbsent(work.id(), running) != null) continue;
-            try { executor.execute(() -> {
+            try { com.yingdao.aicommerce.ops.MaintenanceGate.execute(executor,() -> {
                 try { service.process(work, running.token()); }
                 catch (RuntimeException error) { log.warn("Print reference task {} interrupted: {}", work.id(), error.getClass().getSimpleName()); }
                 finally { active.remove(work.id(), running); }

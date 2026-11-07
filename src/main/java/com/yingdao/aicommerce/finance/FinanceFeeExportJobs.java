@@ -55,7 +55,7 @@ public class FinanceFeeExportJobs {
             throw bad("已有两份报表正在生成，请等待其中一份完成");
         if(jobs.size()>=32)throw bad("导出任务较多，请稍后再试");
         jobs.put(candidate.id,candidate);
-        try{executor.execute(()->generate(candidate));}
+        try{com.yingdao.aicommerce.ops.MaintenanceGate.execute(executor,()->generate(candidate));}
         catch(RejectedExecutionException full){jobs.remove(candidate.id);throw bad("导出队列已满，请稍后再试");}
         return view(candidate);
     }

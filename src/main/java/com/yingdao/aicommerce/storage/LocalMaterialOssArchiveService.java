@@ -57,7 +57,7 @@ public class LocalMaterialOssArchiveService {
     @Scheduled(initialDelay=90_000,fixedDelay=60_000)
     public void scheduleArchive() {
         if(!running.compareAndSet(false,true))return;
-        try {worker.execute(() -> {try {archive();} finally {running.set(false);}});}
+        try {com.yingdao.aicommerce.ops.MaintenanceGate.execute(worker,() -> {try {archive();} finally {running.set(false);}});}
         catch(java.util.concurrent.RejectedExecutionException stopped) {running.set(false);}
     }
     @jakarta.annotation.PreDestroy

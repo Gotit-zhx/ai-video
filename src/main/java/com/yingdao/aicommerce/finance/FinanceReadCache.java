@@ -296,7 +296,7 @@ public class FinanceReadCache {
     private void background(String address,FinanceSnapshotCache.Key key,Supplier<Map<String,Object>> load){
         var future=new CompletableFuture<Map<String,Object>>();
         if(pending.putIfAbsent(address,future)!=null)return;
-        try{executor.execute(()->complete(address,key,load,future));}
+        try{com.yingdao.aicommerce.ops.MaintenanceGate.execute(executor,()->complete(address,key,load,future));}
         catch(RejectedExecutionException busy){pending.remove(address,future);future.completeExceptionally(busy);}
     }
     private Map<String,Object> compute(String address,FinanceSnapshotCache.Key key,Supplier<Map<String,Object>> load){

@@ -5,8 +5,10 @@ ENV PATH=/usr/share/maven/bin:$PATH
 WORKDIR /workspace
 COPY pom.xml .
 COPY maven-settings.xml .
+COPY scripts/ci/VerifyDependencies.java scripts/ci/dependencies.sha256 scripts/ci/
 COPY src src
-RUN --mount=type=cache,target=/root/.m2 mvn -B -ntp -DskipTests clean package
+RUN --mount=type=cache,target=/root/.m2 mvn -B -ntp -DskipTests clean package \
+    && java scripts/ci/VerifyDependencies.java target/ai-commerce-platform-0.1.0-SNAPSHOT.jar scripts/ci/dependencies.sha256
 
 FROM eclipse-temurin:21.0.9_10-jre-noble@sha256:d3eb69add1874bc785382d6282db53a67841f602a1139dee6c4a1221d8c56568
 WORKDIR /app

@@ -150,6 +150,9 @@ if __name__ == "__main__":
     elif a.mode == "unit":
         selected = sorted(set(sources) - set(database) - set(OPTIONAL["excludedClasses"]))
         print(json.dumps(maven(selected, ROOT / "target/ci-reports/unit")))
+        subprocess.run([os.environ.get("MVN","mvn"),"-B","-ntp","-DskipTests","package"],cwd=ROOT,check=True)
+        java_executable=str(Path(os.environ["JAVA_HOME"])/"bin/java") if os.environ.get("JAVA_HOME") else "java"
+        subprocess.run([java_executable,"scripts/ci/VerifyDependencies.java","target/ai-commerce-platform-0.1.0-SNAPSHOT.jar","scripts/ci/dependencies.sha256"],cwd=ROOT,check=True)
     else:
         selected = [name for i, name in enumerate(sorted(database)) if i % a.shards == a.shard]
         if a.classes:
