@@ -1,8 +1,8 @@
 # 阿里云生产部署与运维交接
 
-核对日期：**2026-11-07（北京时间）**，服务器 `8.163.34.81`。Java/Web 已通过 `v2026.11.7.4` 接入统一运维，首次接管执行器用时 26 秒。本文档随后作为纯文档版本同步；最新源码版本以 `heyi-ops status`、`/opt/heyi/source/current` 和正式 Release 回执为准，不能仅按镜像标签推断文档版本。
+核对日期：**2026-11-07（北京时间）**，服务器 `8.163.34.81`。Java/Web 已接入统一运维；当前应用基线 **v2026.11.7.7** 修复了接管引入的定时调度缺陷，原任务已恢复推进。本批交接文档随 v2026.11.7.8 发布；最新源码版本以 `heyi-ops status`、`/opt/heyi/source/current` 和正式 Release 回执为准。
 
-日常命令见[运维指南](operations.md)，流水线和权限见[CI/CD 指南](cicd.md)，版本、摘要与验收边界见[一期验收](../releases/infrastructure/devops-phase1-20261106.md)。接管前的详细端口、目录与问题已归档到[历史快照](../releases/infrastructure/server-handoff-before-cicd-20261107.md)，不再作为当前发布入口。
+日常命令见[运维指南](operations.md)，流水线和权限见[CI/CD 指南](cicd.md)，版本、故障修复和验收边界见[一期收尾](../releases/infrastructure/devops-phase1-closure-20261107.md)。接管前的详细端口、目录与问题已归档到[历史快照](../releases/infrastructure/server-handoff-before-cicd-20261107.md)，不再作为当前发布入口。
 
 ## 1. 接手时先处理什么
 
@@ -14,7 +14,7 @@
 | 生产入口 | GitHub 托管 Runner、两个 Private GHCR 包、来源证明、受限部署/巡检身份、固定 SSH 主机密钥 |
 | 配置与数据边界 | app/frontend 各由 252/240 份历史覆盖收敛为三份配置；环境、端口、挂载、网络、资源和日志比对通过，增加只读运维控制目录 |
 | 恢复与留痕 | systemd 独立执行、双锁、维护门控、拥有者租约释放、持久回执与恢复入口 |
-| 自动巡检 | 九个常驻容器、主应用、数据库任务、磁盘、备份和 TLS；本机每分钟、GitHub 每五分钟调度；有限自愈已启用 |
+| 自动巡检 | 九个常驻容器、主应用、数据库任务、磁盘、备份和 TLS；本机每分钟，GitHub 配置每五分钟且手动外部检查通过；有限自愈已启用 |
 | 通知 | 去重 Issue 与 GitHub 原生邮件；Issue #4 两次测试未重复创建，维护者确认邮件送达后已关闭 |
 | 备份/TLS | 最新已有归档完整校验通过；webroot 续期和实际证书重载通过 |
 
@@ -27,7 +27,7 @@
 | 主机 | Ubuntu 26.04 LTS，内核 `7.0.0-28-generic`，8 vCPU |
 | 时区 | 宿主机 Asia/Shanghai；数据库业务诊断使用 UTC |
 | 容器平台 | Docker 29.1.3，containerd image store；Compose `2.40.3+ds1-0ubuntu1` |
-| 磁盘样本 | 接管后约 16.3 GiB 可用；数值持续变化，14 GiB 是发布/备份启动保护线，8 GiB 为严重阈值 |
+| 磁盘样本 | v7 收尾复核约 15.2 GiB 可用；数值持续变化，14 GiB 是发布/备份启动保护线，8 GiB 为严重阈值 |
 | 运维程序 | `/usr/local/sbin/heyi-ops`；版本位于 `/usr/local/lib/heyi-ops/versions/`，`current` 指向已验收代码 |
 | 日志 | 核心容器仍为 `none`；新增运维回执按 30 天/50 MiB 管理，保留当前和回滚必需证据 |
 
@@ -59,14 +59,15 @@ Docker 在本机可能把 manifest digest 作为 `inspect.Id` 返回。发布清
 | 统一命令 | `status`、`doctor`、`preflight`、`deploy`、`rollback`、`recover`、`cleanup` |
 | 配置 | `/etc/heyi-ops/config.json`；仅 root 管理 |
 | 固定 Compose | `/opt/heyi/ops/compose/base.json` + `production.json` + 生效版本 `images.json` |
-| 当前容器引用的镜像清单 | `/opt/heyi/ops/releases/v2026.11.7.4/images.json` |
+| 当前容器引用的镜像清单 | 后端 `/opt/heyi/ops/releases/v2026.11.7.7/images.json`；未重建的前端仍引用 v4 的 `images.json` |
+| 已安装控制面 | `/usr/local/lib/heyi-ops/versions/20bb15739b2f8601d1f87c4e342ed15747936466` |
 | 当前源码/文档 | `/opt/heyi/source/current` → `/opt/heyi/source/releases/<已验收版本>` |
 | 正式清单与验收 | GitHub Release 的 `release.json`、`receipt.json` 及追加的操作回执；服务器 `/opt/heyi/ops/releases/`、`operations/` |
 | 初始接管证据 | `/opt/heyi/operations/devops-phase1-20261107-946c8f18/` 的小型回执，以及持久化的 `/opt/heyi/ops/adoption/` |
 
-纯文档发布更新源码指针并复用镜像，容器 ID 和其 Compose 标签可继续指向 v4，这是预期行为。下一次应用切换会生成新版本镜像清单。历史 `/opt/heyi/current` 仍是旧配置入口，不是当前应用版本指针。
+纯文档发布更新源码指针并复用镜像；后端、前端的 Compose 标签分别保留其最近实际重建版本，这是预期行为。下一次组件切换会生成新版本镜像清单。历史 `/opt/heyi/current` 仍是旧配置入口，不是当前应用版本指针。
 
-运行中后端 manifest 为 `sha256:4070261f788e2e1521dad431e78609c98dfce2f98bb9c5060af334f7ca3716d7`，前端为 `sha256:ddea0f67a282d99e3a8113fb62f4509c1a29486a41360791024ec5f9166c5e59`。镜像由候选 `867724c` 构建，v4 验证相同组件输入后精确复用；完整 config digest 和映射见一期验收。
+运行中后端 manifest 为 `sha256:5db37670c5f7f70a9df8030b4b9f71cffffcc920ed6198581d0b3c3ead71034a`，由候选 `20bb157` 构建；前端仍为 `sha256:ddea0f67a282d99e3a8113fb62f4509c1a29486a41360791024ec5f9166c5e59`，来源 `867724c`。v7 只切换后端，用时 43 秒。完整 config digest 见[当前版本表](operations.md#最近现场核实的版本)。
 
 ## 5. 持久化、目录与私有配置
 
@@ -89,7 +90,7 @@ Docker 在本机可能把 manifest digest 作为 `inspect.Id` 返回。发布清
 
 接管前后 Flyway 历史指纹相同，仍为 V147，未新增或改写迁移。普通发布发现迁移新增、历史校验变化或无法确认的业务安全点时停止；结构变更走独立维护流程。
 
-首次接管只临时预留本次 UUID 的空闲租约，未直接修改计划、检查点或上游限流；验收后五类租约预留均为 0，正常调度已继续推进。成本积压不要求清零，也不因积压触发重启。未知/过期租约按异常处理，不强行抢占。
+首次接管只临时预留本次 UUID 的空闲租约，未直接修改计划、检查点或上游限流；验收后五类预留均为 0。随后发现 Spring 周期调度没有恢复，v7 已把门控移到业务回调并验证原上传流程自然推进。原图预处理 19/19 完成、九图流程曾到 READY 9/9 后进入 PUBLISH；其他任务仍在运行，不能宣称所有平台上传已完成。成本积压不要求清零，也不因积压触发重启。既往领取或存在任何锁的上传任务仍阻止应用切换，不能修改业务记录绕过安全点。
 
 生产保留原 `none` 日志策略。排障使用有界、脱敏输出和小型回执；不要记录完整请求/响应、凭据、业务导出或在长期运行容器上临时打开无限日志。
 
@@ -143,5 +144,7 @@ systemctl list-timers --all 'heyi-ops-*' heyi-mysql-backup.timer certbot.timer
 | TLS 告警 | 核对 webroot、续期结果及实际对外证书，检查串行重载回执 |
 
 新运维体系的自动回滚集合只包含已验收的受管版本。旧体系的近期应用/前端镜像和回执继续保留，但不能将未携带新维护协议的历史镜像直接当作自动回滚目标。
+
+v3/v4/v5 因确认的定时器缺陷已撤销本机发布资格，原验证文件保存在 `/opt/heyi/ops/quarantine/20261107-upload-scheduler/`；真实受限 SSH 回滚请求已确认拒绝，九个容器、源码、门控和数据库未变。所有原始证据和前端仍引用的 v4 Compose 文件保留。当前健康的受管应用只有 v7 这一组，纯文档 v8 复用相同镜像。不能把历史保留列表或健康检查成功当作业务兼容证明。
 
 仍需独立跟进：云安全组及阿里云管理权核验、Aegis 失败、招聘退役路由承接、完整隔离恢复和异地备份、广告代理及真实账户接入。这些事项不因本次健康检查通过而自动完成。

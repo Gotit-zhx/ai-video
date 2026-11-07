@@ -1,16 +1,16 @@
 # 发布、回滚与运维交接
 
-核对日期：2026-11-07。**14:04:24 已完成 `v2026.11.7.4` 的 CI/CD 首次接管**，执行器从预检至验收用时 26 秒；正常 Production deployment `42345874985` 随后通过并保存正式 Release。自动发布、巡检和有限自愈已启用。日常入口见[CI/CD 指南](cicd.md)，当前主机分类清单见[服务器运维交接](server-handoff.md)，详细证据见[一期验收](../releases/infrastructure/devops-phase1-20261106.md)。
+核对日期：2026-11-07。**当前应用基线为 `v2026.11.7.7`，已修复首次接管引入的定时工作器停调度问题，原上传任务已自然恢复推进。** 自动发布、巡检和有限自愈已启用。`v2026.11.7.8` 用于本批纯文档交接，实际源码版本以 `heyi-ops status` 和正式 Release 为准。日常入口见[CI/CD 指南](cicd.md)，主机分类清单见[服务器运维交接](server-handoff.md)，验收及故障闭环见[一期收尾](../releases/infrastructure/devops-phase1-closure-20261107.md)。
 
 生产操作先读 [AGENTS.md](../../AGENTS.md)，重新核对实际容器、源码指针、镜像摘要及最新回执。多个会话共用生产机，必须按双锁顺序串行协调。
 
 ## 最近现场核实的版本
 
-应用接管版本为 `v2026.11.7.4`，候选源码 `6eae41f74aa0e7eead91dcd6332f5f0a98e77867`。后端/前端组件输入与已验证的 `867724c` 候选一致，精确复用其私有 GHCR 镜像。后续仅文档发布会推进 `/opt/heyi/source/current`，保留相同镜像及容器 ID；最新源码版本看 `heyi-ops status`。
+应用修复版本为 `v2026.11.7.7`，候选及已安装控制面源码 `20bb15739b2f8601d1f87c4e342ed15747936466`，生产合并 `27ddaa730c434ccc7a187eb6cf8fdbb5a952293c`。此次标准自动发布只切换后端，前端复用 `867724c` 构建的原镜像，执行器用时 43 秒。后续仅文档发布推进 `/opt/heyi/source/current`，保留相同镜像及容器 ID。
 
 | 服务 | 运行 manifest digest | config digest |
 | --- | --- | --- |
-| Java 后端 | `4070261f788e2e1521dad431e78609c98dfce2f98bb9c5060af334f7ca3716d7` | `3d3a6f4d6307adc3e5ee653e1852d5f128b07a86fc4916748e8763ea0e6de6cd` |
+| Java 后端 | `5db37670c5f7f70a9df8030b4b9f71cffffcc920ed6198581d0b3c3ead71034a` | `3adc5ef71f16e1047fcff09162f925a3fa9e5a8293e5f06a2529f0e2f0b7f019` |
 | Web 前端 | `ddea0f67a282d99e3a8113fb62f4509c1a29486a41360791024ec5f9166c5e59` | `a33e888de618299a7a9aba639b1a51b07bd16cf065652adc782096f19fe764a9` |
 
 摘要均为 SHA-256，仓库分别为 `ghcr.io/gotit-zhx/ai-video/app`、`frontend`。Docker 29 containerd 的 image ID 可等于 manifest，不能直接与 config digest 比较。
@@ -19,13 +19,13 @@
 
 相关生产路径：
 
-- 固定配置：`/opt/heyi/ops/compose/base.json`、`production.json`；当前容器引用 `/opt/heyi/ops/releases/v2026.11.7.4/images.json`，各三份，不再加载 252/240 份覆盖。
+- 固定配置：`/opt/heyi/ops/compose/base.json`、`production.json`；后端引用 `/opt/heyi/ops/releases/v2026.11.7.7/images.json`，未重建的前端仍引用 v4 的 `images.json`，各三份，不再加载 252/240 份覆盖。不能删除前端仍引用的旧配置。
 - 源码与文档：`/opt/heyi/source/current`；与历史 `/opt/heyi/current` 分开使用。
 - 运维状态：`/opt/heyi/ops/active.json`、`baseline.json`、`operations/`、`requests/`；仅 root 维护，不手工改 active/version 绕过校验。
 - 首次接管及备份/TLS/权限证据：`/opt/heyi/operations/devops-phase1-20261107-946c8f18/`，GitHub Release 附带脱敏摘要。
 - 私有广告 properties：`/opt/heyi/shared/finance-ads/`，继续只读挂载；正式代理接入由独立维护完成。
 
-接管验收确认 schema 指纹未变、七个其他常驻容器未重建、五类本次租约预留均为 0、维护门控清除及调度继续推进。此前[广告发布](../releases/finance/finance-advertising-20261106.md)、[冷查询发布](../releases/finance/finance-cold-queries-20261106.md)和[性能发布](../releases/finance/finance-bi-performance-20261106.md)保留其历史业务事实，不能把 CI/CD 运行验收理解为真实广告账户已接入。
+首次接管确认 schema、配置和租约恢复，但健康检查遗漏了 Spring 周期任务再次排队的缺陷。v7 已用真实定时器回归及原有上传任务推进验证修复；11 月 7 日收尾复核 schema 仍为 V147、配置与基线一致、维护关闭且没有未完成运维。不得再把 v4/v5 的健康验收视为上传业务正常。此前[广告发布](../releases/finance/finance-advertising-20261106.md)、[冷查询发布](../releases/finance/finance-cold-queries-20261106.md)和[性能发布](../releases/finance/finance-bi-performance-20261106.md)保留其历史业务事实，广告真实账户接入仍需独立验收。
 
 ## 接管后的只读基线
 
@@ -61,6 +61,8 @@ docker inspect --format '{{range .Mounts}}{{println .Type .Destination}}{{end}}'
 
 优先使用 GitHub Operations → `rollback`，选择仍保留且已验收的受管版本；或由授权身份调用 `heyi-ops rollback VERSION EXPECTED_VERSION OPERATION_ID`。操作 ID 为 32 位小写十六进制，必须记录本次目标和当前基线，不能复用于其他请求。
 
+- **v2026.11.7.3 / v2026.11.7.4 / v2026.11.7.5 已禁止回滚**：三者复用存在定时器缺陷的后端。原始 `verified.json` 已移到 `/opt/heyi/ops/quarantine/20261107-upload-scheduler/<版本>/`，受限部署身份的真实回滚请求均在入队前被拒绝。原证明、发布清单、镜像、源码和回执保留，禁止复制验证文件重新启用。
+- 当前健康受管应用组合只有 v7 一组；v8 复用它，并不会增加第二组独立应用回滚镜像。保留列表含历史证据不代表仍有发布资格。旧体系两组镜像继续保留，使用前另行审查兼容性，不为凑足数量重新启用缺陷版本。
 - 先确认数据库历史、迁移输入及运行配置兼容。自动回滚恢复应用/源码，数据库、业务卷、密钥、同步进度和已发出的官方写入不会随之撤销。
 - 不通过删除数据或修改迁移校验和来回滚。数据库恢复另走隔离验证后的独立维护流程。
 - 回滚后复核 `status`、`doctor` 和操作回执。清理临时上传目录后仍可诊断、恢复和回滚；保留版本的源包、配置及镜像不得被删除。
@@ -97,6 +99,7 @@ MySQL 之外还需分别交接持久卷、OSS 对象、招聘 SQLite/私有资�
 | 招聘接口 404/无法连接 | 独立 Python 服务、本地/生产 Nginx 路由、设备授权及助手版本 |
 | 财务列表查不到已知订单 | 全部/已结算视图、下单/首次结算日期、精确编号跨日期规则及公司/分组/店铺筛选 |
 | 同步排队/长期未完成 | 通道进度、租约、冷却、手动优先及 ORDER/SETTLEMENT 完整月证明；“最近成功”不等于整店完成 |
+| 服务健康但上传长期 PENDING | 查实际后端摘要、维护状态、领取计数/锁和定时器回归版本；v7 修复记录见[上传调度恢复](../releases/commerce/upload-scheduler-recovery-20261107.md)。保留原流程，不重复生图或重建未知外部发布 |
 | 千易单据不进收货合计 | 真实 receiveTime、完成状态、非删除、对应退回卖家签收证据；未知状态不补猜 |
 | 导出与人民币看板不同币种 | 费用矩阵始终导出原币分表；不是汇率转换失败 |
 | 模型失败或视频不完整 | 提供方状态、Runtime/模型凭据、限量任务事件、素材权限及已保存恢复状态，避免重复付费提交 |

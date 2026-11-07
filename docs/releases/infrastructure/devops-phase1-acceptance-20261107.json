@@ -92,5 +92,19 @@
   "tlsExpiryBeijing": "2027-02-05T11:04:47+08:00",
   "finalClosureReceipt": "GitHub Release v2026.11.7.5 / final-acceptance.json",
   "adoptionObservedAt": 1794031571,
-  "evidenceCompiledAt": "2026-11-07T06:32:03.325801+00:00"
+  "evidenceCompiledAt": "2026-11-07T06:32:03.325801+00:00",
+  "evidenceScope": "Historical v4 structural adoption; subsequently confirmed recurring scheduler defect means this is not current business-health or rollback evidence.",
+  "postAcceptanceIncident": {
+    "affectedAppVersions": [
+      "v2026.11.7.3",
+      "v2026.11.7.4",
+      "v2026.11.7.5"
+    ],
+    "currentRollbackEligible": false,
+    "fixedVersion": "v2026.11.7.7",
+    "fixedCandidate": "20bb15739b2f8601d1f87c4e342ed15747936466",
+    "businessRecoveryReceipt": "GitHub Release v2026.11.7.7 / upload-scheduler-acceptance-20bb157.json",
+    "closureDocument": "devops-phase1-closure-20261107.md",
+    "quarantineReceipt": "/opt/heyi/ops/quarantine/20261107-upload-scheduler/reason.json"
+  }
 }

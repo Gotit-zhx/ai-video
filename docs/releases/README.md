@@ -69,6 +69,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [upload-scheduler-recovery-20261107.md](commerce/upload-scheduler-recovery-20261107.md) | v7 修复维护启动后定时轮询停止，原生图和上传流程恢复 |
 | [watermark-pre-detection-20260909.md](commerce/watermark-pre-detection-20260909.md) | 深灰商品图前置水印漏判修复 |
 | [transparent-artwork-auto-publish-20260915.md](commerce/transparent-artwork-auto-publish-20260915.md) | 透明印花生成与自动草稿上传实测（2026-09-15） |
 | [tiktok-upload-normal-20260910.md](commerce/tiktok-upload-normal-20260910.md) | TikTok Shop 上传补齐与验收（2026-09-10） |
@@ -205,8 +206,10 @@
 
 | 文档 | 内容 |
 | --- | --- |
-| [devops-phase1-20261106.md](infrastructure/devops-phase1-20261106.md) | GitHub Actions 与自动化运维一期实施及验收状态 |
-| [devops-phase1-acceptance-20261107.json](infrastructure/devops-phase1-acceptance-20261107.json) | 已完成的 v4 接管与 CI/通知摘要；后续闭环见 Release 附件 |
+| [devops-phase1-closure-20261107.md](infrastructure/devops-phase1-closure-20261107.md) | 一期收尾、v7 调度恢复、缺陷回滚资格隔离与 v8 交接 |
+| [devops-phase1-closure-20261107.json](infrastructure/devops-phase1-closure-20261107.json) | v7 当前基线、真实受限回滚拒绝与验收边界摘要 |
+| [devops-phase1-20261106.md](infrastructure/devops-phase1-20261106.md) | 原 v4 结构验收及后续调度缺陷说明，非当前业务健康证明 |
+| [devops-phase1-acceptance-20261107.json](infrastructure/devops-phase1-acceptance-20261107.json) | 原接管/CI/通知摘要，追加业务缺陷及回滚资格撤销说明 |
 | [server-handoff-before-cicd-20261107.md](infrastructure/server-handoff-before-cicd-20261107.md) | CI/CD 接管前各次现场交接的历史快照 |
 | [project-sync-20261106.md](infrastructure/project-sync-20261106.md) | 项目同步、刷单核对表跨页合计的候选验证、发布及交接记录 |
 | [server-deployment-audit-20261105.md](infrastructure/server-deployment-audit-20261105.md) | 阿里云服务器只读现场核查、部署基线、证书/备份失败及运维接手边界；含脱敏 JSON 回执 |
