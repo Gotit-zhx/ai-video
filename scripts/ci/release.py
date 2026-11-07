@@ -26,6 +26,10 @@ def canonical(data):
 
 
 def component(path):
+    if path.startswith('src/main/'):
+        return 'app'
+    if path.startswith(('services/','apps/','config/')) and not ('/docs/' in path or Path(path).name in {'README.md','AGENTS.md'}):
+        return 'unsupported'
     if path.endswith(".md") or path.startswith(("docs/","frontend/test/","frontend/tests/","ops/heyi-ops/tests/")):
         return "source"
     if path.startswith("ops/heyi-ops/") or path in {"scripts/heyi-mysql-backup.py","scripts/ci/release.py"} or path.startswith("ops/admin-console/heyi-mysql-backup."):
@@ -39,6 +43,10 @@ def component(path):
     if path.startswith(("docs/", "scripts/", "ops/", ".github/", "src/test/", "experiments/", ".circleci/")) or path.endswith(".md") or path in (".gitignore", ".gitattributes"):
         return "source"
     return "unsupported"
+
+
+def documentation_only(paths):
+    return all(component(p)=='source' and (p.startswith('docs/') or p.endswith('.md')) for p in paths)
 
 
 def inventory(ref="HEAD"):

@@ -123,7 +123,7 @@ def install(source,capture_dir,revision):
     library=version.parent.parent
     library.chmod(0o755);version.parent.chmod(0o755)
     link=library/".next";link.symlink_to(version);link.replace(library/"current")
-    for name in ("gateway","ssh-deploy","ssh-monitoring"):
+    for name in ("gateway","ssh-deploy","ssh-monitoring","certificate-renewed"):
         shutil.copyfile(source/"ops/heyi-ops/bin"/name,library/name);(library/name).chmod(0o755)
     shutil.copyfile(source/"ops/heyi-ops/bin/heyi-ops","/usr/local/sbin/heyi-ops");Path("/usr/local/sbin/heyi-ops").chmod(0o755)
     compose=root/"compose";compose.mkdir(exist_ok=True)

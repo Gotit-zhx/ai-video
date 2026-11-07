@@ -11,6 +11,7 @@ import resource
 import signal
 import subprocess
 import time
+import zlib
 
 ROOT = Path("/opt/heyi/backups/mysql")
 GIB = 1024 ** 3
@@ -126,7 +127,7 @@ def main():
         except BackupFailure as error:
             receipt(error.outcome, durationSeconds=round(time.monotonic()-started))
             return error.code
-        except (gzip.BadGzipFile, EOFError):
+        except (gzip.BadGzipFile, EOFError, zlib.error):
             receipt("integrity_failed", durationSeconds=round(time.monotonic()-started))
             return 1
         except subprocess.TimeoutExpired:

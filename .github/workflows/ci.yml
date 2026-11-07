@@ -39,12 +39,16 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           python3 - <<'PY'
-          import os, subprocess
+          import os, subprocess, sys
+          sys.path.insert(0,'scripts/ci')
+          from release import documentation_only
           base=os.environ.get('BASE_SHA','')
           runtime=True
+          if (not base or base=='0'*40) and os.environ['GITHUB_REF'].startswith(('refs/heads/release/','refs/heads/hotfix/')):
+              base='origin/main-tree'
           if base and base!='0'*40:
               files=subprocess.check_output(['git','diff','--name-only',base,'HEAD'],text=True).splitlines()
-              runtime=any(not (f.startswith('docs/') or f.endswith('.md')) for f in files)
+              runtime=not documentation_only(files)
           with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('runtime='+str(runtime).lower()+'\n')
           PY
   unit:

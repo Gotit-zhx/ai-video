@@ -49,10 +49,10 @@ def recover_operations(store,host):
 def dispatch(args, role="local"):
     allowed={"monitoring":{"status","doctor","receipt"},
              "deploy":{"status","doctor","receipt","stage","deploy","rollback","preflight"},
-             "local":{"status","doctor","receipt","stage","deploy","rollback","preflight","recover","cleanup","monitor","execute","watchdog","finalize","adopt"}}
+             "local":{"status","doctor","receipt","stage","deploy","rollback","preflight","recover","cleanup","monitor","execute","watchdog","finalize","adopt","tls-reload"}}
     if not args or args[0] not in allowed.get(role,set()): raise ValueError("Action is not allowed for this identity")
     action=args[0];config,store,host,artifacts=context()
-    if action in {"status","doctor","recover","cleanup","monitor","watchdog"} and len(args)!=1: raise ValueError("Unexpected arguments")
+    if action in {"status","doctor","recover","cleanup","monitor","watchdog","tls-reload"} and len(args)!=1: raise ValueError("Unexpected arguments")
     if action=="status": return status(store,host)
     if action=="doctor":
         from .monitor import diagnose
@@ -155,6 +155,9 @@ def dispatch(args, role="local"):
     if action=="watchdog":
         from .monitor import watchdog
         return watchdog(config)
+    if action=='tls-reload':
+        from .tls import reload
+        return reload(config,store)
 
 
 def main(argv=None,role="local"):

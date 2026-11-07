@@ -7,7 +7,7 @@ on:
       action:
         description: Operation
         type: choice
-        options: [doctor, rollback]
+        options: [doctor, rollback, notification-test]
         default: doctor
       version:
         description: Previously accepted version (rollback only)
@@ -39,6 +39,7 @@ jobs:
           HEYI_USER: heyi-monitor
           HEYI_SSH_KEY: ${{ secrets.HEYI_MONITOR_SSH_KEY }}
           HEYI_KNOWN_HOSTS: ${{ secrets.HEYI_KNOWN_HOSTS }}
+          HEYI_NOTIFICATION_TEST: ${{ inputs.action == 'notification-test' }}
         run: python3 scripts/ci/notify.py
   rollback:
     if: github.repository == 'Gotit-zhx/ai-video' && vars.HEYI_CD_ENABLED == 'true' && inputs.action == 'rollback'

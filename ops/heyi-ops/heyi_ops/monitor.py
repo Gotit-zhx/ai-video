@@ -44,10 +44,11 @@ def diagnose(config, store, host):
         elif backup.get("outcome")=="success":verified.add("backup")
     expiry=None
     try:
-        text=command("openssl","x509","-enddate","-noout","-in",config["certificate"],timeout=5).decode().strip().split("=",1)[1]
-        expiry=datetime.datetime.strptime(text,"%b %d %H:%M:%S %Y %Z").replace(tzinfo=datetime.timezone.utc).timestamp()
+        from .tls import observe
+        certificate=observe(config);expiry=certificate['expiresAt']
         days=(expiry-time.time())/86400
         verified.add("tls")
+        if not certificate['matches']:alerts.append({'service':'tls','type':'reload-pending','severity':'warning'})
         if days<14: alerts.append({"service":"tls","type":"expiry","severity":"critical" if days<7 else "warning"})
     except Exception: alerts.append({"service":"tls","type":"unreadable","severity":"critical"})
     counters={}; backlog=None

@@ -76,6 +76,8 @@ python3 -m unittest discover -s ops/heyi-ops/tests -v
 
 通知通过 `heyi-ops-event` Issue 按服务和故障类型去重，恢复后关闭。Issue 指派维护者，邮件使用其 GitHub 原生订阅设置；必须人工或收件证据确认送达，API 成功不等于邮件送达。GitHub 报告默认保留七天，服务器运维回执限定 30 天/50 MiB，并保留当前及回滚所需证据。
 
+首次邮件验收可手动运行 Operations 的 `notification-test`，生成独立的 `monitoring-test / notification-validation` 事件；正常巡检不会把它误判为业务事故或提前关闭。收到邮件后记录证据并关闭该验收事件。证书续期使用既有 webroot，deploy hook 提交 `heyi-ops-certificate.service`，经同一发布锁重载 Nginx 并比较实际对外证书与磁盘证书；锁占用时等待重试。日常巡检同时检查实际生效证书的到期日和未重载情况。
+
 `production` 与 `monitoring` 使用独立 SSH 身份，强制命令与 sudo 仅允许固定入口，禁用转发并固定主机密钥。生产环境只允许正式标签和 `main-tree` 的运维任务。巡检身份不允许发布、Shell 或 SQL。
 
 定时工作流不是可靠的本机调度替代。主机 watchdog 仅恢复 `disabled_inactivity`，尊重人工停用；需要仅限本仓库 Actions 写权限的专用令牌，保存在 `/etc/heyi-ops/monitor-actions-token`，不能使用开发者的广泛 OAuth 凭据代替。

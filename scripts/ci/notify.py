@@ -56,6 +56,9 @@ def main():
             verified.discard("external")
         alerts.extend(status["alerts"]);complete=True;verified.update(status["verifiedScopes"]);verified.add("monitoring")
     except Exception:alerts.append({"service":"monitoring","type":"host-probe-failed","severity":"critical"})
+    if os.environ.get('HEYI_NOTIFICATION_TEST')=='true':
+        if os.environ.get('GITHUB_EVENT_NAME')!='workflow_dispatch':raise ValueError('Notification validation requires manual invocation')
+        alerts.append({'service':'monitoring-test','type':'notification-validation','severity':'warning'})
     reconcile(alerts,verified)
     print(json.dumps({"alerts":alerts,"hostProbeComplete":complete},ensure_ascii=False))
 

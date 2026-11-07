@@ -38,9 +38,10 @@ jobs:
       - id: build
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 scripts/ci/candidate.py build
-          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 scripts/ci/smoke.py target/release/release.json --legacy-gate
+        run: python3 scripts/ci/candidate.py build
+      - name: Exercise the exact changed candidate digests
+        if: steps.build.outputs.app_changed == 'true' || steps.build.outputs.frontend_changed == 'true'
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 scripts/ci/smoke.py target/release/release.json --legacy-gate
       - name: Attest backend
         if: steps.build.outputs.app_changed == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

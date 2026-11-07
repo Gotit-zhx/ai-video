@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import tempfile
+import urllib.parse
 from pathlib import Path
 import release
 
@@ -58,6 +59,10 @@ def build(version,baseline=None):
         subprocess.run(args,cwd=ROOT,check=True)
         digest=json.loads(metadata.read_text())["containerimage.digest"]
         info=image_metadata(repository,digest);info.update(sourceCommit=source["commit"],sourceRef=ref)
+        package=urllib.parse.quote(release.REPOSITORY.split('/')[1]+'/'+component,safe='')
+        visibility=json.loads(run('gh','api','users/'+release.REPOSITORY.split('/')[0]+'/packages/container/'+package))
+        if visibility.get('visibility')!='private' or (visibility.get('repository') or {}).get('full_name','').lower()!=release.REPOSITORY.lower():
+            raise RuntimeError('Release images must be private and linked to this repository')
         if component=="frontend":
             container="heyi-ci-assets-"+source["commit"][:12]
             subprocess.run(["docker","create","--name",container,"--entrypoint","true",tag],check=True,stdout=subprocess.DEVNULL)
@@ -72,7 +77,8 @@ def build(version,baseline=None):
     manifest={"schemaVersion":1,"repository":release.REPOSITORY,"version":version,"source":source,
               "images":images,"sourceArchiveSha256":release.sha(source_archive),"sourceArchiveBytes":len(source_archive),"sourceUnpackedBytes":len(source_tar),
               "validation":{"result":"passed","unexpectedSkips":0,"ciRunId":os.environ["GITHUB_RUN_ID"],
-                            "workflow":".github/workflows/ci.yml","containerSmoke":"pending"}}
+                            "workflow":".github/workflows/ci.yml","containerSmoke":"pending" if changed else "passed",
+                            **({"reusedValidationFrom":baseline['version']} if not changed and baseline else {})}}
     release.validate_manifest(manifest, require_smoke=False)
     (output/"release.json").write_text(json.dumps(manifest,sort_keys=True,indent=2)+"\n")
     with open(os.environ["GITHUB_OUTPUT"],"a") as f:

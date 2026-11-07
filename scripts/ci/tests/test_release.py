@@ -40,6 +40,10 @@ class ReleaseTest(unittest.TestCase):
             self.assertEqual("unsupported",release.component(p))
         self.assertEqual("source",release.component("docs/guides/operations.md"))
         self.assertEqual('operations',release.component('scripts/ci/release.py'))
+        self.assertEqual('app',release.component('src/main/resources/prompts/worker.md'))
+        self.assertEqual('unsupported',release.component('services/pi-runtime/skills/worker/SKILL.md'))
+        self.assertTrue(release.documentation_only(['docs/guides/cicd.md','README.md']))
+        self.assertFalse(release.documentation_only(['src/main/resources/prompts/worker.md']))
     def test_required_test_skip_and_missing_report_fail(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)
