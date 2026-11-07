@@ -27,10 +27,11 @@ def main(action):
     # Prevent reruns from rebuilding/overwriting a candidate for the same SHA.
     if subprocess.run(["gh","release","view","candidate-"+sha,"--repo",release.REPOSITORY],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0:
         raise RuntimeError("Candidate already exists; promote it or create a new reviewed commit")
-    latest=subprocess.run(["gh","release","view","--repo",release.REPOSITORY,"--json","tagName"],capture_output=True,text=True)
+    versions=[tag for tag in release.run('git','tag','--points-at','origin/main-tree').splitlines() if release.VERSION.fullmatch(tag)]
+    if len(versions)!=1:raise ValueError('Production HEAD must have one formal version before preparing its successor')
     baseline=None
-    if latest.returncode==0:
-        tag=json.loads(latest.stdout)["tagName"]
+    if versions:
+        tag=versions[0]
         if release.VERSION.fullmatch(tag):
             folder=release.ROOT/"target/baseline";folder.mkdir(parents=True,exist_ok=True)
             result=subprocess.run(["gh","release","download",tag,"--repo",release.REPOSITORY,"--pattern","release.json","--dir",str(folder)],capture_output=True)
@@ -38,6 +39,8 @@ def main(action):
                 baseline=json.loads((folder/"release.json").read_text());release.validate_manifest(baseline)
                 subprocess.run(["gh","attestation","verify",str(folder/"release.json"),"--repo",release.REPOSITORY,
                     "--signer-workflow",release.REPOSITORY+"/.github/workflows/candidate.yml","--source-digest",baseline["source"]["commit"],"--deny-self-hosted-runners"],check=True)
+            elif os.environ.get('INITIAL_ADOPTION')!='true':
+                raise ValueError('Finish publishing the current production receipt before building its successor')
     build.build("v"+match[1],baseline)
 
 

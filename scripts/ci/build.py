@@ -48,6 +48,8 @@ def build(version,baseline=None):
             images[component]=baseline["images"][component];continue
         repository=f"ghcr.io/{release.REPOSITORY.lower()}/{component}"
         tag=repository+":git-"+source["commit"]
+        if subprocess.run(['docker','buildx','imagetools','inspect',tag],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0:
+            raise RuntimeError('Candidate image already exists; do not overwrite it; use a new reviewed commit')
         metadata=output/(component+"-build.json")
         args=["docker","buildx","build","--platform=linux/amd64","--provenance=false","--push",
               "--tag",tag,"--metadata-file",str(metadata),

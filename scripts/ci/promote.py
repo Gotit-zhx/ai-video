@@ -29,7 +29,7 @@ def main(action,version):
         notes=root/"notes.md";notes.write_text("Deployed and verified by heyi-ops. Operation: `"+value["id"]+"`. See the attached immutable manifest and acceptance receipt.\n")
         existing=subprocess.run(["gh","release","view",version,"--repo",release.REPOSITORY],capture_output=True)
         if existing.returncode==0:raise RuntimeError("Formal Release already exists; retain its original acceptance evidence")
-        subprocess.run(["gh","release","create",version,"--repo",release.REPOSITORY,"--verify-tag","--title",version,
+        subprocess.run(["gh","release","create",version,"--repo",release.REPOSITORY,"--verify-tag","--latest=true","--title",version,
                         "--notes-file",str(notes),str(manifests[0]),str(receipts[0])],check=True)
 
 

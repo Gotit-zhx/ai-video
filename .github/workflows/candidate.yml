@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: candidate-${{ github.ref }}
+  group: candidate-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -38,6 +38,7 @@ jobs:
       - id: build
         env:
           GH_TOKEN: ${{ github.token }}
+          INITIAL_ADOPTION: ${{ vars.HEYI_CD_ENABLED != 'true' }}
         run: python3 scripts/ci/candidate.py build
       - name: Exercise the exact changed candidate digests
         if: steps.build.outputs.app_changed == 'true' || steps.build.outputs.frontend_changed == 'true'
