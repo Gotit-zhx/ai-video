@@ -147,6 +147,7 @@ def cleanup(config,store):
     ids=command("docker","ps","-aq").decode().split()
     containers=json.loads(command("docker","inspect",*ids)) if ids else []
     in_use={x["Image"] for x in containers}
+    available_images=set(command('docker','image','ls','-aq','--no-trunc').decode().split())
     config_files={p for x in containers for p in (x["Config"].get("Labels") or {}).get("com.docker.compose.project.config_files","").split(",") if p}
     mounts=[Path(m["Source"]) for x in containers for m in x["Mounts"]]
     protected=set()
@@ -169,10 +170,10 @@ def cleanup(config,store):
             if image["configDigest"] in protected|in_use: continue
             ref=image["repository"]+"@"+image["manifestDigest"]
             if ref not in removed_refs:
-                available=command("docker","image","ls","--quiet","--no-trunc",ref).decode().split()
-                if available:
-                    if available!=[image["configDigest"]]:raise RuntimeError("Image identity drift during cleanup")
-                    command("docker","image","rm",ref)
+                if image['configDigest'] in available_images:
+                    available=json.loads(command('docker','image','inspect',image['configDigest']))[0]
+                    if available['Id']!=image['configDigest']:raise RuntimeError('Image identity drift during cleanup')
+                    if ref in available.get('RepoDigests',[]):command('docker','image','rm',ref)
                 removed_refs.add(ref)
         source=Path(config["sourceRoot"])/"releases"/directory.name
         metadata=read(source/".heyi-source.json",{})

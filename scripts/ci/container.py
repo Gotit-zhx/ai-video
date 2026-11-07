@@ -13,7 +13,7 @@ import release
 import smoke
 
 
-def main():
+def main(legacy_gate=False):
     owner="heyi-ci-full-"+secrets.token_hex(8)
     images={name:owner+"-"+name for name in ("app","frontend")}
     container=owner+"-assets"
@@ -34,8 +34,8 @@ def main():
             manifest=root/"release.json"
             manifest.write_text(json.dumps({"images":{"frontend":{"smokeAssets":{p:assets[p]["sha256"] for p in
                 ["index.html","app.js","finance-workspace.js","finance-charges.js"]}}},"validation":{}}))
-            smoke.smoke(manifest,images)
-            result={"result":"passed","containerSmoke":"passed","noProductionAccess":True}
+            smoke.smoke(manifest,images,legacy_gate)
+            result={"result":"passed","containerSmoke":"passed","noProductionAccess":True,'legacyIngressFixture':'passed' if legacy_gate else 'not_run'}
     finally:
         (output/"summary.json").write_text(json.dumps(result,indent=2)+"\n")
         # Never prune a shared Docker daemon or remove an image another task owns.
@@ -48,4 +48,7 @@ def main():
             subprocess.run(command,check=True,stdout=subprocess.DEVNULL)
 
 
-if __name__=="__main__":main()
+if __name__=="__main__":
+    import argparse
+    p=argparse.ArgumentParser();p.add_argument('--legacy-gate',action='store_true')
+    main(p.parse_args().legacy_gate)

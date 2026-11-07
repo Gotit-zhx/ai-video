@@ -10,7 +10,7 @@ from pathlib import Path
 import release
 
 
-def smoke(file, image_refs=None):
+def smoke(file, image_refs=None, legacy_gate=False):
     manifest=json.loads(file.read_text());runtime=json.loads((release.ROOT/"scripts/ci/runtime.json").read_text())
     project="heyi-ci-smoke-"+secrets.token_hex(5)
     with tempfile.TemporaryDirectory(prefix="heyi-ci-smoke-") as temporary:
@@ -46,6 +46,9 @@ def smoke(file, image_refs=None):
             frontend_container=dc("ps","-q","frontend")
             edge=subprocess.check_output(["docker","exec",frontend_container,"wget","-qO-","http://127.0.0.1/_heyi/nginx-status"],text=True)
             assert "Writing:" in edge
+            if legacy_gate:
+                from adoption_fixture import exercise
+                exercise(dc)
             manifest["validation"]["containerSmoke"]="passed"
             file.write_text(json.dumps(manifest,sort_keys=True,indent=2)+"\n")
             print("Clean candidate images: migrations, health, auth, synthetic read, static files and maintenance passed")
@@ -63,4 +66,5 @@ def smoke(file, image_refs=None):
 
 
 if __name__=="__main__":
-    p=argparse.ArgumentParser();p.add_argument("manifest",type=Path);smoke(p.parse_args().manifest)
+    p=argparse.ArgumentParser();p.add_argument("manifest",type=Path);p.add_argument('--legacy-gate',action='store_true')
+    a=p.parse_args();smoke(a.manifest,legacy_gate=a.legacy_gate)
