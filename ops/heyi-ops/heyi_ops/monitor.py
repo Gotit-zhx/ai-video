@@ -129,6 +129,14 @@ def retained_versions(store):
         key=pair(op["target"])
         if key not in pairs:keep.append(op["target"]["version"]);pairs.add(key)
         if len(pairs)>=3:break
+    # Recent source-only releases remain usable rollback targets as well. They
+    # never displace the two distinct application rollback combinations above.
+    recent=[active['version']]
+    for op in accepted:
+        version=op['target']['version']
+        if version not in recent:recent.append(version)
+        if len(recent)>=3:break
+    keep.extend(version for version in recent if version not in keep)
     return keep
 
 
@@ -156,6 +164,7 @@ def cleanup(config,store):
         manifest=read(store.root/"releases"/version/"release.json",{})
         protected.update(i["configDigest"] for i in manifest.get("images",{}).values())
     from .artifacts import Artifacts
+    staging_removed=Artifacts(store.root).cleanup_staging()
     candidates=[p for p in (store.root/"releases").iterdir() if p.is_dir() and not p.is_symlink() and p.name not in keep and (p/"verified.json").is_file()]
     atomic(store.root/"cleanup-plan.json",{"createdAt":int(time.time()),"retainedVersions":sorted(keep),
         "candidates":[{"path":str(p),"owner":"heyi-ops verified release","evidence":str(p/"verified.json")} for p in candidates]})
@@ -202,7 +211,7 @@ def cleanup(config,store):
         budget+=path.stat().st_size
         if not critical and (time.time()-path.stat().st_mtime>30*86400 or budget>50*1024*1024):
             path.unlink();(store.root/"requests"/path.name).unlink(missing_ok=True)
-    return {"retainedVersions":sorted(keep),"removedManagedVersions":removed,"skipped":skipped}
+    return {"retainedVersions":sorted(keep),"removedManagedVersions":removed,"skipped":skipped,'removedOwnedStaging':staging_removed}
 
 
 def watchdog(config):

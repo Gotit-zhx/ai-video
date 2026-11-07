@@ -140,6 +140,7 @@ def dispatch(args, role="local"):
     if action=="recover":
         results=[public_operation(o) for o in recover_operations(store,host)]
         with store.exclusive():
+            artifacts.cleanup_staging()
             for file in (store.root/"requests").glob("*.json"):
                 if read(store.path(file.stem)):continue
                 state=command("systemctl","show","--property=ActiveState","--value","heyi-ops-executor@"+file.stem+".service").decode().strip()
