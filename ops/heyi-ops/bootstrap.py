@@ -169,11 +169,13 @@ def identities(deploy_key,monitor_key):
             command('useradd','--system','--create-home','--home-dir',str(home),'--shell','/bin/sh',user)
             owned[user]={'home':str(home)};atomic(receipt,owned)
         home.chmod(0o755);os.chown(home,0,0)
-        directory=home/'.ssh';directory.mkdir(exist_ok=True);directory.chmod(0o700);os.chown(directory,0,0)
+        # sshd reads authorized_keys with the account's uid. Public keys must
+        # be readable while the root-owned directory prevents replacement.
+        directory=home/'.ssh';directory.mkdir(exist_ok=True);directory.chmod(0o755);os.chown(directory,0,0)
         auth=directory/'authorized_keys'
         line='restrict,command="/usr/local/lib/heyi-ops/ssh-'+role+'" '+public+'\n'
         if auth.exists() and owned[user].get('authorizedSha256')!=hashlib.sha256(auth.read_bytes()).hexdigest():raise ValueError('Authorized key drift')
-        temporary=directory/'authorized_keys.new';temporary.write_text(line);temporary.chmod(0o600);temporary.replace(auth)
+        temporary=directory/'authorized_keys.new';temporary.write_text(line);temporary.chmod(0o644);temporary.replace(auth)
         owned[user]['authorizedSha256']=hashlib.sha256(auth.read_bytes()).hexdigest();atomic(receipt,owned)
         values[user]=role
     sudo=Path('/etc/sudoers.d/heyi-ops');temporary=sudo.with_name('heyi-ops.new')
