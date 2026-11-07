@@ -1,4 +1,5 @@
 import copy
+import io
 import json
 import sys
 import tempfile
@@ -53,6 +54,21 @@ class ControlTest(unittest.TestCase):
     def test_monitor_cannot_change_runtime_or_read_arbitrary_paths(self):
         for args in [['deploy','v1.0.1','v1.0.0',self.request],['cleanup'],['execute',self.request],['receipt','../private']]:
             with self.assertRaises(ValueError):cli.dispatch(args,'monitoring')
+    def test_stage_header_is_bounded_and_rejects_unadvertised_fields(self):
+        for payload in ({'pullToken':'synthetic','path':'/etc/private'},
+                        {'pullToken':'synthetic','assetSizes':{'release.json':1,'source.tar.gz':513*1024**2}},
+                        {'pullToken':'synthetic','assetSizes':{'release.json':True,'source.tar.gz':1}}):
+            with patch.object(cli.sys,'stdin',SimpleNamespace(buffer=io.BytesIO(json.dumps(payload).encode()+b'\n'))):
+                with self.assertRaises(ValueError):cli.dispatch(['stage','v1.0.1'],'deploy')
+        self.artifacts.prepare.assert_not_called()
+    def test_stage_upload_keeps_binary_stream_after_the_header(self):
+        self.artifacts.prepare.return_value=self.new
+        payload={'pullToken':'synthetic','assetSizes':{'release.json':2,'source.tar.gz':3}}
+        stream=io.BytesIO(json.dumps(payload).encode()+b'\n{}abc')
+        with patch.object(cli.sys,'stdin',SimpleNamespace(buffer=stream)):
+            self.assertTrue(cli.dispatch(['stage','v1.0.1'],'deploy')['prepared'])
+        self.assertEqual(b'{}abc',stream.read())
+        self.assertEqual((stream,payload['assetSizes']),self.artifacts.prepare.call_args.kwargs['upload'])
     def test_final_receipt_cannot_be_reused_for_rollback(self):
         self.store.save({'id':self.request,'target':self.new,'expectedVersion':'v1.0.0','rollback':False},'succeeded')
         with self.assertRaises(ValueError):cli.dispatch(['rollback','v1.0.1','v1.0.0',self.request],'deploy')

@@ -1,3 +1,4 @@
+import io
 import os
 import signal
 import sys
@@ -11,6 +12,18 @@ from heyi_ops.state import atomic
 
 
 class StagingCleanup(unittest.TestCase):
+    def test_inline_upload_preserves_binary_bytes_in_fixed_asset_names(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder=Path(temporary);manifest=b'{"synthetic":true}\n';source=b'\x1f\x8b\0\xff\narchive'
+            sizes={'release.json':len(manifest),'source.tar.gz':len(source)}
+            Artifacts.receive_assets(folder,io.BytesIO(manifest+source),sizes,sizes)
+            self.assertEqual(manifest,(folder/'release.json').read_bytes())
+            self.assertEqual(source,(folder/'source.tar.gz').read_bytes())
+    def test_size_mismatch_truncation_and_trailing_data_fail_closed(self):
+        sizes={'release.json':2,'source.tar.gz':3}
+        for data,declared in [(b'{}abc',dict(sizes,**{'source.tar.gz':4})),(b'{}ab',sizes),(b'{}abcd',sizes)]:
+            with self.subTest(data=data),tempfile.TemporaryDirectory() as temporary:
+                with self.assertRaises(ValueError):Artifacts.receive_assets(Path(temporary),io.BytesIO(data),declared,sizes)
     def test_catchable_disconnect_removes_the_temporary_credential(self):
         with tempfile.TemporaryDirectory() as temporary:
             artifact=Artifacts(temporary);previous=signal.getsignal(signal.SIGHUP)
