@@ -1,6 +1,6 @@
 # 项目技术栈
 
-核对日期：2026-11-05。版本取自仓库声明、锁文件、镜像及 vendored 资源，不代表已连接生产核验全部运行版本。带 `^` 或范围的依赖保留原声明；实际安装版本应由对应锁文件确定。
+主体清单核对日期：2026-11-05；广告连接和 CI/CD 状态补充于 2026-11-07。版本取自仓库声明、锁文件、镜像及 vendored 资源，不代表已连接生产核验全部运行版本。带 `^` 或范围的依赖保留原声明；实际安装版本应由对应锁文件确定。
 
 ## 主系统与基础设施
 
@@ -27,6 +27,7 @@
 | [图片证据服务](../../services/watermark-detector/README.md) | Python 3.11、NumPy 2.2.6、Pillow 11.2.1、OpenCV 4.12.0.88、ONNX Runtime 1.22.1 | custom 引擎；YOLO 基线另声明 ultralytics 8.3.160 / torch 2.7.1 |
 | [HOYEE ERP](../../services/erp/README.md) | Python 3.12、Waitress 3.0.2、SQLite WAL、cryptography 46.0.3 | 独立身份、数据、公开 `/erphoyee/` 路由 |
 | [家务应用](../../services/household/README.md) | Python 3.12、Flask 3.1.2、Gunicorn 23.0.0、pywebpush 2.1.2、SQLite | 独立部署、提醒调度及家庭访问凭据 |
+| [广告专用连接](../../ops/finance-ad-proxy/README.md) | 原生 Xray v26.10.31、systemd；固定摘要见 [runtime.json](../../ops/finance-ad-proxy/runtime.json) | Docker 私网 CONNECT，仅允许 TikTok 广告 API；64 MiB 内存硬限、单核 10% CPU 配额，凭据独立私存 |
 
 ## 客户端
 
@@ -46,6 +47,6 @@
 
 测试包含 JUnit / Spring Boot Test / Mockito、Node 原生测试、JSDOM 页面模拟、Python unittest、隔离 MySQL 与本地 HTTP 模拟。真实模型、官方发布、完整 Windows 账号流程和恢复演练需分别记录验收。
 
-GitHub Actions 提供显式选择平台的桌面构建，CircleCI 提供显式触发的 Windows 备用构建。当前并没有覆盖主业务后端/前端的统一完整 CI；配置检查通过不等于已经完成所有业务回归。
+GitHub Actions 已提供主业务后端/前端必需 CI、隔离数据库分片、真实镜像冒烟、候选来源证明和生产发布，详见 [CI/CD 指南](cicd.md)。桌面构建按平台显式选择，CircleCI 提供显式触发的 Windows 备用构建。自动检查覆盖范围与真实账户授权、完整业务验收分别记录。
 
 项目目录及模块关系见[组织结构](project-structure.md)，Git 协作遵守 [AGENTS.md](../../AGENTS.md) 的 Gitflow 规则。
