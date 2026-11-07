@@ -16,7 +16,10 @@ def configuration(share, listen, port, sources):
     if len(share) > 8192 or not share.startswith('vmess://'):
         raise ValueError('Expected one VMess share link')
     try:
-        node = json.loads(base64.b64decode(share.removeprefix('vmess://'), validate=True))
+        encoded = share.removeprefix('vmess://')
+        if '=' not in encoded:
+            encoded += '=' * (-len(encoded) % 4)
+        node = json.loads(base64.b64decode(encoded, validate=True))
         if not isinstance(node['id'],str):raise ValueError()
         identity=str(uuid.UUID(node['id']))
         address, node_port = node['add'], int(node['port'])
@@ -24,7 +27,7 @@ def configuration(share, listen, port, sources):
             raise ValueError()
         if not 1<=node_port<=65535 or str(node.get('aid','0'))!='0' or node.get('net')!='tcp':
             raise ValueError()
-        if node.get('tls') not in (None,'','none') or node.get('type','none')!='none' or node.get('host') or node.get('path'):
+        if node.get('tls') not in (None,'','none') or node.get('type','none') not in ('','none') or node.get('host') or node.get('path'):
             raise ValueError()
         cipher=node.get('scy','auto')
         if cipher not in ('auto','aes-128-gcm','chacha20-poly1305'):

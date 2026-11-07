@@ -38,6 +38,31 @@ class FinanceAdProxyTest(unittest.TestCase):
             with self.subTest(listen=listen,port=port,sources=sources),self.assertRaises(ValueError):
                 proxy.configuration(self.share(),listen,port,sources)
 
+    def test_empty_or_missing_tcp_header_type_means_no_header(self):
+        expected=proxy.configuration(self.share(),'127.0.0.1',18889,['127.0.0.1/32'])
+        for header_type in ('',None):
+            node=self.node()
+            if header_type is None:node.pop('type')
+            else:node['type']=header_type
+            with self.subTest(header_type=header_type):
+                actual=proxy.configuration(self.share(node),'127.0.0.1',18889,['127.0.0.1/32'])
+                self.assertEqual(expected,actual)
+
+    def test_omitted_base64_padding_is_accepted(self):
+        for suffix in ('','x','xx'):
+            node=self.node();node['ps']=suffix
+            share=self.share(node)
+            with self.subTest(length=len(share.rstrip('='))):
+                self.assertEqual(
+                    proxy.configuration(share,'127.0.0.1',18889,['127.0.0.1/32']),
+                    proxy.configuration(share.rstrip('='),'127.0.0.1',18889,['127.0.0.1/32']))
+
+    def test_invalid_base64_is_rejected_without_echoing_input(self):
+        for encoded in ('A','unit-only-secret!','abcd=def',self.share().removeprefix('vmess://')+'!'):
+            with self.subTest(encoded_length=len(encoded)),self.assertRaises(ValueError) as failure:
+                proxy.configuration('vmess://'+encoded,'127.0.0.1',18889,['127.0.0.1/32'])
+            self.assertEqual('Unsupported node or listener configuration',str(failure.exception))
+
     def test_unsupported_parameters_are_not_silently_downgraded(self):
         for key,value in [('aid','64'),('net','ws'),('tls','tls'),('type','http'),('scy','none'),
                           ('add','https://unit-only-secret@node.invalid'),('id',42),('port','unit-only-secret')]:
