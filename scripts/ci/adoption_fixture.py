@@ -1,6 +1,7 @@
 """Exercise legacy ingress/reservations against disposable real containers."""
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -41,10 +42,12 @@ for base in ('http://app:8080','http://frontend:80'):
         assert not inspect(selected['app'])['State']['Paused']
         # Fresh instance simulates executor loss after ingress was changed.
         second=Legacy(host,root/'second','b'*32)
-        try:second.ingress();second.reserve()
+        try:
+            second.ingress();second.reserve()
+            os.kill(second.state['proxy']['pid'],signal.SIGKILL)
         finally:
             recovered=Legacy(host,root/'second','b'*32)
-            recovered.release();recovered.reopen()
+            recovered.unpause();recovered.reopen();recovered.release()
         assert host.sql('SELECT COUNT(*) FROM finance_label_worker_lock WHERE lease_token IS NOT NULL')=='0'
         dc('run','--rm','--no-deps','probe')
     print('Legacy adoption: direct ingress, HTTP 503, health, real leases, pause and crash restoration passed')

@@ -123,6 +123,11 @@ class Adoption:
                     self.host.gate(op['id']);self.host.drain(op['id'])
                 if self.host.schema()!=op['contract']['schemaFingerprint']:raise RuntimeError('Schema changed during adoption')
                 legacy.unpause();self.legacy_activate()
+            else:
+                # ExecStopPost may run after systemd killed the temporary proxy
+                # along with the executor. Remove its namespace redirect and
+                # unpause the unchanged legacy app before probing its health.
+                legacy.unpause();legacy.reopen()
             self.legacy_verify()
             if op.get('sourceChanging'):
                 current=Path(self.host.config['sourceRoot'])/'current';link=current.with_name('.adoption-restore')

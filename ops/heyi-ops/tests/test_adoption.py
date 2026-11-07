@@ -70,3 +70,8 @@ class InitialRecovery(unittest.TestCase):
         with patch.object(self.adoption,'legacy_activate') as activate:
             with self.assertRaises(RuntimeError):self.adoption.restore(self.op,self.legacy)
         activate.assert_not_called();self.legacy.release.assert_not_called()
+    def test_executor_loss_removes_dead_proxy_before_legacy_health_probe(self):
+        self.op['mayHaveSwitched']=False;self.op['sourceChanging']=False
+        def verify():self.legacy.unpause.assert_called();self.legacy.reopen.assert_called()
+        with patch.object(self.adoption,'legacy_verify',side_effect=verify):
+            self.assertEqual('aborted',self.adoption.restore(self.op,self.legacy)['phase'])
