@@ -55,7 +55,7 @@
 
 连接修复候选在独立 hotfix 分支准备中：可选 `APP_TIKTOK_ADS_PROXY_HOST/PORT` 仅供广告授权与同步访问官方 HTTPS API，保留证书与主机名校验；错误提示同时记录操作阶段和脱敏原因。11 月 7 日通过本机临时通道完成真实令牌交换，用户确认该登录账号本身没有广告账户；临时环境已撤回，正式环境已恢复。候选另补齐空账户数组的官方授权列表查询，并明确区分无授权账户、标识异常与指定账户未授权。63 项回归通过，但长期代理尚未配置，候选尚未正式上线，见[连接修复记录](../../releases/finance/finance-ad-connection-repair-20261107.md)。
 
-后续轻量运行方案使用私网 HTTP CONNECT 和单个原生 VMess 客户端，可从既有广告 properties 读取 `proxy-host` / `proxy-port`，不改变应用凭据 revision。用户提供的节点在服务器、本机及三种官方/兼容客户端中均未完成 HTTPS 转发，因此尚未启用永久代理；67 项 Java 和相关运维/策略回归已通过，现场边界见[节点验证记录](../../releases/finance/finance-ad-vmess-validation-20261107.md)。
+后续轻量运行方案使用私网 HTTP CONNECT 和单个原生 VMess 客户端，可从既有广告 properties 读取 `proxy-host` / `proxy-port`，不改变应用凭据 revision。第一条节点未完成 HTTPS 转发；随后提供的第二条节点已在本机和阿里云服务器通过无凭据 TikTok HTTPS 探测，证书验证正常，非允许目标被拒绝。临时探测已清理，永久服务和实际应用接入仍待正式发布；67 项 Java 和相关运维/策略回归已通过，现场边界见[节点验证记录](../../releases/finance/finance-ad-vmess-validation-20261107.md)。
 
 ## 接口与实现
 
