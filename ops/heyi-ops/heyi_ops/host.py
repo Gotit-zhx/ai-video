@@ -24,7 +24,9 @@ ACTIVE = {
     "finance_label_worker_lock": "lease_until>UTC_TIMESTAMP(6)",
     "finance_authorization_sessions": "status='PROCESSING' AND expires_at>UTC_TIMESTAMP(6)",
     "product_main_image_template_images": "status IN ('PENDING','QUEUED','ANALYZING')",
-    "product_publish_workflows": "status IN ('PENDING','QUEUED','RUNNING','PUBLISHING','PROCESSING_IMAGES')",
+    # A never-claimed, unlocked workflow is durable backlog, not executing work.
+    # Keep prior claims, any residual ownership and external-create boundaries conservative.
+    "product_publish_workflows": "status IN ('RUNNING','PUBLISHING','PROCESSING_IMAGES') OR (status IN ('PENDING','QUEUED') AND (attempt_count>0 OR locked_by IS NOT NULL OR locked_until IS NOT NULL OR publication_attempted=TRUE))",
     "product_image_processing_jobs": "status IN ('PENDING','QUEUED','RUNNING','PROCESSING')",
     "product_watermark_queue": "status IN ('QUEUED','RUNNING')",
     "commerce_batch_executions": "status IN ('QUEUED','RUNNING','PAUSING')",

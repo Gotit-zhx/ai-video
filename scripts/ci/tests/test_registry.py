@@ -24,3 +24,32 @@ class RegistryPrivacy(unittest.TestCase):
             self.assertNotIn('ADD',(folder/'Dockerfile').read_text());calls.append(args)
         with patch.object(build.subprocess,'run',side_effect=execute):build.initialize_package('frontend')
         self.assertEqual(1,len(calls))
+
+
+class ReusedSmokeImages(unittest.TestCase):
+    def images(self):
+        return {name:{'repository':'ghcr.io/gotit-zhx/ai-video/'+name,
+            'manifestDigest':'sha256:'+digit*64,'configDigest':'sha256:'+digit*64,
+            'platform':'linux/amd64','sourceCommit':'a'*40} for name,digit in [('app','1'),('frontend','2')]}
+
+    def test_mixed_release_makes_reused_private_image_available_to_smoke(self):
+        images=self.images();available={images['app']['manifestDigest']}
+        def pull(repository,digest):
+            available.add(digest)
+            return next(image for image in images.values() if image['repository']==repository)
+        with patch.object(build,'image_metadata',side_effect=pull) as metadata:
+            build.prepare_reused_smoke_images(images,['app'])
+        self.assertEqual({image['manifestDigest'] for image in images.values()},available)
+        metadata.assert_called_once_with(images['frontend']['repository'],images['frontend']['manifestDigest'])
+
+    def test_documentation_only_and_fully_built_images_need_no_extra_pull(self):
+        for changed in ([],['app','frontend']):
+            with self.subTest(changed=changed),patch.object(build,'image_metadata') as metadata:
+                build.prepare_reused_smoke_images(self.images(),changed)
+                metadata.assert_not_called()
+
+    def test_reused_identity_mismatch_stops_publication(self):
+        images=self.images()
+        with patch.object(build,'image_metadata',return_value={**images['frontend'],'configDigest':'sha256:'+'f'*64}):
+            with self.assertRaisesRegex(ValueError,'differs from the verified baseline'):
+                build.prepare_reused_smoke_images(images,['app'])
