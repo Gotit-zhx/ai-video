@@ -64,13 +64,20 @@ def dispatch(args, role="local"):
     if action in {"stage","preflight"}:
         if len(args)!=2: raise ValueError("Version required")
         if action=="stage":
-            raw=sys.stdin.buffer.read(16385)
+            raw=sys.stdin.buffer.readline(16385)
             if len(raw)>16384: raise ValueError("Credential input too large")
             payload=json.loads(raw)
-            if set(payload)!={"pullToken"}: raise ValueError("Unexpected input fields")
+            if set(payload) not in ({"pullToken"},{"pullToken","assetSizes"}): raise ValueError("Unexpected input fields")
+            upload=None
+            if 'assetSizes' in payload:
+                sizes=payload['assetSizes']
+                if (not isinstance(sizes,dict) or set(sizes)!={'release.json','source.tar.gz'} or
+                    any(type(v) is not int for v in sizes.values()) or not 0<sizes['release.json']<=1024*1024 or
+                    not 0<sizes['source.tar.gz']<=512*1024**2):raise ValueError('Invalid upload size bounds')
+                upload=(sys.stdin.buffer,sizes)
             with store.exclusive():
                 if store.incomplete() or host.marker.exists():raise RuntimeError("Recover maintenance before preparing another release")
-                target=artifacts.prepare(args[1],payload["pullToken"])
+                target=artifacts.prepare(args[1],payload["pullToken"],upload=upload)
             return {"version":target["version"],"prepared":True}
         with store.exclusive(): host.preflight(artifacts.load(args[1]),store.active())
         return {"preflight":"passed","version":args[1]}

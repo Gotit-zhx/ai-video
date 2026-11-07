@@ -29,6 +29,20 @@ def process_identity(pid):
 class Artifacts:
     def __init__(self, root): self.root=Path(root)
 
+    @staticmethod
+    def receive_assets(folder, stream, sizes, advertised):
+        """Untrusted bytes have fixed names and must match GitHub's asset sizes."""
+        if sizes != {name:advertised[name] for name in ('release.json','source.tar.gz')}:
+            raise ValueError('Uploaded asset sizes differ from the candidate')
+        for name in ('release.json','source.tar.gz'):
+            remaining=sizes[name]
+            with (folder/name).open('xb') as output:
+                while remaining:
+                    block=stream.read(min(1024*1024,remaining))
+                    if not block:raise ValueError('Truncated candidate upload')
+                    output.write(block);remaining-=len(block)
+        if stream.read(1):raise ValueError('Unexpected trailing upload data')
+
     def cleanup_staging(self):
         """Caller holds the shared lock; remove only dead, explicitly owned prepares."""
         removed=[];planned=[]
@@ -77,7 +91,7 @@ class Artifacts:
             raise RuntimeError("Manifest has no matching trusted verification receipt")
         return target
 
-    def prepare(self, version, token):
+    def prepare(self, version, token, upload=None):
         self.path(version)
         if not token or len(token)>10000 or "\n" in token: raise ValueError("Missing short-lived package read credential")
         env=dict(os.environ,GH_TOKEN=token,GH_PROMPT_DISABLED="1")
@@ -95,8 +109,11 @@ class Artifacts:
         if shutil.disk_usage(self.root).free<14*GIB+advertised["source.tar.gz"]+1024**2:
             raise RuntimeError("Insufficient space to download candidate assets")
         with self.workspace(version) as folder:
-            command("gh","release","download","candidate-"+candidate,"--repo",REPOSITORY,
-                    "--pattern","release.json","--pattern","source.tar.gz","--dir",str(folder),env=env,timeout=180)
+            if upload is None:
+                command("gh","release","download","candidate-"+candidate,"--repo",REPOSITORY,
+                        "--pattern","release.json","--pattern","source.tar.gz","--dir",str(folder),env=env,timeout=180)
+            else:
+                self.receive_assets(folder,upload[0],upload[1],advertised)
             manifest=folder/"release.json"
             if manifest.stat().st_size>1024*1024: raise ValueError("Manifest too large")
             target=validate_manifest(json.loads(manifest.read_text()))
