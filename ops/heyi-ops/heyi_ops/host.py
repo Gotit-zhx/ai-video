@@ -58,8 +58,8 @@ def configuration(info, env_keys=None):
         "env": environment, "entrypoint": config.get("Entrypoint"),
         "command": config.get("Cmd"), "user": config.get("User"), "workingDir": config.get("WorkingDir"),
         "mounts": sorted(({k:m.get(k) for k in ("Type","Source","Destination","RW","Propagation")} for m in info["Mounts"]), key=lambda m:m["Destination"]),
-        "networks": {name:sorted(a for a in net.get("Aliases") or [] if a not in {info["Id"],info["Id"][:12]}) for name,net in info["NetworkSettings"]["Networks"].items()},
-        "resources": {k:host.get(k) for k in ("PortBindings","Memory","MemorySwap","NanoCpus","PidsLimit","CapAdd","CapDrop","SecurityOpt","ReadonlyRootfs","Ulimits","RestartPolicy","LogConfig","ExtraHosts","Dns","ShmSize","Init")},
+        "networks": {name:sorted({a for a in net.get("Aliases") or [] if a not in {info["Id"],info["Id"][:12]}}) for name,net in info["NetworkSettings"]["Networks"].items()},
+        "resources": {k:host.get(k) for k in ("PortBindings","Memory","MemoryReservation","MemorySwap","MemorySwappiness","NanoCpus","CpuShares","CpuPeriod","CpuQuota","CpusetCpus","CpusetMems","PidsLimit","CapAdd","CapDrop","SecurityOpt","ReadonlyRootfs","Ulimits","RestartPolicy","LogConfig","ExtraHosts","Dns","DnsOptions","DnsSearch","ShmSize","Init","OomKillDisable","OomScoreAdj","CgroupnsMode","Privileged","Devices","DeviceRequests","ReadonlyPaths","MaskedPaths","GroupAdd","Sysctls","IpcMode","PidMode")},
     }
 
 

@@ -93,6 +93,8 @@ def capture(destination,source_contract=None):
             if host.get(field) is not None:spec[target]=host[field]
         if host.get("NanoCpus"):spec["cpus"]=host["NanoCpus"]/1e9
         spec["restart"]=host["RestartPolicy"]["Name"] or "no"
+        if spec['restart']=='on-failure' and host['RestartPolicy'].get('MaximumRetryCount'):
+            spec['restart']+=':'+str(host['RestartPolicy']['MaximumRetryCount'])
         base["services"][service]=spec;chains[service]=files
     if any(inspect(SERVICES[k])["Id"]!=info["Id"] for k,info in before.items()):raise RuntimeError("Runtime changed during capture")
     atomic(destination/"base.json",dollar_escape(base))
