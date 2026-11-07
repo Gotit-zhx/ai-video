@@ -9,6 +9,11 @@ import javax.net.ssl.SSLException;
 final class FinanceAdFailures {
     private FinanceAdFailures() {}
     enum Stage { CALLBACK, CONFIGURATION, TOKEN_EXCHANGE, ACCOUNT_DISCOVERY, ACCOUNT_INFO, ACCOUNT_SAVE }
+    enum DiscoveryReason { NO_AUTHORIZED_ADVERTISERS, INVALID_ADVERTISER_IDS, TARGET_NOT_GRANTED }
+    static final class DiscoveryFailure extends RuntimeException {
+        private final DiscoveryReason reason;
+        DiscoveryFailure(DiscoveryReason reason){super(reason.name());this.reason=reason;}
+    }
 
     static final class ProviderFailure extends com.yingdao.aicommerce.common.exception.BusinessException {
         private final String code;
@@ -20,6 +25,14 @@ final class FinanceAdFailures {
     }
 
     static String message(Stage stage,RuntimeException failure) {
+        if(stage==Stage.ACCOUNT_DISCOVERY&&failure instanceof DiscoveryFailure discovery){
+            String detail=switch(discovery.reason){
+                case NO_AUTHORIZED_ADVERTISERS -> "TikTok 已授权，但未返回可接入的广告账户。请确认登录账号拥有广告账户访问权限，并在授权页选择具体广告账户。";
+                case INVALID_ADVERTISER_IDS -> "平台返回的广告账户标识格式异常，尚未保存账户，请管理员核对接口协议。";
+                case TARGET_NOT_GRANTED -> "本次授权未包含指定广告账户，请选择对应账户后使用新链接授权。";
+            };
+            return remote(stage,discovery.reason.name(),detail);
+        }
         boolean remote=stage==Stage.TOKEN_EXCHANGE||stage==Stage.ACCOUNT_DISCOVERY||stage==Stage.ACCOUNT_INFO;
         if(remote){
             boolean io=false;

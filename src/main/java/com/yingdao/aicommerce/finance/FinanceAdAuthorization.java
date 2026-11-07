@@ -141,14 +141,19 @@ public class FinanceAdAuthorization {
             var ids=new LinkedHashSet<String>();
             Object rawIds=grant.get("advertiser_ids");
             if(rawIds instanceof List<?> list)list.forEach(id->ids.add(text(id)));
-            else {
+            if(ids.isEmpty()){
                 var available=successful(http.get(MarketplaceHttp.uri("https://business-api.tiktok.com","/open_api/v1.3/oauth2/advertiser/get/",
                         Map.of("app_id",app.get("app_id"),"secret",secret,"access_token",token)),Map.of()));
                 rows(available.get("list")).forEach(row->ids.add(text(row.get("advertiser_id"))));
             }
-            if(ids.isEmpty()||ids.stream().anyMatch(id->!id.matches("\\d{5,30}")))throw bad("本次授权没有可用广告账户");
+            if(ids.isEmpty())throw new FinanceAdFailures.DiscoveryFailure(FinanceAdFailures.DiscoveryReason.NO_AUTHORIZED_ADVERTISERS);
+            if(ids.stream().anyMatch(id->!id.matches("\\d{5,30}")))
+                throw new FinanceAdFailures.DiscoveryFailure(FinanceAdFailures.DiscoveryReason.INVALID_ADVERTISER_IDS);
             String target=text(context.get("advertiserId"));
-            if(!target.isBlank()){if(!ids.contains(target))throw bad("本次授权没有包含指定广告账户");ids.retainAll(Set.of(target));}
+            if(!target.isBlank()){
+                if(!ids.contains(target))throw new FinanceAdFailures.DiscoveryFailure(FinanceAdFailures.DiscoveryReason.TARGET_NOT_GRANTED);
+                ids.retainAll(Set.of(target));
+            }
             var info=new LinkedHashMap<String,Map<String,Object>>();
             stage=FinanceAdFailures.Stage.ACCOUNT_INFO;
             var idList=new ArrayList<>(ids);

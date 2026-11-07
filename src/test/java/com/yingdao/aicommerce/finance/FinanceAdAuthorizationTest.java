@@ -77,6 +77,30 @@ class FinanceAdAuthorizationTest {
         verify(ads,never()).connectVerified(any(),anyString(),anyString(),anyString(),anyString(),anyMap(),any());
         verifyNoInteractions(manager);
     }
+    @Test void emptyAdvertiserIdsAreCompletedByTheOfficialAuthorizedAccountList(){
+        var auth=authorization();grant();
+        when(http.postJson(any(),anyMap(),anyString())).thenReturn(Map.of("code",0,"data",Map.of("access_token","unit-only-access-token","advertiser_ids",List.of())));
+        when(http.get(any(),anyMap())).thenReturn(Map.of("code",0,"data",Map.of("list",List.of(Map.of("advertiser_id","100001")))));
+        assertTrue(auth.complete(state,"unit-only-code",null).startsWith("true:"));
+        verify(http,times(1)).get(argThat(uri->uri.getPath().equals("/open_api/v1.3/oauth2/advertiser/get/")),eq(Map.of()));
+        verify(http,times(1)).postJson(any(),anyMap(),anyString());
+        verify(ads).connectVerified(any(),eq("100001"),eq(""),eq("unit-only-access-token"),eq(""),anyMap(),any());
+    }
+    @Test void noAuthorizedAccountsHasAnExplicitSafeReasonAndNeverSaves(){
+        var auth=authorization();
+        when(http.postJson(any(),anyMap(),anyString())).thenReturn(Map.of("code",0,"data",Map.of("access_token","unit-only-access-token","advertiser_ids",List.of())));
+        when(http.get(any(),anyMap())).thenReturn(Map.of("code",0,"data",Map.of("list",List.of())));
+        String result=auth.complete(state,"unit-only-code",null);
+        assertTrue(result.contains("[NO_AUTHORIZED_ADVERTISERS]"));assertFalse(result.contains("unit-only"));
+        verifyNoInteractions(ads,manager);
+    }
+    @Test void invalidAccountIdsAreNotRoundedOrStored(){
+        var auth=authorization();
+        when(http.postJson(any(),anyMap(),anyString())).thenReturn(Map.of("code",0,"data",Map.of("access_token","unit-only-access-token","advertiser_ids",List.of("1.2345678901234568E18"))));
+        String result=auth.complete(state,"unit-only-code",null);
+        assertTrue(result.contains("[INVALID_ADVERTISER_IDS]"));assertFalse(result.contains("1.234"));
+        verifyNoInteractions(ads,manager);verify(http,never()).get(any(),anyMap());
+    }
     @Test void invalidCallbackDoesNotExchangeCodeAndReusedStateCannotBeRetried(){
         var auth=authorization();
         assertTrue(auth.complete(state,null,"unit-only-provider-secret").contains("[CALLBACK]"));verifyNoInteractions(http,ads,manager);
