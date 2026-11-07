@@ -1,16 +1,16 @@
 # 发布、回滚与运维交接
 
-核对日期：2026-11-07。**当前应用基线为 `v2026.11.7.7`，已修复首次接管引入的定时工作器停调度问题，原上传任务已自然恢复推进。** 自动发布、巡检和有限自愈已启用。`v2026.11.7.8` 用于本批纯文档交接，实际源码版本以 `heyi-ops status` 和正式 Release 为准。日常入口见[CI/CD 指南](cicd.md)，主机分类清单见[服务器运维交接](server-handoff.md)，验收及故障闭环见[一期收尾](../releases/infrastructure/devops-phase1-closure-20261107.md)。
+核对时间：2026-11-07 22:11（北京时间）。**当前应用与源码版本为 `v2026.11.7.9`，广告专用连接和实际 Java 客户端已验收，保留 v7 的上传调度恢复。** 真实广告账户绑定及报表同步仍需账户管理员完成新授权。自动发布、巡检和有限自愈已启用，实际版本仍以 `heyi-ops status` 和正式 Release 为准。日常入口见[CI/CD 指南](cicd.md)，主机分类见[服务器运维交接](server-handoff.md)，本次结果见[广告连接验收](../releases/finance/finance-ad-connection-acceptance-20261107.md)，前期故障闭环见[一期收尾](../releases/infrastructure/devops-phase1-closure-20261107.md)。
 
 生产操作先读 [AGENTS.md](../../AGENTS.md)，重新核对实际容器、源码指针、镜像摘要及最新回执。多个会话共用生产机，必须按双锁顺序串行协调。
 
 ## 最近现场核实的版本
 
-应用修复版本为 `v2026.11.7.7`，候选及已安装控制面源码 `20bb15739b2f8601d1f87c4e342ed15747936466`，生产合并 `27ddaa730c434ccc7a187eb6cf8fdbb5a952293c`。此次标准自动发布只切换后端，前端复用 `867724c` 构建的原镜像，执行器用时 43 秒。后续仅文档发布推进 `/opt/heyi/source/current`，保留相同镜像及容器 ID。
+应用版本为 `v2026.11.7.9`，原始候选及已安装控制面源码 `984a017a9e4861ab0a0a8a3077d7c05f8e6d4a01`，生产合并 `ea83abe54b52a789f6ad5e91002660c0a7fa647b`。原生广告连接先在双锁内安装并登记，标准 CD 再切换后端；前端仍复用 `867724c` 构建的原镜像，容器未重建。后续纯文档发布可能只推进源码指针，需分别核对源码和运行镜像。
 
 | 服务 | 运行 manifest digest | config digest |
 | --- | --- | --- |
-| Java 后端 | `5db37670c5f7f70a9df8030b4b9f71cffffcc920ed6198581d0b3c3ead71034a` | `3adc5ef71f16e1047fcff09162f925a3fa9e5a8293e5f06a2529f0e2f0b7f019` |
+| Java 后端 | `7497cef065fc743777d78cc800b355b22cc902d0958275221fe0f667d4e30cc9` | `5c0c42431e47353e4545b5880aacacb552488cda3aa243deff41076119f169b9` |
 | Web 前端 | `ddea0f67a282d99e3a8113fb62f4509c1a29486a41360791024ec5f9166c5e59` | `a33e888de618299a7a9aba639b1a51b07bd16cf065652adc782096f19fe764a9` |
 
 摘要均为 SHA-256，仓库分别为 `ghcr.io/gotit-zhx/ai-video/app`、`frontend`。Docker 29 containerd 的 image ID 可等于 manifest，不能直接与 config digest 比较。
@@ -19,11 +19,12 @@
 
 相关生产路径：
 
-- 固定配置：`/opt/heyi/ops/compose/base.json`、`production.json`；后端引用 `/opt/heyi/ops/releases/v2026.11.7.7/images.json`，未重建的前端仍引用 v4 的 `images.json`，各三份，不再加载 252/240 份覆盖。不能删除前端仍引用的旧配置。
+- 固定配置：`/opt/heyi/ops/compose/base.json`、`production.json`；后端引用 `/opt/heyi/ops/releases/v2026.11.7.9/images.json`，未重建的前端仍引用 v4 的 `images.json`，各三份。不能删除前端仍引用的旧配置。
 - 源码与文档：`/opt/heyi/source/current`；与历史 `/opt/heyi/current` 分开使用。
 - 运维状态：`/opt/heyi/ops/active.json`、`baseline.json`、`operations/`、`requests/`；仅 root 维护，不手工改 active/version 绕过校验。
 - 首次接管及备份/TLS/权限证据：`/opt/heyi/operations/devops-phase1-20261107-946c8f18/`，GitHub Release 附带脱敏摘要。
-- 私有广告 properties：`/opt/heyi/shared/finance-ads/`，继续只读挂载；正式代理接入由独立维护完成。
+- 私有广告 properties：`/opt/heyi/shared/finance-ads/`，继续只读挂载，保留原应用凭据和权限，只追加代理主机/端口。
+- 广告专用连接：`heyi-finance-ad-proxy.service`，原生程序在 `/opt/heyi/finance-ad-proxy/current`，凭据在 `/etc/heyi/finance-ad-proxy/`；使用说明与限额见[连接组件](../../ops/finance-ad-proxy/README.md)。独立维护回执与私有恢复输入在 `/opt/heyi/operations/finance-ad-connection-v9-20261107-984a017/`。
 
 首次接管确认 schema、配置和租约恢复，但健康检查遗漏了 Spring 周期任务再次排队的缺陷。v7 已用真实定时器回归及原有上传任务推进验证修复；11 月 7 日收尾复核 schema 仍为 V147、配置与基线一致、维护关闭且没有未完成运维。不得再把 v4/v5 的健康验收视为上传业务正常。此前[广告发布](../releases/finance/finance-advertising-20261106.md)、[冷查询发布](../releases/finance/finance-cold-queries-20261106.md)和[性能发布](../releases/finance/finance-bi-performance-20261106.md)保留其历史业务事实，广告真实账户接入仍需独立验收。
 
@@ -61,8 +62,9 @@ docker inspect --format '{{range .Mounts}}{{println .Type .Destination}}{{end}}'
 
 优先使用 GitHub Operations → `rollback`，选择仍保留且已验收的受管版本；或由授权身份调用 `heyi-ops rollback VERSION EXPECTED_VERSION OPERATION_ID`。操作 ID 为 32 位小写十六进制，必须记录本次目标和当前基线，不能复用于其他请求。
 
-- **v2026.11.7.3 / v2026.11.7.4 / v2026.11.7.5 已禁止回滚**：三者复用存在定时器缺陷的后端。原始 `verified.json` 已移到 `/opt/heyi/ops/quarantine/20261107-upload-scheduler/<版本>/`，受限部署身份的真实回滚请求均在入队前被拒绝。原证明、发布清单、镜像、源码和回执保留，禁止复制验证文件重新启用。
-- 当前健康受管应用组合只有 v7 一组；v8 复用它，并不会增加第二组独立应用回滚镜像。保留列表含历史证据不代表仍有发布资格。旧体系两组镜像继续保留，使用前另行审查兼容性，不为凑足数量重新启用缺陷版本。
+- **v2026.11.7.3 / v2026.11.7.4 / v2026.11.7.5 已禁止回滚**：三者复用存在定时器缺陷的后端。原始 `verified.json` 已移到 `/opt/heyi/ops/quarantine/20261107-upload-scheduler/<版本>/`，受限部署身份的真实回滚请求均在入队前被拒绝。原证明、发布清单、源码和回执保留；共用旧后端镜像已完成完整 OCI 私有保全后精确回收 ECS 缓存，见[保全记录](../releases/finance/finance-ad-connection-acceptance-20261107.md#空间与证据保全)。恢复缓存也不能复制验证文件重新启用。
+- 当前活动组合为 v9，v7/v8 仍复用同一组历史镜像，不能重复计算为两组独立应用回滚镜像。旧体系两组镜像继续保留，使用前另行审查兼容性，不为凑足数量重新启用缺陷版本。
+- 若撤回广告专用连接，先按已验证兼容基线回滚应用；再在双锁内核对本次保存的配置摘要，使用对应恢复脚本恢复 properties、控制面和 operations 指纹并停止本次代理。恢复脚本限定预期版本，不能套用到后续版本；保留广告账户密文、业务数据与检查点。
 - 先确认数据库历史、迁移输入及运行配置兼容。自动回滚恢复应用/源码，数据库、业务卷、密钥、同步进度和已发出的官方写入不会随之撤销。
 - 不通过删除数据或修改迁移校验和来回滚。数据库恢复另走隔离验证后的独立维护流程。
 - 回滚后复核 `status`、`doctor` 和操作回执。清理临时上传目录后仍可诊断、恢复和回滚；保留版本的源包、配置及镜像不得被删除。
