@@ -13,6 +13,7 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 
 @Service
 public class FinanceAds {
+    static final List<String> ADVERTISER_FIELDS=List.of("advertiser_id","name","currency","timezone");
     final FinanceRepository repo;final FinanceService finance;final MarketplaceHttp http;final ShopCredentialCipher cipher;
     private final java.util.concurrent.atomic.AtomicBoolean verified=new java.util.concurrent.atomic.AtomicBoolean();
     private final java.util.concurrent.ScheduledExecutorService worker=java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"finance-ad-sync");t.setDaemon(true);return t;});
@@ -27,7 +28,7 @@ public class FinanceAds {
     public void connect(Scope s,String id,String shopId,String token,String gmvStoreId){
         if(!text(id).matches("\\d{5,30}")||text(token).length()<10||text(token).length()>4096)throw bad("请填写有效广告账户 ID 和授权 Access Token");
         validateDestination(s,text(shopId),text(gmvStoreId).trim());
-        var data=get("/advertiser/info/",token,Map.of("advertiser_ids",repo.write(List.of(id)),"fields",repo.write(List.of("advertiser_id","advertiser_name","currency","timezone"))));
+        var data=get("/advertiser/info/",token,Map.of("advertiser_ids",repo.write(List.of(id)),"fields",repo.write(ADVERTISER_FIELDS)));
         var advertiser=rows(data.get("list")).stream().filter(r->id.equals(text(r.get("advertiser_id")))).findFirst().orElseThrow(()->bad("该授权未返回指定广告账户"));
         connectVerified(s,id,shopId,token,gmvStoreId,advertiser);
     }
@@ -69,17 +70,24 @@ public class FinanceAds {
             last_success_at=IF(shop_id<>VALUES(shop_id),NULL,last_success_at),shop_id=VALUES(shop_id),
             gmv_store_id=VALUES(gmv_store_id),gmv_status=VALUES(gmv_status),gmv_error=NULL,timezone=VALUES(timezone),checkpoint_json=NULL,
             enabled=TRUE,status='READY',error_message=NULL,failures=0,lease_token=NULL,lease_until=NULL,next_at=UTC_TIMESTAMP(6)
-            """,storage.organizationId(),storage.userId(),id,first(advertiser,"advertiser_name"),shopId,currency,encrypted,gmvStoreId,gmvStoreId.isBlank()?"DISABLED":"READY",first(advertiser,"timezone"));
+            """,storage.organizationId(),storage.userId(),id,first(advertiser,"name"),shopId,currency,encrypted,gmvStoreId,gmvStoreId.isBlank()?"DISABLED":"READY",first(advertiser,"timezone"));
     }
     public void pause(Scope s,String id,boolean enabled){
         if(enabled&&list(s).stream().noneMatch(a->id.equals(text(a.get("advertiser_id")))))throw bad("广告账户不存在或绑定的财务店铺已移除");
         if(repo.jdbc().update("UPDATE finance_ad_accounts SET enabled=?,next_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND advertiser_id=?",
                 enabled,s.organizationId(),id)!=1)throw bad("广告账户不存在");
     }
+    static Long metricCount(Map<String,Object> metrics,String key){
+        BigDecimal value=decimal(metrics.get(key));
+        if(value==null)return null;
+        try{long count=value.longValueExact();if(count>=0)return count;}
+        catch(ArithmeticException invalid){throw bad("广告报表计数指标格式不正确："+key);}
+        throw bad("广告报表计数指标不能为负数："+key);
+    }
     Map<String,Object> get(String path,String token,Map<String,?> query){
         var response=http.get(MarketplaceHttp.uri("https://business-api.tiktok.com","/open_api/v1.3"+path,query),Map.of("Access-Token",token));
         if(!response.containsKey("code")||number(response.get("code"))!=0)
-            throw bad("TikTok 广告接口返回错误 "+text(response.get("code"))+"，请核对报表权限和授权有效期");
+            throw new FinanceAdFailures.ProviderFailure(response.get("code"));
         return map(response.get("data"));
     }
     @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->{try{tick();if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance ad sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance ad dispatcher temporarily unavailable",e);}},60,30,java.util.concurrent.TimeUnit.SECONDS);}
@@ -128,7 +136,7 @@ public class FinanceAds {
                 if(spend==null)throw bad("广告报表未返回消耗字段");
                 String shop=text(account.get("shop_id"));if(shop.isBlank())shop="UNASSIGNED";
                 repo.save(s,new Entry(shop,"TIKTOK_SHOP",gmv?"AD_GMV":"AD",id+":"+date,"","",gmv?"GMV Max 专项分析":"广告账户总消耗","REPORTED",date,
-                        text(account.get("currency")),spend,gmv?amount(metrics,"gross_revenue"):null,gmv?null:number(metrics.get("impressions")),gmv?null:number(metrics.get("clicks")),amount(metrics,gmv?"orders":"conversion"),"API",
+                        text(account.get("currency")),spend,gmv?amount(metrics,"gross_revenue"):null,gmv?null:metricCount(metrics,"impressions"),gmv?null:metricCount(metrics,"clicks"),amount(metrics,gmv?"orders":"conversion"),"API",
                         Map.of("advertiser_id",id,"dimensions",dim,"metrics",metrics,"_finance_sync",cp.get("run"))));
             }
             if(!data.containsKey("page_info"))throw bad("广告报表未返回分页状态，已保留同步进度");

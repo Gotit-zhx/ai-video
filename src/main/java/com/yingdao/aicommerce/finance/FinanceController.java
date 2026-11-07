@@ -64,7 +64,11 @@ public class FinanceController {
     }
     @GetMapping("/records") public ApiResponse<?> records(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var scope=s(p);var selected=filter(q);boolean allOrders=allOrders(q,q.get("kind"));
-        var result=new LinkedHashMap<>(repo.details(scope,selected,q.get("kind"),(int)Math.max(1,number(q.getOrDefault("page","1"))),50,q.get("numbers"),allOrders));
+        boolean advertisingOnly=advertisingOnly(q,q.get("kind"));
+        int page=(int)Math.max(1,number(q.getOrDefault("page","1")));
+        var result=new LinkedHashMap<>(advertisingOnly?repo.advertisingFeeDetails(scope,selected,page,50,q.get("numbers")):
+                repo.details(scope,selected,q.get("kind"),page,50,q.get("numbers"),allOrders));
+        if(advertisingOnly)result.put("advertisingOnly",true);
         result.put("dateBasis",FinanceCalendar.contract());
         result.put("fieldSettings",fields.settings(personal(p),q.get("kind")));
         if(allOrders){
@@ -80,13 +84,19 @@ public class FinanceController {
         // List workspaces already receive this exact settled-order summary from /overview.
         // Refund/bill/settlement summaries keep their own source-specific basis.
         boolean sharedCostScope="SETTLED_ORDER".equals(FinanceCostReport.scopeKind(q.get("kind"),false));
-        if(!allOrders&&(!sharedCostScope||!"false".equals(q.get("includeProductCosts"))))
+        if(!allOrders&&!advertisingOnly&&!Set.of("AD","AD_GMV").contains(text(q.get("kind")))
+                &&(!sharedCostScope||!"false".equals(q.get("includeProductCosts"))))
             result.put("productCosts",new FinanceCostReport(repo).summary(s(p),filter(q),q.get("kind")));
         if("CNY".equals(q.get("displayCurrency"))){
             var quote=service.exchangeRates().quote(q.get("fxSnapshot"));
             service.exchangeRates().enrich(rows(result.get("items")),quote);if(allOrders)result.put("fx",quote.metadata());
         }
         return ApiResponse.ok(result);
+    }
+    static boolean advertisingOnly(Map<String,String> q,String kind){
+        if(!"true".equals(q.get("advertisingOnly")))return false;
+        if(!"FEE".equals(kind))throw bad("平台账单广告费筛选仅适用于费用明细");
+        return true;
     }
     @GetMapping("/records/{id}") public ApiResponse<?> record(@PathVariable("id") String id,@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var row=repo.detail(s(p),id,"ALL".equals(q.get("orderScope")));
@@ -133,6 +143,7 @@ public class FinanceController {
     @GetMapping("/export") public ResponseEntity<byte[]> export(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         Scope s=s(p);Filter f=filter(q);
         String view=FinanceFields.view(q.getOrDefault("view",q.get("kind")));
+        boolean advertisingOnly=advertisingOnly(q,view);
         boolean rec=view.equals("RECONCILIATION"),cny="CNY".equals(q.get("displayCurrency"));
         FinanceFx.Quote quote=cny?service.exchangeRates().quote(q.get("fxSnapshot")):null;
         boolean allOrders=allOrders(q,view);
@@ -149,7 +160,8 @@ public class FinanceController {
         else {
             int page=1;long total;
             do{
-                var result=repo.details(s,f,view.equals("ALL")?null:view,page,100,q.get("numbers"),allOrders);total=number(result.get("total"));
+                var result=advertisingOnly?repo.advertisingFeeDetails(s,f,page,100,q.get("numbers")):
+                        repo.details(s,f,view.equals("ALL")?null:view,page,100,q.get("numbers"),allOrders);total=number(result.get("total"));
                 if(total>100000)throw bad("本次导出超过 100,000 条，请缩小日期或店铺范围");
                 var items=FinanceData.rows(result.get("items"));
                 if(cny)service.exchangeRates().enrich(items,quote);
@@ -169,14 +181,14 @@ public class FinanceController {
                     List.of("千易收货日期","实际 receiveTime 按北京时间独立筛选，不替代平台结算日期。"),
                     List.of("编号查询",String.join("、",FinanceRecordSearch.numbers(q.get("numbers")))),
                     List.of("编号日期范围",allOrders&&!FinanceRecordSearch.numbers(q.get("numbers")).isEmpty()?"完整订单号跨全部下单日期查找；仍按当前公司、店铺、分组、平台和币种限制":"按所选日期范围"),
-                    List.of("范围","当前筛选全部记录；列按当前用户的导出配置生成；平台已结算不代表银行到账"),
+                    List.of("范围",advertisingOnly?"当前公司及筛选范围的全部平台账单广告费，分类与总览广告统计一致；包含全部分页，保留负向返还":"当前筛选全部记录；列按当前用户的导出配置生成；平台已结算不代表银行到账"),
                     List.of("刷单口径","原始财务明细保留刷单记录及订单标记；经营汇总排除刷单结算金额、关联费用和成本，原始账单对账不删除记录。"),
                     List.of("时间口径",allOrders?"全部官方订单按店铺时区的下单日期筛选，包括取消、未结算和跨月结算订单；首次结算日期单列。收入、利润及成本统计仍按原结算口径。":"已结算订单及关联退款按首次平台结算日期筛选；结算和平台费用按平台结算日期。广告及独立费用按费用日期，待结算按订单日期。"),
                     List.of("收入口径","结算明细及账单主金额展示销售收入；商家优惠和退款已体现在收入中，不再重复扣减。平台费用、物流及调整逐项列示；净结算另列，对账使用平台原始净额。"),
                     List.of("商品成本口径","仅平台已结算订单计入商品成本；整单成本归属首次结算，后续结算调整不重复计成本。未结算成本留空并注明；退款关联成本只作核对，不再次扣减。成本固定人民币，历史价估算保留状态。"),
                     List.of("扩展字段","仅展示平台实际返回的字段；空白表示未返回或不适用。标记原币的扩展金额不做人民币转换。"),
                     List.of("生成时间（北京时间）",FinanceCalendar.display(java.time.Instant.now()))));
-            if(!rec&&!allOrders){
+            if(!rec&&!allOrders&&!advertisingOnly&&!Set.of("AD","AD_GMV").contains(view)){
                 var rc=exportColumns(fields.selected(personal(p),"RECONCILIATION",true,cny));var rr=exportRows(rc);
                 appendReconciliation(rr,rc,s,f,quote,q.get("numbers"));sheets.put("结算对账",rr);
             }

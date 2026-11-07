@@ -2,7 +2,7 @@
 
 面向电商运营、AI 图片与视频生产、财务分析和招聘管理的多租户平台。
 
-文档核对日期：**2026-11-06（北京时间）**。上游默认分支为 `main-tree`；个人 fork 按 Gitflow 使用 `main-tree` 发布基线、`develop` 集成及 `feature/*` 开发分支，见[协作流程](docs/guides/development.md#gitflow-与个人-fork)。服务器于当日 17:34 完成 `2026.11.6.2` 冷查询修复，后端为 `finance-cold-queries-20261106`，前端沿用 `brush-source-summary-20261106`；源码、测试及运行边界见[冷查询发布验收](docs/releases/finance/finance-cold-queries-20261106.md)，不等同于全部业务重新验收。
+文档核对日期：**2026-11-07（北京时间）**。上游默认分支为 `main-tree`；个人 fork 按 Gitflow 使用 `main-tree` 发布基线、`develop` 集成及 `feature/*` 开发分支，见[协作流程](docs/guides/development.md#gitflow-与个人-fork)。服务器于当日 09:18 激活 `2026.11.6.3`，后端与前端均为 `finance-advertising-20261106`，保留上一版冷查询优化。广告统计和运行验收通过；真实广告授权仍因服务器访问官方接口超时而未通过，详见[广告发布验收与待办](docs/releases/finance/finance-advertising-20261106.md)。
 
 ## 接手入口
 

@@ -220,7 +220,7 @@ class FinanceConfigurationIntegrationTest {
         String shop=connect(owner,false);db.update("UPDATE finance_connections SET platform='TIKTOK_SHOP' WHERE id=?",shop);
         var http=mock(com.yingdao.aicommerce.shop.infrastructure.MarketplaceHttp.class);
         var ads=new FinanceAds(repo,service,http,cipher);
-        var advertiser=Map.<String,Object>of("advertiser_id","123456","advertiser_name","Old advertiser","currency","PHP","timezone","Asia/Manila");
+        var advertiser=Map.<String,Object>of("advertiser_id","123456","name","Old advertiser","currency","PHP","timezone","Asia/Manila");
         ads.connectVerified(owner,"123456",shop,"valid-advertiser-token","",advertiser);
         Instant oldLink=Instant.now().minusSeconds(10);
         var entered=new java.util.concurrent.CountDownLatch(1);var release=new java.util.concurrent.CountDownLatch(1);
@@ -234,7 +234,7 @@ class FinanceConfigurationIntegrationTest {
             try{
                 service.removeShop(owner,shop);finishDeletion(shop);
                 assertThrows(BusinessException.class,()->ads.connectVerified(owner,"123456","","another-valid-token","",advertiser,oldLink));
-                var newAdvertiser=new HashMap<>(advertiser);newAdvertiser.put("advertiser_name","New advertiser");
+                var newAdvertiser=new HashMap<>(advertiser);newAdvertiser.put("name","New advertiser");
                 ads.connectVerified(owner,"123456","","new-valid-advertiser-token","",newAdvertiser);
             }finally{release.countDown();}
             running.get(10,java.util.concurrent.TimeUnit.SECONDS);
@@ -1118,9 +1118,25 @@ class FinanceConfigurationIntegrationTest {
     }
     void adGrant(List<String> ids,List<Map<String,Object>> accounts){
         when(adHttp.postJson(any(),anyMap(),anyString())).thenReturn(Map.of("code",0,"data",Map.of("access_token","verified-ad-access","advertiser_ids",ids)));
-        when(adHttp.get(any(),anyMap())).thenReturn(Map.of("code",0,"data",Map.of("list",accounts)));
+        when(adHttp.get(any(),anyMap())).thenAnswer(call->{
+            URI uri=call.getArgument(0);
+            String fields=Arrays.stream(uri.getRawQuery().split("&")).filter(p->p.startsWith("fields="))
+                    .map(p->java.net.URLDecoder.decode(p.substring(7),java.nio.charset.StandardCharsets.UTF_8)).findFirst().orElse("[]");
+            List<String> requested=new ObjectMapper().readValue(fields,List.class);
+            if(!Set.of("advertiser_id","name","currency","timezone").containsAll(requested))
+                return Map.of("code",40002,"message","Unsupported advertiser detail field");
+            return Map.of("code",0,"data",Map.of("list",accounts));
+        });
     }
-    Map<String,Object> advertiser(String id){return Map.of("advertiser_id",id,"advertiser_name","Test ads "+id,"currency","PHP","timezone","Asia/Manila");}
+    Map<String,Object> advertiser(String id){return Map.of("advertiser_id",id,"name","Test ads "+id,"currency","PHP","timezone","Asia/Manila");}
+    @Test void directAdvertisingConnectionPersistsOfficialDetailNameAndReturnsVisibleAccount(){
+        adAuth();adGrant(List.of("100001"),List.of(advertiser("100001")));
+        var accounts=new FinanceAds(FinanceTest.classProxy(repo),service,adHttp,cipher);
+        accounts.connect(owner,"100001","","verified-ad-access","");
+        assertEquals(1,accounts.list(owner).size());assertEquals("Test ads 100001",accounts.list(owner).getFirst().get("name"));
+        assertEquals("Test ads 100001",db.queryForObject("SELECT name FROM finance_ad_accounts WHERE organization_id='org' AND advertiser_id='100001'",String.class));
+        assertTrue(accounts.list(other).isEmpty());verify(adHttp,never()).postJson(any(),anyMap(),anyString());
+    }
     @Test void serverAdvertisingApplicationCreatesCopiedLinksWithoutCompanySetupAndKeepsAccountsIsolated(){
         var a=adAuth(new FinanceAdApplicationSettings("12345678","server-ad-private-secret",""));
         assertEquals(true,a.configuration(owner).get("configured"));
@@ -1186,6 +1202,8 @@ class FinanceConfigurationIntegrationTest {
         assertTrue(result.getHeaders().getLocation().toString().contains("financeAuth=success"));
         assertTrue(result.getHeaders().getLocation().toString().endsWith("#finance-shops"));
         assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_ad_accounts WHERE organization_id='org'",Integer.class));
+        assertEquals("Test ads 100001",db.queryForObject("SELECT name FROM finance_ad_accounts WHERE organization_id='org' AND advertiser_id='100001'",String.class));
+        assertEquals(Set.of("Test ads 100001","Test ads 100002"),new FinanceAds(repo,service,adHttp,cipher).list(owner).stream().map(row->text(row.get("name"))).collect(java.util.stream.Collectors.toSet()));
         assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_ad_accounts WHERE user_id='other'",Integer.class));
         String token=db.queryForObject("SELECT access_token_encrypted FROM finance_ad_accounts WHERE advertiser_id='100001'",String.class);
         assertEquals("verified-ad-access",cipher.decrypt(token,"org","finance:"+companyScope("org").userId()+":100001"));
