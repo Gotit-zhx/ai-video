@@ -48,12 +48,17 @@ def recover_operations(store,host):
 
 def dispatch(args, role="local"):
     allowed={"monitoring":{"status","doctor","receipt"},
-             "deploy":{"status","doctor","receipt","stage","deploy","rollback","preflight"},
-             "local":{"status","doctor","receipt","stage","deploy","rollback","preflight","recover","cleanup","monitor","execute","watchdog","finalize","adopt","tls-reload"}}
+             "deploy":{"status","doctor","receipt","stage","image-cache","deploy","rollback","preflight"},
+             "local":{"status","doctor","receipt","stage","image-cache","deploy","rollback","preflight","recover","cleanup","monitor","execute","watchdog","finalize","adopt","tls-reload"}}
     if not args or args[0] not in allowed.get(role,set()): raise ValueError("Action is not allowed for this identity")
     action=args[0];config,store,host,artifacts=context()
     if action in {"status","doctor","recover","cleanup","monitor","watchdog","tls-reload"} and len(args)!=1: raise ValueError("Unexpected arguments")
     if action=="status": return status(store,host)
+    if action=='image-cache':
+        if len(args)!=4 or args[1] not in {'app','frontend'} or not all(re.fullmatch(r'[a-f0-9]{64}',v) for v in args[2:]):
+            raise ValueError('Expected component and immutable manifest/config digests')
+        return {'component':args[1],'present':artifacts.cached({'repository':'ghcr.io/gotit-zhx/ai-video/'+args[1],
+            'manifestDigest':'sha256:'+args[2],'configDigest':'sha256:'+args[3]})}
     if action=="doctor":
         from .monitor import diagnose
         return diagnose(config,store,host)
@@ -67,14 +72,17 @@ def dispatch(args, role="local"):
             raw=sys.stdin.buffer.readline(16385)
             if len(raw)>16384: raise ValueError("Credential input too large")
             payload=json.loads(raw)
-            if set(payload) not in ({"pullToken"},{"pullToken","assetSizes"}): raise ValueError("Unexpected input fields")
+            if set(payload) not in ({"pullToken"},{"pullToken","assetSizes"},{"pullToken","assetSizes","imageArchives"}): raise ValueError("Unexpected input fields")
             upload=None
             if 'assetSizes' in payload:
                 sizes=payload['assetSizes']
                 if (not isinstance(sizes,dict) or set(sizes)!={'release.json','source.tar.gz'} or
                     any(type(v) is not int for v in sizes.values()) or not 0<sizes['release.json']<=1024*1024 or
                     not 0<sizes['source.tar.gz']<=512*1024**2):raise ValueError('Invalid upload size bounds')
-                upload=(sys.stdin.buffer,sizes)
+                images=payload.get('imageArchives',{})
+                if not isinstance(images,dict) or set(images)-{'app','frontend'} or any(type(v) is not int or not 0<v<=2*1024**3 for v in images.values()):
+                    raise ValueError('Invalid OCI upload sizes')
+                upload=(sys.stdin.buffer,sizes,images)
             with store.exclusive():
                 if store.incomplete() or host.marker.exists():raise RuntimeError("Recover maintenance before preparing another release")
                 target=artifacts.prepare(args[1],payload["pullToken"],upload=upload)
