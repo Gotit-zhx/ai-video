@@ -3,6 +3,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -65,7 +66,14 @@ class Artifacts:
             command("gh","attestation","verify",str(manifest),*verify,"--source-digest",candidate,"--source-ref",source_ref,env=env,timeout=120)
             source=folder/"source.tar.gz"
             if source.stat().st_size!=target["sourceArchiveBytes"] or sha(source.read_bytes())!=target["sourceArchiveSha256"]: raise ValueError("Source checksum/size failed")
-            budget=sum(i["compressedBytes"]+i["unpackedBytes"] for i in target["images"].values())
+            cached=set()
+            for name,image in target['images'].items():
+                local=subprocess.run(['docker','image','inspect',image['repository']+'@'+image['manifestDigest']],capture_output=True,timeout=15)
+                if local.returncode==0:
+                    info=json.loads(local.stdout)[0]
+                    if info['Id']!=image['configDigest'] or info['Architecture']!='amd64' or info['Os']!='linux':raise ValueError('Cached image differs from the attested manifest')
+                    cached.add(name)
+            budget=sum(i["compressedBytes"]+i["unpackedBytes"] for name,i in target["images"].items() if name not in cached)
             budget+=2*target["sourceArchiveBytes"]+target["sourceUnpackedBytes"]
             if shutil.disk_usage(self.root).free<14*GIB+budget: raise RuntimeError("Insufficient pull/unpack budget plus 14 GiB reserve")
             docker=folder/"docker";docker.mkdir(mode=0o700);env["DOCKER_CONFIG"]=str(docker)
@@ -76,7 +84,7 @@ class Artifacts:
                 ref=image["repository"]+"@"+image["manifestDigest"]
                 command("gh","attestation","verify","oci://"+ref,*verify,"--source-digest",image["sourceCommit"],
                         "--source-ref",image["sourceRef"],env=env,timeout=120)
-                command("docker","pull","--platform=linux/amd64",ref,env=env,timeout=300)
+                if name not in cached:command("docker","pull","--platform=linux/amd64",ref,env=env,timeout=300)
                 info=inspect(ref)
                 if info["Id"]!=image["configDigest"] or info["Architecture"]!="amd64" or info["Os"]!="linux": raise ValueError("Pulled image differs")
             destination=self.path(version)
@@ -87,5 +95,5 @@ class Artifacts:
                 shutil.copyfile(manifest,destination/"release.json")
                 shutil.copyfile(source,destination/"source.tar.gz")
             atomic(destination/"verified.json",{"verifiedAt":int(time.time()),"manifestSha256":sha(manifest.read_bytes()),
-                   "productionCommit":head,"candidateCommit":candidate,"workflow":WORKFLOW})
+                   "productionCommit":head,"candidateCommit":candidate,"workflow":WORKFLOW,"cachedImages":sorted(cached)})
         return target
