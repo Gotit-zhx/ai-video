@@ -32,7 +32,7 @@ function harness() {
     respond(status, response) { this.status = status; this.response = response; this.fire('load'); }
   }
   const window = new Node();
-  const context = {window, document: {querySelector: selector => get(selector.slice(1)), querySelectorAll: () => [], activeElement: null},
+  const context = {IncrementalDOM:{html:(node,html)=>{node.innerHTML=html;}},window, document: {querySelector: selector => get(selector.slice(1)), querySelectorAll: () => [], activeElement: null},
     currentUser: {organizationId: 'org'}, XMLHttpRequest: XHR,
     FormData: class {set() {} append() {}}, crypto: {randomUUID: () => `key-${++sequence}`},
     URL: {createObjectURL: () => 'blob:fixture', revokeObjectURL() {}},

@@ -108,7 +108,7 @@ public class CommerceBatchExecutionWorker {
             if (runs.claim(id, flight.token, now, now.plus(LEASE_DURATION)) != 1) continue;
             inFlight.put(id, flight);
             try {
-                executor.execute(() -> {
+                com.yingdao.aicommerce.ops.MaintenanceGate.execute(executor,() -> {
                     try {
                         execute(flight);
                     } catch (Exception failure) {

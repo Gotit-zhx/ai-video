@@ -17,7 +17,7 @@ public class FinanceCostWorker {
     public FinanceCostWorker(FinanceRepository repo,FinanceService service,PlatformTransactionManager tx){
         costs=new FinanceOrderCosts(repo);this.service=service;transactions=new TransactionTemplate(tx);transactions.setTimeout(30);
     }
-    @PostConstruct public void start(){worker.scheduleWithFixedDelay(this::tick,20,1,TimeUnit.SECONDS);}
+    @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->com.yingdao.aicommerce.ops.MaintenanceGate.runIfOpen(this::tick),20,1,TimeUnit.SECONDS);}
     @PreDestroy public void stop(){worker.shutdownNow();}
     public void tick(){
         try{

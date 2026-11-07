@@ -1,0 +1,5 @@
+#!/usr/bin/python3 -I
+import sys
+sys.path.insert(0,"/usr/local/lib/heyi-ops/current")
+from heyi_ops.cli import gateway
+raise SystemExit(gateway(sys.argv[1],sys.argv[2]) if len(sys.argv)==3 else 2)

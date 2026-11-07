@@ -2,6 +2,8 @@
 
 核对日期：2026-11-07。服务器 `8.163.34.81` 于 **09:18 激活财务广告版本 `2026.11.6.3`**，报表和运行验收通过，真实广告授权仍未通过，见[广告发布记录](../releases/finance/finance-advertising-20261106.md)。11 月 6 日的[冷查询发布](../releases/finance/finance-cold-queries-20261106.md)、[第一轮性能发布](../releases/finance/finance-bi-performance-20261106.md)及[项目同步记录](../releases/infrastructure/project-sync-20261106.md)保留历史证据。主机和通用入口见[服务器运维交接](server-handoff.md)。生产操作先读 [AGENTS.md](../../AGENTS.md)，并重新读取实际运行基线。
 
+统一 CI/CD 正在按[GitHub Actions 与统一运维](cicd.md)实施，是否已安装、启用及验收以[一期实施回执](../releases/infrastructure/devops-phase1-20261106.md)为准。
+
 ## 最近现场核实的版本
 
 2026-11-07 09:28（北京时间）复核，后端和前端均为 `finance-advertising-20261106`，版本 `2026.11.6.3`。广告口径、授权字段修正及此前冷查询优化已在制品中；实际新 OAuth 回调仍为 `TIMEOUT`，不能将运行验收通过解释为广告账户已接入。

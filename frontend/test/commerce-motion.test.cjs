@@ -88,7 +88,7 @@ test('color study starts from real SKU targets and only archived BASE_COLOR rows
  assert.deepEqual(h.get('studio-color-grid').children,before);
  colorEvent(h,[...skuColors.map(color=>colorJob(color.key))]);
  assert.equal(h.get('studio-color-count').textContent,'3 / 3');assert.equal(h.get('studio-live-stage').dataset.colorsReady,'true');
- assert.equal(h.get('studio-color-title').textContent,'原色已就位，接续创作');
+ assert.equal(h.get('studio-color-title').textContent,'配色已就位，接续创作');
  colorEvent(h,[...skuColors.map(color=>colorJob(color.key)),{id:'extract',captureId:'source',kind:'EXTRACT',status:'SUBMITTING'}]);
  assert.equal(h.get('studio-live-stage').dataset.scene,'extract');assert.equal(h.get('studio-color-deck').hidden,true);
 });

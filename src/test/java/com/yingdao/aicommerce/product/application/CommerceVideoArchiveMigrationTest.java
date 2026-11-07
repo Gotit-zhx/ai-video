@@ -15,6 +15,7 @@ class CommerceVideoArchiveMigrationTest {
         String url=System.getenv("MODULE_MIGRATION_URL");
         assertTrue(url.contains("module_isolation_test"));
         var source=new DriverManagerDataSource(url,System.getenv("MODULE_MIGRATION_USER"),System.getenv("MODULE_MIGRATION_PASSWORD"));
+        ModuleMigrationFixture.prepare(source,true);
         var db=new JdbcTemplate(source);
         var mapping=db.queryForList("SELECT * FROM commerce_source_copies LIMIT 1").getFirst();
         String original=UUID.randomUUID().toString(),copy=UUID.randomUUID().toString();
@@ -24,8 +25,7 @@ class CommerceVideoArchiveMigrationTest {
                     INSERT INTO product_capture_videos(id,organization_id,capture_id,source_url,mime_type,byte_length,content_sha256,created_at)
                     VALUES(?,?,?,'https://example.com/frozen-video','video/mp4',24,?,NOW(6))
                     """,pair.getKey(),mapping.get("organization_id"),pair.getValue(),hash);
-        var flyway=Flyway.configure().dataSource(source).locations(System.getenv("MODULE_MIGRATION_LOCATION"))
-                .javaMigrations(new V114__freeze_legacy_commerce_sources()).load();
+        var flyway=Flyway.configure().dataSource(source).locations("classpath:db/migration").target("115").load();
         assertEquals(1,flyway.migrate().migrationsExecuted);
         assertEquals(0,flyway.migrate().migrationsExecuted);
         assertEquals(original,db.queryForObject("SELECT storage_video_id FROM product_capture_videos WHERE id=?",String.class,copy));

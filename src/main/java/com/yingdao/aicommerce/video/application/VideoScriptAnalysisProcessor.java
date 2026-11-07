@@ -211,9 +211,9 @@ public class VideoScriptAnalysisProcessor {
     private PiAnalysisResponse requestAnalysisWithProgress(
             String scriptId, String progressId, Map<String, Object> request) {
         FutureTask<PiAnalysisResponse> analysis = new FutureTask<>(() -> requestAnalysisWithRetry(scriptId, request));
-        Thread worker = Thread.ofVirtual()
-                .name("video-script-pi-" + scriptId)
-                .start(analysis);
+        var tracked=com.yingdao.aicommerce.ops.MaintenanceGate.accepted(analysis);
+        Thread worker = Thread.ofVirtual().name("video-script-pi-" + scriptId).unstarted(tracked);
+        tracked.start(worker);
         try {
             while (!analysis.isDone()) {
                 pollAnalysisProgress(scriptId, progressId);

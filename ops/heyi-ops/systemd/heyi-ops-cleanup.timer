@@ -1,0 +1,10 @@
+[Unit]
+Description=Apply Heyi artifact ownership and receipt retention
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=6h
+Persistent=false
+
+[Install]
+WantedBy=timers.target

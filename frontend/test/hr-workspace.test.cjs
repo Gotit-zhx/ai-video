@@ -13,18 +13,25 @@ class Node {
     this.value='';this._text='';this.hidden=false;this.disabled=false;this.className='';
     this.classList={toggle:()=>{}};
   }
+  set onclick(handler) {this.events.click=handler;}
+  get onclick() {return this.events.click;}
+  set onchange(handler) {this.events.change=handler;}
+  get onchange() {return this.events.change;}
   set textContent(value) {this._text=String(value);this.children=[];}
   get textContent() {return this._text+this.children.map(n=>n.textContent).join(' ');}
   get isConnected() {return this._connected===true||!!this.parent?.isConnected;}
   get parentElement() {return this.parent||null;}
   append(...nodes) {nodes.forEach(n=>{n.parent=this;});this.children.push(...nodes);}
   replaceChildren(...nodes) {this._text='';this.children.forEach(n=>{n.parent=null;});this.children=[];this.append(...nodes);}
+  cloneNode(deep=false){const n=new Node(this.tagName);n.className=this.className;n.attributes={...this.attributes};n.dataset={...this.dataset};n.style={...this.style};if(deep)n.append(...this.children.map(c=>c.cloneNode(true)));return n;}
+  insertBefore(node,anchor){node.remove();node.parent=this;const i=this.children.indexOf(anchor);this.children.splice(i<0?this.children.length:i,0,node);return node;}
   remove(){if(this.parent){this.parent.children=this.parent.children.filter(n=>n!==this);this.parent=null;}}
   replaceWith(node){const parent=this.parent;if(!parent)return;node.remove();const index=parent.children.indexOf(this);parent.children[index]=node;node.parent=parent;this.parent=null;}
   setAttribute(key,value) {this.attributes[key]=value;}
   removeAttribute(key) {delete this.attributes[key];}
   addEventListener(key,callback) {this.events[key]=callback;}
-  querySelectorAll(selector) {return all(this).filter(n=>selector==='.hr-result'&&n.className.split(' ').includes('hr-result'));}
+  contains(node){return all(this).includes(node);}
+  querySelectorAll(selector) {return all(this).slice(1).filter(n=>selector.startsWith('.')&&n.className.split(' ').includes(selector.slice(1)));}
   click() {if(!this.disabled)return this.events.click?.({currentTarget:this,preventDefault(){}});}
   showModal(){this.open=true;this.hidden=false;}
   close(){const wasOpen=this.open;this.open=false;this.hidden=true;if(wasOpen)this.events.close?.();}
@@ -57,7 +64,7 @@ function setup(overrides={}) {
   const links=['overview','demands','jobs','resume-pool','pool','onboarding','speeches','departments','talent','applications','chats','resume'].map(route=>{
     const node=new Node('a');node.dataset.hrRoute=route;return node;
   });
-  const env={echarts:overrides.echarts,document:{documentElement:{dataset:{theme:'light'}},
+  const env={IncrementalDOM:{children:(node,next)=>node.replaceChildren(...next.children)},echarts:overrides.echarts,document:{documentElement:{dataset:{theme:'light'}},
     getElementById:()=>root,createElement:tag=>new Node(tag),createElementNS:(_ns,tag)=>new Node(tag),
     querySelectorAll:()=>links},currentUser:{platformAdmin:true,username:'13800000000'},
     activeWorkspace:'hr',location:{pathname:'/',search:'',hash:''},
@@ -81,6 +88,8 @@ function setup(overrides={}) {
     }};
   if(overrides.transport)env.HeyiHrTransport={api:env.api,...overrides.transport};
   env.window=env;vm.createContext(env);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../incremental-charts.js'),'utf8'),env);
+  env.IncrementalDOM.patch=(node,next)=>{node.replaceChildren(...next.children);return node;};
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-pool.js'),'utf8'),env);
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-demands.js'),'utf8'),env);
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-departments.js'),'utf8'),env);
@@ -1305,14 +1314,14 @@ test('BI creates nine real-data charts and preserves chart mode and series acros
   await app.enter('overview');assert.equal(mock.records.length,9);
   assert.ok(mock.records.every(r=>r.settings.renderer==='svg'&&r.options.tooltip.renderMode==='richText'));
   const trend=mock.records.find(r=>r.node.dataset.chart==='招聘周期趋势');
-  assert.deepEqual(Array.from(trend.options.series[0].data),[4,6]);
+  assert.deepEqual(Array.from(trend.options.series[0].data,r=>r.value),[4,6]);
   const ring=mock.records.find(r=>r.node.dataset.chart==='简历来源环形图');
   assert.deepEqual(Array.from(ring.options.series[0].data,r=>r.value),[3,7]);
   const heat=mock.records.find(r=>r.node.dataset.chart==='职位进展热力图');
   assert.deepEqual(Array.from(heat.options.series[0].data,r=>r[2]),[10,5,4,2,0,1]);
   await app.click('柱状');assert.equal(trend.options.series[0].type,'bar');
   const series=all(app.root).find(n=>n.attributes['aria-label']==='趋势指标');
-  series.value='AI 寻源与主动联系';await series.events.change();await flush();
+  series.value='AI 寻源与主动联系';await series.events.change({currentTarget:series});await flush();
   assert.equal(trend.options.series[0].name,'评估人次');
   await app.click('半年 K');assert.ok(mock.records.slice(0,9).every(r=>r.disposed));
   const updated=mock.records.slice(9).find(r=>r.node.dataset.chart==='招聘周期趋势');
@@ -1321,7 +1330,7 @@ test('BI creates nine real-data charts and preserves chart mode and series acros
   assert.equal(all(app.root).filter(n=>n.className.includes('hr-bi-metric')&&n.tagName==='button').length,24);
   await app.enter('onboarding');assert.ok(mock.records.every(r=>r.disposed));
 });
-test('BI clears stale data and export on failed scope changes and ignores older overlapping responses',async()=>{
+test('BI retains the last confirmed scope on refresh failure and ignores older overlapping responses',async()=>{
   const mock=chartMock(),pending=[];
   const app=setup({bi:true,echarts:mock.library,api:async url=>{
     if(url.endsWith('/login/status'))return {data:{state:'complete'}};
@@ -1331,9 +1340,12 @@ test('BI clears stale data and export on failed scope changes and ignores older 
     return {data:biFixture(params)};
   }});
   await app.enter('overview');await app.click('月 K');assert.match(app.text(),/读取失败/);
-  assert.equal(mock.records.every(r=>r.disposed),true);
-  assert.equal(all(app.root).filter(n=>n.className==='hr-bi-plot').length,0);
-  assert.equal(all(app.root).find(n=>n.tagName==='a'&&n.textContent.includes('导出 Excel')).hidden,true);
+  assert.equal(mock.records.some(r=>r.disposed),false);
+  assert.equal(all(app.root).filter(n=>n.className==='hr-bi-plot').length,9);
+  const retained=all(app.root).find(n=>n.tagName==='a'&&n.textContent.includes('导出 Excel'));
+  assert.equal(retained.hidden,false);
+  assert.equal(new URL(retained.href,'https://platform.test').searchParams.get('granularity'),'day');
+  assert.match(app.text(),/保留上次数据/);
   // Recover with the persistent refresh action, then overlap two user-selected scopes.
   const cycle=all(app.root).find(n=>n.tagName==='select'&&n.children.some(o=>o.value==='halfyear'));
   cycle.value='day';await app.visible().find(n=>n.className==='hr-bi-refresh').click();await flush();

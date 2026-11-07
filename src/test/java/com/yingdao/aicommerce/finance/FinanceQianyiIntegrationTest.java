@@ -113,8 +113,8 @@ class FinanceQianyiIntegrationTest extends FinanceActualCostsIntegrationTest {
             var report=new LinkedHashMap<String,Object>(Map.of("total",new LinkedHashMap<String,Object>(),"shops",new ArrayList<>()));
             actual.attachReturns(owner,period(9),report);
             assertEquals(false,report.get("returnProcessing"),"first connection does not erase existing financial results");
-            assertTrue(Boolean.TRUE.equals(report.get("returnIntegrationPending")));
-            assertEquals(1,number(map(report.get("total")).get("return_pending_count")));
+            assertEquals(false,report.get("returnIntegrationPending"));assertEquals(false,report.get("returnCostReversalEnabled"));
+            assertEquals(0,number(map(report.get("total")).get("return_pending_count")),"pending return evidence never blocks operating-cost results");
         }finally{worker.stop();}
     }
     @Test void verifiedHistoricalResultsSurviveLaterSyncErrorAndShopDeletionRemovesQianyiData(){
@@ -123,7 +123,7 @@ class FinanceQianyiIntegrationTest extends FinanceActualCostsIntegrationTest {
         db.update("UPDATE finance_qianyi_connections SET status='ERROR',last_success_at='2026-10-29 15:00:00' WHERE shop_id=?",shop);
         var report=new LinkedHashMap<String,Object>(Map.of("total",new LinkedHashMap<String,Object>(),"shops",new ArrayList<>()));
         actual.attachReturns(owner,period(9),report);
-        assertEquals(false,report.get("returnProcessing"));equalMoney("10.25",map(report.get("total")).get("return_cost_cny"));
+        assertEquals(false,report.get("returnProcessing"));equalMoney("0",map(report.get("total")).get("return_cost_cny"));assertEquals(false,report.get("returnCostReversalEnabled"));assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_qianyi_return_costs",Integer.class),"historical evidence remains stored");
         var delayed=lease(true);service.removeShop(owner,shop);
         assertEquals("",db.queryForObject("SELECT secret_encrypted FROM finance_qianyi_connections WHERE shop_id=?",String.class,shop));
         integration.acceptPage(delayed,"test-lease",new FinanceQianyiClient.Page(List.of(FinanceQianyiEvidenceTest.receipt()),1),Map.of(),true);

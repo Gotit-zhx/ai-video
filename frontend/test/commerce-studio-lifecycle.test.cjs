@@ -93,7 +93,7 @@ test('new batch resets manual navigation and stale execution events cannot affec
  const before=h.stage.replaceCount,requests=h.requests.length;h.run(run('MOCKUP','RUNNING','a'));assert.equal(h.stage.replaceCount,before);assert.equal(h.recipe.inert,false);
  h.run(run('VARIATE','RUNNING','b'));assert.equal(selected(h),'design');assert.equal(h.recipe.inert,true);assert.equal(h.requests.length,requests);
  h.run(run('MOCKUP','RUNNING','b'),{batchId:'a'});assert.equal(selected(h),'design');
- h.reset();assert.equal(h.recipe.inert,false);assert.equal(selected(h),'extract');assert.match(content(h.stage),/流程示例/);
+ h.reset();assert.equal(h.recipe.inert,false);assert.equal(selected(h),'extract');assert.equal(h.stage.querySelector('iframe').title,'商品取色、透明印花裂变与套版动画示例');
  const reset=h.stage.replaceCount;h.run(run('MOCKUP','RUNNING','b'));assert.equal(h.stage.replaceCount,reset);assert.equal(h.recipe.inert,false);
 });
 
@@ -118,15 +118,13 @@ test('late detection responses and errors do not replace a new batch or a manual
 });
 
 test('new isolated animation demo supports stage navigation and stops on real batch selection',()=>{
- const h=harness();assert.match(content(h.stage),/流程示例/);
+ const h=harness();assert.equal(h.stage.querySelector('iframe').title,'商品取色、透明印花裂变与套版动画示例');
  assert.equal(h.stage.querySelector('iframe').src,'/commerce-motion-demo.html?step=extract');
  assert.equal(h.stage.querySelectorAll('img').length,0);
- h.guide.click();assert.equal(h.intervals.size,1);
- [...h.intervals.values()][0]();assert.equal(selected(h),'design');
+ h.manual('design');assert.equal(selected(h),'design');
  assert.equal(h.stage.querySelector('iframe').src,'/commerce-motion-demo.html?step=design');
- h.visibility(true);assert.equal(h.intervals.size,0);assert.match(h.guide.textContent,/播放完整流程/);
  h.select('creative',true);h.run(run('REVIEW','RUNNING','creative'));assert.equal(selected(h),'publish');assert.match(content(h.steps.publish),/结果检查/);
- assert.equal(h.stage.querySelector('iframe'),null);assert.equal(h.guide.hidden,true);
+ assert.equal(h.stage.querySelector('iframe'),null);assert.equal(h.guide,undefined,'demo controls live inside the isolated animation document');
  h.reset();assert.match(content(h.steps.publish),/上架/);assert.doesNotMatch(content(h.steps.publish),/结果检查/);
  assert.equal(h.stage.querySelector('iframe').src,'/commerce-motion-demo.html?step=extract');
 });

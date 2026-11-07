@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+if [ "${RENEWED_LINEAGE:-}" = /etc/letsencrypt/live/hoyee.org.cn ]; then
+    exec /usr/bin/systemctl start --no-block heyi-ops-certificate.service
+fi

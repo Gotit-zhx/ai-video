@@ -38,9 +38,9 @@ class ShopOperatingSettingsServiceTest {
         var result=service.save("shop",new ShopOperatingSettingsService.Request("A","TEST",30,"mixed-template",0),user);
         assertEquals("mixed-template",result.defaultTemplateSnapshotId());verify(mapper).insert(result);
     }
-    @Test void defaultTemplateStillRejectsShopOutsideItsSelection(){
+    @Test void reusableDefaultTemplateIgnoresLegacySavedDestinations(){
         template(List.of("different-shop"));
-        assertThrows(BusinessException.class,()->service.save("shop",new ShopOperatingSettingsService.Request("A","TEST",30,"mixed-template",0),user));
-        verifyNoInteractions(mapper);
+        var saved=service.save("shop",new ShopOperatingSettingsService.Request("A","TEST",30,"mixed-template",0),user);
+        assertEquals("mixed-template",saved.defaultTemplateSnapshotId());verify(mapper).insert(saved);
     }
 }

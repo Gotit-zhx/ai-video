@@ -24,7 +24,7 @@ class ProductCaptureRecaptureMySqlTest {
     @BeforeEach
     void originalSchema() {
         db = new JdbcTemplate(new DriverManagerDataSource(
-                System.getenv("CAPTURE_RECOLLECT_TEST_DB"), "root", ""));
+                System.getenv("CAPTURE_RECOLLECT_TEST_DB"), System.getenv().getOrDefault("HEYI_TEST_DB_USER","root"),System.getenv().getOrDefault("HEYI_TEST_DB_PASSWORD","")));
         db.execute("DROP TABLE IF EXISTS capture_history_attachment");
         db.execute("DROP TABLE IF EXISTS product_publish_workflows");
         db.execute("DROP TABLE IF EXISTS product_watermark_queue");
@@ -33,6 +33,7 @@ class ProductCaptureRecaptureMySqlTest {
                 CREATE TABLE product_captures (
                     id CHAR(36) PRIMARY KEY, organization_id CHAR(36) NOT NULL,
                     idempotency_key VARCHAR(128) NOT NULL, request_fingerprint CHAR(64) NOT NULL,
+                    data_module VARCHAR(32) NOT NULL DEFAULT 'CAPTURE',
                     title VARCHAR(500) NOT NULL, status VARCHAR(32) NOT NULL DEFAULT 'CAPTURED',
                     deleted_at TIMESTAMP(6) NULL, updated_at TIMESTAMP(6) NULL,
                     version BIGINT NOT NULL DEFAULT 0,

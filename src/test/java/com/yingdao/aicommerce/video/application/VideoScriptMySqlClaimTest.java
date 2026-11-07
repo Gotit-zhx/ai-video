@@ -50,7 +50,7 @@ class VideoScriptMySqlClaimTest {
     @Test
     void migrationsTimestampPrecisionAndConcurrentClaimsUseRealMySql() throws Exception {
         var dataSource = new UnpooledDataSource("com.mysql.cj.jdbc.Driver",
-                System.getenv("HEYI_VIDEO_CLAIM_TEST_URL"), "root", "");
+                System.getenv("HEYI_VIDEO_CLAIM_TEST_URL"), System.getenv().getOrDefault("HEYI_TEST_DB_USER","root"),System.getenv().getOrDefault("HEYI_TEST_DB_PASSWORD",""));
         try (var connection = dataSource.getConnection()) {
             try (var tables = connection.getMetaData().getTables(connection.getCatalog(), null, "%", new String[]{"TABLE"})) {
                 assertThat(tables.next()).as("A fresh empty test database is required").isFalse();
