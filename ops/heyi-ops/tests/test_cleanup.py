@@ -15,7 +15,7 @@ class OwnedCleanup(unittest.TestCase):
     def test_live_references_two_distinct_rollbacks_and_user_source_are_preserved(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);store=Store(root,root/'lock');source=root/'source';manifests={}
-            for n in range(6):
+            for n in range(8):
                 image=min(n,3);version='v1.0.'+str(n)
                 manifest={'version':version,'images':{k:{'configDigest':k+str(image),'repository':'ghcr.io/gotit-zhx/ai-video/'+k,'manifestDigest':'sha256:'+str(image)*64} for k in ('app','frontend')}}
                 manifests[version]=manifest;directory=root/'releases'/version;directory.mkdir(parents=True)
@@ -24,7 +24,7 @@ class OwnedCleanup(unittest.TestCase):
                 store.save({'id':format(n,'032x'),'target':manifest,'finishedAt':n},'succeeded')
                 checkout=source/'releases'/version;checkout.mkdir(parents=True);(checkout/'file').write_bytes(b'owned source')
                 atomic(checkout/'.heyi-source.json',{'files':{'file':hashlib.sha256(b'owned source').hexdigest()}})
-            store.set_active(manifests['v1.0.5']);(source/'current').symlink_to(source/'releases/v1.0.5')
+            store.set_active(manifests['v1.0.7']);(source/'current').symlink_to(source/'releases/v1.0.7')
             (source/'releases/v1.0.3/user-notes').write_text('preserve manual change')
             (root/'releases/v1.0.4/foreign-file').write_text('not owned')
             calls=[]
@@ -41,7 +41,7 @@ class OwnedCleanup(unittest.TestCase):
                 raise AssertionError(args)
             with patch.object(monitor,'command',side_effect=command),patch('heyi_ops.artifacts.Artifacts.load',side_effect=lambda version:manifests[version]):
                 result=monitor.cleanup({'sourceRoot':str(source)},store)
-            self.assertEqual(['v1.0.1','v1.0.2','v1.0.5'],result['retainedVersions'])
+            self.assertEqual(['v1.0.1','v1.0.2','v1.0.5','v1.0.6','v1.0.7'],result['retainedVersions'])
             removed=[args[-1] for args in calls if args[:3]==('docker','image','rm')]
             self.assertEqual(['ghcr.io/gotit-zhx/ai-video/frontend@sha256:'+'0'*64],removed)
             self.assertTrue((root/'releases/v1.0.3/images.json').is_file())

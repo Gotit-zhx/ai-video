@@ -1,7 +1,9 @@
 """Fetch only this repository's attested Gitflow candidates at immutable digests."""
 import json
+import contextlib
 import os
 import re
+import signal
 import shutil
 import subprocess
 import tempfile
@@ -19,8 +21,50 @@ except ImportError:  # repository development; installer copies the same module
 WORKFLOW = REPOSITORY+"/.github/workflows/candidate.yml"
 
 
+def process_identity(pid):
+    try:return Path('/proc/'+str(int(pid))+'/stat').read_text().rsplit(')',1)[1].split()[19]
+    except (FileNotFoundError,ProcessLookupError,PermissionError,ValueError,TypeError,IndexError):return None
+
+
 class Artifacts:
     def __init__(self, root): self.root=Path(root)
+
+    def cleanup_staging(self):
+        """Caller holds the shared lock; remove only dead, explicitly owned prepares."""
+        removed=[];planned=[]
+        for directory in (self.root/'staging').glob('prepare-*'):
+            if directory.is_symlink() or not directory.is_dir():continue
+            try:owner=read(directory/'.heyi-prepare.json',{})
+            except (ValueError,OSError):continue
+            if owner.get('owner')!='heyi-ops.prepare' or not owner.get('processStart') or not VERSION.fullmatch(owner.get('version','')):continue
+            if process_identity(owner.get('pid',0))==owner['processStart']:continue
+            if {p.name for p in directory.iterdir()}-{'release.json','source.tar.gz','docker','.heyi-prepare.json'}:continue
+            entries=list(directory.rglob('*'))
+            if any(p.is_symlink() for p in entries):continue
+            if any(str(p.relative_to(directory)) not in ({'docker'} if p.is_dir() else {'release.json','source.tar.gz','.heyi-prepare.json','docker/config.json'}) for p in entries):continue
+            docker=directory/'docker'
+            if docker.exists() and (not docker.is_dir() or {p.name for p in docker.iterdir()}-{'config.json'}):continue
+            planned.append(directory)
+        if planned:atomic(self.root/'staging-cleanup-plan.json',{'createdAt':int(time.time()),'owner':'heyi-ops.prepare','paths':[str(p) for p in planned]})
+        for directory in planned:
+            shutil.rmtree(directory);removed.append(directory.name)
+        if removed:atomic(self.root/'staging-cleanup.json',{'createdAt':int(time.time()),'removed':removed})
+        return removed
+
+    @contextlib.contextmanager
+    def workspace(self,version):
+        self.cleanup_staging()
+        staging=self.root/'staging';staging.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='prepare-',dir=staging) as temporary:
+            folder=Path(temporary)
+            atomic(folder/'.heyi-prepare.json',{'owner':'heyi-ops.prepare','version':version,'pid':os.getpid(),
+                'processStart':process_identity(os.getpid()),'createdAt':int(time.time())})
+            def interrupted(*_):raise InterruptedError('Prefetch interrupted')
+            previous={sig:signal.signal(sig,interrupted) for sig in (signal.SIGHUP,signal.SIGTERM)}
+            try:yield folder
+            finally:
+                (folder/'docker/config.json').unlink(missing_ok=True)
+                for sig,handler in previous.items():signal.signal(sig,handler)
 
     def path(self, version):
         if not VERSION.fullmatch(version): raise ValueError("Invalid formal version")
@@ -50,9 +94,7 @@ class Artifacts:
             raise ValueError("Missing or oversized candidate assets")
         if shutil.disk_usage(self.root).free<14*GIB+advertised["source.tar.gz"]+1024**2:
             raise RuntimeError("Insufficient space to download candidate assets")
-        staging_root=self.root/"staging"; staging_root.mkdir(parents=True,exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="prepare-",dir=staging_root) as temporary:
-            folder=Path(temporary)
+        with self.workspace(version) as folder:
             command("gh","release","download","candidate-"+candidate,"--repo",REPOSITORY,
                     "--pattern","release.json","--pattern","source.tar.gz","--dir",str(folder),env=env,timeout=180)
             manifest=folder/"release.json"

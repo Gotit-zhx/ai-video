@@ -86,7 +86,7 @@ class ControlTest(unittest.TestCase):
             target={'version':'v1.0.'+str(n),'images':{k:{'configDigest':image} for k in ('app','frontend')}}
             self.store.save({'id':format(n,'032x'),'target':target,'finishedAt':n},'succeeded')
         self.store.set_active(target)
-        self.assertEqual(['v1.0.4','v1.0.1','v1.0.0'],monitor.retained_versions(self.store))
+        self.assertEqual(['v1.0.4','v1.0.1','v1.0.0','v1.0.3','v1.0.2'],monitor.retained_versions(self.store))
     def test_cleanup_needs_accepted_baseline_and_respects_incomplete_work(self):
         self.store.save({'id':self.request,'target':self.new},'draining')
         with self.assertRaises(Busy):monitor.cleanup(self.config,self.store)
