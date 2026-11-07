@@ -55,3 +55,10 @@ class OCITransport(unittest.TestCase):
         new=oci.RegistryRedirect().redirect_request(req,None,302,'',{},'https://blob.example/asset')
         self.assertFalse(new.has_header('Authorization'))
         with self.assertRaises(ValueError):oci.RegistryRedirect().redirect_request(req,None,302,'',{},'http://blob.example/asset')
+    def test_unset_oom_disable_equals_false_but_true_remains_a_drift(self):
+        info={'Config':{},'Mounts':[],'NetworkSettings':{'Networks':{}},'HostConfig':{}}
+        unset=host.configuration(info)
+        info['HostConfig']['OomKillDisable']=False
+        self.assertEqual(unset,host.configuration(info))
+        info['HostConfig']['OomKillDisable']=True
+        self.assertNotEqual(unset,host.configuration(info))
