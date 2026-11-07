@@ -9,6 +9,28 @@ import build
 import release
 
 
+def baseline_for(tag):
+    folder=release.ROOT/'target/baseline';folder.mkdir(parents=True,exist_ok=True)
+    result=subprocess.run(['gh','release','download',tag,'--repo',release.REPOSITORY,'--pattern','release.json','--dir',str(folder)],capture_output=True)
+    if result.returncode:
+        if os.environ.get('INITIAL_ADOPTION')!='true':
+            raise ValueError('Finish publishing the current production receipt before building its successor')
+        parents=release.run('git','show','-s','--format=%P',tag+'^{commit}').split()
+        if len(parents)!=2:raise ValueError('Initial baseline is not a formal candidate merge')
+        folder=folder/'qualified-candidate';folder.mkdir()
+        subprocess.run(['gh','release','download','candidate-'+parents[1],'--repo',release.REPOSITORY,
+            '--pattern','release.json','--dir',str(folder)],check=True,capture_output=True)
+    manifest=folder/'release.json';baseline=release.validate_manifest(json.loads(manifest.read_text()))
+    # Even before the first host acceptance, reuse only the exact candidate
+    # bound to the current formal tag, with its original attested image inputs.
+    release.check_tag(tag,baseline)
+    subprocess.run(['gh','attestation','verify',str(manifest),'--repo',release.REPOSITORY,
+        '--signer-workflow',release.REPOSITORY+'/.github/workflows/candidate.yml',
+        '--source-digest',baseline['source']['commit'],'--source-ref',baseline['source']['ref'],
+        '--deny-self-hosted-runners'],check=True)
+    return baseline
+
+
 def main(action):
     sha=release.run("git","rev-parse","HEAD");output=release.ROOT/"target/release"
     if action=="publish":
@@ -42,14 +64,7 @@ def main(action):
     if versions:
         tag=versions[0]
         if release.VERSION.fullmatch(tag):
-            folder=release.ROOT/"target/baseline";folder.mkdir(parents=True,exist_ok=True)
-            result=subprocess.run(["gh","release","download",tag,"--repo",release.REPOSITORY,"--pattern","release.json","--dir",str(folder)],capture_output=True)
-            if result.returncode==0:
-                baseline=json.loads((folder/"release.json").read_text());release.validate_manifest(baseline)
-                subprocess.run(["gh","attestation","verify",str(folder/"release.json"),"--repo",release.REPOSITORY,
-                    "--signer-workflow",release.REPOSITORY+"/.github/workflows/candidate.yml","--source-digest",baseline["source"]["commit"],"--deny-self-hosted-runners"],check=True)
-            elif os.environ.get('INITIAL_ADOPTION')!='true':
-                raise ValueError('Finish publishing the current production receipt before building its successor')
+            baseline=baseline_for(tag)
     build.build("v"+match[1],baseline)
 
 
