@@ -156,13 +156,16 @@ def cleanup(config,store):
     ids=command("docker","ps","-aq").decode().split()
     containers=json.loads(command("docker","inspect",*ids)) if ids else []
     in_use={x["Image"] for x in containers}
+    from .host import image_config_digest
+    for identity in list(in_use):
+        in_use.add(image_config_digest(json.loads(command('docker','image','inspect',identity))[0]))
     available_images=set(command('docker','image','ls','-aq','--no-trunc').decode().split())
     config_files={p for x in containers for p in (x["Config"].get("Labels") or {}).get("com.docker.compose.project.config_files","").split(",") if p}
     mounts=[Path(m["Source"]) for x in containers for m in x["Mounts"]]
     protected=set()
     for version in keep:
         manifest=read(store.root/"releases"/version/"release.json",{})
-        protected.update(i["configDigest"] for i in manifest.get("images",{}).values())
+        protected.update(d for i in manifest.get("images",{}).values() for d in (i["configDigest"],i['manifestDigest']))
     from .artifacts import Artifacts
     staging_removed=Artifacts(store.root).cleanup_staging()
     candidates=[p for p in (store.root/"releases").iterdir() if p.is_dir() and not p.is_symlink() and p.name not in keep and (p/"verified.json").is_file()]
@@ -177,13 +180,14 @@ def cleanup(config,store):
         if {p.name for p in directory.iterdir()}-{"release.json","verified.json","images.json","source.tar.gz"}:skipped.append(directory.name);continue
         manifest=Artifacts(store.root).load(directory.name)
         for image in manifest["images"].values():
-            if image["configDigest"] in protected|in_use: continue
+            if {image['configDigest'],image['manifestDigest']}&(protected|in_use): continue
             ref=image["repository"]+"@"+image["manifestDigest"]
             if ref not in removed_refs:
-                if image['configDigest'] in available_images:
-                    available=json.loads(command('docker','image','inspect',image['configDigest']))[0]
-                    if available['Id']!=image['configDigest']:raise RuntimeError('Image identity drift during cleanup')
-                    if ref in available.get('RepoDigests',[]):command('docker','image','rm',ref)
+                if {image['configDigest'],image['manifestDigest']}&available_images:
+                    available=json.loads(command('docker','image','inspect',image['configDigest'] if image['configDigest'] in available_images else ref))[0]
+                    if image_config_digest(available)!=image['configDigest']:raise RuntimeError('Image identity drift during cleanup')
+                    if ref in available.get('RepoDigests',[]) or available.get('Descriptor',{}).get('digest')==image['manifestDigest']:
+                        command('docker','image','rm',ref)
                 removed_refs.add(ref)
         source=Path(config["sourceRoot"])/"releases"/directory.name
         metadata=read(source/".heyi-source.json",{})

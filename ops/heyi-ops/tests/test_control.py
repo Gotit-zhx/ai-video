@@ -68,7 +68,7 @@ class ControlTest(unittest.TestCase):
         with patch.object(cli.sys,'stdin',SimpleNamespace(buffer=stream)):
             self.assertTrue(cli.dispatch(['stage','v1.0.1'],'deploy')['prepared'])
         self.assertEqual(b'{}abc',stream.read())
-        self.assertEqual((stream,payload['assetSizes']),self.artifacts.prepare.call_args.kwargs['upload'])
+        self.assertEqual((stream,payload['assetSizes'],{}),self.artifacts.prepare.call_args.kwargs['upload'])
     def test_final_receipt_cannot_be_reused_for_rollback(self):
         self.store.save({'id':self.request,'target':self.new,'expectedVersion':'v1.0.0','rollback':False},'succeeded')
         with self.assertRaises(ValueError):cli.dispatch(['rollback','v1.0.1','v1.0.0',self.request],'deploy')
