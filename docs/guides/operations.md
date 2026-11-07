@@ -1,31 +1,31 @@
 # 发布、回滚与运维交接
 
-核对日期：2026-11-07。服务器 `8.163.34.81` 于 **09:18 激活财务广告版本 `2026.11.6.3`**，报表和运行验收通过，真实广告授权仍未通过，见[广告发布记录](../releases/finance/finance-advertising-20261106.md)。11 月 6 日的[冷查询发布](../releases/finance/finance-cold-queries-20261106.md)、[第一轮性能发布](../releases/finance/finance-bi-performance-20261106.md)及[项目同步记录](../releases/infrastructure/project-sync-20261106.md)保留历史证据。主机和通用入口见[服务器运维交接](server-handoff.md)。生产操作先读 [AGENTS.md](../../AGENTS.md)，并重新读取实际运行基线。
+核对日期：2026-11-07。**14:04:24 已完成 `v2026.11.7.4` 的 CI/CD 首次接管**，执行器从预检至验收用时 26 秒；正常 Production deployment `42345874985` 随后通过并保存正式 Release。自动发布、巡检和有限自愈已启用。日常入口见[CI/CD 指南](cicd.md)，当前主机分类清单见[服务器运维交接](server-handoff.md)，详细证据见[一期验收](../releases/infrastructure/devops-phase1-20261106.md)。
 
-统一 CI/CD 正在按[GitHub Actions 与统一运维](cicd.md)实施，是否已安装、启用及验收以[一期实施回执](../releases/infrastructure/devops-phase1-20261106.md)为准。
+生产操作先读 [AGENTS.md](../../AGENTS.md)，重新核对实际容器、源码指针、镜像摘要及最新回执。多个会话共用生产机，必须按双锁顺序串行协调。
 
 ## 最近现场核实的版本
 
-2026-11-07 09:28（北京时间）复核，后端和前端均为 `finance-advertising-20261106`，版本 `2026.11.6.3`。广告口径、授权字段修正及此前冷查询优化已在制品中；实际新 OAuth 回调仍为 `TIMEOUT`，不能将运行验收通过解释为广告账户已接入。
+应用接管版本为 `v2026.11.7.4`，候选源码 `6eae41f74aa0e7eead91dcd6332f5f0a98e77867`。后端/前端组件输入与已验证的 `867724c` 候选一致，精确复用其私有 GHCR 镜像。后续仅文档发布会推进 `/opt/heyi/source/current`，保留相同镜像及容器 ID；最新源码版本看 `heyi-ops status`。
 
-| 服务 | 现场活动镜像 / ID 前缀 | 两个近期有发布回执的保留回滚候选 |
+| 服务 | 运行 manifest digest | config digest |
 | --- | --- | --- |
-| Java 后端 | `ai-commerce-platform:finance-advertising-20261106` / `705cc4678025` | `finance-cold-queries-20261106`、`finance-bi-performance-20261106`（同仓库前缀） |
-| Web 前端 | `ai-commerce-frontend:finance-advertising-20261106` / `34dccb8abc37` | `brush-source-summary-20261106`、`finance-gift-zero-20261105`（同仓库前缀） |
+| Java 后端 | `4070261f788e2e1521dad431e78609c98dfce2f98bb9c5060af334f7ca3716d7` | `3d3a6f4d6307adc3e5ee653e1852d5f128b07a86fc4916748e8763ea0e6de6cd` |
+| Web 前端 | `ddea0f67a282d99e3a8113fb62f4509c1a29486a41360791024ec5f9166c5e59` | `a33e888de618299a7a9aba639b1a51b07bd16cf065652adc782096f19fe764a9` |
 
-标签、完整镜像 ID、制品源提交 `86903734810c9396538ac4f962466e9c90630bc7`、配置保留和 V147 已核对。发布标签的源码另包含后续 helper 修正与验收文档，制品映射见发布回执。仓库已补齐 V147；11 月 5 日记录的源码缺口按当时语境阅读。本轮没有执行回滚，操作前仍须验证届时的数据库与制品兼容性。后续发布更新本表及文档中心，并重新核对容器引用；通用保护规则变化时再更新 AGENTS。
+摘要均为 SHA-256，仓库分别为 `ghcr.io/gotit-zhx/ai-video/app`、`frontend`。Docker 29 containerd 的 image ID 可等于 manifest，不能直接与 config digest 比较。
+
+两组旧体系回滚组合仍在主机保留：`finance-advertising-20261106` 后端/前端（`705cc4678025` / `34dccb8abc37`），以及 `finance-cold-queries-20261106` 后端 / `brush-source-summary-20261106` 前端（`4b27e931e273` / `a86f6307e654`）。它们有历史验收，恢复前仍须核对当时的 schema、配置和业务兼容性；旧维护协议不能直接冒充新入口已验收版本。
 
 相关生产路径：
 
-- 当前后端和前端回执：`/opt/heyi/releases/finance-advertising-20261106/`。
-- 当前源码与文档：`/opt/heyi/source/current`，版本目录 `/opt/heyi/source/releases/v2026.11.6.3/`；与历史 Compose 的 `/opt/heyi/current` 分别使用。逐文件源码核验清单位于 `/opt/heyi/source/manifests/v2026.11.6.3.json`。
-- 回滚回执：`/opt/heyi/releases/finance-cold-20261106-38d2/`、`finance-bi-performance-20261106-38d2/`、`project-sync-20261106/` 与 `finance-gift-zero-20261105/`。旧 helper 目录继续按运行引用保留。
-- 共享广告凭据：`/opt/heyi/shared/finance-ads/`，通过只读挂载提供，文档只记录位置。
-- 其他旧发布目录可能仍提供 Compose、辅助脚本或配置依赖，不能按日期批量删除。
+- 固定配置：`/opt/heyi/ops/compose/base.json`、`production.json`；当前容器引用 `/opt/heyi/ops/releases/v2026.11.7.4/images.json`，各三份，不再加载 252/240 份覆盖。
+- 源码与文档：`/opt/heyi/source/current`；与历史 `/opt/heyi/current` 分开使用。
+- 运维状态：`/opt/heyi/ops/active.json`、`baseline.json`、`operations/`、`requests/`；仅 root 维护，不手工改 active/version 绕过校验。
+- 首次接管及备份/TLS/权限证据：`/opt/heyi/operations/devops-phase1-20261107-946c8f18/`，GitHub Release 附带脱敏摘要。
+- 私有广告 properties：`/opt/heyi/shared/finance-ads/`，继续只读挂载；正式代理接入由独立维护完成。
 
-本次 app 和 frontend 分别引用 252、240 份 Compose 文件，均在上一版本各自链尾追加本次发布的 `compose.<容器名>.json` 与 `compose.<容器名>.ports.yaml`；操作前仍读取真实有序标签。已恢复 291 项同步计划，检查点未重置；09:31 检查本次计划标记、贴单与千易预留残留均为 0。共享发布锁为 `/run/lock/heyi-application-release.lock`。证书续期、Aegis、HR 路由及备份恢复能力等仍按[接手事项](server-handoff.md)跟进。
-
-广告连接待办：新回调已记录 `FAILED / TIMEOUT`。无凭据探测显示默认解析连接超时，可信 DNS 地址的 TLS 握手在主机和应用容器中均被重置，具体阻断位置待核实。先恢复官方接口的可验证 HTTPS 通道，再完成新授权；不能通过关闭证书校验、盲目重放授权码或宣称已接入处理。
+接管验收确认 schema 指纹未变、七个其他常驻容器未重建、五类本次租约预留均为 0、维护门控清除及调度继续推进。此前[广告发布](../releases/finance/finance-advertising-20261106.md)、[冷查询发布](../releases/finance/finance-cold-queries-20261106.md)和[性能发布](../releases/finance/finance-bi-performance-20261106.md)保留其历史业务事实，不能把 CI/CD 运行验收理解为真实广告账户已接入。
 
 ## 接管后的只读基线
 
@@ -46,30 +46,25 @@ docker inspect --format '{{range .Mounts}}{{println .Type .Destination}}{{end}}'
 
 ## 发布准备与激活
 
-本项目近期采用核对线上基线后，定向替换 JAR 类族或前端文件的发布方式。历史局部编译参数不完全统一，不能假定全量构建包与当前线上镜像逐字节相同。
+1. 按 Gitflow 在支持分支开发，完成 PR 必需检查。release/hotfix 的 Candidate artifacts 必须成功生成合格候选和证明，再合入 `main-tree` 并创建正式标签。
+2. Production deployment 校验标签/候选树、组件指纹、来源证明和版本关系。托管 Runner 传输源码和缺失的原始 OCI 镜像；服务器重新校验全部摘要及磁盘预算。
+3. 服务器独立 systemd 执行器持双锁复核实际基线。配置漂移、新迁移、其他维护或无法确认的活动任务会阻止切换。
+4. 关闭新业务入口及任务领取，保留健康检查；等待安全点后切换。503 包含 Retry-After，写请求不自动重放，成本积压保留。
+5. 验证健康、鉴权、维护协议、配置、schema、静态资源/gzip，再恢复本次任务状态、同步源码并保存回执。SSH 或 Actions 中断后仍由服务器收尾。
+6. 查看 GitHub Release 与 `heyi-ops doctor`。纯文档版本复用镜像、更新源码，跳过门控和容器切换。
 
-1. 明确本次修改范围和兼容性；读取实际活动镜像、JAR/静态文件哈希、运行环境与迁移状态。按改动运行单元、隔离数据库、前端及必要业务验证。
-2. 准备候选制品，比较原始源码与线上基线。局部替换时验证所有无关 JAR 条目/静态文件仍一致；全量构建时明确差异并验证完整功能。
-3. **构建叠加镜像之前**运行压缩保护：
+数据库迁移、其他服务和运维程序变更必须走各自维护流程。控制面升级的核对与登记见[主机维护](cicd.md#主机维护与控制面升级)，不能仅改指纹让普通部署越过检查。
 
-   ```bash
-   python3 scripts/compact-release-image.py --prepare SOURCE UNIQUE_TARGET
-   ```
-
-   `SOURCE` 替换成实际基线镜像，`UNIQUE_TARGET` 是本次唯一压缩候选标签。使用返回 JSON 的不可变 `baseImage` 作为 Dockerfile 的 `FROM`，不能再用可能变动的旧标签绕过检查。超过 8 层或 600 MiB 压缩体积时工具要求压缩验证，保留文件系统和镜像元数据。
-4. 使用已验证的停领任务/等待租约释放流程。财务同步、成本、千易及贴单工作器分别核对，不用删除队列、重置游标、放宽限流来“清空任务”。保存必要的短期恢复状态，保留原计划及冷却。
-5. 从实际 Compose 文件链激活候选，保持凭据、环境、网络、挂载、容量及日志配置；不能用仓库默认 Compose 覆盖线上运行配置。
-6. 核对应用健康、迁移、制品哈希、普通/gzip 前端资源、主站与受保护接口、业务抽样，再恢复原同步计划，释放本次工作器预留。
-7. 保存小型验证回执，完成清理并记录活动/回滚镜像。
-
-`scripts/release/release-*.py` **不是通用一键发布工具**。例如原始模板 helper 从 `/opt/heyi/releases/finance-brush-template-20261105/` 导入另一份脚本，许多后续 helper 也复用早期发布目录。清理后的构建目录缺少 QA/基线输入，不能直接重跑 `deploy`。下一次修改应先准备完整可审阅候选和依赖，不能只更改历史脚本日期后执行。
+历史 `scripts/release/release-*.py` 仍可能是旧回执依赖，不能只改日期就重跑。明确需要历史叠加发布时，仍须先执行 `python3 scripts/compact-release-image.py --prepare SOURCE UNIQUE_TARGET`，使用返回的不可变 `baseImage`，并核对完整输入、停领恢复及回滚；正常 CI/CD 使用全量镜像构建。
 
 ## 回滚
 
-- 按本次激活回执及实际 Compose 文件链，恢复该服务的已验证镜像；先确认数据库迁移与旧镜像兼容。
-- 数据库、业务卷、密钥、同步游标、已发送操作和官方写入不会随镜像回滚撤销。不能用旧数据库覆盖或删除业务记录来让页面“回到以前”。
-- 前端单独发布优先使用其独立回滚镜像，确认静态资源/缓存版本；不要顺带重启无关业务服务。
-- 回滚后重复健康、鉴权、文件哈希和相关业务核对，恢复原任务计划，并更新小型回执。
+优先使用 GitHub Operations → `rollback`，选择仍保留且已验收的受管版本；或由授权身份调用 `heyi-ops rollback VERSION EXPECTED_VERSION OPERATION_ID`。操作 ID 为 32 位小写十六进制，必须记录本次目标和当前基线，不能复用于其他请求。
+
+- 先确认数据库历史、迁移输入及运行配置兼容。自动回滚恢复应用/源码，数据库、业务卷、密钥、同步进度和已发出的官方写入不会随之撤销。
+- 不通过删除数据或修改迁移校验和来回滚。数据库恢复另走隔离验证后的独立维护流程。
+- 回滚后复核 `status`、`doctor` 和操作回执。清理临时上传目录后仍可诊断、恢复和回滚；保留版本的源包、配置及镜像不得被删除。
+- 旧体系镜像不在新入口的自动回滚集合中，必要时依据持久化的旧配置和兼容性证据安排人工维护，不直接整套 Compose 重建。
 
 ## 存储与发布后清理
 
@@ -83,7 +78,7 @@ docker inspect --format '{{range .Mounts}}{{println .Type .Destination}}{{end}}'
 
 ## 备份与恢复
 
-11 月 5 日核查时备份失败且只见一份归档；11 月 6 日例行任务已于 03:51:10 成功退出，当前保留 11 月 3 日和 11 月 6 日两份归档。本次发布未触发备份或恢复，也未重测归档完整性、隔离恢复及异地副本。生效 drop-in、退出码含义与容量门槛见[备份现场交接](server-handoff.md#9-备份恢复与容量边界)。
+当前保留 11 月 6 日、11 月 7 日（北京时间）两份归档。最新已有归档已完成全量 gzip 与 SHA-256 校验，回执仍按归档真实时间判断新鲜度；没有触发新导出、补备份或数据库恢复。数量/体积/时长边界与未验证范围见[备份现场交接](server-handoff.md#9-备份恢复与容量边界)。
 
 仓库服务配置在 `ops/admin-console/heyi-mysql-backup.service` / `.timer`，脚本为 `scripts/heyi-mysql-backup.py`。定时基准为北京时间每天 03:20，随机延迟最多 15 分钟；`Persistent=false`，超时边界 3900 秒，标准输出和错误为 null。
 
@@ -110,6 +105,6 @@ MySQL 之外还需分别交接持久卷、OSS 对象、招聘 SQLite/私有资�
 
 ## 上游历史验收补录（2026-11-06）
 
-11 月 5 日的现场检查及源证据保留原样。随后同步的[GIFT 发布记录](../releases/finance/finance-gift-zero-20261105.md)描述该日 18:53—18:55 的最终验收与当时回滚清理，属于历史发布事实；11 月 6 日当前镜像与回滚保留以上表及本次发布回执为准。
+11 月 5 日的现场检查及源证据保留原样。随后同步的[GIFT 发布记录](../releases/finance/finance-gift-zero-20261105.md)描述该日 18:53—18:55 的最终验收与当时回滚清理，属于历史发布事实；当前镜像与回滚保留以上表及最新运维回执为准。
 
 新增日期修复、GIFT 一次性扫描、原生压缩和索引维护约束见[当前财务规则](../business/finance/current-rules.md)。不要重新启动已完成的 GIFT 扫描；历史日期修复是否结束以最新凭据为准，不在本次拉取合并中执行维护程序。

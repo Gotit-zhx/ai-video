@@ -1,6 +1,6 @@
 # GitHub Actions 与统一运维
 
-本指南描述一期实现及接通步骤。启用状态以[一期验收记录](../releases/infrastructure/devops-phase1-20261106.md)为准，不能把仓库中的工作流文件视为生产已经接通。生产分支为 `main-tree`，集成分支为 `develop`，仍按 [AGENTS.md](../../AGENTS.md) 使用 Gitflow。
+本指南描述已接通的一期运行方式及维护步骤。实际启用和验收状态以[一期验收记录](../releases/infrastructure/devops-phase1-20261106.md)为准，不能把仓库中的工作流文件视为生产已经接通。生产分支为 `main-tree`，集成分支为 `develop`，仍按 [AGENTS.md](../../AGENTS.md) 使用 Gitflow。
 
 ## 构建与验证
 
@@ -73,6 +73,18 @@ Docker 的经典存储和 containerd 存储可能报告不同含义的 `inspect.
 维护标记通过只读目录挂载进入 Java。请求入口在鉴权之前返回现有 API 格式的 `503` 和 `Retry-After`，健康检查继续可用。Spring 调度和财务自有调度停止领取新工作，已领取工作继续完成；发布器等待请求、后台工作及数据库业务安全点。成本队列积压保留，不要求队列归零，也不修改计划、检查点或上游限流。
 
 状态在副作用前落盘，SSH/Actions 中断不终止 systemd 执行器。验收失败只在数据库结构兼容时恢复应用；迁移新增、历史校验变化及配置漂移必须在切换前阻止。`recover` 不修改其他操作拥有的标记。恢复失败进入 `needs_attention`，保留证据并告警。
+
+## 主机维护与控制面升级
+
+涉及 `operations` 指纹的修改先完成明确的主机维护，再发布应用。操作前重新读取当前 `active.json`、`baseline.json`、实际容器和并行会话的维护回执；持有两把共享锁，并保留可恢复的私有配置快照。
+
+- 从已验证候选取得运维源码及 `release.json`，核对来源证明、源码提交/树与校验值，不能用未验收的工作区覆盖主机程序。
+- 版本化程序安装在 `/usr/local/lib/heyi-ops/versions/<源码提交>`，保存旧版，原子更新 `current`；`/etc/heyi-ops/config.json` 的 `controlPlaneRevision` 记录实际安装来源。只在 unit 内容变化时 daemon-reload，不重启日常备份 timer。
+- 原生服务/私有配置按已审阅的安装方案变更并单独验收。当前 Docker 配置指纹比较环境值及挂载元数据；挂载文件内容的变更仍需独立记录，不因容器 hash 未变就视为无需协调。
+- 完成安装、配置等价/预期差异验证和小型回执后，才把 `/opt/heyi/ops/baseline.json` 的 `operationsInputs` 更新为该可信候选的 operations 指纹。运行配置确有批准变更时同步记录新的 configurationHashes；没有数据库维护时不更改 schemaFingerprint/migrationInputs。
+- 不修改已发布 `release.json`、原始部署回执或 active 版本来制造成功。若安装/验收失败，按本次快照恢复；解除本次门控后再交接并行会话。
+
+首次接管处理 OOM 默认值表示差异时，先按旧指纹确认实际容器未变，再保存旧 capture，按 `null=false` 的单字段规则重算配置校验值；未修改旧容器的 OOM、内存或 CPU 参数。
 
 ## 监控、备份与权限
 
