@@ -22,7 +22,7 @@ def smoke(file, image_refs=None, legacy_gate=False):
         token=secrets.token_hex(24);(control/"status-token").write_text(token);(control/"status-token").chmod(0o644)
         password=secrets.token_hex(24)
         spec={"name":project,"networks":{"default":{"internal":True}},"services":{
-            "mysql":{"image":runtime["mysqlImage"],"command":["--skip-log-bin"],"environment":{"MYSQL_ROOT_PASSWORD":password,"MYSQL_DATABASE":"heyi_ci","MYSQL_USER":"heyi_ci","MYSQL_PASSWORD":password},"tmpfs":["/var/lib/mysql:rw,size=3g"],"healthcheck":{"test":["CMD","mysqladmin","ping","-h","localhost"],"interval":"2s","timeout":"2s","retries":60}},
+            "mysql":{"image":runtime["mysqlImage"],"command":["--skip-log-bin"],"environment":{"MYSQL_ROOT_PASSWORD":password,"MYSQL_DATABASE":"heyi_ci","MYSQL_USER":"heyi_ci","MYSQL_PASSWORD":password},"tmpfs":["/var/lib/mysql:rw,size=3g"],"healthcheck":{"test":["CMD-SHELL","MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysql --protocol=TCP -h127.0.0.1 -uroot --batch --skip-column-names -e 'SELECT 1'"],"interval":"2s","timeout":"2s","retries":60}},
             "redis":{"image":runtime["redisImage"]},
             "app":{"image":(image_refs or {}).get("app") or manifest["images"]["app"]["repository"]+"@"+manifest["images"]["app"]["manifestDigest"],"platform":"linux/amd64",
                 "volumes":[str(control)+":/run/heyi-ops:ro"],
