@@ -45,7 +45,7 @@ class FinanceAdAuthorizationTest {
         var auth=authorization();
         when(http.postJson(any(),anyMap(),anyString())).thenThrow(new MarketplaceApiException("secret=unit-only-private-secret auth_code=unit-only-code",new HttpTimeoutException("unit-only-private-token")));
         String result=auth.complete(state,"unit-only-code",null);
-        assertTrue(result.startsWith("false:"));assertTrue(result.contains("[TIMEOUT]"));assertFalse(result.contains("unit-only"));
+        assertTrue(result.startsWith("false:"));assertTrue(result.contains("[TOKEN_EXCHANGE][TIMEOUT]"));assertFalse(result.contains("unit-only"));
         verify(http,times(1)).postJson(any(),anyMap(),anyString());verifyNoInteractions(ads,manager);
         verify(db).update(contains("status='FAILED'"),argThat((String message)->message.contains("[TIMEOUT]")&&!message.contains("unit-only")),eq("session"));
     }
@@ -67,6 +67,39 @@ class FinanceAdAuthorizationTest {
         var auth=authorization();grant();when(ads.get(anyString(),anyString(),anyMap())).thenReturn(Map.of("list",List.of()));
         assertTrue(auth.complete(state,"unit-only-code",null).contains("[ACCOUNT_INFO]"));
         verify(ads,never()).connectVerified(any(),anyString(),anyString(),anyString(),anyString(),anyMap(),any());verifyNoInteractions(manager);
+    }
+    @Test void accountLookupTimeoutRetainsItsStageAndNeverReplaysTheTokenExchange(){
+        var auth=authorization();grant();
+        when(ads.get(anyString(),anyString(),anyMap())).thenThrow(new MarketplaceApiException("unit-only-token",new HttpTimeoutException("unit-only-url")));
+        String result=auth.complete(state,"unit-only-code",null);
+        assertTrue(result.contains("[ACCOUNT_INFO][TIMEOUT]"));assertFalse(result.contains("unit-only"));
+        verify(http,times(1)).postJson(any(),anyMap(),anyString());
+        verify(ads,never()).connectVerified(any(),anyString(),anyString(),anyString(),anyString(),anyMap(),any());
+        verifyNoInteractions(manager);
+    }
+    @Test void emptyAdvertiserIdsAreCompletedByTheOfficialAuthorizedAccountList(){
+        var auth=authorization();grant();
+        when(http.postJson(any(),anyMap(),anyString())).thenReturn(Map.of("code",0,"data",Map.of("access_token","unit-only-access-token","advertiser_ids",List.of())));
+        when(http.get(any(),anyMap())).thenReturn(Map.of("code",0,"data",Map.of("list",List.of(Map.of("advertiser_id","100001")))));
+        assertTrue(auth.complete(state,"unit-only-code",null).startsWith("true:"));
+        verify(http,times(1)).get(argThat(uri->uri.getPath().equals("/open_api/v1.3/oauth2/advertiser/get/")),eq(Map.of()));
+        verify(http,times(1)).postJson(any(),anyMap(),anyString());
+        verify(ads).connectVerified(any(),eq("100001"),eq(""),eq("unit-only-access-token"),eq(""),anyMap(),any());
+    }
+    @Test void noAuthorizedAccountsHasAnExplicitSafeReasonAndNeverSaves(){
+        var auth=authorization();
+        when(http.postJson(any(),anyMap(),anyString())).thenReturn(Map.of("code",0,"data",Map.of("access_token","unit-only-access-token","advertiser_ids",List.of())));
+        when(http.get(any(),anyMap())).thenReturn(Map.of("code",0,"data",Map.of("list",List.of())));
+        String result=auth.complete(state,"unit-only-code",null);
+        assertTrue(result.contains("[NO_AUTHORIZED_ADVERTISERS]"));assertFalse(result.contains("unit-only"));
+        verifyNoInteractions(ads,manager);
+    }
+    @Test void invalidAccountIdsAreNotRoundedOrStored(){
+        var auth=authorization();
+        when(http.postJson(any(),anyMap(),anyString())).thenReturn(Map.of("code",0,"data",Map.of("access_token","unit-only-access-token","advertiser_ids",List.of("1.2345678901234568E18"))));
+        String result=auth.complete(state,"unit-only-code",null);
+        assertTrue(result.contains("[INVALID_ADVERTISER_IDS]"));assertFalse(result.contains("1.234"));
+        verifyNoInteractions(ads,manager);verify(http,never()).get(any(),anyMap());
     }
     @Test void invalidCallbackDoesNotExchangeCodeAndReusedStateCannotBeRetried(){
         var auth=authorization();
