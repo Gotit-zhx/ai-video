@@ -23,7 +23,7 @@ def context():
 
 def public_operation(op):
     if not op: return None
-    return {key:op[key] for key in ("id","phase","createdAt","updatedAt","finishedAt","errorType","switched","restart") if key in op} | {"version":op["target"]["version"]}
+    return {key:op[key] for key in ("id","phase","createdAt","updatedAt","finishedAt","errorType","switched","restart","adoption","recovered") if key in op} | {"version":op["target"]["version"]}
 
 
 def reject_unstarted(store,request,reason):

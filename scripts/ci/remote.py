@@ -26,8 +26,10 @@ class Remote:
             "-o","StrictHostKeyChecking=yes","-o","UserKnownHostsFile="+str(self.hosts),"-o","ConnectTimeout=15",
             "-o","ServerAliveInterval=15","-o","ServerAliveCountMax=3",self.destination," ".join(args)],
             input=json.dumps(payload).encode() if payload else b"",stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout)
-        if result.returncode:raise RuntimeError("Restricted SSH operation failed")
-        return json.loads(result.stdout)
+        value=json.loads(result.stdout)
+        if result.returncode and not (args[0]=='receipt' and isinstance(value,dict) and value.get('phase') in {'aborted','rolled_back','recovered','needs_attention'}):
+            raise RuntimeError("Restricted SSH operation failed")
+        return value
 
 
 def deploy(version,rollback=False,prepare_only=False):
@@ -36,13 +38,13 @@ def deploy(version,rollback=False,prepare_only=False):
     import hashlib
     operation=hashlib.sha256((os.environ["GITHUB_RUN_ID"]+":"+os.environ["GITHUB_RUN_ATTEMPT"]+":"+version).encode()).hexdigest()[:32]
     with Remote() as remote:
+        baseline=remote.call('status')['version'] if not prepare_only else None
         if not rollback:remote.call("stage",version,payload={"pullToken":os.environ["GH_TOKEN"]})
         if prepare_only:
             output=Path("target/deployment");output.mkdir(parents=True,exist_ok=True)
             result={"version":version,"phase":"prepared","productionChanged":False}
             (output/"receipt.json").write_text(json.dumps(result)+"\n")
             print(json.dumps(result));return
-        baseline=remote.call("status")["version"]
         if not baseline:raise RuntimeError("Initial adoption is not accepted yet")
         result=remote.call("rollback" if rollback else "deploy",version,baseline,operation)
         deadline=time.monotonic()+1200
