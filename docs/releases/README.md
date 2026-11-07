@@ -1,6 +1,6 @@
 # 历史发布与验收记录
 
-更新日期：2026-11-06。按业务领域保存仍有追溯价值的发布、故障修复和验收证据。记录中的活动镜像、数量、测试与未完成项都适用于该次时间，不代表今天的部署。当前版本及发布规则见[运维指南](../guides/operations.md)，业务入口见[业务说明](../business/README.md)。
+更新日期：2026-11-07。按业务领域保存仍有追溯价值的发布、故障修复和验收证据。记录中的活动镜像、数量、测试与未完成项都适用于该次时间，不代表今天的部署。当前版本及发布规则见[运维指南](../guides/operations.md)，业务入口见[业务说明](../business/README.md)。
 
 生产固定引用的最新十一份规则/验收文档仍位于 `docs/` 根目录，见[当前入口](../README.md#当前生产规则与验收)。历史 helper 可能仍被线上 Compose 链依赖，本次只移动文档。
 
@@ -8,6 +8,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [finance-advertising-20261106.md](finance/finance-advertising-20261106.md) | v2026.11.6.3 广告统计上线、运行验收及真实授权连接待办（11 月 7 日激活） |
 | [finance-bi-performance-20261106.md](finance/finance-bi-performance-20261106.md) | BI 两级缓存、成本队列优化与上线验收 |
 | [finance-cold-queries-20261106.md](finance/finance-cold-queries-20261106.md) | 冷查询分段聚合、后台提交刷新及 v2026.11.6.2 验收 |
 | [finance-atc-date-audit-20261105.md](finance/finance-atc-date-audit-20261105.md) | ATC October date-basis audit — 2026-11-05 |
