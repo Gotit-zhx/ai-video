@@ -60,6 +60,17 @@ def image_metadata(repository,digest):
             "compressedBytes":sum(i["size"] for i in raw["layers"])+raw["config"]["size"],"unpackedBytes":info["Size"]}
 
 
+def prepare_reused_smoke_images(images,changed):
+    # The privileged smoke process does not inherit the publisher's registry login.
+    # Cache every reused private digest while that authenticated client is available.
+    if not changed:return
+    for name,image in images.items():
+        if name in changed:continue
+        actual=image_metadata(image['repository'],image['manifestDigest'])
+        if any(actual[key]!=image[key] for key in ('repository','manifestDigest','configDigest','platform')):
+            raise ValueError('Reused smoke image differs from the verified baseline')
+
+
 def build(version,baseline=None):
     if not release.VERSION.fullmatch(version):raise ValueError("Invalid version")
     source=release.inventory();ref=os.environ["GITHUB_REF"]
@@ -103,6 +114,7 @@ def build(version,baseline=None):
             assets=(output/"asset-manifest.json").read_bytes();public=json.loads(assets)
             info.update(assetManifestSha256=release.sha(assets),smokeAssets={p:public[p]["sha256"] for p in ["index.html","app.js","finance-workspace.js","finance-charges.js"]})
         images[component]=info;changed.append(component)
+    prepare_reused_smoke_images(images,changed)
     source_tar=subprocess.check_output(["git","archive","--format=tar",source["commit"]],cwd=ROOT)
     source_archive=gzip.compress(source_tar,mtime=0)
     (output/"source.tar.gz").write_bytes(source_archive)
