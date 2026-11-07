@@ -31,6 +31,8 @@ python3 -m unittest discover -s ops/heyi-ops/tests -v
 
 第三方 Actions 固定完整提交 SHA。PR 没有生产凭据；镜像发布用 `GITHUB_TOKEN`。生产预取只接收当前任务的短期读取令牌，经 SSH 标准输入传入，独立 systemd 切换前删除临时认证文件。保存的回滚镜像无需长期 GHCR 密钥。
 
+新 GHCR 包的可见性不能依赖默认值。候选任务先检查两个包的 Private 状态及仓库关联；包尚不存在时，仅推送不含任何应用文件的 scratch 初始化镜像。设置私有性后重试发布任务，才允许构建应用镜像。已有候选标签不覆盖；失败任务如果已经生成应用镜像，需要新提交生成新的候选身份。
+
 正式候选只构建一次；不要重跑相同提交来覆盖镜像或候选附件。修正失败候选应在支持分支产生新提交。候选保存为 `candidate-<完整提交>` 的预发布，正式版本仅在生产 `--no-ff` 合并提交打 `v年.月.日[.序号]` 标签。候选分支名称为 `release/<版本>-<主题>` 或 `hotfix/<版本>-<主题>`。
 
 `HEYI_CD_ENABLED` 和 `HEYI_OPS_ENABLED` 仓库变量是接通开关，默认缺失时不执行生产发布、回滚或巡检。首次迁移先通过 Production deployment 的 `prepare` 模式验证并预取正式制品，再由 root 提交 `heyi-ops adopt VERSION LEGACY_VERSION OPERATION_ID`。验收前不打开开关。初始化账号使用 `bootstrap.py identities`，只接收两份独立 Ed25519 公钥，强制命令与 sudoers 均由 root 管理。

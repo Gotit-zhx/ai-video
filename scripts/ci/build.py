@@ -17,6 +17,36 @@ ROOT=release.ROOT
 def run(*args): return subprocess.check_output(args,cwd=ROOT).decode().strip()
 
 
+def package_info(component):
+    package=urllib.parse.quote(release.REPOSITORY.split('/')[1]+'/'+component,safe='')
+    result=subprocess.run(['gh','api','users/'+release.REPOSITORY.split('/')[0]+'/packages/container/'+package],capture_output=True,text=True)
+    value=json.loads(result.stdout or '{}')
+    if result.returncode and str(value.get('status'))=='404':return None
+    if result.returncode:raise RuntimeError('Cannot verify registry package permissions')
+    return value
+
+
+def initialize_package(component):
+    # A new package can inherit public visibility. Its first push contains NO
+    # application files, so visibility can be set before real image publishing.
+    with tempfile.TemporaryDirectory(prefix='heyi-registry-bootstrap-') as directory:
+        (Path(directory)/'Dockerfile').write_text('FROM scratch\nLABEL org.opencontainers.image.source="https://github.com/'+release.REPOSITORY+'"\nLABEL org.heyi.registry-bootstrap="true"\n')
+        subprocess.run(['docker','buildx','build','--platform=linux/amd64','--provenance=false','--push',
+            '--tag','ghcr.io/'+release.REPOSITORY.lower()+'/'+component+':registry-bootstrap',directory],check=True)
+
+
+def ensure_private_packages():
+    rejected=[]
+    for component in ('app','frontend'):
+        value=package_info(component)
+        if value is None:
+            initialize_package(component);value=package_info(component) or {}
+        linked=(value.get('repository') or {}).get('full_name','')
+        print(json.dumps({'package':component,'visibility':value.get('visibility'),'repository':linked}))
+        if value.get('visibility')!='private' or linked.lower()!=release.REPOSITORY.lower():rejected.append(component)
+    if rejected:raise RuntimeError('Set these packages to Private and link this repository before retrying: '+','.join(rejected)+'; no application image was built')
+
+
 def image_metadata(repository,digest):
     raw=json.loads(run("docker","buildx","imagetools","inspect","--raw",repository+"@"+digest))
     if "manifests" in raw:
@@ -41,6 +71,7 @@ def build(version,baseline=None):
         if baseline["source"]["inputs"]["unsupported"]!=source["inputs"]["unsupported"]:raise ValueError("Unsupported runtime service changes")
     elif "unsupported" in release.changed("origin/main-tree"):
         raise ValueError("Initial adoption includes unsupported runtime changes")
+    ensure_private_packages()
     output=ROOT/"target/release";output.mkdir(parents=True,exist_ok=True)
     images={};changed=[]
     for component in ("app","frontend"):
@@ -61,8 +92,7 @@ def build(version,baseline=None):
         subprocess.run(args,cwd=ROOT,check=True)
         digest=json.loads(metadata.read_text())["containerimage.digest"]
         info=image_metadata(repository,digest);info.update(sourceCommit=source["commit"],sourceRef=ref)
-        package=urllib.parse.quote(release.REPOSITORY.split('/')[1]+'/'+component,safe='')
-        visibility=json.loads(run('gh','api','users/'+release.REPOSITORY.split('/')[0]+'/packages/container/'+package))
+        visibility=package_info(component) or {}
         if visibility.get('visibility')!='private' or (visibility.get('repository') or {}).get('full_name','').lower()!=release.REPOSITORY.lower():
             raise RuntimeError('Release images must be private and linked to this repository')
         if component=="frontend":
