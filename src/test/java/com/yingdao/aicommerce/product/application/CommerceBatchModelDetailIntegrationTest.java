@@ -195,7 +195,7 @@ class CommerceBatchModelDetailIntegrationTest {
             when(f.db.queryForList(eq("SELECT report_json FROM commerce_batch_artwork_checks WHERE job_id=?"), anyString()))
                     .thenAnswer(call -> reports(call.getArgument(1)));
             when(f.db.queryForList(eq("SELECT result_json FROM commerce_batch_artwork_jobs WHERE id=? AND organization_id=?"), anyString(), eq("org")))
-                    .thenAnswer(call -> List.of(Map.of("result_json", byId(call.getArgument(1)).get("result_json"))));
+                    .thenAnswer(call -> List.of(Collections.singletonMap("result_json", byId(call.getArgument(1)).get("result_json"))));
             when(f.db.queryForObject(startsWith("SELECT COUNT(*)>0 FROM commerce_batch_creation_modes"), eq(Boolean.class), eq("batch"), eq("org"))).thenReturn(true);
             when(f.db.queryForMap(eq("SELECT * FROM commerce_batch_artwork_jobs WHERE execution_id=? AND request_key=?"), eq("run"), anyString()))
                     .thenAnswer(call -> jobs.stream().filter(j -> call.getArgument(2).equals(j.get("request_key"))).findFirst().orElseThrow());
@@ -212,6 +212,20 @@ class CommerceBatchModelDetailIntegrationTest {
                     .when(f.db).update(startsWith("UPDATE commerce_batch_artwork_jobs SET status='READY'"), any(Object[].class));
             doAnswer(call -> {checks.put(call.getArgument(2), call.getArgument(1)); return 1;})
                     .when(f.db).update(startsWith("INSERT INTO commerce_batch_artwork_checks"), any(Object[].class));
+            when(f.db.queryForList(startsWith("SELECT c.report_json FROM commerce_batch_artwork_checks"), anyString(), eq("run"), eq("org")))
+                    .thenAnswer(call -> reports(call.getArgument(1)));
+            org.mockito.stubbing.Answer<Integer> fencedReview = call -> {
+                var job=byId(call.getArgument(2));
+                assertEquals("run",call.getArgument(3)); assertEquals("org",call.getArgument(4));
+                assertEquals(job.get("kind"),call.getArgument(5)); assertEquals(job.get("capture_id"),call.getArgument(6));
+                assertEquals(job.get("capture_version"),call.getArgument(7)); assertEquals(job.get("variant_index"),call.getArgument(8));
+                assertEquals(job.get("storage_key"),call.getArgument(9)); assertEquals(job.get("content_sha256"),call.getArgument(10));
+                assertEquals("lease",call.getArgument(15));
+                if(call.getArguments().length==17 && !Objects.equals(checks.get(call.getArgument(2)),call.getArgument(16)))return 0;
+                checks.put(call.getArgument(2),call.getArgument(1));return 1;
+            };
+            doAnswer(fencedReview).when(f.db).update(startsWith("INSERT IGNORE INTO commerce_batch_artwork_checks(job_id,report_json,created_at) SELECT"),any(Object[].class));
+            doAnswer(fencedReview).when(f.db).update(startsWith("UPDATE commerce_batch_artwork_checks c JOIN"),any(Object[].class));
             when(f.models.selectCommerceMockupRuntimeConnection(f.user)).thenReturn(Optional.of(CommerceGrokSceneWorkflowTest.GROK));
             when(f.models.commerceMockupConnectionById("org", "grok")).thenReturn(Optional.of(CommerceGrokSceneWorkflowTest.GROK));
             when(f.ledger.claim(any(), anyString(), anyString())).thenAnswer(call -> {byId(call.getArgument(1)).put("status", "SUBMITTING"); return "CLAIMED";});

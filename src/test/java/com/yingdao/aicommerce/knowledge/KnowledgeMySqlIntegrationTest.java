@@ -33,7 +33,7 @@ class KnowledgeMySqlIntegrationTest {
     private KnowledgeService service;
 
     @BeforeAll void initializeDisposableDatabase() throws Exception {
-        var dataSource=new UnpooledDataSource("com.mysql.cj.jdbc.Driver",System.getenv("HEYI_KNOWLEDGE_TEST_URL"),"root","");
+        var dataSource=new UnpooledDataSource("com.mysql.cj.jdbc.Driver",System.getenv("HEYI_KNOWLEDGE_TEST_URL"),System.getenv().getOrDefault("HEYI_TEST_DB_USER","root"),System.getenv().getOrDefault("HEYI_TEST_DB_PASSWORD",""));
         try(var connection=dataSource.getConnection()) {
             try(var tables=connection.getMetaData().getTables(connection.getCatalog(),null,"%",new String[]{"TABLE"})) {
                 assertFalse(tables.next(),"Refusing to use a populated database; create a fresh heyi_knowledge_test schema");

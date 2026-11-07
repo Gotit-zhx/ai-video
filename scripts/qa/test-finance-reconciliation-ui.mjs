@@ -39,6 +39,6 @@ release();gate=null;await ready();
 assert.equal(requests.at(-1).searchParams.get('start'),'2026-10-01');assert.equal(requests.at(-1).searchParams.get('page'),'1');
 button('人民币 ¥').click();await ready();assert(d.querySelector('.fi-meta').textContent.includes('CNY'));
 const retained=d.querySelector('tbody');fail=true;button('刷新').click();await ready();assert.equal(d.querySelector('tbody'),retained);
-assert(d.querySelector('.fi-state').textContent.includes('已保留当前数据'));
+assert(d.querySelector('.fi-state').textContent.includes('当前显示的是相同条件的上次结果'),d.querySelector('.fi-state').textContent);
 w.FinanceWorkspace.leave();dom.window.close();
 console.log('Reconciliation: one endpoint, 50-row pagination, calendar reset, CNY, stable refresh and failure retention passed.');

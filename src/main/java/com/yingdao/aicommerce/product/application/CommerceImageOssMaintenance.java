@@ -26,7 +26,7 @@ public class CommerceImageOssMaintenance {
     public void schedule() {
         if (!archive.usesOss() || !running.compareAndSet(false, true)) return;
         try {
-            worker.execute(() -> {
+            com.yingdao.aicommerce.ops.MaintenanceGate.execute(worker,() -> {
                 try { migrate(); }
                 catch (Exception failure) { log.warn("Commerce image OSS maintenance deferred ({})", failure.getClass().getSimpleName()); }
                 finally { running.set(false); }

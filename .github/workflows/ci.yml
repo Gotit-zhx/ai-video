@@ -1,0 +1,160 @@
+name: CI
+on:
+  pull_request:
+    branches: [develop, main-tree]
+  push:
+    branches: [develop]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runtime: ${{ steps.scope.outputs.runtime }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Gitflow and source policy
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+        run: |
+          if [ -n "$BASE" ]; then python3 scripts/ci/release.py pr "$BASE" "$HEAD"; fi
+          python3 -m unittest discover -s scripts/ci/tests -v
+          python3 -m unittest discover -s ops/heyi-ops/tests -v
+          git diff --check
+      - id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python3 - <<'PY'
+          import os, subprocess, sys
+          sys.path.insert(0,'scripts/ci')
+          from release import documentation_only
+          base=os.environ.get('BASE_SHA','')
+          runtime=True
+          if (not base or base=='0'*40) and os.environ['GITHUB_REF'].startswith(('refs/heads/release/','refs/heads/hotfix/')):
+              base='origin/main-tree'
+          if base and base!='0'*40:
+              files=subprocess.check_output(['git','diff','--name-only',base,'HEAD'],text=True).splitlines()
+              runtime=not documentation_only(files)
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('runtime='+str(runtime).lower()+'\n')
+          PY
+  unit:
+    needs: policy
+    if: needs.policy.outputs.runtime == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+      - run: python3 scripts/ci/java.py unit
+      - name: Upload sanitized synthetic test summaries
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: java-unit-${{ github.run_attempt }}
+          path: target/ci-reports/**/summary.json
+          retention-days: 7
+  database:
+    needs: policy
+    if: needs.policy.outputs.runtime == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+      - run: python3 scripts/ci/java.py integration --shards 3 --shard "${{ matrix.shard }}"
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: database-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: target/ci-reports/**/summary.json
+          retention-days: 7
+  frontend:
+    needs: policy
+    if: needs.policy.outputs.runtime == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+      - run: python3 scripts/ci/run.py frontend
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: frontend-${{ github.run_attempt }}
+          path: target/ci-reports/frontend/summary.json
+          retention-days: 7
+  container:
+    needs: policy
+    if: needs.policy.outputs.runtime == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 scripts/ci/container.py --legacy-gate
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: container-smoke-${{ github.run_attempt }}
+          path: target/ci-reports/container/summary.json
+          retention-days: 7
+  systemd:
+    needs: policy
+    if: needs.policy.outputs.runtime == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 scripts/ci/systemd_test.py
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: systemd-recovery-${{ github.run_attempt }}
+          path: target/ci-reports/systemd/summary.json
+          retention-days: 7
+  required:
+    name: CI required
+    if: always()
+    needs: [policy, unit, database, frontend, container, systemd]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          n=json.loads(os.environ['NEEDS'])
+          assert n['policy']['result']=='success', 'Policy checks failed'
+          assert n['policy']['outputs'].get('runtime') in ['true','false'], 'Missing component decision'
+          expected='success' if n['policy']['outputs']['runtime']=='true' else 'skipped'
+          assert all(n[k]['result']==expected for k in ['unit','database','frontend','container','systemd']), 'Mandatory checks failed or unexpectedly skipped'
+          PY

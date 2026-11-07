@@ -25,7 +25,7 @@ public class ProductWatermarkQueueWorker {
   queue.recoverUnqueuedJobs();
   for(var work:queue.claim()){
    active.put(work.id(),work);
-   try{executor.execute(()->run(work));}
+   try{com.yingdao.aicommerce.ops.MaintenanceGate.execute(executor,()->run(work));}
    catch(RejectedExecutionException e){active.remove(work.id());queue.release(work);}
   }
  }

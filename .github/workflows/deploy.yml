@@ -1,0 +1,92 @@
+name: Production deployment
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing formal version to retry
+        required: true
+        type: string
+      mode:
+        description: Prepare only during the initial host adoption; deploy after readiness is enabled
+        type: choice
+        options: [deploy, prepare]
+        default: deploy
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heyi-production
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  deploy:
+    if: github.repository == 'Gotit-zhx/ai-video' && (vars.HEYI_CD_ENABLED == 'true' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'prepare'))
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main-tree
+          fetch-depth: 0
+          persist-credentials: false
+      - id: validate
+        env:
+          VERSION: ${{ inputs.version || github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/ci/promote.py validate "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Prefetch and submit independent host executor
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEYI_HOST: ${{ vars.HEYI_HOST }}
+          HEYI_USER: heyi-deploy
+          HEYI_SSH_KEY: ${{ secrets.HEYI_DEPLOY_SSH_KEY }}
+          HEYI_KNOWN_HOSTS: ${{ secrets.HEYI_KNOWN_HOSTS }}
+          VERSION: ${{ steps.validate.outputs.version }}
+          MODE: ${{ inputs.mode || 'deploy' }}
+        run: |
+          if [ "$MODE" = prepare ]; then
+            python3 scripts/ci/remote.py "$VERSION" --prepare-only
+          else
+            python3 scripts/ci/remote.py "$VERSION"
+          fi
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: deployment-receipt
+          path: |
+            target/deployment/receipt.json
+            target/promotion/release.json
+          retention-days: 7
+  receipt:
+    needs: deploy
+    if: inputs.mode != 'prepare'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main-tree
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: deployment-receipt
+          path: target/receipt
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.deploy.outputs.version }}
+        run: python3 scripts/ci/promote.py publish "$VERSION"

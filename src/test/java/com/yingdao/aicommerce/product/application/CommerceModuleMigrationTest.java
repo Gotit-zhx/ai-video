@@ -16,13 +16,14 @@ class CommerceModuleMigrationTest {
         String url=System.getenv("MODULE_MIGRATION_URL"),password=System.getenv("MODULE_MIGRATION_PASSWORD");
         assertTrue(url.contains("module_isolation_test"),"Only the disposable migration database is allowed");
         var dataSource=new DriverManagerDataSource(url,System.getenv("MODULE_MIGRATION_USER"),password);
+        ModuleMigrationFixture.prepare(dataSource,false);
         var db=new JdbcTemplate(dataSource);
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM product_captures",Integer.class));
         var original=db.queryForList("SELECT * FROM product_captures ORDER BY id");
         var shops=db.queryForList("SELECT * FROM shops ORDER BY id");
         var batches=db.queryForList("SELECT * FROM commerce_batches ORDER BY id");
         var flyway=Flyway.configure().dataSource(dataSource)
-                .locations(System.getenv("MODULE_MIGRATION_LOCATION"))
-                .javaMigrations(new V114__freeze_legacy_commerce_sources()).load();
+                .locations("classpath:db/migration").target("114").load();
         assertEquals(2,flyway.migrate().migrationsExecuted);
         assertEquals(0,flyway.migrate().migrationsExecuted);
         assertEquals(stable(shops),stable(db.queryForList("SELECT * FROM shops ORDER BY id")));

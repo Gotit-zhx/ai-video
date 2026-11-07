@@ -59,7 +59,7 @@ class CommerceBatchLaunchIntegrationTest {
     @BeforeAll static void createIsolatedSchema() throws Exception {
         String url=System.getenv("HEYI_LAUNCH_TEST_URL");
         assertNotNull(url);assertTrue(url.matches("jdbc:mysql://127\\.0\\.0\\.1:[0-9]+/heyi_launch_test[a-zA-Z0-9_]*"));
-        dataSource=new DriverManagerDataSource(url,"root","");
+        dataSource=new DriverManagerDataSource(url,System.getenv().getOrDefault("HEYI_TEST_DB_USER","root"),System.getenv().getOrDefault("HEYI_TEST_DB_PASSWORD",""));
         try(var connection=dataSource.getConnection()) {
             try(var existing=connection.getMetaData().getTables(connection.getCatalog(),null,"%",new String[]{"TABLE"})) {
                 assertFalse(existing.next(),"Use a newly created empty heyi_launch_test schema; never the application database");

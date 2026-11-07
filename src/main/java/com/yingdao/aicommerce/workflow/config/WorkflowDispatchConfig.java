@@ -23,7 +23,7 @@ public class WorkflowDispatchConfig {
         executor.setThreadNamePrefix("workflow-dispatch-");
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(30);
-        executor.initialize();
+        com.yingdao.aicommerce.ops.MaintenanceGate.initialize(executor);
         return executor;
     }
 }

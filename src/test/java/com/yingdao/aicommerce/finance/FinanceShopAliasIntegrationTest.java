@@ -17,9 +17,9 @@ class FinanceShopAliasIntegrationTest extends FinanceQianyiIntegrationTest {
         assertEquals("母婴菲律宾一店",service.ownedShop(owner,shop).get("display_name"));
         var controller=new FinanceController(service,repo,null,null);
         assertEquals("母婴菲律宾一店",controller.exportShopNames(colleague).get(shop));
-        var result=new FinanceQianyiReturns(repo,service).list(colleague,Map.of());
+        var result=new FinanceQianyiReturns(repo,service).list(colleague,Map.of("start","","end","","receiptScope","ALL"));
         assertEquals("母婴菲律宾一店",rows(result.get("items")).getFirst().get("shop_name"));
-        var bytes=new FinanceQianyiReturns(repo,service).export(colleague,Map.of());
+        var bytes=new FinanceQianyiReturns(repo,service).export(colleague,Map.of("start","","end","","receiptScope","ALL"));
         String sheet="";
         try(var zip=new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(bytes))){
             for(var entry=zip.getNextEntry();entry!=null;entry=zip.getNextEntry())

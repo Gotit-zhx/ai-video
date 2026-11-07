@@ -40,7 +40,7 @@ class CommerceBatchArtworkRetryIntegrationTest {
         String url = System.getenv("HEYI_ARTWORK_RETRY_TEST_URL");
         assertNotNull(url);
         assertTrue(url.matches("jdbc:mysql://127\\.0\\.0\\.1:[0-9]+/heyi_artwork_retry_test[a-zA-Z0-9_]*"));
-        source = new DriverManagerDataSource(url, "root", "");
+        source = new DriverManagerDataSource(url, System.getenv().getOrDefault("HEYI_TEST_DB_USER","root"),System.getenv().getOrDefault("HEYI_TEST_DB_PASSWORD",""));
         try (var connection = source.getConnection()) {
             try (var tables = connection.getMetaData().getTables(connection.getCatalog(), null, "%", new String[]{"TABLE"})) {
                 assertFalse(tables.next(), "Only a new empty heyi_artwork_retry_test schema is allowed");

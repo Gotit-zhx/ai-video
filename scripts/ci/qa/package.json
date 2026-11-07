@@ -1,0 +1,7 @@
+{
+  "name": "heyi-ci-qa",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {"node": "22.21.1"},
+  "dependencies": {"jsdom": "26.1.0"}
+}

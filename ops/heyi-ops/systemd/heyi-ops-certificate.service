@@ -1,0 +1,16 @@
+[Unit]
+Description=Verify and load the renewed Heyi TLS certificate
+After=docker.service
+Requires=docker.service
+StartLimitIntervalSec=3600
+StartLimitBurst=60
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/heyi-ops tls-reload
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=60
+UMask=0077
+StandardOutput=null
+StandardError=null

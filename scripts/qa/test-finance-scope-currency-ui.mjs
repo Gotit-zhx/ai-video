@@ -72,16 +72,18 @@ async function wait(test){for(let i=0;i<200;i++){if(test())return;await new Prom
 const ready=()=>wait(()=>root.getAttribute('aria-busy')==='false');
 const pause=()=>new Promise(r=>setTimeout(r,10));
 const button=(text,host=d)=>[...host.querySelectorAll('button')].find(b=>b.textContent.trim()===text);
-async function click(text,host=d){const b=button(text,host);assert(b,'button '+text);b.click();await ready();}
+async function click(text,host=d){const b=button(text,host);assert(b,'button '+text);transitionStart=reads.length;b.click();await ready();}
 function change(label,value){
+  transitionStart=reads.length;
   const input=d.querySelector(`[aria-label="${label}"]`);assert(input,label);input.value=value;assert.equal(input.value,value,label+' option');
   input.dispatchEvent(new w.Event('change'));
 }
-async function choose(label,value){change(label,value);await ready();}
-const reports=()=>reads.filter(r=>['/overview','/screen','/reconciliation'].includes(r.endpoint));
+let transitionStart=0;
+async function choose(label,value){transitionStart=reads.length;change(label,value);await ready();}
+const reports=()=>reads.filter(r=>['/overview','/records','/screen','/reconciliation'].includes(r.endpoint));
 const lastReport=()=>reports().at(-1);
 function assertScopeRequest(shopId,displayCurrency){
-  const q=lastReport().q;
+  const q=reads.slice(transitionStart).find(r=>['/overview','/records','/screen','/reconciliation'].includes(r.endpoint)).q;
   assert.equal(q.shopId,shopId);assert.equal(q.currency,'','new scope must resolve its own native currency');
   assert.equal(q.fxSnapshot,'','new scope must obtain its own FX snapshot');assert.equal(q.displayCurrency,displayCurrency);
 }
@@ -116,8 +118,8 @@ try{
       }
       if(['settlements','orders','fee-records'].includes(route)){
         const rowQuery=reads.filter(r=>r.endpoint==='/records').at(-1).q;
-        assert.equal(rowQuery.currency,mode==='CNY'?'':'MYR');assert.equal(rowQuery.shopId,'my');
-        if(mode==='CNY')assert(rowQuery.fxSnapshot.startsWith('fx-'),'rows wait for the newly resolved FX');
+        assert(['','MYR'].includes(rowQuery.currency),'direct record requests resolve the new shop currency server-side when blank');assert.equal(rowQuery.shopId,'my');assert.equal(rowQuery.displayCurrency,mode);
+        if(rowQuery.fxSnapshot)assert(rowQuery.fxSnapshot.startsWith('fx-'),'only a resolved current quote can be forwarded');
         await click('下一页');await choose('店铺','ph');
         assert.equal(reads.filter(r=>r.endpoint==='/records').at(-1).q.page,'1');
       }

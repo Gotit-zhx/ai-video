@@ -54,7 +54,7 @@ class VideoReviewFinalizerMySqlTest {
     @BeforeAll
     void initializeDisposableDatabase() throws Exception {
         dataSource = new UnpooledDataSource("com.mysql.cj.jdbc.Driver",
-                System.getenv("HEYI_VIDEO_REVIEW_TEST_URL"), "root", "");
+                System.getenv("HEYI_VIDEO_REVIEW_TEST_URL"), System.getenv().getOrDefault("HEYI_TEST_DB_USER","root"),System.getenv().getOrDefault("HEYI_TEST_DB_PASSWORD",""));
         try (var connection = dataSource.getConnection()) {
             try (var tables = connection.getMetaData().getTables(connection.getCatalog(), null, "%", new String[]{"TABLE"})) {
                 assertThat(tables.next()).as("Only a fresh empty test database is allowed").isFalse();

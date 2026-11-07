@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/bin/sudo -n /usr/local/lib/heyi-ops/gateway deploy "$SSH_ORIGINAL_COMMAND"

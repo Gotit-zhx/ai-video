@@ -14,7 +14,7 @@ public class FinanceQianyiAccount {
     final FinanceQianyi integration;final FinanceRepository repo;
     final ScheduledExecutorService worker=Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"finance-qianyi-binding");t.setDaemon(true);return t;});
     public FinanceQianyiAccount(FinanceQianyi integration){this.integration=integration;this.repo=integration.repo;}
-    @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->{try{tick();}catch(RuntimeException ignored){}},45,5,TimeUnit.SECONDS);}
+    @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->{try{com.yingdao.aicommerce.ops.MaintenanceGate.runIfOpen(this::tick);}catch(RuntimeException ignored){}},45,5,TimeUnit.SECONDS);}
     @PreDestroy public void stop(){worker.shutdownNow();}
     public Map<String,Object> configuration(Scope scope){
         var row=integration.account(scope);var result=new LinkedHashMap<String,Object>();
