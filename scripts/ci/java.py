@@ -96,6 +96,22 @@ def sql(container, text):
                    input=text.encode(), stdout=subprocess.DEVNULL, check=True)
 
 
+def wait_for_mysql(container):
+    # The image's initialization server answers socket pings while TCP is disabled.
+    # Require the final network listener and an authenticated query before DDL.
+    deadline=time.monotonic()+90
+    while time.monotonic()<deadline:
+        try:
+            result=subprocess.run(['docker','exec',container,'mysql','--protocol=TCP',
+                '-h127.0.0.1','-P3306','-uroot','--batch','--skip-column-names','-e','SELECT 1'],
+                stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=5)
+            if result.returncode==0 and result.stdout.strip()==b'1':return
+        except subprocess.TimeoutExpired:
+            pass
+        time.sleep(1)
+    raise RuntimeError('Disposable MySQL startup timed out')
+
+
 def integration(classes, database, shard):
     runtime = json.loads((ROOT / "scripts/ci/runtime.json").read_text())
     suffix = secrets.token_hex(5); mysql = "heyi-ci-mysql-" + suffix; redis = "heyi-ci-redis-" + suffix
@@ -106,10 +122,7 @@ def integration(classes, database, shard):
     try:
         port = start(mysql, runtime["mysqlImage"], 3306, ["-e", "MYSQL_ALLOW_EMPTY_PASSWORD=yes", "--tmpfs", "/var/lib/mysql:rw,size=3g"])
         redis_port = start(redis, runtime["redisImage"], 6379, [])
-        for _ in range(90):
-            if subprocess.run(["docker", "exec", mysql, "mysqladmin", "ping", "-uroot", "--silent"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0: break
-            time.sleep(1)
-        else: raise RuntimeError("Disposable MySQL startup timed out")
+        wait_for_mysql(mysql)
         failures=[]
         for name in classes:
             user = "ci_"+secrets.token_hex(5); password = secrets.token_hex(24)
