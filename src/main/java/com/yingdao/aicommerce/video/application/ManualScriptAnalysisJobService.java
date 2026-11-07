@@ -110,7 +110,7 @@ public class ManualScriptAnalysisJobService {
                 "updatedAt", now.toString()
         ));
         try {
-            executor.execute(() -> execute(jobId, work));
+            com.yingdao.aicommerce.ops.MaintenanceGate.execute(executor,() -> execute(jobId, work));
         } catch (RuntimeException exception) {
             update(jobId, "FAILED", "分析队列繁忙，请稍后重试", null);
             throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "分析队列繁忙，请稍后重试");

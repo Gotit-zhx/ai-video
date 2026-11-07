@@ -1,0 +1,11 @@
+[Unit]
+Description=Retain verified Heyi releases and bounded receipts
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/heyi-ops cleanup
+TimeoutStartSec=300
+UMask=0077
+StandardOutput=null
+StandardError=null

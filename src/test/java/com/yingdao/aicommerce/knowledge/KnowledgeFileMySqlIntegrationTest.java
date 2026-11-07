@@ -37,7 +37,7 @@ class KnowledgeFileMySqlIntegrationTest {
     private final OssStorageService oss=mock(OssStorageService.class);
     private final Map<String,byte[]> objects=new ConcurrentHashMap<>();
     @BeforeAll void setup() throws Exception {
-        var source=new UnpooledDataSource("com.mysql.cj.jdbc.Driver",System.getenv("HEYI_KNOWLEDGE_FILE_TEST_URL"),"root","");
+        var source=new UnpooledDataSource("com.mysql.cj.jdbc.Driver",System.getenv("HEYI_KNOWLEDGE_FILE_TEST_URL"),System.getenv().getOrDefault("HEYI_TEST_DB_USER","root"),System.getenv().getOrDefault("HEYI_TEST_DB_PASSWORD",""));
         try(var connection=source.getConnection()) {
             try(var existing=connection.getMetaData().getTables(connection.getCatalog(),null,"%",new String[]{"TABLE"})) {
                 assertFalse(existing.next(),"Refusing a populated schema: create fresh heyi_knowledge_file_test");

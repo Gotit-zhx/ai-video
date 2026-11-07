@@ -1,10 +1,10 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const html=fs.readFileSync(path.join(__dirname,'../index.html'),'utf8');
 const app=fs.readFileSync(path.join(__dirname,'../app.js'),'utf8');
-test('all original destinations belong to one of six parent menus',()=>{
+test('all original destinations belong to one of seven parent menus',()=>{
   const nav=html.slice(html.indexOf('<nav id="primary-navigation"'),html.indexOf('</nav>',html.indexOf('<nav id="primary-navigation"')));
   const groups=[...nav.matchAll(/<details class="nav-group"[\s\S]*?<\/details>/g)].map(m=>m[0]);
-  assert.equal(groups.length,6);
+  assert.equal(groups.length,7);
   for(const id of ['nav-ai-video-monitor','nav-video-scripts','nav-ai-video-tasks','nav-general-video','nav-shops','nav-publish','nav-automations','nav-automation-admin','nav-models','nav-system','nav-assistant-test'])assert.equal(groups.filter(g=>g.includes(`id="${id}"`)).length,1,id);
 });
 test('commerce deep links select exactly one content panel and reject unknown routes',()=>{

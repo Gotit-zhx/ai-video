@@ -5,8 +5,8 @@ const vm=require('node:vm');
 const path=require('node:path');
 const source=fs.readFileSync(path.join(__dirname,'../app.js'),'utf8');
 function harness(captures,canPublish=true){
- const list={innerHTML:''};
- const context={document:{querySelector:()=>list},hasAnyPermission:()=>canPublish,
+ const list={innerHTML:'',querySelectorAll:()=>[]};
+ const context={IncrementalDOM:{html:(node,html)=>{node.innerHTML=html;}},document:{querySelector:()=>list},hasAnyPermission:()=>canPublish,
   filteredProductCaptures:()=>captures,syncProductCapturePagination:()=>{},
   productCaptureStatusGroup:()=> 'PUBLISHED',productCaptureImages:()=>[],safeProductUrl:()=>'',
   selectedProductCaptureId:null,productBulkSelectedIds:new Set(),escapeHtml:v=>String(v??'').replaceAll('<','&lt;').replaceAll('"','&quot;'),

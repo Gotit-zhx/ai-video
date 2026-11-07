@@ -213,7 +213,8 @@ public class VideoFirstFrameAuditService {
                 if (Thread.currentThread().isInterrupted()) Files.deleteIfExists(target);
             }
         });
-        Thread.ofVirtual().name("video-audit-download").start(download);
+        var tracked=com.yingdao.aicommerce.ops.MaintenanceGate.accepted(download);
+        tracked.start(Thread.ofVirtual().name("video-audit-download").unstarted(tracked));
         try {
             download.get(120, TimeUnit.SECONDS);
         } catch (Exception failure) {

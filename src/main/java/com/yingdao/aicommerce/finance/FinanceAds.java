@@ -90,7 +90,7 @@ public class FinanceAds {
             throw new FinanceAdFailures.ProviderFailure(response.get("code"));
         return map(response.get("data"));
     }
-    @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->{try{tick();if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance ad sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance ad dispatcher temporarily unavailable",e);}},60,30,java.util.concurrent.TimeUnit.SECONDS);}
+    @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->{try{com.yingdao.aicommerce.ops.MaintenanceGate.runIfOpen(this::tick);if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance ad sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance ad dispatcher temporarily unavailable",e);}},60,30,java.util.concurrent.TimeUnit.SECONDS);}
     @PreDestroy public void stop(){worker.shutdownNow();}
     public void tick(){
         var accounts=repo.jdbc().queryForList("SELECT * FROM finance_ad_accounts a WHERE enabled=TRUE AND "+visibleAccount()+" AND next_at<=UTC_TIMESTAMP(6)"

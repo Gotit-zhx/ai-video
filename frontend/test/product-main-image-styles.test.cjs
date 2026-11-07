@@ -58,6 +58,7 @@ test('navigation, optional selection and assets are wired into both frontend ima
   assert.doesNotMatch(html.match(/<select id="product-bulk-main-style"[^>]*>/)[0], /required/);
   for (const file of ['Dockerfile','Dockerfile.local']) {
     const docker = fs.readFileSync(path.join(__dirname,'..',file),'utf8');
+    if(file==='Dockerfile'){const assets=require('./public-assets.cjs')();assert.ok(assets['product-main-image-styles.js']);assert.ok(assets['product-main-image-styles.css']);continue;}
     assert.match(docker, /COPY product-main-image-styles\.js product-main-image-styles\.css/);
   }
 });

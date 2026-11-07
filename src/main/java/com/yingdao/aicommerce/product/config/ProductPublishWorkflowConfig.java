@@ -20,7 +20,7 @@ public class ProductPublishWorkflowConfig {
         executor.setQueueCapacity(concurrency * 10);
         executor.setThreadNamePrefix("product-publish-workflow-");
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
-        executor.initialize();
+        com.yingdao.aicommerce.ops.MaintenanceGate.initialize(executor);
         return executor;
     }
 }

@@ -1,0 +1,70 @@
+name: Operations
+on:
+  schedule:
+    - cron: '2-57/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Operation
+        type: choice
+        options: [doctor, rollback, notification-test]
+        default: doctor
+      version:
+        description: Previously accepted version (rollback only)
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    if: github.repository == 'Gotit-zhx/ai-video' && vars.HEYI_OPS_ENABLED == 'true' && inputs.action != 'rollback'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: monitoring
+    concurrency:
+      group: heyi-monitoring
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main-tree
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          HEYI_HOST: ${{ vars.HEYI_HOST }}
+          HEYI_USER: heyi-monitor
+          HEYI_SSH_KEY: ${{ secrets.HEYI_MONITOR_SSH_KEY }}
+          HEYI_KNOWN_HOSTS: ${{ secrets.HEYI_KNOWN_HOSTS }}
+          HEYI_NOTIFICATION_TEST: ${{ inputs.action == 'notification-test' }}
+        run: python3 scripts/ci/notify.py
+  rollback:
+    if: github.repository == 'Gotit-zhx/ai-video' && vars.HEYI_CD_ENABLED == 'true' && inputs.action == 'rollback'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment: production
+    concurrency:
+      group: heyi-production
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main-tree
+          persist-credentials: false
+      - env:
+          HEYI_HOST: ${{ vars.HEYI_HOST }}
+          HEYI_USER: heyi-deploy
+          HEYI_SSH_KEY: ${{ secrets.HEYI_DEPLOY_SSH_KEY }}
+          HEYI_KNOWN_HOSTS: ${{ secrets.HEYI_KNOWN_HOSTS }}
+          VERSION: ${{ inputs.version }}
+        run: python3 scripts/ci/remote.py "$VERSION" --rollback
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: rollback-receipt
+          path: target/deployment/receipt.json
+          retention-days: 7

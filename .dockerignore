@@ -9,3 +9,9 @@ services
 experiments
 *.zip
 *.log
+
+**/node_modules
+.env*
+!**/.env.example
+ops
+docs

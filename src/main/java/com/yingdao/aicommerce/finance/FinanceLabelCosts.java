@@ -26,7 +26,7 @@ public class FinanceLabelCosts {
         @Value("${finance.label-import-directory:/data/automation-attachments/finance-label-imports}") String directory){
         this.repo=repo;this.service=service;this.directory=Path.of(directory).toAbsolutePath().normalize();
     }
-    @PostConstruct public void start(){worker.scheduleWithFixedDelay(this::tick,25,2,TimeUnit.SECONDS);}
+    @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->com.yingdao.aicommerce.ops.MaintenanceGate.runIfOpen(this::tick),25,2,TimeUnit.SECONDS);}
     @PreDestroy public void stop(){worker.shutdownNow();}
     static void dirty(FinanceRepository repo,String org){
         repo.jdbc().update("""

@@ -13,11 +13,11 @@ public class FinanceCacheWarmer {
     private final ScheduledExecutorService worker=Executors.newSingleThreadScheduledExecutor(r->{
         var t=new Thread(r,"finance-cache-prewarm");t.setDaemon(true);return t;});
     public FinanceCacheWarmer(FinanceRepository repo,FinanceService service){this.repo=repo;this.service=service;}
-    @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->{
+    @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->com.yingdao.aicommerce.ops.MaintenanceGate.runIfOpen(()->{
         try{
             for(var row:repo.jdbc().queryForList("SELECT DISTINCT organization_id FROM finance_connections WHERE enabled=TRUE AND status='ACTIVE' ORDER BY organization_id LIMIT 32"))
                 service.prewarm(companyScope(text(row.get("organization_id"))));
         }catch(RuntimeException failure){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance snapshot prewarm deferred: {}",failure.getClass().getSimpleName());}
-    },10,30,TimeUnit.SECONDS);}
+    }),10,30,TimeUnit.SECONDS);}
     @PreDestroy public void stop(){worker.shutdownNow();}
 }

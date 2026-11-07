@@ -14,6 +14,7 @@
 | 本地环境、配置、调试与测试 | [开发指南](guides/development.md) |
 | 登录、权限及接口查找 | [接口导航](guides/api.md) |
 | 发布、回滚、备份和排障 | [运维指南](guides/operations.md) |
+| GitHub Actions、统一发布入口和巡检 | [CI/CD 与统一运维](guides/cicd.md)（启用状态见一期验收记录） |
 | 服务器现状、目录、证书、备份、维护任务及接管待办 | [服务器运维交接](guides/server-handoff.md)（含 2026-11-07 上线更新） |
 | 桌面构建与备份约定 | [桌面构建说明](guides/desktop-build-backup.md) |
 

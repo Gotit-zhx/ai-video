@@ -13,7 +13,7 @@ public class FinanceShopDeletionWorker {
         var t=new Thread(r,"finance-shop-deletion");t.setDaemon(true);return t;
     });
     public FinanceShopDeletionWorker(FinanceRepository repo,FinanceService service){this.repo=repo;this.service=service;}
-    @PostConstruct public void start(){worker.scheduleWithFixedDelay(this::tick,30,1,TimeUnit.SECONDS);}
+    @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->com.yingdao.aicommerce.ops.MaintenanceGate.runIfOpen(this::tick),30,1,TimeUnit.SECONDS);}
     @PreDestroy public void stop(){worker.shutdownNow();}
     public void tick(){
         // Bounded work prevents large histories from monopolizing the connection pool.

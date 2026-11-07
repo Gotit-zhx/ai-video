@@ -24,7 +24,7 @@ class CommerceBatchExecutionMapperLeaseTest {
     final String id = UUID.randomUUID().toString();
 
     @BeforeEach void database() throws Exception {
-        var source = new UnpooledDataSource("com.mysql.cj.jdbc.Driver", System.getenv("HEYI_EXECUTION_TEST_URL"), "root", "");
+        var source = new UnpooledDataSource("com.mysql.cj.jdbc.Driver", System.getenv("HEYI_EXECUTION_TEST_URL"), System.getenv().getOrDefault("HEYI_TEST_DB_USER","root"),System.getenv().getOrDefault("HEYI_TEST_DB_PASSWORD",""));
         var configuration = new Configuration(new Environment("lease-test", new JdbcTransactionFactory(), source));
         configuration.setMapUnderscoreToCamelCase(true);
         configuration.addMapper(CommerceBatchExecutionMapper.class);

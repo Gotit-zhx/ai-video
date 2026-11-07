@@ -962,11 +962,11 @@ class FinanceConfigurationIntegrationTest {
         for(String format:List.of("csv","xlsx")){
             var q=Map.of("start","2026-10-21","end","2026-10-21","view","ORDER","format",format,"displayCurrency","CNY","fxSnapshot","fixed");
             var content=controller().export(q,principal()).getBody();var table=FinanceWorkbook.read(content,"export."+format);
-            assertEquals(List.of("记录编号","支付方式","折算人民币"),table.getFirst());assertEquals(List.of("00123456789012345678","CARD","12.500000"),table.get(1));
+            assertEquals(List.of("店铺（优先别名）","记录编号","支付方式","折算人民币"),table.getFirst());assertEquals(List.of(controller().exportShopNames(owner).get(id),"00123456789012345678","CARD","12.500000"),table.get(1));
         }
         var q=Map.of("start","2026-10-21","end","2026-10-21","view","RECONCILIATION","format","csv");
         var table=FinanceWorkbook.read(controller().export(q,principal()).getBody(),"rec.csv");
-        assertEquals(List.of("记录编号","结算明细金额","差异","核对结果"),table.getFirst());assertEquals("MATCHED",table.get(1).getLast());assertEquals(2,table.size());
+        assertEquals(List.of("店铺（优先别名）","记录编号","结算明细金额","差异","核对结果"),table.getFirst());assertEquals("MATCHED",table.get(1).getLast());assertEquals(2,table.size());
     }
     @Test void callbackConsumesOnlyItsOwnStateOnceAndRedirectsToFinance(){
         final String[] rawState={null};when(client.authorizationUrl(anyString(),anyString())).thenAnswer(i->{rawState[0]=i.getArgument(1);return "https://official.test/?state="+rawState[0];});

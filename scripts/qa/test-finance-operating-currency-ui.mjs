@@ -21,7 +21,7 @@ const response=(cny,start,end)=>({
 });
 w.api=async path=>{
   const url=new URL(path,'https://example.test'),q=url.searchParams;
-  if(url.pathname.endsWith('/qianyi/returns')){assert.equal(q.get('refundStatus'),'FINISH');assert.equal(q.get('dateField'),'CREATED');return {data:{summary:{refundTotals:[{currency:'PHP',amount:44,records:1,known_count:1}]}}};}
+  if(url.pathname.endsWith('/qianyi/returns')){assert.equal(q.get('returnStatus'),'FINISH');assert.equal(q.get('refundStatus'),'');assert.equal(q.get('dateField'),'RECEIPT');assert.equal(q.get('receiptScope'),'RECEIVED');assert.equal(q.get('receiptStatus'),'SIGNED');return {data:{summary:{refundTotals:[{currency:'PHP',amount:44,records:1,known_count:1}]}}};}
   if(url.pathname.endsWith('/overview'))return {data:response(q.get('displayCurrency')==='CNY',q.get('start'),q.get('end'))};
   if(url.pathname.endsWith('/costs/summary')){
     if(hold)await new Promise(resolve=>pending.push(resolve));
@@ -42,15 +42,15 @@ async function closeAll(){for(const dialog of [...d.querySelectorAll('dialog')])
 w.FinanceWorkspace.enter('overview');await ready();
 let dialog=await open();
 assert.equal(row(dialog,'其中：商品成本—样品').children[1].textContent,'¥ 12');
-await wait(()=>row(dialog,'已完成退款（千易）'));assert.equal(row(dialog,'已完成退款（千易）').children[1].textContent,'44 PHP');assert(!dialog.textContent.includes('冲回'));
+await wait(()=>row(dialog,'已收货退货单（千易）'));assert.equal(row(dialog,'已收货退货单（千易）').children[1].textContent,'44 PHP');assert(dialog.textContent.includes('不冲回营业成本'));
 assert(dialog.textContent.includes('商品成本（CNY）'));await closeAll();
 button(d.querySelector('.fi-pills'),'原币').click();await ready();
 dialog=await open();
 assert(dialog.querySelector('.fi-operating-total').textContent.includes('520 PHP'));
 assert.equal(row(dialog,'其中：商品成本—样品').children[1].textContent,'120');
-await wait(()=>row(dialog,'已完成退款（千易）'));assert.equal(row(dialog,'已完成退款（千易）').children[1].textContent,'44 PHP');
+await wait(()=>row(dialog,'已收货退货单（千易）'));assert.equal(row(dialog,'已收货退货单（千易）').children[1].textContent,'44 PHP');
 assert(dialog.textContent.includes('商品成本（PHP）'));
-button(dialog,'已完成退款（千易）').click();assert.equal(returns.at(-1).selection.dateField,'CREATED');assert.equal(returns.at(-1).selection.currency,'');await closeAll();
+button(dialog,'已收货退货单（千易）').click();assert.equal(returns.at(-1).selection.dateField,'RECEIPT');assert.equal(returns.at(-1).selection.currency,'');await closeAll();
 // Keep the open dialog's rate when background refresh obtains a different quote.
 hold=true;dialog=await open();await wait(()=>pending.length===1);
 rate=.2;button(d,'刷新').click();await ready();hold=false;pending.splice(0).forEach(resolve=>resolve());
@@ -64,6 +64,6 @@ assert(!row(dialog,'其中：退货退款关联商品成本'));await closeAll();
 sample=12;refund=18;partial=false;
 button(d.querySelector('.fi-pills'),'人民币 ¥').click();await ready();dialog=await open();
 assert.equal(row(dialog,'其中：商品成本—样品').children[1].textContent,'¥ 12');
-await wait(()=>row(dialog,'已完成退款（千易）'));button(dialog,'已完成退款（千易）').click();assert.equal(returns.at(-1).selection.displayCurrency,'CNY');assert.equal(returns.at(-1).selection.refundStatus,'FINISH');
+await wait(()=>row(dialog,'已收货退货单（千易）'));button(dialog,'已收货退货单（千易）').click();assert.equal(returns.at(-1).selection.displayCurrency,'CNY');assert.equal(returns.at(-1).selection.refundStatus,'');
 w.FinanceWorkspace.leave();dom.window.close();
 console.log('Operating cost currency passed: CNY/PHP toggles, sample conversion and Qianyi refund source, frozen quote, missing FX, partial and zero amounts.');

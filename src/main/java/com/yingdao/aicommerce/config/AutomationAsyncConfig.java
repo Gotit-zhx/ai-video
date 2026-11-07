@@ -26,7 +26,7 @@ public class AutomationAsyncConfig {
         executor.setMaxPoolSize(6);
         executor.setQueueCapacity(100);
         executor.setThreadNamePrefix("automation-model-");
-        executor.initialize();
+        com.yingdao.aicommerce.ops.MaintenanceGate.initialize(executor);
         return executor;
     }
 
@@ -42,7 +42,7 @@ public class AutomationAsyncConfig {
         executor.setKeepAliveSeconds(60);
         executor.setAllowCoreThreadTimeOut(true);
         executor.setThreadNamePrefix("video-script-analysis-");
-        executor.initialize();
+        com.yingdao.aicommerce.ops.MaintenanceGate.initialize(executor);
         return executor;
     }
 
@@ -55,7 +55,7 @@ public class AutomationAsyncConfig {
         executor.setKeepAliveSeconds(60);
         executor.setAllowCoreThreadTimeOut(true);
         executor.setThreadNamePrefix("ai-video-image-");
-        executor.initialize();
+        com.yingdao.aicommerce.ops.MaintenanceGate.initialize(executor);
         return executor;
     }
 
@@ -66,7 +66,7 @@ public class AutomationAsyncConfig {
         executor.setMaxPoolSize(AI_VIDEO_COORDINATOR_CONCURRENCY);
         executor.setQueueCapacity(AI_VIDEO_TASK_QUEUE_CAPACITY);
         executor.setThreadNamePrefix("ai-video-image-coordinator-");
-        executor.initialize();
+        com.yingdao.aicommerce.ops.MaintenanceGate.initialize(executor);
         return executor;
     }
 
@@ -80,7 +80,7 @@ public class AutomationAsyncConfig {
         executor.setAllowCoreThreadTimeOut(true);
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
         executor.setThreadNamePrefix("ai-video-generate-");
-        executor.initialize();
+        com.yingdao.aicommerce.ops.MaintenanceGate.initialize(executor);
         return executor;
     }
 }

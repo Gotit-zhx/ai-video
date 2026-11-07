@@ -1,0 +1,5 @@
+#!/usr/bin/python3 -I
+import sys
+sys.path.insert(0,"/usr/local/lib/heyi-ops/current")
+from heyi_ops.cli import main
+raise SystemExit(main())
