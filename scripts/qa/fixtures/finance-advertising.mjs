@@ -30,8 +30,8 @@ export function createAdvertisingFixture(){
     }
     function breakdown(items,keys){
       const groups=new Map();for(const item of items){const key=keys.map(k=>item[k]||'').join('|');if(!groups.has(key))groups.set(key,[]);groups.get(key).push(item);}
-      return [...groups.values()].map(list=>({...summary(list),...Object.fromEntries(keys.map(k=>[k,list[0][k]||''])),
-        settlement:summary(list.filter(x=>x.kind==='FEE')),commission:summary(list.filter(commission)),independent:summary(list.filter(x=>x.kind==='AD'))}));
+      return [...groups.values()].map(list=>({...summary(list.filter(x=>x.kind!=='AD_GMV')),...Object.fromEntries(keys.map(k=>[k,list[0][k]||''])),
+        settlement:summary(list.filter(x=>x.kind==='FEE')),commission:summary(list.filter(commission)),independent:summary(list.filter(x=>x.kind==='AD')),gmv:summary(list.filter(x=>x.kind==='AD_GMV'))}));
     }
     const ordinary=rows.filter(x=>x.kind!=='AD_GMV'),independent=rows.filter(x=>x.kind==='AD'),ledger=rows.filter(x=>x.kind==='FEE');
     const performance=summary(independent),ratio=(value,denominator,scale=1)=>value!=null&&denominator>0?round(value/denominator*scale):null;
@@ -44,7 +44,7 @@ export function createAdvertisingFixture(){
       const items=ordinary.filter(x=>x.record_date===period);return {period,AD_TOTAL:summary(items).amount,AD_INDEPENDENT:items.some(x=>x.kind==='AD')?summary(items.filter(x=>x.kind==='AD')).amount:null,AD_SETTLEMENT:items.some(x=>x.kind==='FEE')?summary(items.filter(x=>x.kind==='FEE')).amount:null};
     });
     const advertising={total:summary(ordinary),independent:summary(independent),settlement:summary(ledger),commission:summary(ledger.filter(commission)),unassigned:summary(ordinary.filter(x=>x.shop_id==='UNASSIGNED')),
-      shops:breakdown(ordinary,['shop_id','group_id']),groups:breakdown(ordinary,['group_id']),categories:breakdown(ordinary,['sourceType','category']),performance,gmv,trend,
+      shops:breakdown(rows,['shop_id','group_id']),groups:breakdown(rows,['group_id']),categories:breakdown(ordinary,['sourceType','category']),performance,gmv,trend,
       basis:'平台账单广告费与独立广告消耗按各自费用日期汇总；GMV Max 专项不重复相加。',profitBasis:'平台账单广告费已经包含在净结算中，利润只额外扣减独立广告消耗。',coverageNote:'当前为本地模拟验证数据；缺少记录不代表实际投放为零。'};
     return {filters:{...q,currency,displayCurrency:display},shops,groups,currencies:['PHP','THB'],sync:[],fees:[],statuses:[],advertising,
       totals:[{kind:'AD',...summary(independent)},{kind:'AD_GMV',...gmv},{kind:'SETTLEMENT',amount:500,revenue:600,records:1,known_amounts:1,known_revenues:1}],

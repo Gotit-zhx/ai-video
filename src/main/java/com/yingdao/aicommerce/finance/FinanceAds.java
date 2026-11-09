@@ -26,8 +26,29 @@ public class FinanceAds {
         this(repo,finance,transport.transport(),cipher);
     }
     public List<Map<String,Object>> list(Scope s){
-        return repo.jdbc().queryForList("SELECT advertiser_id,name,shop_id,currency,enabled,status,error_message,next_at,last_success_at,gmv_store_id,gmv_status,gmv_error,timezone"
-                +" FROM finance_ad_accounts a WHERE organization_id=? AND "+visibleAccount()+" ORDER BY name",s.organizationId());
+        return list(s,null,null);
+    }
+    public List<Map<String,Object>> list(Scope s,LocalDate from,LocalDate to){
+        List<Map<String,Object>> accounts=repo.jdbc().queryForList("SELECT advertiser_id,name,shop_id,currency,enabled,status,error_message,next_at,last_success_at,gmv_store_id,gmv_status,gmv_error,timezone,discovery_status,discovery_error"
+                +" FROM finance_ad_accounts a WHERE organization_id=? AND "+visibleAccount()+" ORDER BY name",s.organizationId()).stream().map(r->(Map<String,Object>)new LinkedHashMap<>(r)).toList();
+        var stores=repo.jdbc().queryForList("SELECT advertiser_id,store_id,store_name,store_code,shop_id,match_status,report_eligible,primary_advertiser_id,gmv_available,active FROM finance_ad_stores WHERE organization_id=? ORDER BY store_name",s.organizationId());
+        var streams=repo.jdbc().queryForList("SELECT advertiser_id,channel,store_id,status,error_message,next_at,last_success_at FROM finance_ad_streams WHERE organization_id=?",s.organizationId());
+        for(var account:accounts){
+            String id=text(account.get("advertiser_id"));
+            account.put("stores",stores.stream().filter(r->id.equals(r.get("advertiser_id"))).toList());
+            account.put("streams",streams.stream().filter(r->id.equals(r.get("advertiser_id"))).toList());
+        }
+        if(from!=null&&to!=null){
+            if(from.isAfter(to)||from.plusYears(10).isBefore(to))throw bad("广告覆盖日期范围不正确");
+            var coverage=repo.jdbc().queryForList("""
+                SELECT advertiser_id,channel,store_id,COUNT(*) covered_days,SUM(amount) amount,SUM(row_count) records,
+                  MIN(record_date) first_day,MAX(record_date) last_day,MIN(observed_at) oldest_observation
+                FROM finance_ad_coverage WHERE organization_id=? AND record_date BETWEEN ? AND ? GROUP BY advertiser_id,channel,store_id
+                """,s.organizationId(),from.toString(),to.toString());
+            for(var account:accounts){account.put("coverage",coverage.stream().filter(r->text(account.get("advertiser_id")).equals(r.get("advertiser_id"))).toList());
+                account.put("requestedDays",java.time.temporal.ChronoUnit.DAYS.between(from,to)+1);}
+        }
+        return accounts;
     }
     static String visibleAccount(){return "(COALESCE(a.shop_id,'')='' OR EXISTS (SELECT 1 FROM finance_connections c WHERE c.id=a.shop_id AND c.organization_id=a.organization_id AND c.status<>'REMOVED'))";}
     public void connect(Scope s,String id,String shopId,String token,String gmvStoreId){
@@ -73,9 +94,11 @@ public class FinanceAds {
             INSERT INTO finance_ad_accounts(organization_id,user_id,advertiser_id,name,shop_id,currency,access_token_encrypted,gmv_store_id,gmv_status,timezone)
             VALUES(?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE name=VALUES(name),access_token_encrypted=VALUES(access_token_encrypted),
             last_success_at=IF(shop_id<>VALUES(shop_id),NULL,last_success_at),shop_id=VALUES(shop_id),
-            gmv_store_id=VALUES(gmv_store_id),gmv_status=VALUES(gmv_status),gmv_error=NULL,timezone=VALUES(timezone),checkpoint_json=NULL,
+            gmv_store_id=VALUES(gmv_store_id),gmv_status=VALUES(gmv_status),gmv_error=NULL,timezone=VALUES(timezone),
+            discovery_next_at=UTC_TIMESTAMP(6),
             enabled=TRUE,status='READY',error_message=NULL,failures=0,lease_token=NULL,lease_until=NULL,next_at=UTC_TIMESTAMP(6)
             """,storage.organizationId(),storage.userId(),id,first(advertiser,"name"),shopId,currency,encrypted,gmvStoreId,gmvStoreId.isBlank()?"DISABLED":"READY",first(advertiser,"timezone"));
+        repo.jdbc().update("UPDATE finance_ad_streams SET next_at=UTC_TIMESTAMP(6),failures=0 WHERE organization_id=? AND advertiser_id=?",s.organizationId(),id);
     }
     public void pause(Scope s,String id,boolean enabled){
         if(enabled&&list(s).stream().noneMatch(a->id.equals(text(a.get("advertiser_id")))))throw bad("广告账户不存在或绑定的财务店铺已移除");
@@ -108,61 +131,7 @@ public class FinanceAds {
                 +" WHERE organization_id=? AND user_id=? AND advertiser_id=? AND shop_id=? AND enabled=TRUE"
                 +" AND (lease_until IS NULL OR lease_until<UTC_TIMESTAMP(6))",lease,s.organizationId(),s.userId(),id,text(account.get("shop_id")))!=1)return;
         try{
-            String token=cipher.decrypt(text(account.get("access_token_encrypted")),s.organizationId(),"finance:"+s.userId()+":"+id);
-            Map<String,Object> cp=account.get("checkpoint_json")==null?new LinkedHashMap<>():new LinkedHashMap<>(repo.read(text(account.get("checkpoint_json"))));
-            LocalDate today=LocalDate.now(ZoneOffset.UTC).plusDays(1);
-            // Covers every advertiser timezone; the report's stat_time_day remains authoritative.
-            if(cp.isEmpty()){
-                boolean nightly=account.get("last_success_at")!=null&&instant(account.get("last_success_at")).atZone(ZoneOffset.UTC).toLocalDate().isBefore(LocalDate.now(ZoneOffset.UTC));
-                cp.put("from",today.minusDays(account.get("last_success_at")==null?90:nightly?31:7).toString());cp.put("until",today.toString());cp.put("page",1);
-            }
-            cp.putIfAbsent("run",UUID.randomUUID().toString());
-            repo.jdbc().update("UPDATE finance_ad_accounts SET checkpoint_json=? WHERE "+where,repo.write(cp),s.organizationId(),s.userId(),id,lease);
-            LocalDate from=LocalDate.parse(text(cp.get("from"))),to=from.plusDays(6);LocalDate until=LocalDate.parse(text(cp.get("until")));if(to.isAfter(until))to=until;
-            int page=(int)Math.max(1,number(cp.get("page")));
-            var q=new LinkedHashMap<String,Object>(Map.of("advertiser_id",id,"report_type","BASIC","data_level","AUCTION_ADVERTISER",
-                    "dimensions",repo.write(List.of("stat_time_day")),"metrics",repo.write(List.of("spend","impressions","clicks","conversion")),
-                    "start_date",from.toString(),"end_date",to.toString(),"page",page,"page_size",100));
-            boolean gmv="GMV".equals(cp.get("channel"));
-            if(gmv){q=new LinkedHashMap<>(Map.of("advertiser_id",id,"store_ids",repo.write(List.of(text(account.get("gmv_store_id")))),
-                    "dimensions",repo.write(List.of("advertiser_id","stat_time_day")),"metrics",repo.write(List.of("cost","orders","gross_revenue","net_cost")),
-                    "start_date",from.toString(),"end_date",to.toString(),"page",page,"page_size",100));}
-            Map<String,Object> data;
-            try{data=get(gmv?"/gmv_max/report/get/":"/report/integrated/get/",token,q);}
-            catch(Exception ex){
-                if(!gmv)throw ex;
-                repo.jdbc().update("UPDATE finance_ad_accounts SET gmv_status='ERROR',gmv_error='GMV Max 报表未授权或店铺 ID 不匹配，请核对广告权限' WHERE "+where,s.organizationId(),s.userId(),id,lease);
-                // Never block ordinary advertising costs because the optional GMV report is unavailable.
-                cp.put("gmvFailed",true);data=Map.of("list",List.of(),"page_info",Map.of("total_page",1));
-            }
-            for(var row:FinanceMarketplace.requiredRows(data,"list")){
-                var dim=map(row.get("dimensions"));var metrics=map(row.get("metrics"));
-                LocalDate date=FinanceData.date(dim.get("stat_time_day"),"UTC");BigDecimal spend=amount(metrics,gmv?"cost":"spend");
-                if(spend==null)throw bad("广告报表未返回消耗字段");
-                String shop=text(account.get("shop_id"));if(shop.isBlank())shop="UNASSIGNED";
-                repo.save(s,new Entry(shop,"TIKTOK_SHOP",gmv?"AD_GMV":"AD",id+":"+date,"","",gmv?"GMV Max 专项分析":"广告账户总消耗","REPORTED",date,
-                        text(account.get("currency")),spend,gmv?amount(metrics,"gross_revenue"):null,gmv?null:metricCount(metrics,"impressions"),gmv?null:metricCount(metrics,"clicks"),amount(metrics,gmv?"orders":"conversion"),"API",
-                        Map.of("advertiser_id",id,"dimensions",dim,"metrics",metrics,"_finance_sync",cp.get("run"))));
-            }
-            if(!data.containsKey("page_info"))throw bad("广告报表未返回分页状态，已保留同步进度");
-            boolean more=number(at(data,"page_info.total_page"))>page;
-            if(more)cp.put("page",page+1);
-            else{
-                if(!gmv||!Boolean.TRUE.equals(cp.get("gmvFailed"))){
-                    repo.jdbc().update("DELETE FROM finance_records WHERE organization_id=? AND user_id=? AND shop_id=? AND kind=? AND source='API'"
-                                    +" AND record_date>=? AND record_date<=? AND JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$.advertiser_id'))=?"
-                                    +" AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$._finance_sync')),'')<>?",
-                            s.organizationId(),s.userId(),text(account.get("shop_id")).isBlank()?"UNASSIGNED":text(account.get("shop_id")),gmv?"AD_GMV":"AD",from.toString(),to.toString(),id,cp.get("run"));
-                    if(gmv)repo.jdbc().update("UPDATE finance_ad_accounts SET gmv_status='SUCCESS',gmv_error=NULL WHERE "+where,s.organizationId(),s.userId(),id,lease);
-                }
-                if(!gmv&&!text(account.get("gmv_store_id")).isBlank()){cp.put("channel","GMV");cp.put("page",1);}
-                else if(to.isBefore(until)){cp.put("from",to.plusDays(1).toString());cp.put("page",1);cp.remove("channel");cp.remove("run");cp.remove("gmvFailed");}
-                else cp.clear();
-            }
-            boolean done=cp.isEmpty();
-            repo.jdbc().update("UPDATE finance_ad_accounts SET checkpoint_json=?,status=?,error_message=NULL,failures=0,lease_until=NULL,lease_token=NULL,"
-                    +"last_success_at=CASE WHEN ? THEN UTC_TIMESTAMP(6) ELSE last_success_at END,next_at=? WHERE "+where,
-                    done?null:repo.write(cp),done?"SUCCESS":"SYNCING",done,Timestamp.from(Instant.now().plusSeconds(done?3600:30)),s.organizationId(),s.userId(),id,lease);
+            new FinanceAdAutomation(this).tick(s,account,lease);
         }catch(Exception e){
             long seconds=Math.min(21600,120*(1L<<Math.min(7,number(account.get("failures")))));
             repo.jdbc().update("UPDATE finance_ad_accounts SET status='ERROR',error_message=?,failures=failures+1,lease_until=NULL,lease_token=NULL,next_at=? WHERE "+where,

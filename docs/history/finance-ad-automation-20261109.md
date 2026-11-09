@@ -1,0 +1,58 @@
+# 广告数据自动获取：开发与验收
+
+日期：2026-11-09。功能分支 `feature/finance-ad-automation`，从个人 fork 的 `develop`（`52c926c1d7b7c78a76980c4a78a421c6ded92ab5`）建立。本文记录本地候选，不代表已部署或已验证正式账户的新接口权限。
+
+## 自动流程
+
+1. 管理员完成 TikTok 官方授权后，后台调用 `/gmv_max/store/list/` 自动发现可访问店铺；授权弹窗不再要求填写专属财务店铺或 GMV Max 店铺 ID。
+2. 使用同公司、TikTok 平台的 `external_shop_id` 与官方 `store_id` 精确匹配。不会按名称猜测，不把本地 UUID 当官方标识。尚未连接对应财务店铺时，仍读取有权限的 GMV Max 报表并暂存到未归属项；后续连接店铺后自动重新匹配，记录 ID 和金额不变。
+3. 普通账户报表与各店铺的 GMV Max 报表分别保存进度、退避和状态。默认回补近 90 天，每页 100 条，每个窗口不超过 7 天；完成后每小时回查近 7 天、每日扩大至近 31 天。日期按广告账户时区计算；未知时区报错，不猜测 UTC。
+4. GMV Max 使用计划及日期维度，查询商品和直播计划，显式包含已删除、停用和其他投放状态。保留 `cost`、`net_cost`、`orders`、`gross_revenue`，分别表示报表总消耗、扣除广告金等后的净消耗、SKU 订单和归因收入；不把归因收入当作财务结算收入。
+5. 单线程调度每次租约最多发一个官方请求。发现、普通报表和各店铺报表失败时独立指数退避，最大 6 小时；不让一家店的权限错误堵住其他报表，不启动新的代理、浏览器或后台服务。
+
+授权同意、恢复被撤销的读取权限，以及尚未建立的财务店铺授权仍须账户管理员完成。系统不更换 GMV Max 主广告账户，不调用 exclusive authorization 的写接口。当前主投放账户及可投放状态不等于历史报表读取权限，仍尝试只读报表，由接口结果决定重试状态。
+
+## 数据与计算边界
+
+- 新增迁移 `V148__finance_ad_automation.sql`：店铺发现表、独立报表进度表、分页暂存表和逐日覆盖表。只扩展广告账户状态，不变更既有加密 AAD、财务金额、公司、原始账单、已应用迁移或店铺同步检查点。
+- 新流程独立接管，旧报表失败不会阻塞店铺发现。首次新通道扫描起点取近 90 天与旧 checkpoint 起点的较早值，在新暂存区从完整窗口首重新获取，避免丢掉旧分页已经发布的数据；旧 checkpoint 保留到发现及所有相关通道完成再退休。重新授权保留旧、新进度及暂存页，撤销旧工作器租约并唤醒重试。启停仍使用既有广告账户开关。
+- 分页先暂存。仅在完整窗口通过日期、指标、页码、重复维度和记录数校验后，事务替换该账户、来源、店铺、日期窗口的 API 快照；失败保留上次可用数据和导入记录。平台分页变化导致重复或总数变化时，仅重新获取受影响窗口。达到 20,000 条安全边界时不标记完整，需继续核对平台截断/异步报表能力。
+- 发布前再次校验账户租约、启用状态和店铺可写状态；迟到请求不复活已删除店铺。店铺移除沿原有有界批次清理新增暂存、覆盖与进度，保留共享账户的其他店铺。
+- 新记录身份不依赖本地店铺归属。重新匹配只改变 `shop_id`；不会复制一份费用，不修改广告账户持有人或密文。未发生归属变化时不重复更新历史记录。
+- `finance_ad_coverage` 保存成功观察到的每一天，包括空报表。失败不写覆盖；页面展示所选范围的已采集天数、当前任务状态和原币消耗。全日期返回零与部分日期返回零明确区分。覆盖只说明接口返回范围，不保证平台延迟、对象截断或财务对账已完成。
+- 普通 `/report/integrated/get/` 继续保留账户级总额，不能仅凭可访问一家店就把全部消耗归给它。GMV Max 使用请求中明确的官方店铺归属；店铺/分组表单列该消耗，即使只有 GMV Max 数据也可见。
+- 普通报表不能被假定已完整包含 GMV Max；GMV Max 与普通报表、平台结算广告费之间的支付/覆盖关系尚未获得真实凭据验证。本候选不把它们直接叠加或重复扣减利润，页面明确提示待核对，原有已入账合计及利润口径保持。不能宣称已经自动完成跨来源去重或全额对账。
+- 广告页面默认自动采集，导入入口改为「异常补录」，只用于 API 无法提供数据或确实无法取得权限的情况；保留原有导入防重复约束，不自动删除人工导入。
+
+## 实现入口
+
+- `FinanceAds`：授权、账户租约、旧进度接管入口及范围覆盖查询。
+- `FinanceAdAutomation`：自动发现、精确匹配、独立重试、分页发布及租约校验。
+- `FinanceAdvertisingReport`：分店、分组 GMV Max 展示，与已入账财务费用区分。
+- `FinanceShopDeletion`：新增表的删除保护及清理。
+- `GET /api/v1/finance/ads?start=YYYY-MM-DD&end=YYYY-MM-DD`：在原账户响应中加入 `stores`、`streams`、`coverage` 和 `requestedDays`；不返回 token 或原始平台响应。
+- 前端 `finance-workspace.js`；共享快照升级至 `v18-advertising-automation`。
+
+## 验证及交接
+
+在本机独立 MySQL 8.4 容器创建随机 `finance_qa_*` 库及仅该库权限的账户；测试结束删除库和账号。未使用生产数据库、令牌或业务导出。
+
+Java 验证入口：`FinanceAdAutomationTest`、`FinanceAdAutomationIntegrationTest#automation*`，以及既有广告授权、HTTP、统计、字段、缓存和 `FinanceConfigurationIntegrationTest`。新用例覆盖多店/跨公司、同名不误配、匹配后幂等、分页失败续传、变化分页重取、空报表、原始导入保留、删除保护、失效租约和重新授权续接。
+
+验收结果：广告、权限、字段、缓存等 119 项 Java 测试通过（含 12 项新的隔离数据库用例），另有 63 项财务配置集成回归通过，无跳过。三组前端交互脚本及 `git diff --check` 通过。新增兼容用例覆盖被旧失败检查点阻塞的升级接管，以及合法空店铺列表。初轮测试发现并修正不可变测试返回值、缺少分组/API 来源的夹具、Mockito 重设行为及测试声明语法问题；最终所列用例全部通过。
+
+另外按 CI 的整类调用方式运行 `FinanceAdAutomationIntegrationTest`，12 个新用例及继承的 63 个财务用例共 75 项通过，夹具互不污染。前端静态及动态字面量资源引用检查通过。
+
+前端入口：`scripts/qa/test-finance-ad-automation-ui.mjs`、`test-finance-advertising-ui.mjs`、`test-finance-ad-authorization-ui.mjs`。使用明确的合成数据验证自动授权选项、多店分组可见性、范围覆盖、部分与零值、GMV Max 分项、只读权限和导入兜底。
+
+本轮未部署生产。发布前重新核对生产基线、迁移编号、发布锁与空间预算，并验证现有真实账户对店铺发现及 GMV Max 计划报表的读取权限、字段和账单对应关系；不能拿模拟接口测试替代正式平台验证。候选必须经 feature → develop → release 流程；不得用新迁移回滚或篡改旧校验和。
+
+## 官方契约依据
+
+2026-11-09 核对官方文档和 TikTok 官方 SDK；SDK 与文档版本差异以实际只读验证为准：
+
+- [可访问店铺](https://business-api.tiktok.com/portal/docs/get-tiktok-shops-for-gmv-max-campaigns/v1.3)
+- [GMV Max 报表](https://business-api.tiktok.com/portal/docs/run-a-gmv-max-campaign-report/v1.3)
+- [GMV Max 指标](https://business-api.tiktok.com/portal/docs/metrics-in-gmv-max-campaign-reports/v1.3)
+- [普通同步报表](https://business-api.tiktok.com/portal/docs/run-a-synchronous-report/v1.3)
+- [官方 SDK 请求定义](https://github.com/tiktok/tiktok-business-api-sdk/tree/main/yml_files)

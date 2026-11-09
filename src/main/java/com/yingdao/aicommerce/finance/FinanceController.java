@@ -119,7 +119,11 @@ public class FinanceController {
     @PutMapping("/fields/{view}") public ApiResponse<?> fields(@PathVariable("view") String view,@RequestBody FieldSelection body,@AuthenticationPrincipal PlatformPrincipal p){
         fields.save(personal(p),view,body.visible,body.exported);return ApiResponse.ok("字段设置已保存");
     }
-    @GetMapping("/ads") public ApiResponse<?> ads(@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(ads.list(s(p)));}
+    @GetMapping("/ads") public ApiResponse<?> ads(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
+        Scope scope=s(p);
+        if(!q.containsKey("start")&&!q.containsKey("end"))return ApiResponse.ok(ads.list(scope));
+        Filter f=filter(q);return ApiResponse.ok(ads.list(scope,f.start(),f.end()));
+    }
     @GetMapping("/ads/application") public ApiResponse<?> adApplication(@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(adAuthorization.configuration(s(p)));}
     record AdApplication(String appId,String appSecret){}
     @PutMapping("/ads/application") public ApiResponse<?> adApplication(@RequestBody AdApplication body,@AuthenticationPrincipal PlatformPrincipal p){
