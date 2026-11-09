@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from .host import GIB, command, inspect
 from .state import atomic, read, Busy
+from .storage import RESERVE_BYTES
 
 
 def diagnose(config, store, host):
@@ -29,7 +30,7 @@ def diagnose(config, store, host):
     except Exception: app_ok=False
     if not app_ok: alerts.append({"service":"app","type":"availability","severity":"critical"})
     free=shutil.disk_usage(config["root"]).free
-    if free<14*GIB: alerts.append({"service":"disk","type":"free-space","severity":"critical" if free<8*GIB else "warning"})
+    if free<RESERVE_BYTES: alerts.append({"service":"disk","type":"free-space","severity":"critical" if free<8*GIB else "warning"})
     backup=read(Path(config["backupRoot"])/"status.json",{})
     successful=backup.get("lastSuccess",{})
     if not successful or time.time()-successful.get("finishedAt",0)>36*3600:
