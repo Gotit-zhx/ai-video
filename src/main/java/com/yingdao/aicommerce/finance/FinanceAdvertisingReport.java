@@ -62,8 +62,8 @@ final class FinanceAdvertisingReport {
         result.put("settlement",summary(settled,currency));
         result.put("commission",summary(settled.stream().filter(r->Boolean.TRUE.equals(r.get("advertisingCommission"))).toList(),currency));
         result.put("unassigned",summary(ordinary.stream().filter(r->"UNASSIGNED".equals(r.get("shop_id"))).toList(),currency));
-        result.put("shops",breakdown(ordinary,currency,"shop_id","group_id"));
-        result.put("groups",breakdown(ordinary,currency,"group_id"));
+        result.put("shops",breakdown(prepared,currency,"shop_id","group_id"));
+        result.put("groups",breakdown(prepared,currency,"group_id"));
         result.put("categories",breakdown(ordinary,currency,"sourceType","category"));
         result.put("performance",performance(independent,currency));
         var gmvSummary=summary(gmv,currency);
@@ -86,7 +86,7 @@ final class FinanceAdvertisingReport {
             point.put("AD_SETTLEMENT",recordedAmount(rows.stream().filter(r->r.get("sourceType").equals("SETTLEMENT")).toList(),currency));
         });
         result.put("trend",new ArrayList<>(points.values()));
-        result.put("basis","广告费用合计 = 平台账单广告费（含达人广告佣金、合作伙伴店铺广告佣金）+ 独立广告账户报表或导入消耗。广告佣金作为其中项单列，不重复相加。按各自官方费用日期统计，保留负向返还；GMV Max 专项报表不重复相加。未分配费用单列，不强行分摊到店铺或类目。");
+        result.put("basis","当前已入账广告费用 = 平台账单广告费（含广告佣金）+ 普通独立广告报表或导入消耗。GMV Max 自动按店铺单列；普通报表不保证覆盖 GMV Max，且 GMV Max 与账单扣费的重叠尚待核对，因此不直接相加或重复扣减利润。不能将当前入账合计视为完整媒体消耗。未归属费用保留在账户层级。");
         result.put("profitBasis","利润沿用经营范围：平台账单广告费及广告佣金已随平台净结算及费用处理，只额外扣减独立广告消耗；刷单等既有排除规则保留，卡片合计不重复扣减。");
         result.put("coverageNote","仅统计已同步或已导入的记录；没有记录不代表平台实际消耗为零。广告充值、充值或技术支持混合字段、优惠券和普通达人佣金不凭名称推定为广告费用。");
         return result;
@@ -115,11 +115,12 @@ final class FinanceAdvertisingReport {
         for(var row:rows)groups.computeIfAbsent(Arrays.stream(keys).map(k->text(row.get(k))).toList(),k->new ArrayList<>()).add(row);
         var result=new ArrayList<Map<String,Object>>();
         groups.forEach((key,items)->{
-            var row=summary(items,currency);
+            var row=summary(items.stream().filter(r->!r.get("sourceType").equals("GMV")).toList(),currency);
             for(int i=0;i<keys.length;i++)row.put(keys[i],key.get(i));
             row.put("independent",summary(items.stream().filter(r->r.get("sourceType").equals("INDEPENDENT")).toList(),currency));
             row.put("settlement",summary(items.stream().filter(r->r.get("sourceType").equals("SETTLEMENT")).toList(),currency));
             row.put("commission",summary(items.stream().filter(r->Boolean.TRUE.equals(r.get("advertisingCommission"))).toList(),currency));
+            row.put("gmv",summary(items.stream().filter(r->r.get("sourceType").equals("GMV")).toList(),currency));
             result.add(row);
         });
         return result;

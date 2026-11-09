@@ -111,8 +111,29 @@ class Host:
         baseline = read(self.root / "baseline.json")
         if self.schema() != baseline["schemaFingerprint"]:
             raise RuntimeError("Database migration history drift; use the maintenance procedure")
-        if target["source"]["inputs"]["migrations"] != baseline["migrationInputs"]:
+        if target["source"]["inputs"]["migrations"] != baseline["migrationInputs"] and not self.additive_compatibility(target,baseline):
             raise RuntimeError("Schema changes require independent maintenance")
+
+    def additive_compatibility(self, target, baseline):
+        """Only a root-recorded, verified additive maintenance receipt can admit an older app."""
+        approval=baseline.get("schemaCompatibility",{})
+        if not isinstance(approval,dict):return False
+        owner=approval.get("operationId","")
+        if not isinstance(owner,str) or not re.fullmatch(r"[a-f0-9]{32}",owner):return False
+        path=self.root/"schema-maintenance"/owner/"verified.json"
+        try:
+            payload=path.read_bytes()
+            if len(payload)>65536 or sha(payload)!=approval.get("receiptSha256"):return False
+            receipt=json.loads(payload)
+        except (OSError,ValueError):return False
+        if not isinstance(receipt,dict):return False
+        return (receipt.get("phase")=="verified"
+            and receipt.get("operationId")==owner
+            and receipt.get("afterSchemaFingerprint")==baseline["schemaFingerprint"]
+            and receipt.get("migrationInputs")==baseline["migrationInputs"]
+            and receipt.get("previousMigrationInputs")==target["source"]["inputs"]["migrations"]
+            and receipt.get("addedVersions")==["148"]
+            and all(receipt.get(key) is True for key in ("historyPrefixPreserved","protectedDataPreserved","oldRuntimeValidationPassed","oldRuntimeRestartPassed")))
 
     def preflight(self, target, baseline, rollback=False, restart=False):
         self.compatible(target)

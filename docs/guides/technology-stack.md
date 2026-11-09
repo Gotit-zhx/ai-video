@@ -9,7 +9,7 @@
 | 后端语言 / 框架 | Java 21、Spring Boot 4.1.0、Maven 3.9 构建镜像 | [pom.xml](../../pom.xml)、[Dockerfile](../../Dockerfile) |
 | HTTP / 权限 | Spring MVC、Spring Security、Bean Validation、Spring Session Redis、BCrypt | [后端清单](../../pom.xml)、`auth/`、`config/` |
 | 数据访问 | MyBatis-Plus 3.5.17、JdbcTemplate、MySQL Connector/J | [后端清单](../../pom.xml) |
-| 数据库 / 迁移 | MySQL 8.4、Flyway；最高现存迁移 V147，历史有缺号 | [Compose](../../compose.yaml)、[迁移](../../src/main/resources/db/migration/) |
+| 数据库 / 迁移 | MySQL 8.4、Flyway；最高现存迁移 V148（广告自动化候选），历史有缺号 | [Compose](../../compose.yaml)、[迁移](../../src/main/resources/db/migration/) |
 | 缓存 / 会话 / 队列 | Redis 8、Redis Session、Redis Stream 与业务持久任务表 | [Compose](../../compose.yaml)、`workflow/`、`finance/` |
 | Web | 原生 HTML / JavaScript / CSS；没有 React/Vue 构建工程 | [前端](../../frontend/) |
 | 图表 / 3D | Apache ECharts 6.1.0、Three.js r170（0.170.0） | [本地第三方资源](../../frontend/vendor/) |

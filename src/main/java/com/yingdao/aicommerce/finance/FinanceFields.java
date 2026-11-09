@@ -105,6 +105,9 @@ public final class FinanceFields {
         extra("tk_shipping_cost","TK 物流费用（原币，平台符号）","money","SETTLEMENT","shipping_cost_amount"),
         extra("tk_adjustment","TK 调整金额（原币，平台符号）","money","SETTLEMENT","adjustment_amount"),
         extra("advertiser_id","广告账户ID","text","AD AD_GMV","advertiser_id"),
+        extra("ad_store_id","官方广告店铺ID","text","AD_GMV","_finance_store_id"),
+        extra("ad_campaign_id","广告计划ID","text","AD_GMV","dimensions.campaign_id"),
+        extra("ad_report_channel","广告报表来源","text","AD AD_GMV","_finance_channel"),
         extra("impressions","曝光量","number","AD",""),extra("clicks","点击量","number","AD",""),
         extra("conversions","转化 / SKU 订单数","number","AD AD_GMV",""),
         extra("net_cost","GMV Max 净消耗（原币）","money","AD_GMV","metrics.net_cost")

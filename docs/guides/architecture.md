@@ -90,7 +90,9 @@ Java 包根目录为 [`src/main/java/com/yingdao/aicommerce/`](../../src/main/ja
 | 招聘 Python 私有存储与本机 Profile | 业务 SQLite、附件追踪、设备身份、招聘浏览器登录态 | 与 MySQL 分开备份；不把 Cookie 复制进源码或跨设备迁移 |
 | ERP / 家务 SQLite | 独立子项目业务 | 按各自 README 维护，不与主平台数据混用 |
 
-数据库结构以 [`src/main/resources/db/migration/`](../../src/main/resources/db/migration) 为准。当前最高 V147；迁移序列有历史缺号，不能用最大编号推断实际已执行条数。重点域包括 `organizations`/RBAC、`workflow_*`、`captured_*`/`commerce_*`、`ai_video_*`、`finance_*`、`knowledge_*`。查表与索引应读迁移和 SQL，不把本文当作完整 ERD。
+数据库结构以 [`src/main/resources/db/migration/`](../../src/main/resources/db/migration) 为准。当前最高 V148（广告自动化候选）；迁移序列有历史缺号，不能用最大编号推断实际已执行条数。重点域包括 `organizations`/RBAC、`workflow_*`、`captured_*`/`commerce_*`、`ai_video_*`、`finance_*`、`knowledge_*`。查表与索引应读迁移和 SQL，不把本文当作完整 ERD。
+
+广告自动化由 `FinanceAdAutomation` 在既有单线程、账户租约内执行：店铺发现 → 同公司官方 ID 匹配 → 普通报表和各店 GMV Max 独立进度 → 分页暂存 → 完整窗口事务发布 → 覆盖状态。`finance_ad_stores` 保存访问与匹配关系，`finance_ad_streams` 保存游标及退避，`finance_ad_report_stage` 暂存未完成分页，`finance_ad_coverage` 区分空报表与未获取数据。公司账本中的 GMV Max 记录身份与本地归属解耦，账户访问关系不用于推定普通费用归属。实现与边界见[开发验收](../history/finance-ad-automation-20261109.md)。
 
 ## 保持不变的业务边界
 

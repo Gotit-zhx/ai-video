@@ -45,6 +45,13 @@ class FinanceAdvertisingReportTest {
         money("9.5",map(result.get("total")).get("amount"));assertEquals(121,number(map(result.get("total")).get("records")));
         money("-2.5",map(result.get("settlement")).get("amount"));
     }
+    @Test void gmvOnlyStoresAndGroupsStayVisibleWithoutClaimingFullFinancialReconciliation(){
+        var result=report(List.of(row("AD_GMV","b","","13")));
+        var shop=find(result.get("shops"),"shop_id","b");var group=find(result.get("groups"),"group_id","clothes");
+        money("13",map(shop.get("gmv")).get("amount"));money("13",map(group.get("gmv")).get("amount"));
+        assertEquals(false,shop.get("hasRecords"));money("0",map(result.get("total")).get("amount"));
+        assertTrue(text(result.get("basis")).contains("不能将当前入账合计视为完整媒体消耗"));
+    }
     @Test void nativeCurrenciesStaySeparateAndAllCnyTotalsUseOneQuote(){
         var php=row("AD","a","","100");var thb=row("FEE","b","gmv_max_ad_fee_amount","30");thb.put("currency","THB");
         var quote=new FinanceFx.Quote("fixed",Instant.EPOCH,Map.of("PHP",decimal("0.1"),"THB",decimal("0.2")));
