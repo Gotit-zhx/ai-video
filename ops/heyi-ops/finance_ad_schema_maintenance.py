@@ -4,10 +4,11 @@
 Run under systemd, with the same command plus --recover as ExecStopPost. Inputs and
 the verified SQL/runner stay in this operation's private directory for recovery.
 """
-import hashlib,json,os,re,shlex,shutil,subprocess,sys,time
+import hashlib,json,os,re,shlex,subprocess,sys,time
 from pathlib import Path
 from heyi_ops.state import Store,read,atomic
 from heyi_ops.host import Host,inspect,config_hash
+from heyi_ops.storage import require_space
 
 SQL_NAME='V148__finance_ad_automation.sql'
 SQL_SHA='58a433ea9e49a5a4b49e9005446fce1e6b4d2bca1fe3b7d507377a606aea6d19'
@@ -76,7 +77,7 @@ def execute(owner,recover=False):
         app=inspect('ai-commerce-app')
         if app['Id']!=inputs['appContainerId'] or config_hash(app,baseline['environmentKeys']['app'])!=baseline['configurationHashes']['app']:raise RuntimeError('Application configuration changed')
         if not state:
-            if shutil.disk_usage(config['root']).free<14*1024**3+64*1024**2:raise RuntimeError('Insufficient schema maintenance reserve')
+            require_space(config['root'],64*1024**2)
             host.compatible(store.active())
             if host.sql("SELECT version FROM flyway_schema_history ORDER BY installed_rank DESC LIMIT 1")!='147':raise RuntimeError('Expected schema V147')
             state={'phase':'prepared','operationId':owner,'inputsSha256':sha((root/'inputs.json').read_bytes()),'beforeHistory':host.sql(HISTORY),

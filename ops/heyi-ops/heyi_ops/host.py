@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from .state import atomic, read, Busy
+from .storage import require_space
 
 GIB = 1024 ** 3
 SERVICES = {"app": "ai-commerce-app", "frontend": "ai-commerce-frontend"}
@@ -141,7 +142,7 @@ class Host:
             raise RuntimeError("Control plane or backup changes require explicit host maintenance")
         if target["source"]["inputs"]["unsupported"] != baseline["source"]["inputs"]["unsupported"]:
             raise RuntimeError("Changes include services outside automatic CD")
-        if shutil.disk_usage(self.root).free < 14*GIB+target["sourceUnpackedBytes"]: raise RuntimeError("Insufficient space for source plus 14 GiB reserve")
+        require_space(self.root, target["sourceUnpackedBytes"])
         if not (rollback or restart):
             req=urllib.request.Request("https://api.github.com/repos/Gotit-zhx/ai-video/git/ref/heads/main-tree",headers={"User-Agent":"heyi-ops","Accept":"application/vnd.github+json"})
             with urllib.request.urlopen(req,timeout=15) as response:head=json.load(response)["object"]["sha"]
