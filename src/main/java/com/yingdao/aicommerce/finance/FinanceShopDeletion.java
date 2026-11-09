@@ -40,6 +40,7 @@ final class FinanceShopDeletion {
                 WHERE organization_id=? AND id=?
                 """,scope.organizationId(),shopId);
             // Invalidate outstanding worker ownership before returning to the user.
+            repo.jdbc().update("UPDATE finance_ad_stores SET match_status='REMOVED',report_eligible=FALSE WHERE organization_id=? AND shop_id=?",scope.organizationId(),shopId);
             repo.jdbc().update("""
                 UPDATE finance_sync_states SET status='DISABLED',lease_token=NULL,lease_until=NULL,checkpoint_json=NULL,error_message=NULL
                 WHERE organization_id=? AND shop_id=?
@@ -124,7 +125,15 @@ final class FinanceShopDeletion {
                 if(removed==0)removed=delete("finance_reporting_months","organization_id=? AND shop_id=?",keys);
                 yield removed;
             }
-            case 11 -> delete("finance_ad_accounts","organization_id=? AND shop_id=?",keys);
+            case 11 -> {
+                int removed=0;
+                for(String table:List.of("finance_ad_report_stage","finance_ad_coverage","finance_ad_streams")){
+                    removed=delete(table,"organization_id=? AND (EXISTS (SELECT 1 FROM finance_ad_stores d WHERE d.organization_id="+table+".organization_id AND d.advertiser_id="+table+".advertiser_id AND d.store_id="+table+".store_id AND d.shop_id=?) OR EXISTS (SELECT 1 FROM finance_ad_accounts a WHERE a.organization_id="+table+".organization_id AND a.advertiser_id="+table+".advertiser_id AND a.shop_id=?))",org,shop,shop);
+                    if(removed>0)break;
+                }
+                if(removed==0)removed=delete("finance_ad_stores","organization_id=? AND shop_id=?",keys);
+                yield removed>0?removed:delete("finance_ad_accounts","organization_id=? AND shop_id=?",keys);
+            }
             case 12 -> delete("finance_authorization_sessions","organization_id=? AND JSON_UNQUOTE(JSON_EXTRACT(context_json,'$.shopId'))=?",keys);
             case 13 -> {
                 repo.jdbc().update("DELETE FROM finance_connections WHERE organization_id=? AND id=? AND status='REMOVED'",keys);

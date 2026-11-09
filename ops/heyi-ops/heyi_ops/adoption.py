@@ -2,12 +2,12 @@
 import copy
 import json
 import os
-import shutil
 import time
 from pathlib import Path
-from .host import SERVICES, GIB, command, inspect, config_hash, configuration, sha
+from .host import SERVICES, command, inspect, config_hash, configuration, sha
 from .legacy import Legacy
 from .state import Busy, atomic, read, TERMINAL
+from .storage import require_space
 
 
 class Adoption:
@@ -30,7 +30,7 @@ class Adoption:
         if target['source']['commit']!=self.host.config['controlPlaneRevision']:raise RuntimeError('Install this candidate control-plane revision first')
         for key in ('migrations','unsupported'):
             if source['source']['inputs'][key]!=target['source']['inputs'][key]:raise RuntimeError('Initial adoption includes unsupported service or schema changes')
-        if shutil.disk_usage(self.root).free<14*GIB+target['sourceUnpackedBytes']:raise RuntimeError('Insufficient adoption headroom')
+        require_space(self.root, target['sourceUnpackedBytes'])
         before=self.original();expected={};folder=self.root/'adoption'/owner;folder.mkdir(parents=True,exist_ok=True)
         probes={name:SERVICES[name]+'-adoption-'+owner[:12] for name in SERVICES}
         override=folder/'probe-compose.json'

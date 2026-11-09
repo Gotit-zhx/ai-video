@@ -9,8 +9,9 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from .host import command, sha, inspect, image_config_digest, GIB
+from .host import command, sha, inspect, image_config_digest
 from .state import atomic, read
+from .storage import require_space
 try:
     from .release_contract import validate_manifest, VERSION, REPOSITORY
 except ImportError:  # repository development; installer copies the same module
@@ -115,8 +116,7 @@ class Artifacts:
         advertised={a["name"]:a["size"] for a in api("releases/tags/candidate-"+candidate)["assets"]}
         if not 0<advertised.get("release.json",0)<=1024*1024 or not 0<advertised.get("source.tar.gz",0)<=512*1024**2:
             raise ValueError("Missing or oversized candidate assets")
-        if shutil.disk_usage(self.root).free<14*GIB+advertised["source.tar.gz"]+1024**2:
-            raise RuntimeError("Insufficient space to download candidate assets")
+        require_space(self.root, advertised["source.tar.gz"]+1024**2)
         with self.workspace(version) as folder:
             if upload is None:
                 command("gh","release","download","candidate-"+candidate,"--repo",REPOSITORY,
@@ -140,7 +140,7 @@ class Artifacts:
                 raise ValueError('Image transfer exceeds attested size budget')
             budget=sum(i["compressedBytes"]+i["unpackedBytes"] for name,i in target["images"].items() if name not in cached)
             budget+=sum(archives.values())+2*target["sourceArchiveBytes"]+target["sourceUnpackedBytes"]
-            if shutil.disk_usage(self.root).free<14*GIB+budget: raise RuntimeError("Insufficient pull/unpack budget plus 14 GiB reserve")
+            require_space(self.root, budget)
             for name in sorted(archives):
                 remaining=archives[name]
                 with (folder/(name+'.oci.tar')).open('xb') as output:
