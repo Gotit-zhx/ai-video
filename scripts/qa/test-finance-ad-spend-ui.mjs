@@ -39,6 +39,7 @@ try{
  d.querySelector('[data-allocation-add]').click();const form=d.querySelector('dialog');for(const [field,value]of Object.entries({amount:'10',cash_amount:'0',credit_amount:'9',grant_amount:'1'}))form.querySelector('[data-allocation-field="'+field+'"]').value=value;
  [...form.querySelectorAll('button')].find(b=>b.textContent==='保存核实金额').click();await wait(()=>writes.some(r=>r.endpoint.endsWith('/allocations')));await wait(()=>!d.querySelector('dialog'));
  const sent=JSON.parse(writes.at(-1).options.body);assert.equal(sent.allocations[0].shop_id,'a');assert.equal(sent.allocations[0].credit_amount,'9');assert.equal(sent.fingerprint,'verified');
+ w.FinanceWorkspace.leave();w.currentUser={...w.currentUser,organizationId:'another-company'};w.FinanceWorkspace.enter('ads');await ready();assert.equal(reads.filter(r=>r.endpoint==='/advertising/spend').at(-1).q.search,'','spending search does not leak into the next company');assert.equal(reads.filter(r=>r.endpoint==='/advertising/spend').at(-1).q.page,'1');
  failSpend=true;w.FinanceWorkspace.enter('ads');await ready();assert(root.textContent.includes('店铺消耗读取失败'));assert(!root.querySelector('[data-ad-spend-workspace]'),'failed reads must not display stale primary amounts');
  console.log('Finance advertising spending workspace UI passed');
 }finally{w.FinanceWorkspace.leave();dom.window.close();}

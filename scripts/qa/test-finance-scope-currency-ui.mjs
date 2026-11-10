@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import assert from 'node:assert/strict';
 const {JSDOM}=await import(process.env.JSDOM_MODULE||'jsdom');
 const dom=new JSDOM('<main id="finance-page"></main>',{url:'https://example.test/#finance-overview',runScripts:'outside-only',pretendToBeVisual:true});
-const w=dom.window,d=w.document,root=d.querySelector('main'),reads=[],exports=[];
+const w=dom.window,d=w.document,root=d.querySelector('main'),reads=[],exports=[],costExports=[];
 w.currentUser={organizationId:'org',userId:'user',permissions:['finance:view']};
 w.matchMedia=()=>({matches:false});w.ResizeObserver=class{observe(){}disconnect(){}};
 w.echarts={init:()=>({setOption(){},resize(){},dispose(){},getWidth(){return 1;},getHeight(){return 1;}})};
@@ -43,6 +43,11 @@ function response(q){
 w.api=async (path,options={})=>{
   const url=new URL(path,'https://example.test'),q=Object.fromEntries(url.searchParams),endpoint=url.pathname.replace('/api/v1/finance','');
   reads.push({url,q,endpoint,signal:options.signal});
+  if(endpoint==='/cost-exports'&&options.method==='POST'){
+    const body=JSON.parse(options.body);costExports.push({body,options});
+    return {data:{id:'cost-'+costExports.length,status:'READY',filename:'成本.xlsx',contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',parts:1,processed:1,total:1,start:body.start,end:body.end}};
+  }
+  if(endpoint==='/cost-exports')return {data:[]};
   if(['/overview','/reconciliation','/screen','/records'].includes(endpoint)){
     if(failedShop&&q.shopId===failedShop)throw Error('Internal server error');
     const result=response(q);
@@ -199,7 +204,7 @@ try{
   change('财务店铺','ph');await wait(()=>root.textContent.includes('COST-ph'));
   let costQuery=reads.filter(r=>r.endpoint==='/workspace/costs/orders').at(-1).q;
   assert.equal(costQuery.shopId,'ph');assert(!costQuery.currency);
-  await click('导出 Excel');await pause();assert.equal(exports.at(-1).searchParams.get('shopId'),'ph');assert(!exports.at(-1).searchParams.get('currency'));
+  await click('导出 Excel');await pause();assert.equal(costExports.at(-1).body.shopId,'ph');assert(!costExports.at(-1).body.currency);
   change('成本分组','clothes');await wait(()=>root.textContent.includes('COST-th'));
   costQuery=reads.filter(r=>r.endpoint==='/workspace/costs/orders').at(-1).q;
   assert.equal(costQuery.groupId,'clothes');assert(!costQuery.currency);
