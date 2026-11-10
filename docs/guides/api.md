@@ -34,7 +34,7 @@ Content-Type: application/json
 | `/api/v1/hr/**` | Nginx 交给 Python Connector，再验证平台身份/招聘权限与设备授权 |
 | `/actuator/health` | 允许健康探测；其他 Actuator 端点不因此公开 |
 
-财务通过 `FinanceService.authorize/requireManagement` 做公司级权限检查。`finance:view` 可查看、导出和保存个人字段偏好，管理及导入需 `finance:manage`。写接口另有同源检查；费用异步导出允许查看者显式创建任务，其任务再绑定公司和用户。
+财务通过 `FinanceService.authorize/requireManagement` 做公司级权限检查。`finance:view` 可查看、导出和保存个人字段偏好，管理及导入需 `finance:manage`。写接口另有同源检查；费用与成本异步导出允许查看者显式创建只读报表任务，其任务再绑定公司和真实用户。
 
 ## 主应用接口地图
 
@@ -56,6 +56,7 @@ Content-Type: application/json
 | 财务 | `/api/v1/finance` | `finance/FinanceController.java` |
 | 成本 / 贴单 / 刷单费 | `/api/v1/finance/workspace` | `finance/FinanceCostController.java` |
 | 费用矩阵导出 | `/api/v1/finance/fee-exports` | `finance/FinanceFeeExportController.java` |
+| 成本分片导出任务 | `/api/v1/finance/cost-exports` | `finance/FinanceCostExportController.java` |
 | 千易公司配置 / 店铺 / 退货 | `/api/v1/finance/qianyi`、`/api/v1/finance/shops/{shop}/qianyi`、`/api/v1/finance/qianyi/returns` | `finance/FinanceQianyi*Controller.java` |
 | 知识库及附件 | `/api/v1/knowledge`、`/api/v1/knowledge/files` | `knowledge/KnowledgeController.java`、`KnowledgeFileController.java` |
 | 自动化助手 | `/api/v1/automation-agent` 等 | `automation/web/` |
@@ -85,6 +86,14 @@ GET /api/v1/finance/records?kind=ORDER&orderScope=ALL&start=2026-10-01&end=2026-
 `POST /api/v1/finance/fee-exports` 必须提供 `Idempotency-Key`，JSON 包含 `start`、`end`、`groupId`、`shopId`、`platform`、`currency`。任务固定提交时的筛选；`GET` 同路径列表、`GET /{id}` 查状态、`GET /{id}/download` 下载。
 
 这个导出始终按原币分工作表，不使用看板人民币汇率，不合并跨币种总额。任务与文件只在内存暂存，完成后 30 分钟过期，后端重启会清除。未知提交结果由用户显式使用原幂等键和请求核对，不自动重新 POST。参见[费用导出验收](../finance-fee-export-20261104.md)。
+
+## 成本后台分片导出
+
+`POST /api/v1/finance/cost-exports` 提供 `Idempotency-Key`，JSON 保留成本页的 `start/end/shopId/groupId/platform/currency/kind/recordId/costStatus/numbers`。同一个键不可换条件，未知提交结果使用原键核对，不自动重建任务。
+
+`GET` 同路径列出本人任务，`GET /{id}` 返回状态及进度，`GET /{id}/download` 重新鉴权后输出文件流。任务所有者使用真实公司+用户，数据查询仍用财务公司范围。状态为 `QUEUED/RUNNING/READY/FAILED`；文件名和 Content-Type 取实际结果，小文件为 XLSX、多份为 ZIP，不固定扩展名。失败不返回部分“成功”结果。
+
+任务只读固定快照，临时文件与进度不写账本或同步状态。结果保留 30 分钟，重启后不存在的任务明确提示重新生成。原同步 `/workspace/costs/orders/export` 接口保留其容量保护；页面大范围导出使用后台接口。单片、任务及临时存储上限见[成本说明](../business/finance/costs.md#全店待补齐与批量导出)。
 
 ## 接口变更时的最低核对
 

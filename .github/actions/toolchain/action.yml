@@ -74,7 +74,14 @@ runs:
       shell: bash
       run: |
         if ! command -v ffmpeg >/dev/null 2>&1; then
+          # Match the runtime Dockerfile: keep Ubuntu sources and signatures,
+          # using HTTPS for package metadata and packages on hosted runners.
+          for apt_source in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt /etc/apt/apt-security-mirrors.txt; do
+            if [ -f "$apt_source" ]; then sudo sed -i 's|http://|https://|g' "$apt_source"; fi
+          done
+          echo 'Refreshing Ubuntu package metadata for FFmpeg'
           sudo timeout 120s apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq
+          echo 'Installing FFmpeg'
           sudo timeout 180s apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y -qq ffmpeg
         fi
         ffmpeg -version >/dev/null
