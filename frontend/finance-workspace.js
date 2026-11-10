@@ -12,6 +12,8 @@
   let callbackNotice='';const callbackParams=new URLSearchParams(location.search);if(callbackParams.has('financeAuth')){callbackNotice=callbackParams.get('financeMessage')||(callbackParams.get('financeAuth')==='success'?'财务店铺已连接':'财务授权未完成');callbackParams.delete('financeAuth');callbackParams.delete('financeMessage');history.replaceState(null,'',location.pathname+(callbackParams.size?'?'+callbackParams:'')+location.hash);}
   let active=false,generation=0,mountedGeneration=0,view='overview',data=null,chartPromise,charts=[],observer,themeObserver,refreshTimer=null,clockTimer=null,page=1,selectedKind='ORDER',mountedView='',loadController=null,mountedSelection='';
   let activeLoadKey='',waitingTimer=null,shopMonthFilter='ALL',shopSearch='';
+  let costExportOwner='',costExportJobs=[],costExportTimer=null,costExportLoading=false,costExportSubmitting=false,costExportMessage='',costExportUncertain=null,costExportEpoch=0,costExportRevision=0,costExportDetails=null;
+  const costExportSelections=new Map(),costExportAutoAttempted=new Set();
   const calendarVersion='shop-calendar-v1',displayZone='Asia/Shanghai';
   const dateText=d=>Number.isFinite(d.getTime())?d.toISOString().slice(0,10):'';
   const today=()=>{const p=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:displayZone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).map(p=>[p.type,p.value]));return `${p.year}-${p.month}-${p.day}`;};
@@ -126,6 +128,121 @@
   }
   const json=(method,body)=>({method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   function notify(message,error=false){const n=root.querySelector('.fi-state');if(n){n.textContent=message;n.hidden=!message;n.classList.toggle('is-error',error);}}
+  const financeIdentity=()=>typeof currentUser!=='undefined'&&currentUser?.organizationId&&currentUser?.userId?JSON.stringify([currentUser.organizationId,currentUser.userId]):'';
+  const costExportPending=job=>['QUEUED','RUNNING'].includes(job.status);
+  const costExportStatuses={QUEUED:'排队中',RUNNING:'生成中',READY:'可下载',FAILED:'生成失败'};
+  function stopCostExportPolling(){clearTimeout(costExportTimer);costExportTimer=null;}
+  function resetCostExports(){
+    costExportEpoch++;costExportRevision=0;stopCostExportPolling();costExportOwner='';costExportJobs=[];costExportLoading=false;costExportSubmitting=false;costExportMessage='';costExportUncertain=null;costExportDetails=null;costExportSelections.clear();costExportAutoAttempted.clear();
+  }
+  function leaveCostExports(){costExportEpoch++;stopCostExportPolling();costExportLoading=false;costExportSubmitting=false;costExportDetails=null;}
+  function costExportSelection(selection={}){
+    return Object.fromEntries(['start','end','shopId','groupId','platform','currency','kind','recordId','costStatus','numbers'].map(key=>[key,selection[key]||'']));
+  }
+  function costExportCaption(selection={}){
+    const shop=(data?.shops||[]).find(item=>item.id===selection.shopId),group=(data?.groups||[]).find(item=>item.id===selection.groupId);
+    const scope=selection.shopId?(shop?.display_name||shop?.name||'所选店铺'):
+      selection.groupId==='UNGROUPED'?'未分组全部店铺':selection.groupId?(group?.name||'所选分组')+'全部店铺':'全部分组、全部店铺';
+    const source={SETTLED_ORDER:'已结算订单',BILL:'账单关联订单',SAMPLE_SETTLED:'样品订单',REFUND_SETTLED:'退款关联订单'}[selection.kind]||selection.kind||'订单成本';
+    const status=selection.costStatus==='PENDING'?'待补齐':selection.recordId?'所选记录 '+selection.recordId:'全部成本状态';
+    const numbers=selection.numbers?' · 指定订单号 '+selection.numbers:'';
+    return `${selection.start||'日期待确认'} 至 ${selection.end||'日期待确认'} · ${scope} · ${selection.platform||'全部平台'} · ${selection.currency||'全部原币'} · ${source} · ${status}${numbers}`;
+  }
+  function costExportFileLabel(job){
+    const filename=String(job.filename||''),zip=Number(job.parts)>1||/zip/i.test(job.contentType||'')||/\.zip$/i.test(filename);
+    return zip?'下载 ZIP':'下载 Excel';
+  }
+  function scheduleCostExportPolling(){
+    stopCostExportPolling();
+    if(costExportDetails?.open&&costExportDetails.isConnected&&costExportJobs.some(costExportPending))
+      costExportTimer=setTimeout(()=>refreshCostExports(),3000);
+  }
+  function renderCostExports(){
+    const details=costExportDetails;if(!details?.isConnected)return;
+    details.replaceChildren();
+    const activeJobs=costExportJobs.filter(costExportPending).length;
+    el('summary','导出任务'+(activeJobs?`（${activeJobs}）`:'')+' ▾',details,'fi-export-trigger');
+    const panel=el('section',null,details,'fi-export-panel');panel.setAttribute('aria-label','订单成本导出任务');panel.setAttribute('aria-live','polite');
+    const head=el('div',null,panel,'fi-export-panel-head');el('strong','订单成本导出',head);
+    const close=el('button','收起',head);close.type='button';close.onclick=()=>{details.open=false;stopCostExportPolling();};
+    if(costExportMessage)el('p',costExportMessage,panel,'fi-export-message');
+    if(costExportUncertain){
+      el('p','上次提交结果待确认：'+costExportCaption(costExportUncertain.body),panel,'fi-export-scope');
+      const confirm=el('button','确认上次任务',panel);confirm.type='button';confirm.disabled=costExportSubmitting;confirm.onclick=()=>submitCostExport(costExportUncertain);
+    }
+    const refresh=el('button',costExportLoading?'读取中…':'刷新任务状态',panel,'fi-export-refresh');refresh.type='button';refresh.disabled=costExportLoading;refresh.onclick=()=>refreshCostExports();
+    if(!costExportJobs.length)el('p',costExportLoading?'正在读取任务…':'暂无导出任务',panel,'fi-muted');
+    for(const job of costExportJobs){
+      const selection=costExportSelections.get(job.id)||job,row=el('article',null,panel,'fi-export-job');row.dataset.updateKey=job.id;
+      el('strong',job.filename||'订单成本导出',row);el('small',costExportCaption(selection),row);
+      el('span',costExportStatuses[job.status]||'状态待确认',row,'fi-export-status '+String(job.status||'').toLowerCase());
+      if(costExportPending(job)){
+        const processed=Number(job.processed||0),total=Number(job.total||0),progress=total?`${number(processed)} / ${number(total)}`:`已处理 ${number(processed)}`;
+        el('p',progress+(job.orders?` · ${number(job.orders)} 笔订单`:''),row,'fi-export-message');
+      }
+      if(job.status==='FAILED')el('p',job.error||'生成失败，请重新提交',row,'fi-export-message');
+      if(job.status==='READY'){
+        const meta=[];if(job.orders!=null)meta.push(number(job.orders)+' 笔订单');if(job.lines!=null)meta.push(number(job.lines)+' 条 SKU');if(Number(job.parts)>1)meta.push(number(job.parts)+' 份文件');
+        if(meta.length)el('p',meta.join(' · '),row,'fi-muted');
+        const link=el('a',costExportFileLabel(job),row);link.href='/api/v1/finance/cost-exports/'+encodeURIComponent(job.id)+'/download';link.download=job.filename||'';
+        link.onclick=event=>{
+          if(!allowed()||financeIdentity()!==costExportOwner){event.preventDefault();costExportJobs=[];costExportMessage='登录信息已变化，请重新打开导出任务。';stopCostExportPolling();renderCostExports();return;}
+          costExportMessage='已请求浏览器保存；若未开始，请点击下载。';queueMicrotask(renderCostExports);
+        };
+      }
+    }
+    el('small','后台生成期间可继续操作。关闭面板不会取消任务；文件保留期内可重新打开下载。',panel,'fi-export-retention');
+  }
+  function mergeCostExportJobs(next,{autoReady=false,autoNewReady=false}={}){
+    const previous=new Map(costExportJobs.map(job=>[job.id,job.status]));costExportJobs=Array.isArray(next)?next:[];
+    renderCostExports();
+    if(autoReady&&financeIdentity()===costExportOwner){
+      for(const job of costExportJobs){
+        const oldStatus=previous.get(job.id);
+        if(job.status!=='READY'||costExportAutoAttempted.has(job.id)||(!costExportPending({status:oldStatus})&&!(autoNewReady&&oldStatus===undefined)))continue;
+        const link=[...(costExportDetails?.querySelectorAll('a[href]')||[])].find(node=>node.getAttribute('href')===`/api/v1/finance/cost-exports/${encodeURIComponent(job.id)}/download`);if(!link)continue;
+        costExportAutoAttempted.add(job.id);link.click();
+      }
+    }
+    scheduleCostExportPolling();
+  }
+  async function refreshCostExports(){
+    if(!costExportOwner||costExportLoading)return;
+    const identity=costExportOwner,run=costExportEpoch,revision=costExportRevision;costExportLoading=true;renderCostExports();
+    try{
+      const result=await request('/cost-exports');
+      if(run!==costExportEpoch||financeIdentity()!==identity)return;
+      if(revision!==costExportRevision){scheduleCostExportPolling();return;}
+      costExportMessage='';mergeCostExportJobs(result,{autoReady:true});
+    }catch(error){
+      if(run!==costExportEpoch||financeIdentity()!==identity)return;
+      stopCostExportPolling();costExportMessage='任务状态暂时无法读取，后台任务不会因此重建。可点刷新查看。';
+    }finally{if(run===costExportEpoch){costExportLoading=false;renderCostExports();}}
+  }
+  async function submitCostExport(saved){
+    if(costExportSubmitting)throw Error('上一个导出请求仍在确认中，请等待完成后再提交当前筛选。');
+    const identity=costExportOwner,run=costExportEpoch,body=saved?.body||costExportSelection(saved),key=saved?.key||crypto.randomUUID();
+    if(!identity||financeIdentity()!==identity)throw Error('登录信息已变化，请重新打开导出');
+    costExportSubmitting=true;costExportMessage='正在提交后台导出任务…';costExportDetails.open=true;renderCostExports();
+    try{
+      const job=await request('/cost-exports',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify(body)});
+      if(run!==costExportEpoch||financeIdentity()!==identity)throw Error('登录信息已变化，请重新打开导出');
+      costExportRevision++;costExportUncertain=null;costExportSelections.set(job.id,body);mergeCostExportJobs([job,...costExportJobs.filter(item=>item.id!==job.id)],{autoReady:true,autoNewReady:true});
+      costExportMessage=job.status==='READY'?'导出已完成，已请求浏览器保存；若未开始，请点击下载。':'任务已提交，后台生成期间可继续操作。';
+      renderCostExports();return job;
+    }catch(error){
+      if(run!==costExportEpoch||financeIdentity()!==identity)throw error;
+      costExportMessage=error.message||'导出提交未确认';
+      if(!error.status||Number(error.status)>=500){costExportUncertain={body,key};renderCostExports();return {status:'UNCERTAIN'};}
+      renderCostExports();throw error;
+    }finally{if(run===costExportEpoch){costExportSubmitting=false;renderCostExports();}}
+  }
+  function mountCostExports(parent){
+    const identity=financeIdentity();if(identity!==costExportOwner){resetCostExports();costExportOwner=identity;}
+    stopCostExportPolling();
+    const details=el('details',null,parent,'fi-export-menu');details.dataset.financeCostExports='';details.dataset.updateKey='finance-cost-exports';costExportDetails=details;
+    details.ontoggle=()=>{if(details.open)refreshCostExports();else stopCostExportPolling();};renderCostExports();return details;
+  }
   function loadingIndicator(parent){const n=el('span','正在加载所选数据…',parent,'fi-loading');n.hidden=true;n.setAttribute('role','status');n.setAttribute('aria-live','polite');}
   function selectionKey(){return JSON.stringify([view,filters.start,filters.end,filters.shopId,filters.groupId,filters.platform,filters.currency,filters.displayCurrency,filters.granularity,page,selectedKind,orderScope,detailNumbers()]);}
   function markPending(){
@@ -148,8 +265,8 @@
   function setLoading(busy){root.setAttribute('aria-busy',String(busy));const n=root.querySelector('.fi-loading');if(n){n.hidden=!busy;n.textContent=view==='shops'?'正在读取店铺同步进度…':view==='live'?'正在读取最新经营数据…':'正在加载所选店铺和日期…';n.title=filters.start+' 至 '+filters.end;}}
   function navigate(route){location.hash='finance-'+route;}
   function cleanup(){qianyiCleanup?.();qianyiCleanup=null;mountedSelection='';root.classList.remove('fi-selection-pending');clearInterval(clockTimer);clockTimer=null;charts.forEach(c=>c.dispose());charts=[];observer?.disconnect();themeObserver?.disconnect();observer=themeObserver=null;mountedView='';}
-  function reset(){shopMonthFilter='ALL';shopSearch='';qianyiSelection={};orderScope='ALL';active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();globalThis.FinanceFeeExports?.reset();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();numberQueries={};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
-  function leave(){active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();}
+  function reset(){shopMonthFilter='ALL';shopSearch='';qianyiSelection={};orderScope='ALL';active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();resetCostExports();globalThis.FinanceFeeExports?.reset();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();numberQueries={};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
+  function leave(){active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();leaveCostExports();}
   function refreshWhenIdle(){
     if(!active)return;
     if(document.hidden||document.querySelector('.fi-dialog[open]')){refreshTimer=setTimeout(refreshWhenIdle,15000);return;}
@@ -1194,16 +1311,9 @@
   }
   async function downloadOrderCosts(selection){
     if(!allowed())throw Error('没有财务 BI 查看权限');
-    const owner=typeof currentUser!=='undefined'?currentUser?.organizationId:null;
-    const response=await fetch('/api/v1/finance/workspace/costs/orders/export?'+new URLSearchParams(selection),{
-      credentials:'same-origin',cache:'no-store',signal:AbortSignal.timeout(180000)
-    });
-    if(!response.ok){let message='成本导出失败，请重试';try{message=(await response.json()).message||message;}catch{}throw Error(message);}
-    const blob=await response.blob();
-    if(!allowed()||(typeof currentUser!=='undefined'?currentUser?.organizationId:null)!==owner)throw Error('登录公司已变化，请重新导出');
-    const url=URL.createObjectURL(blob),a=el('a',null,document.body);
-    a.href=url;a.download=`${selection.costStatus==='PENDING'&&!selection.shopId?'所有店铺待补齐订单成本':'已结算订单成本'}-${selection.start}-${selection.end}.xlsx`;a.click();a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url),10000);
+    const identity=financeIdentity();
+    if(!identity||identity!==costExportOwner)throw Error('登录信息已变化，请重新打开导出');
+    return submitCostExport(costExportSelection(selection));
   }
   function importDialog(){
     const d=dialog('导入平台账单 / 费用');
@@ -1378,7 +1488,7 @@
       }
       if(view==='costs'){
         const host=root.querySelector('[data-finance-costs]');
-        if(globalThis.FinanceCosts)FinanceCosts.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),preview:data.costs,dates:{start:filters.start,end:filters.end},onDatesChange:dates=>{filters.start=dates.start;filters.end=dates.end;filters.granularity=dateGranularity(dates.start,dates.end);pinnedDates=true;rememberFilters();},openRecord:detailDialog,skuCell,dateTimeCell,numberSearch,downloadOrderCosts,isActive:()=>active&&view==='costs',request:(path,options)=>request('/workspace'+path,options)});
+        if(globalThis.FinanceCosts)FinanceCosts.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),preview:data.costs,dates:{start:filters.start,end:filters.end},onDatesChange:dates=>{filters.start=dates.start;filters.end=dates.end;filters.granularity=dateGranularity(dates.start,dates.end);pinnedDates=true;rememberFilters();},openRecord:detailDialog,skuCell,dateTimeCell,numberSearch,downloadOrderCosts,mountOrderCostExports:mountCostExports,isActive:()=>active&&view==='costs',request:(path,options)=>request('/workspace'+path,options)});
         else el('p','成本管理页面组件暂未加载，请刷新重试。',host,'fi-muted');
       }
       if(view==='expense-ledger'){
@@ -1403,6 +1513,7 @@
   globalThis.FinanceWorkspace={allowed,canManage,enter(route){
     if(!allowed())return;restoreFilters();const wasLive=view==='live';
     view=route==='fees'?'fee-records':routes[route]?route:'overview';
+    if(view!=='costs')leaveCostExports();
     if(route==='fees')selectedKind='FEE';
     if(['fee-records','expense-ledger'].includes(view))document.querySelector('[data-finance-route="fees"]')?.classList.add('active');
     if(view==='live'&&(!wasLive||!reportFilters)){
