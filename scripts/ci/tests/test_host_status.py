@@ -33,6 +33,18 @@ class HostStatusTest(unittest.TestCase):
         self.assertNotIn('operationsInputs', value)
         self.assertNotIn('observedAt', value)
 
+    def test_null_fingerprints_are_unknown_while_valid_status_survives(self):
+        remote = Mock()
+        remote.call.return_value = {'protocol':1,'version':'v1.0.0','maintenance':False,'operations':[],
+            'observedAt':123,'sourceCommit':'a'*40,'controlPlaneRevision':None,
+            'operationsInputs':None,'migrationInputs':None,'schemaFingerprint':None,'releaseSchemas':[1,2]}
+        value=snapshot(remote)
+        self.assertEqual('a'*40,value['sourceCommit']);self.assertEqual(123,value['observedAt'])
+        for key in ('controlPlaneRevision','operationsInputs','migrationInputs','schemaFingerprint'):
+            self.assertNotIn(key,value)
+        remote.call.return_value['operationsInputs']='invalid'
+        with self.assertRaises(ValueError):snapshot(remote)
+
     def test_malformed_status_is_rejected(self):
         for value in ({}, {'protocol': 1, 'version': 'v1.0.0',
                           'maintenance': 'false', 'operations': []}):

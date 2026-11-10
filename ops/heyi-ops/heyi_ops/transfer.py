@@ -7,12 +7,14 @@ import os
 import re
 import subprocess
 import selectors
+import stat
 import time
 import tarfile
 import tempfile
 from pathlib import Path
 from . import oci
 
+CONTENT_CONFIG=Path("/etc/heyi-ops/containerd-content.json")
 TTL_SECONDS = 1800
 PLAN_ID = re.compile(r'[a-f0-9]{32}\Z')
 
@@ -113,11 +115,43 @@ def reconstruct(image,root,descriptors,open_blob,path):
 
 
 def temporary_peak(target,descriptors):
-    # Uploaded/cached blobs, complete tar copies, daemon import and source extraction
-    # can coexist. Do not discount this by the number of cached layers.
+    # Retained staging/cache content and new daemon compressed content coexist
+    # with reconstruction/import. The archive allowance also covers the later
+    # verification copy after reconstruction archives have been removed.
     blob_bytes=sum(d['size'] for d in unique_descriptors(descriptors))
-    return (blob_bytes+sum(i['compressedBytes']+2*oci.MIB+i['unpackedBytes'] for i in target['images'].values())+
+    return (2*blob_bytes+sum(i['compressedBytes']+2*oci.MIB+i['unpackedBytes'] for i in target['images'].values())+
             2*target['sourceArchiveBytes']+target['sourceUnpackedBytes']+3*oci.MIB)
+
+
+def read_content_binding():
+    """Only independent root maintenance may assert the Docker/content binding."""
+    try:
+        fd=os.open(CONTENT_CONFIG,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        with os.fdopen(fd,'rb') as source:
+            info=os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022 or info.st_size>16384:
+                raise CacheUnavailable('Untrusted content binding ownership')
+            value=json.load(source)
+        if (not isinstance(value,dict) or set(value)!={'schemaVersion','address','namespace','dockerId','verifiedAt'} or
+            type(value['schemaVersion']) is not int or value['schemaVersion']!=1 or
+            not isinstance(value['address'],str) or not re.fullmatch(r'/[A-Za-z0-9_./-]+',value['address']) or '..' in Path(value['address']).parts or
+            not isinstance(value['namespace'],str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}',value['namespace']) or
+            not isinstance(value['dockerId'],str) or not re.fullmatch(r'[A-Za-z0-9:_-]{1,128}',value['dockerId']) or
+            type(value['verifiedAt']) is not int or not 0<value['verifiedAt']<=time.time()+300):
+            raise CacheUnavailable('Unverified content binding')
+        socket=Path(value['address']).lstat()
+        if not stat.S_ISSOCK(socket.st_mode) or socket.st_uid!=0:raise CacheUnavailable('Untrusted content socket')
+        return value
+    except (OSError,ValueError,TypeError,KeyError):raise CacheUnavailable('No verified Docker content binding') from None
+
+
+def content_command():
+    from .host import command
+    binding=read_content_binding()
+    try:engine=json.loads(command('docker','info','--format','{{json .ID}}',timeout=15))
+    except (OSError,ValueError,RuntimeError,subprocess.SubprocessError):raise CacheUnavailable('Docker identity unavailable') from None
+    if engine!=binding['dockerId']:raise CacheUnavailable('Docker identity differs from verified content binding')
+    return ['ctr','--address',binding['address'],'--namespace',binding['namespace']]
 
 
 class ContainerdCache:
@@ -129,10 +163,11 @@ class ContainerdCache:
     def __enter__(self):
         from .host import command
         try:
+            self.command=content_command()
             driver=json.loads(command('docker','info','--format','{{json .DriverStatus}}',timeout=15))
             if not any(row==['driver-type','io.containerd.snapshotter.v1'] for row in (driver or [])):
                 raise CacheUnavailable('Classic image store requires full transfer')
-            command('ctr','-n','moby','content','ls','-q','digest=='+next(iter(self.sizes),'sha256:'+'0'*64),timeout=15)
+            command(*self.command,'content','ls','-q','digest=='+next(iter(self.sizes),'sha256:'+'0'*64),timeout=15)
         except (RuntimeError,OSError,ValueError,subprocess.SubprocessError):
             self.temporary.cleanup();raise CacheUnavailable('Container content API unavailable') from None
         return self
@@ -142,10 +177,10 @@ class ContainerdCache:
         if value not in self.sizes:raise ValueError('Digest is not in verified graph')
         path=self.root/value[7:]
         if path.exists():return path.open('rb')
-        present=command('ctr','-n','moby','content','ls','-q','digest=='+value,timeout=15).decode().splitlines()
+        present=command(*self.command,'content','ls','-q','digest=='+value,timeout=15).decode().splitlines()
         if value not in present:return None
         with path.open('xb') as output:
-            result=subprocess.Popen(['ctr','-n','moby','content','get',value],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+            result=subprocess.Popen([*self.command,'content','get',value],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
             deadline=time.monotonic()+180;count=0
             try:
                 with selectors.DefaultSelector() as selector:
@@ -164,7 +199,7 @@ class ContainerdCache:
         if result.returncode:
             path.unlink(missing_ok=True)
             # A content GC between list and read is a miss; other failures fail closed.
-            present=command('ctr','-n','moby','content','ls','-q','digest=='+value,timeout=15).decode().splitlines()
+            present=command(*self.command,'content','ls','-q','digest=='+value,timeout=15).decode().splitlines()
             if value not in present:return None
             raise CacheIntegrityError('Cached content could not be read')
         return path.open('rb')

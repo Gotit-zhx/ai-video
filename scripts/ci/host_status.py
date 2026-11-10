@@ -26,7 +26,7 @@ def snapshot(remote):
         result['operations'].append({key: operation[key] for key in ('id', 'phase')})
     for key in ('sourceCommit', 'controlPlaneRevision', 'operationsInputs',
                 'migrationInputs', 'schemaFingerprint'):
-        if key not in value:
+        if value.get(key) is None:
             continue
         length = 40 if key.endswith('Commit') or key == 'controlPlaneRevision' else 64
         if not re.fullmatch(r'[a-f0-9]{' + str(length) + '}', str(value[key])):

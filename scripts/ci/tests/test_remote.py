@@ -99,7 +99,7 @@ class DeltaNegotiation(unittest.TestCase):
             source_path=root/'source.tar.gz';source_path.write_bytes(source)
             @contextlib.contextmanager
             def assets(*args,**kwargs):yield {'release.json':manifest,'source.tar.gz':source_path}
-            def download(image,descriptors,folder,token):
+            def download(image,descriptors,folder,token,**kwargs):
                 downloaded.extend(descriptors)
                 for d in descriptors:(folder/d['digest'][7:]).write_bytes(contents[d['digest']])
             class Peer:
@@ -121,3 +121,16 @@ class DeltaNegotiation(unittest.TestCase):
             finally:os.chdir(previous)
         self.assertTrue(result['prepared']);self.assertEqual(['stage-plan','stage'],calls)
         self.assertEqual([{'digest':layer,'size':10240}],downloaded)
+
+class ReceiveTiming(unittest.TestCase):
+    def test_server_receive_event_survives_response_and_timing_artifact(self):
+        import tempfile
+        from remote import write_timings
+        remote=Remote();remote.key=Path('/test/key');remote.hosts=Path('/test/hosts');remote.destination='heyi-deploy@example.test'
+        value={'prepared':True,'serverReceiveCompletedAtMs':1234,'timings':{'schemaVersion':1,'phases':[]}}
+        with patch('remote.subprocess.run',return_value=SimpleNamespace(returncode=0,stdout=json.dumps(value).encode())):
+            remote.call('stage','v1.0.0',payload={'pullToken':'synthetic'})
+        with tempfile.TemporaryDirectory() as temp:
+            result=json.loads(write_timings(remote,Path(temp)).read_text())
+        self.assertEqual(1234,result['server'][0]['serverReceiveCompletedAtMs'])
+        self.assertNotIn('synthetic',json.dumps(result))

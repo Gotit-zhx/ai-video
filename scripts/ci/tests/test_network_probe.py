@@ -14,6 +14,7 @@ class ProbeTest(unittest.TestCase):
         self.assertEqual('sample_incomplete', classify_sample(28, True, True, 858643))
         self.assertEqual('connect_timeout', classify_sample(28, False, False, 0))
         self.assertEqual('tls_failed', classify_sample(35, True, False, 0))
+        self.assertEqual('tls_failed', classify_sample(28, True, False, 0))
 
     def test_only_fixed_public_https_endpoints_are_allowed(self):
         for url in ['http://ghcr.io/v2/', 'https://evil.example/',

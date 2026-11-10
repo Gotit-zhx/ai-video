@@ -47,7 +47,7 @@ def process_identity(pid):
 
 
 class Artifacts:
-    def __init__(self, root): self.root=Path(root);self.timings=TimingRecorder()
+    def __init__(self, root): self.root=Path(root);self.timings=TimingRecorder();self.receive_completed_at=None
 
     @staticmethod
     def receive_assets(folder, stream, sizes, advertised, trailing=False):
@@ -168,6 +168,7 @@ class Artifacts:
                         "--pattern","release.json","--pattern","source.tar.gz","--dir",str(folder),env=env,timeout=180)
             else:
                 self.receive_assets(folder,upload[0],upload[1],advertised,trailing=bool(upload[2]))
+                if not upload[2]:self.receive_completed_at=int(time.time()*1000)
             timing.add_bytes(sum(advertised[name] for name in ('release.json','source.tar.gz')))
         with self.timings.measure('sourceAndProofVerify'):
             manifest=folder/"release.json"
@@ -215,7 +216,8 @@ class Artifacts:
             if any(size>target['images'][name]['compressedBytes']+2*1024**2 for name,size in archives.items()):
                 raise ValueError('Image transfer exceeds attested size budget')
             budget=sum(i["compressedBytes"]+i["unpackedBytes"] for name,i in target["images"].items() if name not in cached)
-            budget+=sum(archives.values())+2*target["sourceArchiveBytes"]+target["sourceUnpackedBytes"]
+            budget+=2*sum(archives.values())+2*target["sourceArchiveBytes"]+target["sourceUnpackedBytes"]
+            # Input archives remain while daemon content is copied for verification.
             require_space(self.root, budget)
             archive_graphs={}
             for name in sorted(archives):
@@ -230,7 +232,9 @@ class Artifacts:
                 from .oci import validate_archive
                 with self.timings.measure('ociVerify'):
                     archive_graphs[name]=validate_archive(folder/(name+'.oci.tar'),target['images'][name])
-            if archives and upload[0].read(1):raise ValueError('Unexpected trailing OCI data')
+            if archives:
+                if upload[0].read(1):raise ValueError('Unexpected trailing OCI data')
+                self.receive_completed_at=int(time.time()*1000)
             for name,image in target["images"].items():
                 ref=image["repository"]+"@"+image["manifestDigest"]
                 with self.timings.measure('imageLoad'):
@@ -256,7 +260,7 @@ class Artifacts:
     def plan_response(self,plan,missing):
         return {'protocol':2,'planId':plan['planId'],'version':plan['version'],'manifestSha256':plan['manifestSha256'],
                 'transferMode':'delta','missingBlobs':missing,'uploadBytes':sum(d['size'] for d in missing),
-                'temporaryPeakBytes':plan['temporaryPeakBytes'],'cachedBlobBytes':plan.get('cachedBlobBytes',0),'logicalBlobBytes':sum(d['size'] for d in plan['descriptors']),'timings':self.timings.snapshot(),'expiresInSeconds':max(0,plan['expiresAt']-int(time.time()))}
+                'temporaryPeakBytes':plan['temporaryPeakBytes'],'cachedBlobBytes':plan.get('cachedBlobBytes',0),'logicalBlobBytes':sum(d['size'] for d in plan['descriptors']),'timings':self.timings.snapshot(),'serverReceiveCompletedAtMs':self.receive_completed_at,'expiresInSeconds':max(0,plan['expiresAt']-int(time.time()))}
 
     def prepare_plan(self,version,plan_id,token,stream,sizes,metadata_sizes):
         from .transfer import validate_metadata,unique_descriptors,plan_missing,temporary_peak,ContainerdCache,CacheUnavailable,CacheIntegrityError,TTL_SECONDS
@@ -274,6 +278,7 @@ class Artifacts:
                     root,items,metadata=validate_metadata(target['images'][name],json.loads(data))
                 graphs[name]={'root':root,'descriptors':items};descriptors.extend(items);raw.update(metadata)
             if stream.read(1):raise ValueError('Unexpected metadata trailing data')
+            self.receive_completed_at=int(time.time()*1000)
             descriptors=unique_descriptors(descriptors);peak=temporary_peak(target,descriptors)
             require_space(self.root,peak)
             prior=read(folder/'plan.json')
@@ -298,7 +303,7 @@ class Artifacts:
             if prior and prior.get('completed') and not missing:
                 self.load(version)
                 for image in target['images'].values():self.verify_import(image)
-                return {**self.plan_response(prior,[]),'prepared':True,'timings':self.timings.snapshot()}
+                return {**self.plan_response(prior,[]),'prepared':True,'timings':self.timings.snapshot(),'serverReceiveCompletedAtMs':self.receive_completed_at}
             plan={**proof,'owner':'heyi-ops.transfer','planId':plan_id,'version':version,'baseline':baseline,
                   'createdAt':int(time.time()),'expiresAt':prior['expiresAt'] if prior else int(time.time())+TTL_SECONDS,
                   'pid':os.getpid(),'processStart':process_identity(os.getpid()),'graphs':graphs,'descriptors':descriptors,'cachedBlobBytes':max(0,sum(d['size'] for d in descriptors)-sum(d['size'] for d in missing)-sum(len(v) for v in raw.values())),'temporaryPeakBytes':peak,'missingBlobs':missing,'completed':False}
@@ -323,7 +328,7 @@ class Artifacts:
             if payload['blobs'] or stream.read(1):raise ValueError('Completed plan does not accept content')
             self.load(version)
             for image in target['images'].values():self.verify_import(image)
-            return {'protocol':2,'version':version,'planId':plan['planId'],'prepared':True,'timings':self.timings.snapshot()}
+            return {'protocol':2,'version':version,'planId':plan['planId'],'prepared':True,'timings':self.timings.snapshot(),'serverReceiveCompletedAtMs':self.receive_completed_at}
         if file_sha(folder/'source.tar.gz')!=target['sourceArchiveSha256']:raise ValueError('Transfer source changed')
         plan.update(pid=os.getpid(),processStart=process_identity(os.getpid()));atomic(folder/'plan.json',plan)
         require_space(self.root,plan['temporaryPeakBytes'])
@@ -339,6 +344,7 @@ class Artifacts:
                     return replan('MissingSetChanged',missing)
                 with self.timings.measure('serverReceive') as timing:
                     receive_blobs(folder/'blobs',stream,payload['blobs'],missing);timing.add_bytes(sum(d['size'] for d in missing))
+                    self.receive_completed_at=int(time.time()*1000)
                 missing=plan_missing(plan['descriptors'],cached)
                 if missing:return replan('CachedBlobEvicted',missing)
                 if plan['expiresAt']<=int(time.time()) or plan['baseline']!=read(self.root/'active.json') or plan['productionCommit']!=production_head():
@@ -357,7 +363,7 @@ class Artifacts:
             plan['completed']=True;plan['missingBlobs']=[];atomic(folder/'plan.json',plan)
             # Retain only tiny immutable proof; copied source/OCI blobs have served their purpose.
             shutil.rmtree(folder/'blobs');(folder/'source.tar.gz').unlink()
-            return {'protocol':2,'version':version,'planId':plan['planId'],'prepared':True,'timings':self.timings.snapshot()}
+            return {'protocol':2,'version':version,'planId':plan['planId'],'prepared':True,'timings':self.timings.snapshot(),'serverReceiveCompletedAtMs':self.receive_completed_at}
         except CacheIntegrityError:
             return {'protocol':2,'planId':plan['planId'],'phase':'needs_repair','reason':'CachedBlobIntegrity'}
         except CacheUnavailable:return replan('ContentAPIUnavailable')

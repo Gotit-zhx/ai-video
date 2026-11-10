@@ -95,7 +95,8 @@ class Remote:
         value=json.loads(result.stdout)
         if isinstance(value,dict) and isinstance(value.get("timings"),dict):
             if not hasattr(self,"server_timings"):self.server_timings=[]
-            self.server_timings.append({"command":args[0],"timings":value["timings"]})
+            self.server_timings.append({"command":args[0],"timings":value["timings"],
+                "serverReceiveCompletedAtMs":value.get("serverReceiveCompletedAtMs")})
         if result.returncode and not (args[0]=='receipt' and isinstance(value,dict) and value.get('phase') in {'aborted','rolled_back','recovered','needs_attention'}):
             error=value.get('error','Unknown') if isinstance(value,dict) else 'Unknown'
             if not re.fullmatch(r'[A-Za-z]{1,60}',error):error='Unknown'
@@ -140,8 +141,7 @@ def _full_assets(value,remote,assets,root,force=False):
         folder=root/component;folder.mkdir(exist_ok=True)
         path=folder/'image.tar'
         if not path.exists():
-            with remote.timings.measure('ociExport') as timing:
-                export_archive(image,path,os.environ['GH_TOKEN']);timing.add_bytes(path.stat().st_size)
+            export_archive(image,path,os.environ['GH_TOKEN'],timings=remote.timings)
         assets[component+'.oci.tar']=path
 
 
@@ -166,8 +166,7 @@ def stage_candidate(version,remote,plan_id=None,capabilities=None):
         if not delta_enabled() or 2 not in protocols:return full()
         graphs={};descriptor_map={};metadata_paths={}
         for component,image in value['images'].items():
-            with remote.timings.measure('registryResolve'):
-                metadata=export_metadata(image,os.environ['GH_TOKEN'])
+            metadata=export_metadata(image,os.environ['GH_TOKEN'],timings=remote.timings)
             _,descriptors,_=validate_metadata(image,metadata);graphs[component]=descriptors
             for d in descriptors:descriptor_map[d['digest']]=d
             path=root/(component+'.metadata.json');path.write_text(json.dumps(metadata,separators=(',',':')))
@@ -190,8 +189,7 @@ def stage_candidate(version,remote,plan_id=None,capabilities=None):
             for component,image in value['images'].items():
                 wanted=[d for d in missing if d in graphs[component] and not (blob_folder/d['digest'][7:]).exists()]
                 if wanted:
-                    with remote.timings.measure('registryDownload') as timing:
-                        export_blobs(image,wanted,blob_folder,os.environ['GH_TOKEN']);timing.add_bytes(sum(d['size'] for d in wanted))
+                    export_blobs(image,wanted,blob_folder,os.environ['GH_TOKEN'],timings=remote.timings)
             result=remote.call('stage',version,payload={'protocol':2,'planId':plan_id,'blobs':missing},
                 blobs={d['digest']:blob_folder/d['digest'][7:] for d in missing})
             if result.get('prepared'):return result

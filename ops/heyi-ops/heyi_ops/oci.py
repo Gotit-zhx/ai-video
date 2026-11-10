@@ -1,5 +1,13 @@
 """Transport original registry blobs without rebuilding their signed manifests."""
 import base64
+import contextlib
+import http.client
+import signal
+import ssl
+import subprocess
+import threading
+import time
+import urllib.error
 import hashlib
 import io
 import json
@@ -8,8 +16,12 @@ import tarfile
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from .timing import TimingRecorder
 
 MIB=1024**2
+ATTEMPT_SECONDS=120
+FILE_SECONDS=300
+MAX_ATTEMPTS=3
 DIGEST=re.compile(r'sha256:[a-f0-9]{64}\Z')
 MANIFESTS={'application/vnd.oci.image.manifest.v1+json','application/vnd.docker.distribution.manifest.v2+json'}
 INDEXES={'application/vnd.oci.image.index.v1+json','application/vnd.docker.distribution.manifest.list.v2+json'}
@@ -59,41 +71,32 @@ class RegistryRedirect(urllib.request.HTTPRedirectHandler):
         return request
 
 
-def export_archive(image,path,token):
-    """Runner only: registry auth stays in memory and is absent from the archive."""
-    repository=image['repository']
-    if repository not in {'ghcr.io/gotit-zhx/ai-video/app','ghcr.io/gotit-zhx/ai-video/frontend'}:
-        raise ValueError('Unexpected registry repository')
-    name=repository.removeprefix('ghcr.io/');opener=urllib.request.build_opener(RegistryRedirect())
-    url='https://ghcr.io/token?'+urllib.parse.urlencode({'service':'ghcr.io','scope':'repository:'+name+':pull'})
-    credentials=base64.b64encode(('Gotit-zhx:'+token).encode()).decode()
-    with opener.open(urllib.request.Request(url,headers={'Authorization':'Basic '+credentials}),timeout=30) as response:
-        bearer=json.loads(response.read(MIB))['token']
-    blobs={};root=Path(path).parent/'blobs';root.mkdir()
+def export_archive(image,path,token,timings=None):
+    """Full and delta use the same bounded registry reader and unchanged blobs."""
+    registry=Registry(image,token,timings=timings);blobs={}
+    root=Path(path).parent/'blobs';root.mkdir()
     def fetch(value,size,manifest,metadata):
         if value in blobs:
             file=blobs[value]
             if size is not None and file.stat().st_size!=size:raise ValueError('Conflicting OCI descriptor')
             return file.read_bytes() if metadata else None
-        maximum=MIB if metadata else image['compressedBytes']
-        if size is not None and size>maximum:raise ValueError('OCI descriptor exceeds budget')
-        request=urllib.request.Request('https://ghcr.io/v2/'+name+('/manifests/' if manifest else '/blobs/')+value,
-            headers={'Authorization':'Bearer '+bearer,'Accept':','.join(sorted(MANIFESTS|INDEXES))})
-        file=root/value.split(':')[1];hashed=hashlib.sha256();count=0
-        with opener.open(request,timeout=60) as response,file.open('xb') as output:
-            while block:=response.read(MIB):
-                count+=len(block)
-                if count>maximum or (size is not None and count>size):raise ValueError('Registry blob exceeded size')
-                hashed.update(block);output.write(block)
-        if (size is not None and count!=size) or 'sha256:'+hashed.hexdigest()!=value:raise ValueError('Registry blob verification failed')
+        file=root/value[7:];temporary=file.with_suffix('.part');created=False
+        try:
+            with temporary.open('xb') as output:
+                created=True;registry.download(value,size,output,manifest,metadata)
+            temporary.replace(file)
+        finally:
+            if created:temporary.unlink(missing_ok=True)
         blobs[value]=file
         return file.read_bytes() if metadata else None
     descriptor,_=graph(image,fetch)
-    with tarfile.open(path,'w') as tar:
-        for name,value in {'oci-layout':{'imageLayoutVersion':'1.0.0'},'index.json':index_for(image,descriptor)}.items():
-            data=json.dumps(value,separators=(',',':')).encode();entry=tarfile.TarInfo(name);entry.size=len(data);tar.addfile(entry,io.BytesIO(data))
-        for value,file in blobs.items():tar.add(file,arcname='blobs/sha256/'+value.split(':')[1],recursive=False)
-    if Path(path).stat().st_size>image['compressedBytes']+2*MIB:raise ValueError('OCI archive exceeds framing budget')
+    with registry.timings.measure('ociExport') as timing:
+        with tarfile.open(path,'w') as tar:
+            for name,value in {'oci-layout':{'imageLayoutVersion':'1.0.0'},'index.json':index_for(image,descriptor)}.items():
+                data=json.dumps(value,separators=(',',':')).encode();entry=tarfile.TarInfo(name);entry.size=len(data);tar.addfile(entry,io.BytesIO(data))
+            for value,file in blobs.items():tar.add(file,arcname='blobs/sha256/'+value[7:],recursive=False)
+        if Path(path).stat().st_size>image['compressedBytes']+2*MIB:raise ValueError('OCI archive exceeds framing budget')
+        timing.add_bytes(Path(path).stat().st_size)
 
 
 def validate_archive(path,image):
@@ -136,35 +139,85 @@ def validate_archive(path,image):
         return {'root':descriptor,'descriptors':descriptors}
 
 
+@contextlib.contextmanager
+def wall_deadline(seconds):
+    """Unix runner main-thread deadline, including DNS, TLS and trickling reads."""
+    if seconds<=0:raise TimeoutError('Download deadline exceeded')
+    if threading.current_thread() is not threading.main_thread() or not hasattr(signal,'setitimer'):
+        raise RuntimeError('Bounded downloads require the Unix main thread')
+    if signal.getitimer(signal.ITIMER_REAL)[0]:raise RuntimeError('An outer process deadline is already active')
+    previous=signal.getsignal(signal.SIGALRM)
+    def expired(*_):raise TimeoutError('Download deadline exceeded')
+    signal.signal(signal.SIGALRM,expired);signal.setitimer(signal.ITIMER_REAL,seconds)
+    try:yield
+    finally:signal.setitimer(signal.ITIMER_REAL,0);signal.signal(signal.SIGALRM,previous)
+
+
+def recoverable_download(error):
+    if isinstance(error,urllib.error.HTTPError):return error.code in {429,500,502,503,504}
+    if isinstance(error,urllib.error.URLError):return not isinstance(error.reason,(ssl.SSLError,ValueError))
+    return isinstance(error,(TimeoutError,ConnectionError,http.client.IncompleteRead))
+
+
+def download_file(opener,request,output,maximum,size=None,expected=None,timing=None):
+    """At most three recoverable attempts; one 300s budget and 120s per attempt."""
+    deadline=time.monotonic()+FILE_SECONDS;start=output.tell()
+    try:
+        for attempt in range(MAX_ATTEMPTS):
+            remaining=deadline-time.monotonic()
+            if remaining<=0:raise TimeoutError('Download file budget exhausted')
+            duration=min(ATTEMPT_SECONDS,remaining);attempt_end=time.monotonic()+duration
+            output.seek(start);output.truncate();hashed=hashlib.sha256();count=0
+            try:
+                with wall_deadline(duration):
+                    with opener.open(request,timeout=min(60,duration)) as response:
+                        while True:
+                            if time.monotonic()>=attempt_end:raise TimeoutError('Download attempt deadline exceeded')
+                            block=response.read(min(MIB,max(1,maximum+1-count)))
+                            if time.monotonic()>=attempt_end:raise TimeoutError('Download attempt deadline exceeded')
+                            if not block:break
+                            count+=len(block)
+                            if timing:timing.add_bytes(len(block))
+                            if count>maximum:raise ValueError('Registry blob exceeded size')
+                            hashed.update(block);output.write(block)
+                if (size is not None and count!=size) or (expected is not None and 'sha256:'+hashed.hexdigest()!=expected):
+                    raise ValueError('Registry blob verification failed')
+                return count
+            except Exception as error:
+                output.seek(start);output.truncate()
+                if not recoverable_download(error) or attempt+1==MAX_ATTEMPTS:raise
+        raise TimeoutError('Download attempts exhausted')
+    except BaseException:
+        output.seek(start);output.truncate();raise
+
+
 class Registry:
     """Bounded runner-side registry downloads; authorization never enters receipts."""
-    def __init__(self,image,token):
+    def __init__(self,image,token,timings=None):
         if image['repository'] not in {'ghcr.io/gotit-zhx/ai-video/app','ghcr.io/gotit-zhx/ai-video/frontend'}:
             raise ValueError('Unexpected registry repository')
-        self.image=image;self.name=image['repository'].removeprefix('ghcr.io/')
+        self.image=image;self.name=image['repository'].removeprefix('ghcr.io/');self.timings=timings or TimingRecorder()
         self.opener=urllib.request.build_opener(RegistryRedirect())
         url='https://ghcr.io/token?'+urllib.parse.urlencode({'service':'ghcr.io','scope':'repository:'+self.name+':pull'})
-        credentials=base64.b64encode(('Gotit-zhx:'+token).encode()).decode()
-        with self.opener.open(urllib.request.Request(url,headers={'Authorization':'Basic '+credentials}),timeout=30) as response:
-            self.bearer=json.loads(response.read(MIB))['token']
+        credentials=base64.b64encode(('Gotit-zhx:'+token).encode()).decode();output=io.BytesIO()
+        with self.timings.measure('registryResolve') as timing:
+            download_file(self.opener,urllib.request.Request(url,headers={'Authorization':'Basic '+credentials}),output,MIB,timing=timing)
+            self.bearer=json.loads(output.getvalue())['token']
     def download(self,value,size,output,manifest=False,metadata=False):
         if not DIGEST.fullmatch(value) or (size is not None and (type(size) is not int or size<0)):
             raise ValueError('Invalid OCI descriptor')
         maximum=MIB if metadata else self.image['compressedBytes']
-        if size is not None:maximum=min(maximum,size)
+        if size is not None:
+            if size>maximum:raise ValueError('OCI descriptor exceeds budget')
+            maximum=size
         request=urllib.request.Request('https://ghcr.io/v2/'+self.name+('/manifests/' if manifest else '/blobs/')+value,
             headers={'Authorization':'Bearer '+self.bearer,'Accept':','.join(sorted(MANIFESTS|INDEXES))})
-        count=0;hashed=hashlib.sha256()
-        with self.opener.open(request,timeout=60) as response:
-            while block:=response.read(min(MIB,max(1,maximum+1-count))):
-                count+=len(block)
-                if count>maximum:raise ValueError('Registry blob exceeded size')
-                hashed.update(block);output.write(block)
-        if (size is not None and count!=size) or 'sha256:'+hashed.hexdigest()!=value:raise ValueError('Registry blob verification failed')
+        with self.timings.measure('registryDownload') as timing:
+            download_file(self.opener,request,output,maximum,size,value,timing)
 
 
-def export_metadata(image,token):
-    registry=Registry(image,token);metadata={}
+def export_metadata(image,token,timings=None):
+    registry=Registry(image,token,timings=timings);metadata={}
     def fetch(value,size,manifest,is_metadata):
         if not is_metadata:return None
         if value not in metadata:
@@ -177,16 +230,60 @@ def export_metadata(image,token):
     return result
 
 
-def export_blobs(image,descriptors,folder,token):
-    registry=Registry(image,token);folder=Path(folder);folder.mkdir(mode=0o700,parents=True,exist_ok=True)
+def export_blobs(image,descriptors,folder,token,timings=None):
+    registry=Registry(image,token,timings=timings);folder=Path(folder);folder.mkdir(mode=0o700,parents=True,exist_ok=True)
     for item in descriptors:
         path=folder/item['digest'].split(':')[1]
         if path.exists():
             from .transfer import verified
             with path.open('rb') as cached:verified(cached,item)
             continue
-        temporary=path.with_suffix('.part')
+        temporary=path.with_suffix('.part');created=False
         try:
-            with temporary.open('xb') as output:registry.download(item['digest'],item['size'],output)
+            with temporary.open('xb') as output:
+                created=True;registry.download(item['digest'],item['size'],output)
             temporary.replace(path)
-        finally:temporary.unlink(missing_ok=True)
+        finally:
+            if created:temporary.unlink(missing_ok=True)
+
+
+def saved_metadata(image_id,maximum):
+    """Read an immutable Docker image-save stream without files or container exports."""
+    if not isinstance(image_id,str) or not DIGEST.fullmatch(image_id) or type(maximum) is not int or maximum<0:
+        raise ValueError('Invalid immutable Docker save bounds')
+    process=subprocess.Popen(['docker','image','save',image_id],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+    class Limited:
+        count=0
+        def read(self,size=-1):
+            size=MIB if size<0 else size
+            block=process.stdout.read(min(size,max(1,maximum+1-self.count)))
+            self.count+=len(block)
+            if self.count>maximum:raise ValueError('Docker save exceeded image size budget')
+            return block
+    source=Limited();result={};retained=0;members=0
+    try:
+        with wall_deadline(180):
+            with tarfile.open(fileobj=source,mode='r|') as archive:
+                for member in archive:
+                    members+=1
+                    if members>512 or member.size<0 or member.size>maximum:raise ValueError('Docker save member exceeds budget')
+                    if member.isdir():continue
+                    if not member.isfile() or member.name.startswith('/') or '..' in Path(member.name).parts:
+                        raise ValueError('Unsafe Docker save member')
+                    if member.size>MIB:continue
+                    raw=archive.extractfile(member).read(MIB+1)
+                    try:value=json.loads(raw)
+                    except (ValueError,UnicodeError):continue
+                    if not isinstance(value,dict):continue
+                    if value.get('mediaType') not in MANIFESTS|INDEXES and not {'architecture','os','rootfs'}<=set(value):continue
+                    identity=digest(raw)
+                    if identity in result:continue
+                    retained+=len(raw)
+                    if retained>4*MIB:raise ValueError('Docker save metadata exceeds budget')
+                    result[identity]=raw
+            while source.read(MIB):pass
+            if process.wait(timeout=1):raise RuntimeError('Docker image save failed')
+        return result
+    finally:
+        if process.poll() is None:process.kill();process.wait(timeout=5)
+        process.stdout.close()

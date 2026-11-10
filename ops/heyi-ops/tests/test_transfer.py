@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from heyi_ops import transfer, oci
+RealContentCache=transfer.ContainerdCache
 
 
 def descriptor(data):
@@ -126,7 +127,8 @@ class PlanLifecycleTest(unittest.TestCase):
         return self.artifacts.stage_delta('v1.0.0',payload,io.BytesIO(b''.join(self.blobs[d['digest']] for d in missing) if data is None else data))
     def test_trusted_plan_then_full_reconstruction_preserves_signed_images(self):
         plan=self.plan();self.assertEqual('delta',plan['transferMode']);self.assertEqual(10240,plan['uploadBytes'])
-        result=self.upload(plan);self.assertTrue(result['prepared']);self.assertEqual(self.target,self.artifacts.load('v1.0.0'))
+        self.assertIsInstance(plan['serverReceiveCompletedAtMs'],int)
+        result=self.upload(plan);self.assertIsInstance(result['serverReceiveCompletedAtMs'],int);self.assertTrue(result['prepared']);self.assertEqual(self.target,self.artifacts.load('v1.0.0'))
         self.assertNotIn('synthetic-secret',''.join(p.read_text() for p in self.root.rglob('*.json')))
         self.assertTrue(self.artifacts.stage_delta('v1.0.0',{'protocol':2,'planId':self.plan_id,'blobs':[]},io.BytesIO())['prepared'])
         self.assertTrue(self.plan()['prepared'])
@@ -158,6 +160,20 @@ class PlanLifecycleTest(unittest.TestCase):
         self.cache={next(d for d in self.blobs if d not in self.metadata):b'corrupt'}
         self.assertEqual('needs_repair',self.plan()['phase']);self.cache={}
         with patch('heyi_ops.transfer.ContainerdCache',side_effect=transfer.CacheUnavailable()):self.assertEqual('full',self.plan()['transferMode'])
+    def test_full_import_succeeds_with_no_proven_content_store(self):
+        from unittest.mock import patch
+        target=self.target;root,descriptors,_=transfer.validate_metadata(target['images']['app'],self.metadata)
+        archives={}
+        for name,image in target['images'].items():
+            path=self.root/(name+'.oci.tar');transfer.reconstruct(image,root,descriptors,lambda d:io.BytesIO(self.blobs[d]),path)
+            archives[name]=path.read_bytes()
+        content=self.frames[:sum(self.assets.values())]+b''.join(archives[name] for name in sorted(archives))
+        with patch('heyi_ops.transfer.ContainerdCache',RealContentCache),patch('heyi_ops.transfer.CONTENT_CONFIG',self.root/'absent-binding'),patch('heyi_ops.host.command') as unrelated:
+            unrelated.return_value=b'[]'
+            self.artifacts.prepare('v1.0.0','synthetic-secret',(io.BytesIO(content),self.assets,{n:len(v) for n,v in archives.items()}))
+            self.assertEqual([],unrelated.call_args_list)
+        self.assertEqual(self.target,self.artifacts.load('v1.0.0'))
+
     def test_full_import_does_not_publish_corrupt_daemon_content(self):
         self.corrupt_import=True
         target=self.target;root,descriptors,_=transfer.validate_metadata(target['images']['app'],self.metadata)
@@ -207,3 +223,35 @@ class TransferCleanupTest(unittest.TestCase):
                 removed=artifacts.cleanup_staging()
             self.assertIn('transfer-'+'a'*32,removed)
             for char in 'bcd':self.assertTrue((root/'staging'/('transfer-'+char*32)).exists())
+
+class BoundContentStoreTest(unittest.TestCase):
+    def test_unconfigured_store_never_queries_a_responding_unrelated_ctr(self):
+        from unittest.mock import patch
+        image,metadata,blobs=fixture()
+        with tempfile.TemporaryDirectory() as temp,patch('heyi_ops.transfer.CONTENT_CONFIG',Path(temp)/'absent.json'),patch('heyi_ops.host.command') as command:
+            command.return_value=b'[]'
+            with self.assertRaises(transfer.CacheUnavailable):
+                with transfer.ContainerdCache(temp,[{'digest':image['manifestDigest'],'size':len(blobs[image['manifestDigest']])}]):pass
+            self.assertEqual([],command.call_args_list)
+    def test_proven_binding_is_explicit_and_daemon_identity_must_match(self):
+        from unittest.mock import patch
+        binding={'schemaVersion':1,'address':'/run/docker/containerd/containerd.sock','namespace':'moby','dockerId':'engine-123','verifiedAt':1}
+        with patch('heyi_ops.transfer.read_content_binding',return_value=binding),patch('heyi_ops.host.command',return_value=b'"different-engine"'):
+            with self.assertRaises(transfer.CacheUnavailable):transfer.content_command()
+        with patch('heyi_ops.transfer.read_content_binding',return_value=binding),patch('heyi_ops.host.command',return_value=b'"engine-123"'):
+            self.assertEqual(['ctr','--address','/run/docker/containerd/containerd.sock','--namespace','moby'],transfer.content_command())
+
+    def test_binding_file_requires_root_ownership_and_a_real_local_socket(self):
+        import stat
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        value={'schemaVersion':1,'address':'/run/docker/containerd/containerd.sock','namespace':'moby','dockerId':'engine-123','verifiedAt':1}
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'binding.json';path.write_text(json.dumps(value));path.chmod(0o622)
+            with patch('heyi_ops.transfer.CONTENT_CONFIG',path):
+                with self.assertRaises(transfer.CacheUnavailable):transfer.read_content_binding()
+                for mode in (stat.S_IFREG|0o600,stat.S_IFREG|0o622):
+                    with patch('heyi_ops.transfer.os.fstat',return_value=SimpleNamespace(st_uid=0,st_mode=mode,st_size=path.stat().st_size)),patch('heyi_ops.transfer.Path.lstat',return_value=SimpleNamespace(st_uid=0,st_mode=stat.S_IFSOCK|0o600)):
+                        if mode&0o022:
+                            with self.assertRaises(transfer.CacheUnavailable):transfer.read_content_binding()
+                        else:self.assertEqual(value,transfer.read_content_binding())

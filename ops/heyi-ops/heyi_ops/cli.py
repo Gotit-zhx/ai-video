@@ -114,7 +114,7 @@ def dispatch(args, role="local"):
             with store.exclusive():
                 if store.incomplete() or host.marker.exists():raise RuntimeError("Recover maintenance before preparing another release")
                 target=artifacts.prepare(args[1],payload["pullToken"],upload=upload)
-            return {"version":target["version"],"prepared":True,"timings":artifacts.timings.snapshot()}
+            return {"version":target["version"],"prepared":True,"timings":artifacts.timings.snapshot(),"serverReceiveCompletedAtMs":artifacts.receive_completed_at}
         with store.exclusive(): host.preflight(artifacts.load(args[1]),store.active())
         return {"preflight":"passed","version":args[1]}
     if action=='adopt':

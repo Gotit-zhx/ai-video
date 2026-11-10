@@ -37,7 +37,8 @@ def validate_endpoint(endpoint):
 def classify_sample(exit_code, connected, tls_ok, received_bytes):
     if exit_code == 0: return 'none'
     if exit_code == 28:
-        return 'sample_incomplete' if connected and tls_ok else 'connect_timeout'
+        if not connected:return 'connect_timeout'
+        return 'sample_incomplete' if tls_ok else 'tls_failed'
     if exit_code in (35, 51, 58, 60): return 'tls_failed'
     return 'unresolved'
 
