@@ -1,0 +1,58 @@
+{
+  "date": "2026-11-10",
+  "status": "local-development-verified-not-deployed",
+  "branch": "feature/finance-ad-spend-workspace",
+  "baseCommit": "c2f25382470b04ebe23e34696f77f3a818b827c7",
+  "javaUnit": {
+    "tests": 108,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "isolatedDatabase": {
+    "classes": 1,
+    "tests": 4,
+    "allowedSkips": [],
+    "unexpectedSkips": 0,
+    "result": "passed",
+    "failures": []
+  },
+  "frontend": {
+    "tests": 735,
+    "uiSuites": 34,
+    "unexpectedSkips": 0,
+    "result": "passed",
+    "assetReferences": "passed"
+  },
+  "sourceWorkbook": {
+    "readOnlyProductionParserCheck": "passed",
+    "allFundingComponentsReconcile": "passed",
+    "originalFileModified": false,
+    "persistedInDatabase": false,
+    "committedToGit": false
+  },
+  "browser": {
+    "threePrimaryTables": "verified",
+    "allFundingFields": "verified",
+    "paginationPreservesSummary": "verified",
+    "previewCurrency": "native",
+    "sourceOwnership": "unassigned-until-confirmed",
+    "liveShopeeDataLoaded": false,
+    "localOnly": true
+  },
+  "review": {
+    "implementationBlockers": 0,
+    "reportedDefectsFixed": [
+      "optional-type-identity",
+      "inflight-detail-query",
+      "later-api-unknown-identity-overlap"
+    ],
+    "designRefinement": "Actual source account ID is required for imports; OAuth and exclusive shop binding are not required."
+  },
+  "production": {
+    "migrationApplied": false,
+    "deployed": false,
+    "realDataImported": false,
+    "controlsModified": false
+  }
+}
