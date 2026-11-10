@@ -416,7 +416,8 @@
       },'fi-primary');
     }
     async function orderCostsPanel(parent){
-      const origin=state.orderContext;
+      const origin=state.orderCostStatus==='PENDING'
+        ?{shopId:'',groupId:'',platform:'',currency:'',recordId:'',kind:'SETTLED_ORDER'}:state.orderContext;
       const settled=!origin?.recordId&&origin?.kind!=='PENDING';
       const p=panel(parent,origin?.kind==='SAMPLE_SETTLED'?'样品订单商品成本':origin?.kind==='REFUND_SETTLED'?'退货退款关联商品成本':settled?'已结算订单商品成本':'关联已结算订单成本',
         settled?'按结算归属日期筛选；下单日期仅供核对，同一订单成本只计一次。':'仅核对所选来源关联的已结算订单成本，未结算不计入。');
@@ -488,7 +489,7 @@
           },'fi-record-link');
         }
         const statusFilters=el('div',null,next,'fi-actions fc-order-status');statusFilters.setAttribute('aria-label','订单成本状态筛选');
-        for(const [value,title]of [['ALL','全部订单'],['PENDING',`待补齐（${format(totals.pending_count||0)}）`]]){
+        for(const [value,title]of [['ALL','全部订单'],['PENDING',state.orderCostStatus==='PENDING'?`所有店铺待补齐（${format(totals.pending_count||0)}）`:'所有店铺待补齐']]){
           const button=action(statusFilters,title,()=>{state.orderCostStatus=value;state.orderPage=1;body();},state.orderCostStatus===value?'fi-primary':'');
           button.setAttribute('aria-pressed',String(state.orderCostStatus===value));button.dataset.costStatus=value;
         }

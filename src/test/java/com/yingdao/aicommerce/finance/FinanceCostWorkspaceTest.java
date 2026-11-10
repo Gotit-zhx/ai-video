@@ -14,6 +14,21 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class FinanceCostWorkspaceTest {
+    @Test void costPreviewSuggestsTheCountryWarehouseAndKeepsExplicitSettings(){
+        var db=mock(org.springframework.jdbc.core.JdbcTemplate.class);
+        var repo=new FinanceRepository(db,new tools.jackson.databind.ObjectMapper());var service=mock(FinanceService.class);
+        var scope=companyScope("org");
+        when(service.shops(scope)).thenReturn(List.of(Map.of("id","shop","group_id","group","region","PH","platform","SHOPEE")));
+        when(service.shopScope(scope,"shop")).thenReturn(scope);
+        var book=Map.of("costs",List.of(Map.of("warehouse","菲律宾","sku","PACK"),Map.of("warehouse","泰国","sku","PACK")));
+        when(db.queryForList(startsWith("SELECT id,source_name,data_json,created_at"),eq("org"),eq("group")))
+            .thenReturn(List.of(Map.of("id","book","source_name","cost.csv","data_json",repo.write(book))));
+        var workspace=new FinanceCostWorkspace(repo,service);
+        assertEquals("菲律宾",workspace.costs(scope,"shop").get("suggestedWarehouse"));
+        when(db.queryForList(startsWith("SELECT data_json,version FROM finance_cost_settings"),eq("org"),eq("shop")))
+            .thenReturn(List.of(Map.of("data_json",repo.write(Map.of("warehouse","泰国")),"version",1)));
+        assertEquals("泰国",workspace.costs(scope,"shop").get("suggestedWarehouse"));
+    }
     @Test void skuFormattingKeepsBundleIdentityAndRejectsAmbiguousNormalizedCodes(){
         for(String code:List.of("(YUXI-BPants-XL) *2","（YUXI-BPants-XL） × 2"," ( YUXI-BPants-XL *2 ) ","YUXI-BPants-XL＊2"))
             assertEquals("YUXI-BPants-XL*2",FinanceCostWorkspace.normalizedSku(code));

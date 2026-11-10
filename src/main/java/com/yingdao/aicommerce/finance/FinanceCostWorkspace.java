@@ -93,6 +93,8 @@ public class FinanceCostWorkspace {
         var settings=repo.jdbc().queryForList("SELECT data_json,version FROM finance_cost_settings WHERE organization_id=? AND shop_id=?",s.organizationId(),shopId);
         result.put("settings",settings.isEmpty()?Map.of():decode(settings.getFirst().get("data_json")));
         result.put("settingsVersion",settings.isEmpty()?0:settings.getFirst().get("version"));
+        result.put("suggestedWarehouse",FinanceOrderCosts.resolveWarehouse(text(shop.get("region")),
+            FinanceCostSources.allCosts(result),map(result.get("settings"))));
         var mappings=new LinkedHashMap<String,Object>();
         for(var row:repo.jdbc().queryForList("SELECT product_id,sku_id,data_json,version FROM finance_cost_mappings WHERE organization_id=? AND shop_id=?",s.organizationId(),shopId)){
             var mapping=new LinkedHashMap<>(decode(row.get("data_json")));mapping.put("version",row.get("version"));mappings.put(shopId+":"+row.get("product_id")+":"+row.get("sku_id")+":"+mapping.get("warehouse"),mapping);

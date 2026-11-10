@@ -27,15 +27,18 @@ public final class FinanceOrderCosts {
             "fixedGift",true,"costSource","GIFT 赠品固定零成本"));
     }
     static String resolveWarehouse(Context context){
-        String explicit=text(context.settings().get("warehouse"));
+        return resolveWarehouse(context.region(),context.costs(),context.settings());
+    }
+    static String resolveWarehouse(String region,List<Map<String,Object>> costs,Map<String,Object> settings){
+        String explicit=text(settings.get("warehouse"));
         if(!explicit.isBlank())return explicit;
         var warehouses=new LinkedHashSet<String>();
-        for(var c:context.costs())warehouses.add(text(c.get("warehouse")));
-        var names=switch(context.region().toUpperCase(Locale.ROOT)){
+        for(var c:costs)warehouses.add(text(c.get("warehouse")));
+        var names=switch(region.toUpperCase(Locale.ROOT)){
             case "PH"->List.of("菲律宾");case "TH"->List.of("泰国");case "MY"->List.of("马来");
             case "VN"->List.of("越南");case "SG"->List.of("新加坡");case "ID"->List.of("印尼","印度尼西亚");default->List.<String>of();
         };
-        var matched=warehouses.stream().filter(w->w.contains("海外")&&names.stream().anyMatch(w::contains)).toList();
+        var matched=warehouses.stream().filter(w->names.stream().anyMatch(w::contains)).toList();
         if(matched.size()==1)return matched.getFirst();
         return warehouses.size()==1?warehouses.iterator().next():"";
     }
