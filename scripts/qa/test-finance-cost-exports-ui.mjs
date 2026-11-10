@@ -25,7 +25,8 @@ const groups=[{id:'group-a',name:'测试组'}];
 const costs={live:true,shopId:'shop-a',groupId:'group-a',groupName:'测试组',sourceName:'成本.xlsx',costs:[],manualCosts:[],products:[],sampleOrders:1,orderLimit:2000,settings:{warehouse:'',rules:{}},settingsVersion:1,mappings:{},shopCatalogs:{'shop-a':{costRows:1,sourceName:'成本.xlsx'}}};
 const orderResult={items:[{id:'row-a',shop_id:'shop-a',order_id:'ORDER-A',record_date:'2026-10-01',order_created_time:'2026-10-01T00:00:00Z',first_settlement_date:'2026-10-05',settlement_currency:'MYR',product_cost_cny:8,product_cost_state:'已计算'}],total:1,page:1,pageSize:50,productCosts:{total:{ready_count:1,pending_count:0,estimated_count:0,amount_cny:8,known_amount_cny:8}},costAmountSummary:{order_count:1,pending_count:0,amount_cny:8}};
 
-let serverJobs=[],postFailure=null,listFailure=null;
+const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
+let serverJobs=[],postFailure=null,listFailure=null,listGate=null,postGate=null;
 const requests=[],posts=[],automaticDownloads=[];
 w.HTMLAnchorElement.prototype.click=function(){let prevented=false;this.onclick?.({preventDefault:()=>{prevented=true;},currentTarget:this,target:this});if(!prevented)automaticDownloads.push({href:this.href,download:this.download,text:this.textContent});};
 w.api=async(path,options={})=>{
@@ -36,6 +37,7 @@ w.api=async(path,options={})=>{
   if(url.pathname==='/api/v1/finance/workspace/costs/orders')return {data:structuredClone(orderResult)};
   if(url.pathname==='/api/v1/finance/cost-exports'&&options.method==='POST'){
     posts.push({options,body});
+    if(postGate){const gate=postGate;postGate=null;await gate.promise;}
     if(postFailure)throw postFailure;
     const job={id:'job-'+posts.length,status:'QUEUED',processed:0,total:250000,orders:0,lines:0,parts:0,start:body.start,end:body.end};
     serverJobs=[job,...serverJobs.filter(item=>item.id!==job.id)];
@@ -43,7 +45,9 @@ w.api=async(path,options={})=>{
   }
   if(url.pathname==='/api/v1/finance/cost-exports'){
     if(listFailure)throw listFailure;
-    return {data:structuredClone(serverJobs)};
+    const snapshot=structuredClone(serverJobs);
+    if(listGate){const gate=listGate;listGate=null;await gate.promise;}
+    return {data:snapshot};
   }
   throw Error('Unexpected request '+url.pathname);
 };
@@ -56,15 +60,20 @@ const runPoll=async()=>{const entry=[...polls.entries()][0];assert(entry,'expect
 
 w.FinanceCosts.openOrders({start:'2026-10-01',end:'2026-10-31',shopId:'shop-a',groupId:'group-a',platform:'SHOPEE',currency:'MYR',kind:'SETTLED_ORDER',numbers:'ORDER-A'});
 w.FinanceWorkspace.enter('costs');await settle();
+const staleList=deferred();listGate=staleList;
+let details=d.querySelector('[data-finance-cost-exports]');details.open=true;details.dispatchEvent(new w.Event('toggle'));await settle();
 const exportButton=button('导出 Excel');assert(exportButton);exportButton.click();await settle();
 
 assert.equal(posts.length,1,'one click creates one task');
 assert.deepEqual(posts[0].body,{start:'2026-10-01',end:'2026-10-31',shopId:'shop-a',groupId:'group-a',platform:'SHOPEE',currency:'MYR',kind:'SETTLED_ORDER',recordId:'',costStatus:'ALL',numbers:'ORDER-A'});
 assert.equal(posts[0].options.headers['Idempotency-Key'],'uuid-1');
 assert.match(d.body.textContent,/后台生成|已提交/);assert.doesNotMatch(d.body.textContent,/Excel 已生成/);
-let details=d.querySelector('[data-finance-cost-exports]');assert(details?.open,'submitting opens the task panel');
+assert(details?.open,'submitting opens the task panel');
 assert.match(details.textContent,/2026-10-01 至 2026-10-31/);assert.match(details.textContent,/测试店/);assert.match(details.textContent,/已结算订单/);assert.match(details.textContent,/排队中/);
 assert.equal(polls.size,1,'pending tasks poll every three seconds');
+staleList.resolve();await settle();
+assert.match(details.textContent,/排队中/,'a list snapshot started before POST must not remove the accepted task');
+assert.equal(polls.size,1,'discarding a stale list snapshot keeps the accepted task polling');
 
 serverJobs[0]={...serverJobs[0],status:'RUNNING',processed:120000,total:250000,orders:30000,lines:120000};
 await runPoll();assert.match(details.textContent,/120,000 \/ 250,000/);assert.match(details.textContent,/30,000 笔订单/);assert.equal(polls.size,1);
@@ -83,7 +92,15 @@ const xlsxLink=details.querySelector('a[href$="/api/v1/finance/cost-exports/sing
 serverJobs[0]={...serverJobs[0],status:'FAILED',error:'单笔订单明细超过上限'};
 button('刷新任务状态',details).click();await settle();assert.match(details.textContent,/单笔订单明细超过上限/);
 
+const slowPost=deferred();postGate=slowPost;button('导出 Excel').click();await settle();
+const slowPosts=posts.length;
 d.querySelector('[data-cost-status="PENDING"]').click();await settle();details=d.querySelector('[data-finance-cost-exports]');
+button('导出 Excel').click();await settle();
+assert.equal(posts.length,slowPosts,'a second scope is not silently submitted while the first POST is unresolved');
+assert.match(d.querySelector('.fc-feedback').textContent,/上一个导出请求仍在确认中/);
+assert.doesNotMatch(d.querySelector('.fc-feedback').textContent,/任务已提交/,'the new scope must not receive a false submitted toast');
+slowPost.resolve();await settle();
+
 button('导出 Excel').click();await settle();
 assert.deepEqual(posts.at(-1).body,{start:'2026-10-01',end:'2026-10-31',shopId:'',groupId:'',platform:'',currency:'',kind:'SETTLED_ORDER',recordId:'',costStatus:'PENDING',numbers:'ORDER-A'},'all-shop pending export preserves the complete date/number scope and every page');
 
@@ -95,7 +112,7 @@ postFailure=Error('connection closed');button('导出 Excel').click();await sett
 const uncertainPost=posts.at(-1);assert(button('确认上次任务',details));
 postFailure=null;button('确认上次任务',details).click();await settle();
 assert.equal(posts.at(-1).options.headers['Idempotency-Key'],uncertainPost.options.headers['Idempotency-Key']);
-assert.deepEqual(posts.at(-1).body,uncertainPost.body);assert.equal(posts.length,4,'uncertain delivery is retried only by an explicit confirmation');
+assert.deepEqual(posts.at(-1).body,uncertainPost.body);assert.equal(posts.length,5,'uncertain delivery is retried only by an explicit confirmation');
 
 const oldLink=details.querySelector('a[download]');const beforeCrossUser=automaticDownloads.length;
 w.currentUser={organizationId:'org-b',userId:'user-b',permissions:['finance:view']};

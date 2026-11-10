@@ -12,7 +12,7 @@
   let callbackNotice='';const callbackParams=new URLSearchParams(location.search);if(callbackParams.has('financeAuth')){callbackNotice=callbackParams.get('financeMessage')||(callbackParams.get('financeAuth')==='success'?'财务店铺已连接':'财务授权未完成');callbackParams.delete('financeAuth');callbackParams.delete('financeMessage');history.replaceState(null,'',location.pathname+(callbackParams.size?'?'+callbackParams:'')+location.hash);}
   let active=false,generation=0,mountedGeneration=0,view='overview',data=null,chartPromise,charts=[],observer,themeObserver,refreshTimer=null,clockTimer=null,page=1,selectedKind='ORDER',mountedView='',loadController=null,mountedSelection='';
   let activeLoadKey='',waitingTimer=null,shopMonthFilter='ALL',shopSearch='';
-  let costExportOwner='',costExportJobs=[],costExportTimer=null,costExportLoading=false,costExportSubmitting=false,costExportMessage='',costExportUncertain=null,costExportEpoch=0,costExportDetails=null;
+  let costExportOwner='',costExportJobs=[],costExportTimer=null,costExportLoading=false,costExportSubmitting=false,costExportMessage='',costExportUncertain=null,costExportEpoch=0,costExportRevision=0,costExportDetails=null;
   const costExportSelections=new Map(),costExportAutoAttempted=new Set();
   const calendarVersion='shop-calendar-v1',displayZone='Asia/Shanghai';
   const dateText=d=>Number.isFinite(d.getTime())?d.toISOString().slice(0,10):'';
@@ -133,7 +133,7 @@
   const costExportStatuses={QUEUED:'排队中',RUNNING:'生成中',READY:'可下载',FAILED:'生成失败'};
   function stopCostExportPolling(){clearTimeout(costExportTimer);costExportTimer=null;}
   function resetCostExports(){
-    costExportEpoch++;stopCostExportPolling();costExportOwner='';costExportJobs=[];costExportLoading=false;costExportSubmitting=false;costExportMessage='';costExportUncertain=null;costExportDetails=null;costExportSelections.clear();costExportAutoAttempted.clear();
+    costExportEpoch++;costExportRevision=0;stopCostExportPolling();costExportOwner='';costExportJobs=[];costExportLoading=false;costExportSubmitting=false;costExportMessage='';costExportUncertain=null;costExportDetails=null;costExportSelections.clear();costExportAutoAttempted.clear();
   }
   function leaveCostExports(){costExportEpoch++;stopCostExportPolling();costExportLoading=false;costExportSubmitting=false;costExportDetails=null;}
   function costExportSelection(selection={}){
@@ -208,10 +208,11 @@
   }
   async function refreshCostExports(){
     if(!costExportOwner||costExportLoading)return;
-    const identity=costExportOwner,run=costExportEpoch;costExportLoading=true;renderCostExports();
+    const identity=costExportOwner,run=costExportEpoch,revision=costExportRevision;costExportLoading=true;renderCostExports();
     try{
       const result=await request('/cost-exports');
       if(run!==costExportEpoch||financeIdentity()!==identity)return;
+      if(revision!==costExportRevision){scheduleCostExportPolling();return;}
       costExportMessage='';mergeCostExportJobs(result,{autoReady:true});
     }catch(error){
       if(run!==costExportEpoch||financeIdentity()!==identity)return;
@@ -219,14 +220,14 @@
     }finally{if(run===costExportEpoch){costExportLoading=false;renderCostExports();}}
   }
   async function submitCostExport(saved){
-    if(costExportSubmitting) return {status:'SUBMITTING'};
+    if(costExportSubmitting)throw Error('上一个导出请求仍在确认中，请等待完成后再提交当前筛选。');
     const identity=costExportOwner,run=costExportEpoch,body=saved?.body||costExportSelection(saved),key=saved?.key||crypto.randomUUID();
     if(!identity||financeIdentity()!==identity)throw Error('登录信息已变化，请重新打开导出');
     costExportSubmitting=true;costExportMessage='正在提交后台导出任务…';costExportDetails.open=true;renderCostExports();
     try{
       const job=await request('/cost-exports',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify(body)});
       if(run!==costExportEpoch||financeIdentity()!==identity)throw Error('登录信息已变化，请重新打开导出');
-      costExportUncertain=null;costExportSelections.set(job.id,body);mergeCostExportJobs([job,...costExportJobs.filter(item=>item.id!==job.id)],{autoReady:true,autoNewReady:true});
+      costExportRevision++;costExportUncertain=null;costExportSelections.set(job.id,body);mergeCostExportJobs([job,...costExportJobs.filter(item=>item.id!==job.id)],{autoReady:true,autoNewReady:true});
       costExportMessage=job.status==='READY'?'导出已完成，已请求浏览器保存；若未开始，请点击下载。':'任务已提交，后台生成期间可继续操作。';
       renderCostExports();return job;
     }catch(error){
