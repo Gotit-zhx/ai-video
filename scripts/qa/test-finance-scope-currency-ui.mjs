@@ -109,7 +109,7 @@ try{
         // Qianyi refunds retain upstream currencies; their native filters are
         // covered by test-finance-qianyi-refunds-ui.mjs.
         orders:[['ORDER','订单']], 'fee-records':[['FEE','平台费用'],['COST','物流贴单成本']],
-        ads:[['AD','广告费用明细'],['AD_GMV','GMV Max 分析明细']]}[route]||[];
+        ads:[['AD','普通独立广告消耗明细'],['AD_GMV','GMV Max 分析明细']]}[route]||[];
       for(const [kind,label]of tabs){
         const tab=[...d.querySelectorAll('.fi-settlement-totals button,.fi-tabs button')].find(b=>b.textContent.startsWith(label));
         assert(tab,label);tab.click();await ready();
