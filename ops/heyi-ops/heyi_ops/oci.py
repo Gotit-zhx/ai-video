@@ -171,11 +171,20 @@ def download_file(opener,request,output,maximum,size=None,expected=None,timing=N
             try:
                 with wall_deadline(duration):
                     with opener.open(request,timeout=min(60,duration)) as response:
+                        header=getattr(response,'getheader',lambda name:None)
+                        declared=header('Content-Length')
+                        if 'chunked' in (header('Transfer-Encoding') or '').lower():declared=None
+                        if declared is not None:
+                            declared=int(declared)
+                            if not 0<=declared<=maximum:raise ValueError('Registry body framing exceeds size budget')
                         while True:
                             if time.monotonic()>=attempt_end:raise TimeoutError('Download attempt deadline exceeded')
                             block=response.read(min(MIB,max(1,maximum+1-count)))
                             if time.monotonic()>=attempt_end:raise TimeoutError('Download attempt deadline exceeded')
-                            if not block:break
+                            if not block:
+                                if declared is not None and count<declared:
+                                    raise http.client.IncompleteRead(b'',declared-count)
+                                break
                             count+=len(block)
                             if timing:timing.add_bytes(len(block))
                             if count>maximum:raise ValueError('Registry blob exceeded size')

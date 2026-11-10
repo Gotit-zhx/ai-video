@@ -90,3 +90,44 @@ class RegistryDownloadTest(unittest.TestCase):
             partial=Path(temp)/(item['digest'][7:]+'.part');partial.write_bytes(b'other operation')
             with self.assertRaises(FileExistsError):oci.export_blobs(image,[item],temp,'synthetic')
             self.assertEqual(b'other operation',partial.read_bytes())
+
+    def test_actual_http_response_premature_eof_retries_to_complete_file(self):
+        import http.client
+        class Socket:
+            def __init__(self,body):self.body=body
+            def makefile(self,*args):return io.BytesIO(b'HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n'+self.body)
+        class Opener:
+            calls=0
+            def open(self,request,timeout):
+                self.calls+=1
+                response=http.client.HTTPResponse(Socket(b'a' if self.calls==1 else b'abc'))
+                response.begin();return response
+        opener=Opener();output=io.BytesIO()
+        oci.download_file(opener,None,output,3,size=3,expected=oci.digest(b'abc'))
+        self.assertEqual(2,opener.calls);self.assertEqual(b'abc',output.getvalue())
+
+    def test_actual_http_truncation_exhausts_three_attempts_and_cleans_partial(self):
+        import http.client
+        class Socket:
+            def makefile(self,*args):return io.BytesIO(b'HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\na')
+        class Opener:
+            calls=0
+            def open(self,request,timeout):
+                self.calls+=1;response=http.client.HTTPResponse(Socket());response.begin();return response
+        opener=Opener();output=io.BytesIO()
+        with self.assertRaises(http.client.IncompleteRead):oci.download_file(opener,None,output,3,size=3,expected=oci.digest(b'abc'))
+        self.assertEqual(3,opener.calls);self.assertEqual(b'',output.getvalue())
+
+    def test_actual_fully_received_wrong_size_or_digest_is_not_retried(self):
+        import http.client
+        for length,body in [(1,b'a'),(4,b'abcd'),(3,b'bad')]:
+            class Socket:
+                def makefile(self,*args):return io.BytesIO(b'HTTP/1.1 200 OK\r\nContent-Length: '+str(length).encode()+b'\r\n\r\n'+body)
+            class Opener:
+                calls=0
+                def open(self,request,timeout):
+                    self.calls+=1;response=http.client.HTTPResponse(Socket());response.begin();return response
+            opener=Opener();output=io.BytesIO()
+            with self.subTest(length=length,body=body),self.assertRaises(ValueError):
+                oci.download_file(opener,None,output,3,size=3,expected=oci.digest(b'abc'))
+            self.assertEqual(1,opener.calls);self.assertEqual(b'',output.getvalue())
