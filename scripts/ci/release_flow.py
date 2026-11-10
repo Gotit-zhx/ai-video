@@ -31,11 +31,27 @@ REMOTE = 'fork'
 IDENTITY = re.compile(r'[a-f0-9]{32}\Z')
 STOPS = {'conflict', 'baseline_changed', 'permissions_missing', 'operation_mismatch',
          'requires_maintenance', 'dirty_worktree', 'candidate_mismatch', 'validation_failed',
-         'deployment_failed', 'parallel_maintenance', 'disabled', 'no_runtime_release', 'complete'}
+         'deployment_failed', 'evidence_unavailable', 'parallel_maintenance', 'disabled', 'no_runtime_release', 'complete'}
 
 
 class FlowError(RuntimeError):
     """A safe, actionable stop; details never contain raw subprocess output."""
+
+
+class GitHubError(FlowError):
+    def __init__(self, status):
+        self.status = status
+        super().__init__('GitHub operation failed (HTTP ' + str(status or 'unknown') + '); check permissions/state and resume')
+
+
+def version_key(version):
+    parts = tuple(int(part) for part in version.removeprefix('v').split('.'))
+    return parts + (0,) if len(parts) == 3 else parts
+
+
+def branch_version(branch):
+    match = re.fullmatch(r'(?:release|hotfix)/(\d+(?:\.\d+){2,3})(?:-[A-Za-z0-9._-]+)?', branch)
+    return version_key(match[1]) if match else None
 
 
 def next_version(tags, occupied_versions, shanghai_date):
@@ -57,6 +73,8 @@ def next_action(journal, observed):
                         ('parallelMaintenance', 'parallel_maintenance'), ('candidateMismatch', 'candidate_mismatch')]:
         if observed.get(key):
             return action
+    if observed.get('deploymentEvidenceUnavailable'):
+        return 'evidence_unavailable'
     if observed.get('dirty'):
         return 'dirty_worktree'
     if observed.get('candidateReady') and observed.get('maintenanceRequired'):
@@ -130,7 +148,7 @@ class JournalStore:
 
     def write_sample(self, journal, observed, action, now_ms):
         operation = journal.get('operationId')
-        if (not operation or not IDENTITY.fullmatch(operation) or action == 'operation_mismatch' or
+        if (not observed.get('receiptVerified') or not operation or not IDENTITY.fullmatch(operation) or action == 'operation_mismatch' or
                 observed.get('operationId') != operation or observed.get('version') != journal.get('version')):
             return
         phase = observed.get('deploymentPhase')
@@ -180,12 +198,14 @@ def advance(journal, api, store, *, enabled, clock=time.time):
     observed = api.observe(journal)
     # Adopt IDs from trusted observations before evaluating receipt identity.
     for key in ('pr', 'validationRun', 'validationAttempt', 'candidateRun', 'candidateAttempt',
-                'deployRun', 'deployAttempt', 'operationId', 'mergeCommit', 'validationProfile'):
+                'deployRun', 'deployAttempt', 'operationId', 'expectedOperationId', 'mergeCommit', 'validationProfile'):
         if key in observed:
-            if key in {'operationId', 'deployRun', 'deployAttempt', 'mergeCommit'} and journal.get(key) and journal[key] != observed[key]:
+            if key in {'operationId', 'expectedOperationId', 'deployRun', 'deployAttempt', 'mergeCommit'} and journal.get(key) and journal[key] != observed[key]:
                 observed['operationMismatch'] = True
             else:
                 journal[key] = observed[key]
+    if 'backmergeStates' in observed:
+        journal['backmerges'] = observed['backmergeStates']
     action = next_action(journal, observed)
     if not enabled:
         return action if action in {'complete', 'no_runtime_release'} else 'disabled'
@@ -210,10 +230,23 @@ def advance(journal, api, store, *, enabled, clock=time.time):
         return action
     # Journal intent first: process/network failure can happen after remote success.
     journal['pendingAction'] = action
+    if action == 'backmerge' and observed.get('backmergeUpdate'):
+        state = journal['backmerges'][observed['backmergeTarget']]
+        state['pendingUpdate'] = {'head': observed['backmergeHead'], 'base': observed['backmergeBase']}
     if action == 'dispatch_validation':
         journal['validationAfterRun'] = observed.get('validationObservedRun', 0)
     store.write(journal)
-    journal.update(api.perform(action, journal, observed) or {})
+    try:
+        journal.update(api.perform(action, journal, observed) or {})
+    except GitHubError as error:
+        # A definitive rejection is different from an interrupted response.
+        # Only known 4xx non-acceptance clears an update intent for retry.
+        if action == 'backmerge' and observed.get('backmergeUpdate') and error.status in {403, 409, 422}:
+            journal['backmerges'][observed['backmergeTarget']].pop('pendingUpdate', None)
+            journal.pop('pendingAction', None)
+            journal['phase'] = {403: 'permissions_missing', 409: 'conflict', 422: 'baseline_changed'}[error.status]
+            store.write(journal)
+        raise
     journal['phase'] = {'create_branch': 'planned', 'open_pr': 'pr_open',
                         'dispatch_candidate': 'validating', 'dispatch_validation': 'validating',
                         'dispatch_host_check': 'candidate_ready', 'merge_production': 'production_merged',
@@ -265,8 +298,7 @@ class GhTransport:
                                 stderr=subprocess.PIPE, timeout=180)
         if result.returncode:
             match = re.search(rb'HTTP (\d{3})', result.stderr)
-            code = match[1].decode() if match else 'unknown'
-            raise FlowError('GitHub operation failed (HTTP ' + code + '); check gh authentication/permissions and resume')
+            raise GitHubError(int(match[1]) if match else None)
         return result.stdout
 
     def api(self, path, method='GET', payload=None, missing=False):
@@ -294,6 +326,16 @@ class GitHubAPI:
         self.clock = clock
         self.candidate = None
         self.receipt_files = None
+
+    def release_enabled(self, environment=None):
+        environment = os.environ if environment is None else environment
+        local = environment.get('HEYI_RELEASE_FLOW_ENABLED')
+        # Repository rollout is authoritative. A local false only narrows it;
+        # a local true never enables a repository whose rollout is still off.
+        if local is not None and local.lower() != 'true':
+            return False
+        variable = self.api('/actions/variables/HEYI_RELEASE_FLOW_ENABLED', missing=True)
+        return bool(variable and str(variable.get('value', '')).lower() == 'true')
 
     def ref(self, name, kind='heads'):
         value = self.api('/git/ref/' + kind + '/' + quote(name, safe=''), missing=True)
@@ -394,7 +436,7 @@ class GitHubAPI:
         active = []
         for branch in records:
             name = branch['name']
-            if not name.startswith('release/') or name.endswith('-backmerge'):
+            if not name.startswith('release/') or re.search(r'-backmerge(?:-|$)', name):
                 continue
             head = branch.get('commit', {}).get('sha') or self.ref(name)
             compared = self.api('/compare/' + head + '...' + production)
@@ -429,8 +471,11 @@ class GitHubAPI:
         versioned = re.fullmatch(r'hotfix/(\d+(?:\.\d+){2,3})(?:-[A-Za-z0-9._-]+)?', source)
         if versioned:
             version = 'v' + versioned[1]
-            if version in {t['name'] for t in tags}:
+            if version_key(version) in {version_key(t['name']) for t in tags if release.VERSION.fullmatch(t['name'])}:
                 raise FlowError('Hotfix version already has a tag; resume its existing release operation')
+            conflicts = [name for name in branches if name != source and branch_version(name) == version_key(version)]
+            if conflicts:
+                raise FlowError('Hotfix version is reserved by: ' + ', '.join(sorted(conflicts)))
             branch = source
         else:
             version = next_version([t['name'] for t in tags], branches, shanghai_date)
@@ -549,7 +594,7 @@ class GitHubAPI:
                 run.get('event') != 'push' or run.get('head_branch') != journal['version']):
             return {'operationMismatch': True}
         operation = hashlib.sha256((str(run['id']) + ':' + str(run['run_attempt']) + ':' + journal['version']).encode()).hexdigest()[:32]
-        observed = {'deployRun': run['id'], 'deployAttempt': run['run_attempt'], 'operationId': operation}
+        observed = {'deployRun': run['id'], 'deployAttempt': run['run_attempt'], 'expectedOperationId': operation}
         if journal.get('operationId') and journal['operationId'] != operation:
             return {**observed, 'operationMismatch': True}
         if run['status'] != 'completed':
@@ -557,7 +602,7 @@ class GitHubAPI:
         files = self.artifact_files(run, 'deployment-receipt')
         if files is None:
             # No trusted receipt means no automatic re-run: the host may have accepted.
-            return {**observed, 'deploymentPhase': 'failed', 'version': journal['version']}
+            return {**observed, 'deploymentEvidenceUnavailable': True, 'version': journal['version']}
         if not {'receipt.json', 'release.json'} <= set(files) or set(files) - {'receipt.json', 'release.json', 'timings.json'}:
             raise FlowError('Missing deployment manifest/receipt pair')
         receipt = json.loads(files['receipt.json'])
@@ -567,7 +612,7 @@ class GitHubAPI:
             return {**observed, 'operationMismatch': True}
         self.receipt_files = {key: files[key] for key in ('receipt.json', 'release.json')}
         observed.update(deployment_measurements(files.get('timings.json'), receipt))
-        observed.update(deploymentPhase=receipt['phase'], version=receipt['version'])
+        observed.update(deploymentPhase=receipt['phase'], version=receipt['version'], operationId=operation, receiptVerified=True)
         observed['receiptPublished'] = self.receipt_published(journal, files)
         return observed
 
@@ -772,69 +817,121 @@ class GitHubAPI:
                 isinstance(artifact.get('size_in_bytes'), int) and 0 < artifact['size_in_bytes'] <= 512 * 1024**2 and
                 bool(re.fullmatch(r'sha256:[a-f0-9]{64}', artifact.get('digest', ''))))
 
+    def ancestor(self, ancestor, head):
+        return self.api('/compare/' + ancestor + '...' + head)['merge_base_commit']['sha'] == ancestor
+
+    def backmerge_branch(self, journal, target):
+        stem = journal['branch'].split('/')[0] + '/' + journal['version'][1:] + '-backmerge'
+        # Keep the original develop name for resumable pre-upgrade journals.
+        return stem if target == INTEGRATION else stem + '-' + hashlib.sha256(target.encode()).hexdigest()[:12]
+
     def backmerge_observation(self, journal):
         active = self.active_releases(journal['mergeCommit'])
         targets = [INTEGRATION]
         if journal['branch'].startswith('hotfix/'):
-            targets = sorted(set(journal.get('activeReleases', [])) |
-                             set(active)) + targets
-        support = journal['branch'].split('/')[0] + '/' + journal['version'][1:] + '-backmerge'
-        support_sha = self.ref(support)
-        if support_sha and support_sha != journal['mergeCommit']:
-            raise FlowError('Backmerge branch already points at a different commit')
+            targets = sorted(set(journal.get('activeReleases', [])) | set(active)) + targets
+        states = {target: dict(state) for target, state in journal.get('backmerges', {}).items()}
         for target in targets:
-            base = self.ref(target)
+            support = self.backmerge_branch(journal, target)
+            state = states.setdefault(target, {'branch': support, 'head': journal['mergeCommit']})
+            if state.get('branch') != support:
+                raise FlowError('Backmerge journal branch differs from its target identity')
+            base, head = self.ref(target), self.ref(support)
             if base is None:
                 raise FlowError('Required backmerge target disappeared: ' + target)
-            compare = self.api('/compare/' + journal['mergeCommit'] + '...' + base)
-            if compare['merge_base_commit']['sha'] == journal['mergeCommit']:
+            if head and head != state['head']:
+                pending = state.get('pendingUpdate')
+                commit = self.api('/commits/' + head)
+                parents = [p['sha'] for p in commit.get('parents', [])]
+                if not pending or parents != [pending['head'], pending['base']]:
+                    return {'baselineChanged': True, 'backmergeStates': states}
+                # An accepted asynchronous update may outlive the client. Adopt
+                # only its exact no-ff parents, then require new combination CI.
+                state.update(head=head, tree=commit['commit']['tree']['sha'])
+                state.pop('pendingUpdate', None)
+            if head and not self.ancestor(journal['mergeCommit'], head):
+                return {'baselineChanged': True, 'backmergeStates': states}
+            if self.ancestor(journal['mergeCommit'], base):
                 completed = self.exact_pr(support, target)
                 if not completed or not completed.get('merged'):
                     raise FlowError('Backmerge ancestry exists without the required no-ff PR proof')
                 commit = self.api('/commits/' + completed['merge_commit_sha'])
+                expected_base = state.get('base', completed['base']['sha'])
                 parents = [p['sha'] for p in commit.get('parents', [])]
-                if len(parents) != 2 or parents[1] != journal['mergeCommit']:
-                    raise FlowError('Completed backmerge is not the required no-ff merge')
+                if (parents != [expected_base, state['head']] or
+                        not self.ancestor(completed['merge_commit_sha'], base)):
+                    raise FlowError('Completed backmerge differs from its exact no-ff head/base')
+                tested = self.api('/commits/' + state['head'])
+                if commit['commit']['tree']['sha'] != tested['commit']['tree']['sha']:
+                    raise FlowError('Completed backmerge tree differs from its validated combined head')
+                state['mergedCommit'] = completed['merge_commit_sha']
                 continue
             self.protection(target)
-            result = {'backmergeTarget': target, 'backmergeBase': base, 'backmergeBranch': support,
-                      'backmergeBranchExists': bool(support_sha)}
-            if not support_sha:
+            result = {'backmergeTarget': target, 'backmergeBase': base, 'backmergeHead': state['head'],
+                      'backmergeBranch': support, 'backmergeBranchExists': bool(head), 'backmergeStates': states}
+            pending = state.get('pendingUpdate')
+            if pending:
+                if base != pending['base'] or head != pending['head']:
+                    return {'baselineChanged': True, 'backmergeStates': states}
+                current_pr = self.exact_pr(support, target)
+                if not current_pr or current_pr.get('merged'):
+                    return {'baselineChanged': True, 'backmergeStates': states}
+                if current_pr.get('mergeable') is False:
+                    return {**result, 'conflict': True}
+                return {**result, 'backmergeWaiting': True}
+            state['base'] = base
+            if not head:
+                if state['head'] != journal['mergeCommit']:
+                    return {'baselineChanged': True, 'backmergeStates': states}
                 return result
             pr = self.exact_pr(support, target)
             if not pr:
                 return result
+            state['pr'] = pr['number']
             if pr.get('merged'):
                 raise FlowError('Merged backmerge PR is not in the current target history')
-            if pr['head']['sha'] != journal['mergeCommit'] or pr['base']['sha'] != base:
-                return {'baselineChanged': True}
+            if pr['head']['sha'] != state['head'] or pr['base']['sha'] != base:
+                return {'baselineChanged': True, 'backmergeStates': states}
+            result['backmergePR'] = pr['number']
             if pr.get('mergeable') is False:
-                return {'conflict': True}
+                return {**result, 'conflict': True}
+            if pr.get('mergeable') is None:
+                return {**result, 'backmergeWaiting': True}
+            if not self.ancestor(base, state['head']):
+                return {**result, 'backmergeUpdate': True}
             ready = self.pr_validation(pr)
-            result.update(backmergePR=pr['number'], backmergeReady=ready,
-                          backmergeWaiting=not ready or pr.get('mergeable_state') != 'clean')
+            result.update(backmergeReady=ready, backmergeWaiting=not ready or pr.get('mergeable_state') != 'clean')
             return result
-        return {'backmergesComplete': True}
+        return {'backmergesComplete': True, 'backmergeStates': states}
 
     def backmerge(self, journal, observed):
         target = observed['backmergeTarget']
+        head = observed.get('backmergeHead', journal['mergeCommit'])
         if self.ref(target) != observed['backmergeBase']:
             raise FlowError('baseline_changed: backmerge target moved; revalidate combined tree')
         if observed.get('backmergePR'):
-            if not observed.get('backmergeReady'):
-                raise FlowError('Backmerge combination has not passed CI')
             pr = self.api('/pulls/' + str(observed['backmergePR']))
-            if (pr['head']['sha'] != journal['mergeCommit'] or pr['base']['sha'] != observed['backmergeBase'] or
-                    pr.get('mergeable') is not True or pr.get('mergeable_state') != 'clean'):
-                raise FlowError('Backmerge head/base/conflict changed before merge')
+            if (pr['head']['sha'] != head or pr['base']['sha'] != observed['backmergeBase'] or
+                    pr.get('mergeable') is not True):
+                raise FlowError('Backmerge head/base/conflict changed before mutation')
+            if observed.get('backmergeUpdate'):
+                # GitHub merges the target into this dedicated support branch;
+                # expected_head_sha is the update CAS. Never rebase/force push.
+                self.api('/pulls/' + str(observed['backmergePR']) + '/update-branch', 'PUT',
+                         {'expected_head_sha': head})
+                return {}
+            if not observed.get('backmergeReady') or pr.get('mergeable_state') != 'clean':
+                raise FlowError('Backmerge combination has not passed CI and strict protection')
             result = self.api('/pulls/' + str(observed['backmergePR']) + '/merge', 'PUT',
-                              {'sha': journal['mergeCommit'], 'merge_method': 'merge'})
+                              {'sha': head, 'merge_method': 'merge'})
             if not result.get('merged'):
                 raise FlowError('Backmerge rejected by GitHub; no protection bypass is available')
             return {'backmergePR': observed['backmergePR'], 'backmergeCommit': result['sha']}
         if not observed.get('backmergeBranchExists'):
-            self.api('/git/refs', 'POST', {'ref': 'refs/heads/' + observed['backmergeBranch'], 'sha': journal['mergeCommit']})
+            self.api('/git/refs', 'POST', {'ref': 'refs/heads/' + observed['backmergeBranch'], 'sha': head})
         else:
+            if self.ref(observed['backmergeBranch']) != head:
+                raise FlowError('baseline_changed: backmerge support head moved before opening PR')
             pr = self.api('/pulls', 'POST', {'title': 'Backmerge ' + journal['version'] + ' into ' + target,
                                            'head': observed['backmergeBranch'], 'base': target,
                                            'body': 'Accepted release operation `' + journal['id'] + '`. Validate this combined tree before merging.'})
@@ -876,6 +973,21 @@ def validate_journal(journal):
             raise ValueError('Invalid identity')
         if journal.get('operationId') and not IDENTITY.fullmatch(journal['operationId']):
             raise ValueError('Invalid operation')
+        for target in journal.get('activeReleases', []):
+            if not re.fullmatch(r'release/[A-Za-z0-9._-]+', target):
+                raise ValueError('Invalid active release identity')
+        for target, state in journal.get('backmerges', {}).items():
+            if target != INTEGRATION and not re.fullmatch(r'release/[A-Za-z0-9._-]+', target):
+                raise ValueError('Invalid backmerge target')
+            if not re.fullmatch(r'(?:release|hotfix)/[A-Za-z0-9._-]+', state['branch']):
+                raise ValueError('Invalid backmerge support branch')
+            for key in ('head', 'base', 'tree', 'mergedCommit'):
+                if key in state and not re.fullmatch(r'[a-f0-9]{40}', state[key]):
+                    raise ValueError('Invalid backmerge commit')
+            if 'pendingUpdate' in state:
+                if set(state['pendingUpdate']) != {'head', 'base'} or not all(
+                        re.fullmatch(r'[a-f0-9]{40}', value) for value in state['pendingUpdate'].values()):
+                    raise ValueError('Invalid backmerge update intent')
         for key in ('pr', 'validationRun', 'validationAttempt', 'deployRun', 'deployAttempt'):
             if key in journal and (type(journal[key]) is not int or journal[key] <= 0):
                 raise ValueError('Invalid run identity')
@@ -909,9 +1021,9 @@ def main(argv=None):
     mode.add_argument('--resume', metavar='32HEX', help='resume or inspect the original release operation')
     parser.add_argument('--dry-run', action='store_true', help='read-only remote/local inspection; never dispatch or mutate GitHub')
     args = parser.parse_args(argv)
-    enabled = os.environ.get('HEYI_RELEASE_FLOW_ENABLED', '').lower() == 'true'
-    if not enabled and not args.dry_run and not args.resume:
-        print(json.dumps({'phase': 'disabled', 'message': 'HEYI_RELEASE_FLOW_ENABLED defaults off; use --dry-run or --resume for read-only inspection'}))
+    local_switch = os.environ.get('HEYI_RELEASE_FLOW_ENABLED')
+    if local_switch is not None and local_switch.lower() != 'true' and not args.dry_run and not args.resume:
+        print(json.dumps({'phase': 'disabled', 'message': 'Local release-flow kill switch is off; use --dry-run or --resume for read-only inspection'}))
         return 2
     journal = None
     try:
@@ -919,6 +1031,10 @@ def main(argv=None):
         dirty_paths = local.dirty_paths()
         store = JournalStore(local.common_dir)
         adapter = GitHubAPI(dirty=bool(dirty_paths))
+        enabled = adapter.release_enabled()
+        if not enabled and not args.dry_run and not args.resume:
+            print(json.dumps({'phase': 'disabled', 'message': 'Repository HEYI_RELEASE_FLOW_ENABLED is off; use --dry-run or --resume for read-only inspection'}))
+            return 2
         if args.resume:
             journal = store.read(args.resume)
         else:
@@ -947,7 +1063,7 @@ def main(argv=None):
             last = None
             while time.monotonic() < deadline:
                 adapter.dirty = bool(local.dirty_paths())
-                action = advance(journal, adapter, store, enabled=True)
+                action = advance(journal, adapter, store, enabled=adapter.release_enabled())
                 if action != last:
                     print(json.dumps({'id': journal['id'], 'version': journal['version'], 'phase': journal['phase'],
                                       'action': action, 'resume': '--resume ' + journal['id']}), flush=True)

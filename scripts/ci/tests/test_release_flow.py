@@ -687,7 +687,7 @@ class RepositoryServer:
             if method == 'PUT':
                 if payload != {'sha': pr['head']['sha'], 'merge_method': 'merge'}:
                     raise AssertionError('wrong merge constraints')
-                sha = ('5' if number == 20 else '6')*40
+                sha = ('5' if number == 20 else ('6' if number == 21 else '8'))*40
                 self.commits[sha] = self.commit(sha, self.commits[pr['head']['sha']]['commit']['tree']['sha'], [pr['base']['sha'], pr['head']['sha']])
                 pr.update(merged=True, state='closed', merged_at='2026-11-10T10:01:00Z', merge_commit_sha=sha)
                 self.refs['heads/' + pr['base']['ref']] = sha
@@ -772,7 +772,7 @@ class SampleTest(unittest.TestCase):
             journal = {'id': 'a'*32, 'operationId': 'b'*32, 'version': 'v2026.11.10', 'phase': 'deploying',
                        'startedAtMs': 1000, 'releaseType': 'backend'}
             observation = {'deploymentPhase': 'succeeded', 'version': journal['version'], 'operationId': 'b'*32,
-                           'receiptPublished': False, 'validationProfile': 'module', 'uploadedBytes': 42,
+                           'receiptPublished': False, 'receiptVerified': True, 'validationProfile': 'module', 'uploadedBytes': 42,
                            'phases': [{'phase': 'sshUpload', 'durationMs': 123, 'bytes': 42, 'status': 'passed'}]}
             api = MemoryAPI(observation)
             self.assertEqual('publish_receipt', flow.advance(journal, api, store, enabled=True, clock=lambda: 6))
@@ -793,7 +793,7 @@ class SampleTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = flow.JournalStore(Path(directory))
             j = {'id': 'a'*32, 'operationId': 'b'*32, 'version': 'v2026.11.10', 'startedAtMs': 1000, 'releaseType': 'high-risk'}
-            api = MemoryAPI({'deploymentPhase': 'rolled_back', 'operationId': 'b'*32, 'version': j['version'], 'validationProfile': 'full'})
+            api = MemoryAPI({'deploymentPhase': 'rolled_back', 'receiptVerified': True, 'operationId': 'b'*32, 'version': j['version'], 'validationProfile': 'full'})
             self.assertEqual('deployment_failed', flow.advance(j, api, store, enabled=True, clock=lambda: 5))
             sample = json.loads((store.root/'samples'/('b'*32+'.json')).read_text())
             self.assertEqual('failed', sample['result'])
@@ -812,6 +812,307 @@ class CandidateDiscoveryTest(unittest.TestCase):
         self.assertEqual('candidate-' + 'a'*40, observed.get('existingCandidate'))
         self.assertEqual('candidate_mismatch', flow.next_action(journal, observed))
         self.assertEqual([], server.effects)
+
+
+class ReviewReservationTest(unittest.TestCase):
+    def test_versioned_hotfix_rejects_other_hotfix_and_release_reservations(self):
+        for other in ['hotfix/2026.11.10.7-other', 'release/2026.11.10.7-other', 'release/2026.11.10.07-other']:
+            api, data = PlanningTest().make_api(source='hotfix/2026.11.10.7-cost')
+            data[('GET', '/branches?per_page=100&page=1')].append({'name': other})
+            with self.assertRaisesRegex(flow.FlowError, other):
+                api.plan('hotfix/2026.11.10.7-cost', '2026-11-10')
+            self.assertEqual([], api.transport.writes)
+
+
+class ReviewMissingReceiptTest(unittest.TestCase):
+    def test_missing_receipt_is_unknown_and_cannot_create_or_overwrite_sample(self):
+        server = RepositoryServer()
+        api = flow.GitHubAPI(server, clock=lambda: 1794304860)
+        journal = api.plan('develop', '2026-11-10')
+        with tempfile.TemporaryDirectory() as directory:
+            store = flow.JournalStore(Path(directory))
+            for _ in range(10):
+                action = flow.advance(journal, api, store, enabled=True)
+                if action == 'tag':
+                    break
+            server.artifacts[400] = []
+            self.assertEqual('evidence_unavailable', flow.advance(journal, api, store, enabled=True))
+            self.assertFalse((store.root/'samples').exists())
+            self.assertNotIn('operationId', journal)
+            self.assertEqual((400, 1), (journal['deployRun'], journal['deployAttempt']))
+            operation = flow.hashlib.sha256(('400:1:' + journal['version']).encode()).hexdigest()[:32]
+            server.bundle(400, 'deployment-receipt', {'release.json': server.manifest,
+                          'receipt.json': {'id': operation, 'version': journal['version'], 'phase': 'succeeded'}})
+            self.assertEqual('publish_receipt', flow.advance(journal, api, store, enabled=True))
+            sample = store.root/'samples'/(operation+'.json')
+            original = sample.read_bytes()
+            server.artifacts[400] = []
+            self.assertEqual('evidence_unavailable', flow.advance(journal, api, store, enabled=True))
+            self.assertEqual(original, sample.read_bytes())
+            self.assertEqual(1, len(server.workflow_runs['deploy.yml']))
+
+    def test_outcome_without_receipt_proof_never_emits_a_sample(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = flow.JournalStore(Path(directory))
+            j = {'id': 'a'*32, 'operationId': 'b'*32, 'version': 'v2026.11.10', 'startedAtMs': 0}
+            store.write_sample(j, {'operationId': 'b'*32, 'version': j['version'], 'deploymentPhase': 'failed'}, 'deployment_failed', 1000)
+            self.assertFalse((store.root/'samples').exists())
+
+
+class DivergedRepositoryServer(RepositoryServer):
+    def __init__(self):
+        super().__init__()
+        self.hold_updated_ci = False
+        self.lose_update_response = False
+        self.updates = []
+
+    def ancestor(self, ancestor, head):
+        todo = [head]; visited = set()
+        while todo:
+            current = todo.pop()
+            if current == ancestor:
+                return True
+            if current in visited:
+                continue
+            visited.add(current)
+            todo.extend(p['sha'] for p in self.commits[current]['parents'])
+        return False
+
+    def advance_branch(self, branch, sha):
+        parent = self.refs['heads/'+branch]
+        self.commits[sha] = self.commit(sha, flow.hashlib.sha1(('tree'+sha).encode()).hexdigest(), [parent])
+        self.refs['heads/'+branch] = sha
+
+    def api(self, path, method='GET', payload=None, missing=False):
+        route = path.split('?')[0]
+        if route.startswith('/pulls/'):
+            number = int(route.split('/')[2])
+            pr = self.prs[number]
+            if not pr['merged']:
+                pr['head']['sha'] = self.refs['heads/'+pr['head']['ref']]
+                pr['base']['sha'] = self.refs['heads/'+pr['base']['ref']]
+                pr['mergeable_state'] = 'clean' if self.ancestor(pr['base']['sha'], pr['head']['sha']) else 'behind'
+            if route.endswith('/update-branch'):
+                if method != 'PUT' or payload != {'expected_head_sha': pr['head']['sha']}:
+                    raise AssertionError('Update must CAS the exact support head')
+                old, base = pr['head']['sha'], pr['base']['sha']
+                head = flow.hashlib.sha1((old+base).encode()).hexdigest()
+                tree = flow.hashlib.sha1(('combined'+old+base).encode()).hexdigest()
+                self.commits[head] = self.commit(head, tree, [old, base])
+                self.refs['heads/'+pr['head']['ref']] = head
+                pr['head']['sha'] = head
+                self.updates.append((old, base, head))
+                self.effects.append(('PUT', route, payload))
+                run = self.run('ci.yml', 500+len(self.updates), head, pr['head']['ref'], 'pull_request', [copy.deepcopy(pr)])
+                self.evidence(run['id'], head, tree)
+                if self.hold_updated_ci:
+                    run.update(status='in_progress', conclusion=None)
+                if self.lose_update_response:
+                    self.lose_update_response = False
+                    raise OSError('response lost after update was accepted')
+                return {'message': 'Updating pull request branch'}
+        return super().api(path, method, payload, missing)
+
+
+class ReviewBackmergeTest(unittest.TestCase):
+    def prepare(self, server, store, source='develop'):
+        api = flow.GitHubAPI(server, clock=lambda: 1794304860)
+        journal = api.plan(source, '2026-11-10')
+        for _ in range(10):
+            if flow.advance(journal, api, store, enabled=True) == 'tag':
+                return api, journal
+        self.fail('Test release never reached its production tag')
+
+    def finish(self, api, journal, store):
+        actions = []
+        for _ in range(24):
+            action = flow.advance(journal, api, store, enabled=True)
+            actions.append(action)
+            if action == 'complete':
+                return actions
+        self.fail('Backmerge did not finish: '+repr(actions))
+
+    def test_diverged_develop_is_updated_with_noff_and_new_combination_ci(self):
+        server = DivergedRepositoryServer()
+        with tempfile.TemporaryDirectory() as directory:
+            store = flow.JournalStore(Path(directory))
+            api, journal = self.prepare(server, store)
+            server.advance_branch('develop', '9'*40)
+            server.hold_updated_ci = True
+            for _ in range(8):
+                flow.advance(journal, api, store, enabled=True)
+                if server.updates:
+                    break
+            self.assertEqual(1, len(server.updates), 'Diverged target must be merged into its support ref')
+            self.assertEqual('wait_backmerge', flow.advance(journal, api, store, enabled=True))
+            self.assertEqual('9'*40, server.refs['heads/develop'], 'Old CI cannot authorize the new combined head')
+            server.workflow_runs['ci.yml'][-1].update(status='completed', conclusion='success')
+            self.finish(api, journal, store)
+            head = journal['backmerges']['develop']['head']
+            self.assertTrue(server.ancestor('9'*40, head))
+            self.assertTrue(server.ancestor(journal['mergeCommit'], head))
+            final = server.commits[server.refs['heads/develop']]
+            self.assertEqual(['9'*40, head], [p['sha'] for p in final['parents']])
+            self.assertEqual(server.commits[head]['commit']['tree'], final['commit']['tree'])
+
+    def test_update_response_loss_recovers_exact_combined_head_once(self):
+        server = DivergedRepositoryServer()
+        with tempfile.TemporaryDirectory() as directory:
+            store = flow.JournalStore(Path(directory))
+            api, journal = self.prepare(server, store)
+            server.advance_branch('develop', '9'*40)
+            server.lose_update_response = True
+            caught = False
+            for _ in range(8):
+                try:
+                    flow.advance(journal, api, store, enabled=True)
+                except OSError:
+                    caught = True
+                    break
+            self.assertTrue(caught, 'The combined head update must be attempted')
+            resumed = store.read(journal['id'])
+            self.finish(flow.GitHubAPI(server, clock=lambda: 1794304860), resumed, store)
+            self.assertEqual(1, len(server.updates))
+            self.assertEqual(server.updates[0][2], resumed['backmerges']['develop']['head'])
+
+    def test_hotfix_active_release_and_develop_get_separate_combined_heads(self):
+        server = DivergedRepositoryServer()
+        source = 'hotfix/2026.11.10-fix'
+        server.refs['heads/'+source] = 'a'*40
+        server.refs['heads/release/2026.11.11-upcoming'] = 'b'*40
+        server.advance_branch('release/2026.11.11-upcoming', '7'*40)
+        server.advance_branch('develop', '9'*40)
+        server.manifest['source']['ref'] = 'refs/heads/'+source
+        server.manifest_raw = json.dumps(server.manifest).encode()
+        with tempfile.TemporaryDirectory() as directory:
+            store = flow.JournalStore(Path(directory))
+            api, journal = self.prepare(server, store, source)
+            self.finish(api, journal, store)
+            self.assertEqual(2, len(server.updates))
+            active = journal['backmerges']['release/2026.11.11-upcoming']
+            develop = journal['backmerges']['develop']
+            self.assertNotEqual(active['branch'], develop['branch'])
+            self.assertTrue(server.ancestor('7'*40, active['head']))
+            self.assertTrue(server.ancestor('9'*40, develop['head']))
+            self.assertFalse(server.ancestor('7'*40, develop['head']), 'Unreleased active-release commits must not leak into develop')
+
+
+class ReviewFlagTest(unittest.TestCase):
+    def test_repository_enablement_is_sufficient_without_local_switch(self):
+        self.assertTrue(hasattr(flow.GitHubAPI, 'release_enabled'), 'CLI must read the rollout variable')
+        api = flow.GitHubAPI(FakeTransport({('GET', '/actions/variables/HEYI_RELEASE_FLOW_ENABLED'): {'name': 'HEYI_RELEASE_FLOW_ENABLED', 'value': 'true'}}))
+        self.assertTrue(api.release_enabled({}))
+
+    def test_local_true_cannot_bypass_remote_off_and_false_is_a_kill_switch(self):
+        self.assertTrue(hasattr(flow.GitHubAPI, 'release_enabled'), 'CLI must read the rollout variable')
+        api = flow.GitHubAPI(FakeTransport({}))
+        self.assertFalse(api.release_enabled({'HEYI_RELEASE_FLOW_ENABLED': 'true'}))
+        self.assertFalse(api.release_enabled({'HEYI_RELEASE_FLOW_ENABLED': 'false'}))
+        self.assertFalse(api.release_enabled({}))
+
+
+class ReviewBackmergeRaceTest(unittest.TestCase):
+    def test_target_advancement_requires_another_exact_combination(self):
+        server = DivergedRepositoryServer()
+        with tempfile.TemporaryDirectory() as directory:
+            store = flow.JournalStore(Path(directory))
+            helper = ReviewBackmergeTest()
+            api, journal = helper.prepare(server, store)
+            server.advance_branch('develop', '9'*40)
+            for _ in range(8):
+                flow.advance(journal, api, store, enabled=True)
+                if server.updates:
+                    break
+            self.assertEqual(1, len(server.updates))
+            server.advance_branch('develop', '2'*40)
+            helper.finish(api, journal, store)
+            self.assertEqual(2, len(server.updates))
+            self.assertEqual('2'*40, server.updates[1][1])
+            self.assertEqual(server.updates[0][2], server.updates[1][0])
+            self.assertTrue(server.ancestor('2'*40, server.refs['heads/develop']))
+
+    def test_unrequested_support_head_change_stops_without_merging(self):
+        server = DivergedRepositoryServer()
+        with tempfile.TemporaryDirectory() as directory:
+            store = flow.JournalStore(Path(directory))
+            helper = ReviewBackmergeTest()
+            api, journal = helper.prepare(server, store)
+            server.advance_branch('develop', '9'*40)
+            server.hold_updated_ci = True
+            for _ in range(8):
+                flow.advance(journal, api, store, enabled=True)
+                if server.updates:
+                    break
+            self.assertEqual('wait_backmerge', flow.advance(journal, api, store, enabled=True))
+            support = journal['backmerges']['develop']['branch']
+            expected_head = journal['backmerges']['develop']['head']
+            server.advance_branch(support, '2'*40)
+            self.assertEqual('baseline_changed', flow.advance(journal, api, store, enabled=True))
+            self.assertEqual(expected_head, journal['backmerges']['develop']['head'])
+            self.assertEqual('9'*40, server.refs['heads/develop'])
+
+
+class ReviewBackmergeRejectionTest(unittest.TestCase):
+    def test_rejected_update_does_not_leave_an_uncertain_dispatch_lock(self):
+        self.assertTrue(hasattr(flow, 'GitHubError'), 'Definitive API rejections must be distinct from lost responses')
+        server = DivergedRepositoryServer()
+        original = server.api
+        rejected = []
+        def api_call(path, method='GET', payload=None, missing=False):
+            if path.endswith('/update-branch') and not rejected:
+                rejected.append(path)
+                raise flow.GitHubError(409)
+            return original(path, method, payload, missing)
+        server.api = api_call
+        with tempfile.TemporaryDirectory() as directory:
+            store = flow.JournalStore(Path(directory))
+            helper = ReviewBackmergeTest()
+            api, journal = helper.prepare(server, store)
+            server.advance_branch('develop', '9'*40)
+            for _ in range(8):
+                try:
+                    flow.advance(journal, api, store, enabled=True)
+                except flow.GitHubError:
+                    break
+            resumed = store.read(journal['id'])
+            self.assertEqual('conflict', resumed['phase'])
+            self.assertNotIn('pendingUpdate', resumed['backmerges']['develop'])
+            helper.finish(flow.GitHubAPI(server, clock=lambda: 1794304860), resumed, store)
+            self.assertEqual(1, len(server.updates))
+
+    def test_recovered_backmerge_identity_is_validated_before_api_use(self):
+        j = {'id': 'a'*32, 'head': 'b'*40, 'base': 'c'*40, 'tree': 'd'*40, 'version': 'v2026.11.10',
+             'source': 'develop', 'branch': 'release/2026.11.10-flow', 'baselineVersion': 'v2026.11.9',
+             'activeReleases': ['main-tree']}
+        with self.assertRaises(flow.FlowError):
+            flow.validate_journal(j)
+
+
+class ReviewCommandTest(unittest.TestCase):
+    def test_one_command_uses_repository_flag_without_environment_enablement(self):
+        from unittest.mock import patch
+        server = RepositoryServer()
+        original = server.api
+        def api_call(path, method='GET', payload=None, missing=False):
+            if path == '/actions/variables/HEYI_RELEASE_FLOW_ENABLED':
+                return {'name': 'HEYI_RELEASE_FLOW_ENABLED', 'value': 'true'}
+            return original(path, method, payload, missing)
+        server.api = api_call
+        adapter = flow.GitHubAPI(server, clock=lambda: 1794304860)
+        with tempfile.TemporaryDirectory() as directory:
+            class Local:
+                common_dir = Path(directory)
+                def dirty_paths(self):
+                    return []
+            with patch.dict(flow.os.environ, {}, clear=True), patch.object(flow, 'GitContext', return_value=Local()), \
+                    patch.object(flow, 'GitHubAPI', return_value=adapter), patch.object(flow.time, 'sleep'), \
+                    patch.object(flow, 'datetime') as current, redirect_stdout(io.StringIO()):
+                current.now.return_value.date.return_value.isoformat.return_value = '2026-11-10'
+                self.assertEqual(0, flow.main(['--source', 'develop']))
+            journals = list((Path(directory)/'heyi-release-flow').glob('*.json'))
+            self.assertEqual(1, len(journals))
+            self.assertEqual('complete', json.loads(journals[0].read_text())['phase'])
+            self.assertEqual(1, len(server.workflow_runs['deploy.yml']))
 
 
 if __name__ == '__main__':
