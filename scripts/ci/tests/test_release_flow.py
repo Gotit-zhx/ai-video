@@ -562,7 +562,7 @@ class RepositoryServer:
                         'b'*40: self.commit('b'*40, 'd'*40, [])}
         self.prs = {}
         self.releases = {}
-        self.workflow_runs = {'ci.yml': [], 'candidate.yml': [], 'operations.yml': [], 'deploy.yml': []}
+        self.workflow_runs = {'ci.yml': [], 'candidate.yml': [], 'operations.yml': [], 'deploy.yml': [], 'release-ready.yml': []}
         self.artifacts = {}
         self.archives = {}
         self.effects = []
@@ -577,7 +577,7 @@ class RepositoryServer:
         return {'sha': sha, 'commit': {'tree': {'sha': tree}}, 'parents': [{'sha': p} for p in parents]}
 
     def run(self, workflow, identity, head, branch, event, prs=None):
-        value = {'id': identity, 'run_attempt': 1, 'head_sha': head, 'head_branch': branch, 'event': event,
+        value = {'id': identity, 'run_attempt': 1, 'check_suite_id': identity*10, 'head_sha': head, 'head_branch': branch, 'event': event,
                  'path': '.github/workflows/' + workflow, 'status': 'completed', 'conclusion': 'success',
                  'repository': {'full_name': flow.REPOSITORY}, 'head_repository': {'full_name': flow.REPOSITORY},
                  'run_started_at': '2026-11-10T10:00:00Z', 'updated_at': '2026-11-10T10:01:00Z',
@@ -652,6 +652,12 @@ class RepositoryServer:
             return [{'name': n[6:], 'commit': {'sha': sha}} for n, sha in self.refs.items() if n.startswith('heads/')]
         if route.endswith('/protection/required_status_checks'):
             return {'strict': True, 'contexts': ['CI required', 'Release ready']}
+        if route.startswith('/check-runs/'):
+            identity = int(route.split('/')[-1])
+            run = next(r for r in self.workflow_runs['release-ready.yml'] if r['id']*100 == identity)
+            return {'id': identity, 'name': 'Release ready', 'head_sha': run['head_sha'],
+                    'check_suite': {'id': run['check_suite_id']}, 'app': {'id': 15368, 'slug': 'github-actions'},
+                    'status': run['status'], 'conclusion': run['conclusion']}
         if route.startswith('/commits/') and route.endswith('/check-runs'):
             return {'check_runs': [{'name': n, 'app': {'slug': 'github-actions'}, 'status': 'completed', 'conclusion': 'success'}
                                    for n in ['CI required', *(['Release ready'] if 'candidate-' + 'a'*40 in self.releases else [])]]}
@@ -680,6 +686,9 @@ class RepositoryServer:
             self.prs[number] = pr
             self.run('ci.yml', 200 + number, pr['head']['sha'], payload['head'], 'pull_request', [copy.deepcopy(pr)])
             self.evidence(200 + number, pr['head']['sha'], self.commits[pr['head']['sha']]['commit']['tree']['sha'])
+            if payload['base'] == 'main-tree':
+                ready = self.run('release-ready.yml', 250+number, pr['head']['sha'], payload['head'], 'pull_request', [copy.deepcopy(pr)])
+                ready.update(status='in_progress', conclusion=None)
             return copy.deepcopy(pr)
         if route.startswith('/pulls/'):
             number = int(route.split('/')[2])
@@ -707,6 +716,9 @@ class RepositoryServer:
                 self.run(workflow, 300, 'a'*40, payload['ref'], 'workflow_dispatch')
                 self.refs['tags/candidate-' + 'a'*40] = 'a'*40
                 self.releases['candidate-' + 'a'*40] = {'release.json': self.manifest_raw}
+                for ready in self.workflow_runs['release-ready.yml']:
+                    if ready['head_sha'] == 'a'*40:
+                        ready.update(status='completed', conclusion='success')
                 return {}
             if workflow == 'operations.yml':
                 run = self.run(workflow, 350, 'b'*40, 'main-tree', 'workflow_dispatch')
@@ -721,6 +733,11 @@ class RepositoryServer:
             identity = int(route.split('/')[3])
             if route.endswith('/artifacts'):
                 return {'artifacts': copy.deepcopy(self.artifacts.get(identity, []))}
+            if route.endswith('/jobs'):
+                run = next(r for r in self.workflow_runs['release-ready.yml'] if r['id'] == identity)
+                return {'jobs': [{'id': identity*100, 'run_id': identity, 'name': 'Release ready', 'head_sha': run['head_sha'],
+                    'status': run['status'], 'conclusion': run['conclusion'],
+                    'check_run_url': 'https://api.github.com/repos/'+flow.REPOSITORY+'/check-runs/'+str(identity*100)}]}
             return copy.deepcopy(next(r for runs in self.workflow_runs.values() for r in runs if r['id'] == identity))
         raise AssertionError(('unexpected API', method, path, payload))
 
@@ -1114,10 +1131,6 @@ class ReviewCommandTest(unittest.TestCase):
             self.assertEqual('complete', json.loads(journals[0].read_text())['phase'])
             self.assertEqual(1, len(server.workflow_runs['deploy.yml']))
 
-
-if __name__ == '__main__':
-    unittest.main()
-
 class PrReusedExecutionAdapterTest(unittest.TestCase):
     def fixture(self):
         import zipfile
@@ -1157,3 +1170,109 @@ class PrReusedExecutionAdapterTest(unittest.TestCase):
             observed=adapter.observe(journal)
             self.assertTrue(observed.get('needsTrustedValidation'),change)
             self.assertNotIn('validationRun',observed)
+
+
+class EligibleReleaseReadyTest(unittest.TestCase):
+    def fixture(self):
+        pr = {'number': 46, 'head': {'sha': 'a'*40}, 'base': {'sha': 'b'*40}}
+        run = {'id': 400, 'run_attempt': 2, 'check_suite_id': 900,
+               'head_sha': 'a'*40, 'event': 'pull_request', 'path': '.github/workflows/release-ready.yml',
+               'repository': {'full_name': flow.REPOSITORY}, 'head_repository': {'full_name': flow.REPOSITORY},
+               'status': 'completed', 'conclusion': 'success', 'pull_requests': [copy.deepcopy(pr)]}
+        job = {'id': 1234, 'run_id': 400, 'name': 'Release ready', 'head_sha': 'a'*40,
+               'status': 'completed', 'conclusion': 'success',
+               'check_run_url': 'https://api.github.com/repos/'+flow.REPOSITORY+'/check-runs/1234'}
+        check = {'id': 1234, 'name': 'Release ready', 'head_sha': 'a'*40, 'check_suite': {'id': 900},
+                 'app': {'id': 15368, 'slug': 'github-actions'}, 'status': 'completed', 'conclusion': 'success'}
+        responses = {
+            ('GET', '/actions/workflows/release-ready.yml/runs?head_sha='+'a'*40+'&per_page=100&page=1'): {'workflow_runs': [run]},
+            ('GET', '/actions/runs/400/attempts/2/jobs?per_page=100&page=1'): {'jobs': [job]},
+            ('GET', '/check-runs/1234'): check}
+        return flow.GitHubAPI(FakeTransport(responses)), pr, run, job, check
+
+    def test_successful_exact_pr_workflow_and_native_check_are_ready(self):
+        self.assertTrue(hasattr(flow.GitHubAPI, 'pr_release_ready'), 'Readiness must bind an eligible PR workflow')
+        api, pr, _, _, _ = self.fixture()
+        self.assertTrue(api.pr_release_ready(pr))
+
+    def test_dispatch_or_other_workflow_success_is_not_eligible(self):
+        self.assertTrue(hasattr(flow.GitHubAPI, 'pr_release_ready'), 'Readiness must bind an eligible PR workflow')
+        for change in [{'event': 'workflow_dispatch'}, {'event': 'workflow_run'}, {'event': 'schedule'},
+                       {'event': 'push'}, {'path': '.github/workflows/candidate.yml'},
+                       {'head_repository': {'full_name': 'other/repo'}}, {'repository': {'full_name': 'other/repo'}}]:
+            api, pr, run, _, _ = self.fixture()
+            run.update(change)
+            self.assertFalse(api.pr_release_ready(pr), change)
+
+    def test_stale_pr_head_base_number_or_failed_run_is_not_ready(self):
+        self.assertTrue(hasattr(flow.GitHubAPI, 'pr_release_ready'), 'Readiness must bind an eligible PR workflow')
+        for change in ['head', 'base', 'number', 'run_head', 'failure', 'pending']:
+            api, pr, run, _, _ = self.fixture()
+            if change in {'head', 'base'}:
+                run['pull_requests'][0][change]['sha'] = 'c'*40
+            elif change == 'number': run['pull_requests'][0]['number'] = 47
+            elif change == 'run_head': run['head_sha'] = 'c'*40
+            elif change == 'failure': run['conclusion'] = 'failure'
+            else: run.update(status='in_progress', conclusion=None)
+            self.assertFalse(api.pr_release_ready(pr), change)
+
+    def test_matching_name_on_another_suite_or_non_actions_app_is_rejected(self):
+        self.assertTrue(hasattr(flow.GitHubAPI, 'pr_release_ready'), 'Readiness must bind an eligible PR workflow')
+        for change in [{'check_suite': {'id': 901}}, {'id': 999}, {'head_sha': 'c'*40},
+                       {'name': 'Candidate published'}, {'app': {'id': 1, 'slug': 'github-actions'}},
+                       {'app': {'id': 15368, 'slug': 'other'}}, {'conclusion': 'failure'}]:
+            api, pr, _, _, check = self.fixture()
+            check.update(change)
+            self.assertFalse(api.pr_release_ready(pr), change)
+
+    def test_attempt_job_binding_and_duplicate_jobs_fail_closed(self):
+        self.assertTrue(hasattr(flow.GitHubAPI, 'pr_release_ready'), 'Readiness must bind an eligible PR workflow')
+        for change in ['run', 'head', 'url', 'duplicate']:
+            api, pr, _, job, _ = self.fixture()
+            if change == 'run': job['run_id'] = 401
+            elif change == 'head': job['head_sha'] = 'c'*40
+            elif change == 'url': job['check_run_url'] = 'https://api.github.com/repos/other/repo/check-runs/1234'
+            else: api.transport.responses[('GET', '/actions/runs/400/attempts/2/jobs?per_page=100&page=1')]['jobs'].append(dict(job))
+            self.assertFalse(api.pr_release_ready(pr), change)
+
+    def test_newer_failed_attempt_does_not_inherit_old_success(self):
+        self.assertTrue(hasattr(flow.GitHubAPI, 'pr_release_ready'), 'Readiness must bind an eligible PR workflow')
+        api, pr, run, _, _ = self.fixture()
+        runs = api.transport.responses[('GET', '/actions/workflows/release-ready.yml/runs?head_sha='+'a'*40+'&per_page=100&page=1')]['workflow_runs']
+        runs.append({**run, 'run_attempt': 3, 'conclusion': 'failure'})
+        self.assertFalse(api.pr_release_ready(pr))
+
+
+class ReleaseReadyOrderingTest(unittest.TestCase):
+    def test_pending_readiness_does_not_block_candidate_dispatch(self):
+        server = RepositoryServer()
+        api = flow.GitHubAPI(server, clock=lambda: 1794304860)
+        journal = api.plan('develop', '2026-11-10')
+        api.perform('create_branch', journal, {})
+        journal.update(api.perform('open_pr', journal, {}))
+        observed = api.observe(journal)
+        self.assertTrue(observed['ciReady'])
+        self.assertFalse(observed['releaseReady'])
+        self.assertEqual('dispatch_candidate', flow.next_action(journal, observed))
+
+    def test_successful_dispatch_origin_check_alone_cannot_authorize_merge(self):
+        server = RepositoryServer()
+        api = flow.GitHubAPI(server, clock=lambda: 1794304860)
+        journal = api.plan('develop', '2026-11-10')
+        api.perform('create_branch', journal, {})
+        journal.update(api.perform('open_pr', journal, {}))
+        api.perform('dispatch_candidate', journal, api.observe(journal))
+        server.workflow_runs['release-ready.yml'][0]['event'] = 'workflow_dispatch'
+        self.assertTrue(api.check(journal['head'], 'Release ready'), 'Reproduce legacy same-name dispatch check success')
+        observed = api.observe(journal)
+        self.assertTrue(observed['candidateReady'])
+        self.assertFalse(observed['releaseReady'])
+        api.perform('dispatch_host_check', journal, observed)
+        observed = api.observe(journal)
+        self.assertTrue(observed['hostReady'])
+        self.assertEqual('wait_candidate', flow.next_action(journal, observed))
+        self.assertFalse(any(effect[0] == 'PUT' and effect[1].endswith('/merge') for effect in server.effects))
+
+
+if __name__ == '__main__':
+    unittest.main()
