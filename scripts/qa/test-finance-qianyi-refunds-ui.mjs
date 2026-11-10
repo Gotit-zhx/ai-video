@@ -14,6 +14,8 @@ w.api=async(path,options={})=>{
   const url=new URL(path,'https://example.test'),q=Object.fromEntries(url.searchParams);calls.push({url,q,options});
   if(url.pathname.endsWith('/shops'))return {data:{items:shops,groups}};
   if(url.pathname.endsWith('/qianyi/returns')){
+    for(const key of ['returnStatus','refundStatus','type','costStatus','receiptStatus'])
+      if(q[key]&&!/^[A-Z0-9_]{1,64}$/.test(q[key]))throw Error('千易状态筛选不正确');
     if(gate){const held=gate;gate=null;await new Promise(resolve=>held.release=resolve);}
     const ready=q.refundStatus==='FINISH';
     return {data:{total:73,page:Number(q.page),pageSize:50,basis:'千易接口原始口径',
@@ -41,6 +43,11 @@ assert(d.querySelector('.fq-totals').textContent.includes('退货成本合计（
 assert(d.querySelector('.fq-totals').textContent.includes('已匹配 80'));
 assert(d.querySelector('.fq-totals').textContent.includes('5 笔 · 合计仅含已匹配部分'));
 assert(!d.querySelector('.fq-panel').textContent.includes('退货成本冲回'));assert(!d.querySelector('[aria-label="成本状态"]'));assert(!button('导出报表'));assert(!d.querySelector('.fi-date-range'));
+const firstSelection={...refundCalls.at(-1).q},firstCount=calls.filter(c=>c.url.pathname.endsWith('/qianyi/returns')).length;
+button('刷新').click();
+await wait(()=>calls.filter(c=>c.url.pathname.endsWith('/qianyi/returns')).length>firstCount&&!d.querySelector('.fq-totals')?.hidden&&d.querySelector('.fq-totals')?.textContent.includes('73'));
+assert(!d.querySelector('.fq-panel').textContent.includes('读取失败'));
+for(const key of ['type','returnStatus','refundStatus','receiptScope','receiptStatus','start','end'])assert.equal(calls.at(-1).q[key],firstSelection[key]);
 await change('退款状态','FINISH');assert(d.querySelector('.fq-totals').textContent.includes('125.5'));assert(d.querySelector('.fq-totals').textContent.includes('730'));
 assert(!d.querySelector('.fq-totals').textContent.includes('退货成本待补齐'));assert(d.querySelector('.fq-totals').textContent.includes('使用历史成本价'));
 await change('售后类型','RETURN');assert.equal(calls.at(-1).q.type,'RETURN');assert.equal(calls.at(-1).q.refundStatus,'FINISH');
@@ -53,5 +60,16 @@ await change('退款状态','FINISH');assert(!d.querySelector('.fq-totals').hidd
 assert(d.querySelector('.fq-totals').textContent.includes('125.5'));assert(!d.querySelector('.fq-panel').textContent.includes('Q-PENDING'));
 const leaving={};gate=leaving;button('查询').click();await pause();button('订单').click();await wait(()=>d.body.textContent.includes('PLATFORM-ORDER'));
 leaving.release();await pause();assert(!d.querySelector('.fq-panel'));assert(d.body.textContent.includes('PLATFORM-ORDER'));
+button('退款').click();await wait(()=>!d.querySelector('.fq-totals')?.hidden&&d.querySelector('.fq-totals')?.textContent.includes('73'));
+assert.equal(calls.at(-1).q.refundStatus,'FINISH');assert.equal(calls.at(-1).q.type,'RETURN');
+await change('退款状态','');await change('退货状态','');await change('售后类型','');
+button('清除日期').click();await pause();
+const clearedCount=calls.filter(c=>c.url.pathname.endsWith('/qianyi/returns')).length;button('刷新').click();
+await wait(()=>calls.filter(c=>c.url.pathname.endsWith('/qianyi/returns')).length>clearedCount&&!d.querySelector('.fq-totals')?.hidden&&d.querySelector('.fq-totals')?.textContent.includes('73'));
+const clearedQuery=calls.filter(c=>c.url.pathname.endsWith('/qianyi/returns')).at(-1).q;
+for(const key of ['refundStatus','returnStatus','type','start','end'])assert.equal(clearedQuery[key],'','refresh preserves an intentionally cleared '+key);
+button('导出千易售后 Excel').click();await pause();
+for(const key of ['refundStatus','returnStatus','type','start','end'])assert.equal(exports.at(-1).searchParams.get(key),'');
+assert(!d.querySelector('.fq-panel').textContent.includes('读取失败'));
 w.FinanceWorkspace.reset();dom.window.close();
-console.log('PASS embedded Qianyi refund source, defaults, full-filter totals, export, pagination, loading and rapid-switch isolation.');
+console.log('PASS embedded Qianyi refund source, refresh/re-entry state contract, cleared filters, full-filter totals, export, pagination, loading and rapid-switch isolation.');
