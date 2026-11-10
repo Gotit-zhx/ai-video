@@ -1195,7 +1195,7 @@
     const blob=await response.blob();
     if(!allowed()||(typeof currentUser!=='undefined'?currentUser?.organizationId:null)!==owner)throw Error('登录公司已变化，请重新导出');
     const url=URL.createObjectURL(blob),a=el('a',null,document.body);
-    a.href=url;a.download=`已结算订单成本-${selection.start}-${selection.end}.xlsx`;a.click();a.remove();
+    a.href=url;a.download=`${selection.costStatus==='PENDING'&&!selection.shopId?'所有店铺待补齐订单成本':'已结算订单成本'}-${selection.start}-${selection.end}.xlsx`;a.click();a.remove();
     setTimeout(()=>URL.revokeObjectURL(url),10000);
   }
   function importDialog(){

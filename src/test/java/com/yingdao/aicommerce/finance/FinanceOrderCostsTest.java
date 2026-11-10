@@ -77,6 +77,24 @@ class FinanceOrderCostsTest {
         var ambiguous=new ArrayList<>(costs);ambiguous.add(cost("PACK","海外仓-菲律宾2","2026-10","8"));
         assertEquals("",FinanceOrderCosts.resolveWarehouse(context(ambiguous,Map.of(),Map.of())));
     }
+    @Test void countryNamedWarehousesCalculateLocalCostsWithoutAnOverseasPrefix(){
+        var costs=List.of(cost("PACK","菲律宾","2026-10","7"),cost("PACK","泰国","2026-10","100"),
+            cost("PACK","马来西亚","2026-10","200"));
+        for(var entry:Map.of("PH","菲律宾","TH","泰国","MY","马来西亚").entrySet()){
+            var context=new FinanceOrderCosts.Context("shop","group",entry.getKey(),"Asia/Manila","book",costs,Map.of(),Map.of());
+            var result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(tk("line","PACK"))),context);
+            assertEquals(entry.getValue(),result.get("warehouse"));assertEquals("READY",result.get("status"));
+        }
+        var result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(tk("line","PACK"))),context(costs,Map.of(),Map.of()));
+        amountEquals("7",result.get("amountCny"));
+    }
+    @Test void plainAndOverseasWarehousesInTheSameCountryRemainAmbiguous(){
+        var costs=List.of(cost("PACK","菲律宾","2026-10","7"),cost("PACK","海外仓-菲律宾","2026-10","8"));
+        var result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(tk("line","PACK"))),context(costs,Map.of(),Map.of()));
+        assertEquals("",result.get("warehouse"));assertEquals("INCOMPLETE",result.get("status"));assertNull(result.get("amountCny"));
+        result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(tk("line","PACK"))),context(costs,Map.of("warehouse","菲律宾"),Map.of()));
+        assertEquals("READY",result.get("status"));amountEquals("7",result.get("amountCny"));
+    }
     @Test void recognizedBundleWithoutLocalCountryCostIsExplicitAndNeverBorrowsAnotherCountry(){
         var context=new FinanceOrderCosts.Context("shop","group","MY","Asia/Kuala_Lumpur","book",
             List.of(cost("YUXI-BDiaper-NB","海外仓-菲律宾","2026-08","9.1"),cost("YUXI-BDiaper-NB","海外仓-泰国","2026-08","9"),
