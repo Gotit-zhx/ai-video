@@ -22,8 +22,8 @@ final class FinanceAdSpendReport {
     static String campaignKey(Map<String,Object> r){return bucket(r)+"\0"+text(r.get("campaign_id"));}
     static Map<String,Object> api(Map<String,Object> record,Map<String,Object> raw){
         var r=new LinkedHashMap<String,Object>();r.put("source_key",record.get("id"));r.put("platform",record.get("platform"));r.put("shop_id",record.get("shop_id"));r.put("record_date",text(record.get("record_date")));r.put("currency",record.get("currency"));r.put("amount",record.get("amount"));
-        r.put("account_id",first(raw,"advertiser_id","account_id"));r.put("account_name",first(raw,"advertiser_name","account_name"));r.put("campaign_id",first(raw,"dimensions.campaign_id","campaign_id"));r.put("campaign_name",first(raw,"dimensions.campaign_name","campaign_name"));
-        r.put("source","API".equals(record.get("source"))?("AD_GMV".equals(record.get("kind"))?"API_GMV":"API_BASIC"):"LEGACY_IMPORT");
+        r.put("account_id","SHOPEE".equals(record.get("platform"))?first(raw,"shop_id","account_id"):first(raw,"advertiser_id","account_id"));r.put("account_name",first(raw,"advertiser_name","account_name"));r.put("campaign_id",first(raw,"dimensions.campaign_id","campaign_id","ad_id"));r.put("campaign_name",first(raw,"dimensions.campaign_name","campaign_name","ad_name"));
+        r.put("source","API".equals(record.get("source"))?("AD_GMV".equals(record.get("kind"))?"API_GMV":text(r.get("campaign_id")).isBlank()?"API_BASIC":"API_CAMPAIGN"):"LEGACY_IMPORT");
         for(String k:MONEY.subList(1,4))r.put(k,null);return r;
     }
     static List<Map<String,Object>> allocated(Map<String,Object> source,List<Map<String,Object>> assignments,List<Map<String,Object>> shops){
@@ -52,9 +52,11 @@ final class FinanceAdSpendReport {
         if(remaining){rest.put("shop_id","UNASSIGNED");rest.put("assignment_status","PARTIAL");out.add(rest);}return out;
     }
     static Map<String,Object> build(List<Map<String,Object>> sources,List<Map<String,Object>> assignments,List<Map<String,Object>> shops,Filter f,FinanceFx.Quote quote,String search,String status){
-        var imports=new HashSet<String>();var series=new HashSet<String>();var importCounts=new HashMap<String,Integer>();var officialByCampaign=new HashMap<String,List<Map<String,Object>>>();var apiPeriods=new HashSet<String>();
-        for(var r:sources){String key=campaignKey(r);if(text(r.get("source")).startsWith("API_"))apiPeriods.add(periodKey(r));if("IMPORT_FUNDING".equals(r.get("source"))){imports.add(key);importCounts.merge(key,1,Integer::sum);}if("API_GMV".equals(r.get("source")))officialByCampaign.computeIfAbsent(key,k->new ArrayList<>()).add(r);if(!text(r.get("campaign_id")).isBlank())series.add(bucket(r));}
         var known=new HashMap<String,Map<String,Object>>();shops.forEach(s->known.put(text(s.get("id")),s));
+        var normalized=new ArrayList<Map<String,Object>>();
+        for(var source:sources){var row=new LinkedHashMap<>(source);var shop=known.getOrDefault(text(row.get("shop_id")),Map.of());if("SHOPEE".equals(row.get("platform"))&&text(row.get("source")).startsWith("API_")&&text(row.get("account_id")).isBlank()&&!text(shop.get("external_shop_id")).isBlank())row.put("account_id",shop.get("external_shop_id"));normalized.add(row);}sources=normalized;
+        var imports=new HashSet<String>();var series=new HashSet<String>();var importCounts=new HashMap<String,Integer>();var officialByCampaign=new HashMap<String,List<Map<String,Object>>>();var apiPeriods=new HashSet<String>();var fundingPeriods=new HashSet<String>();
+        for(var r:sources){String key=campaignKey(r);if(text(r.get("source")).startsWith("API_"))apiPeriods.add(periodKey(r));if("IMPORT_FUNDING".equals(r.get("source"))){imports.add(key);importCounts.merge(key,1,Integer::sum);fundingPeriods.add(periodKey(r));}if(Set.of("API_GMV","API_CAMPAIGN").contains(text(r.get("source"))))officialByCampaign.computeIfAbsent(key,k->new ArrayList<>()).add(r);if(!text(r.get("campaign_id")).isBlank())series.add(bucket(r));}
         var splits=new HashMap<String,List<Map<String,Object>>>();assignments.forEach(a->splits.computeIfAbsent(text(a.get("source_key")),k->new ArrayList<>()).add(a));
         var prepared=new ArrayList<Map<String,Object>>();int excluded=0,unresolved=0;
         for(var source:sources){
@@ -62,14 +64,19 @@ final class FinanceAdSpendReport {
             if(day.isBefore(f.start())||day.isAfter(f.end())||!f.platform().isBlank()&&!platform.equals(f.platform())||!f.currency().isBlank()&&!currency.equals(f.currency()))continue;
             if(!"IMPORT_FUNDING".equals(source.get("source"))&&imports.contains(campaignKey(source))||"API_BASIC".equals(source.get("source"))&&!text(source.get("account_id")).isBlank()&&series.contains(bucket(source))){excluded++;continue;}
             var attributed=new LinkedHashMap<>(source);
-            boolean unknownIdentity=(text(source.get("account_id")).isBlank()||text(source.get("account_id")).startsWith("manual:"))&&apiPeriods.contains(periodKey(source));
+            var confirmed=splits.getOrDefault(text(source.get("source_key")),List.of());
+            if(confirmed.isEmpty()&&"IMPORT_FUNDING".equals(source.get("source"))&&"SHOPEE".equals(platform)){
+                var owners=shops.stream().filter(s->"SHOPEE".equals(s.get("platform"))&&!text(s.get("external_shop_id")).isBlank()&&s.get("external_shop_id").equals(source.get("account_id"))).toList();
+                if(owners.size()==1)attributed.put("shop_id",owners.getFirst().get("id"));
+            }
+            boolean unknownIdentity=(text(source.get("account_id")).isBlank()||text(source.get("account_id")).startsWith("manual:"))&&(text(source.get("source")).startsWith("API_")?fundingPeriods.contains(periodKey(source)):apiPeriods.contains(periodKey(source)));
             if(unknownIdentity){attributed.put("overlap_status","IDENTITY_REQUIRED");unresolved++;}
-            if("IMPORT_FUNDING".equals(source.get("source"))&&importCounts.get(campaignKey(source))==1){
+            if(confirmed.isEmpty()&&"IMPORT_FUNDING".equals(source.get("source"))&&importCounts.get(campaignKey(source))==1){
                 var matches=officialByCampaign.getOrDefault(campaignKey(source),List.of());
                 var owners=matches.stream().map(r->text(r.get("shop_id"))).distinct().toList();
                 if(owners.size()==1&&known.containsKey(owners.getFirst())&&matches.stream().allMatch(r->r.get("amount")!=null)&&matches.stream().map(r->decimal(r.get("amount"))).reduce(BigDecimal.ZERO,BigDecimal::add).compareTo(decimal(source.get("amount")))==0)attributed.put("shop_id",owners.getFirst());
             }
-            for(var row:allocated(attributed,splits.getOrDefault(text(source.get("source_key")),List.of()),shops)){
+            for(var row:allocated(attributed,confirmed,shops)){
                 String shop=text(row.get("shop_id"));var details=known.getOrDefault(shop,Map.of());String group=text(details.get("group_id"));
                 if(!f.shopId().isBlank()&&!f.shopId().equals(shop)||!f.groupId().isBlank()&&!(f.groupId().equals("UNGROUPED")?group.isBlank():f.groupId().equals(group)))continue;
                 row.put("group_id",group);row.put("group_name",text(details.get("group_name")));row.put("shop_name",shop.equals("UNASSIGNED")?"待分配店铺":first(details,"display_name","name"));

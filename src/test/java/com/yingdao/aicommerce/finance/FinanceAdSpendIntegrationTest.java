@@ -49,6 +49,12 @@ class FinanceAdSpendIntegrationTest {
         request.addHeader("Sec-Fetch-Site","cross-site");assertThrows(RuntimeException.class,()->controller.authorize(fixture.principal(),request));
         assertThrows(RuntimeException.class,()->controller.assign("a".repeat(64),new FinanceAdSpendController.Assignment("previous-company","fingerprint",List.of()),fixture.principal()));
     }
+    @Test void shopeeNativeExpenseImportAutomaticallyUsesItsExactCompanyShopSource(){
+        String sourceShop=fixture.groupedShop(fixture.owner,"SHOP_123",fixture.service.saveGroup(fixture.owner,null,"Shopee source"));
+        var entries=FinanceAdSpendImport.parse(List.of(List.of("date","ad_id","expense","currency"),List.of("2026-10-02","9012345678901234","9.00","USD")),"SHOPEE","SHOP_123","Shopee source",false);
+        spend.saveImport(fixture.owner,"actor",entries,"shopee.csv");var result=rows(spend.report(fixture.owner,filter,false,"","","").get("items")).getFirst();assertEquals(sourceShop,result.get("shop_id"));assertNull(result.get("cash_amount"));assertEquals(new BigDecimal("9.000000"),result.get("amount"));
+        assertEquals(0,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_records",Integer.class));
+    }
     @Test void exactAssignmentsAreScopedVersionedAndReadAfterAllocationBeforeShopFilter(){
         var imported=FinanceAdSpendImport.parse(file,"TIKTOK_SHOP","123","共享账户",true);spend.saveImport(fixture.owner,"actor",imported,"report.xlsx");var source=imported.getFirst();
         var values=new LinkedHashMap<String,Object>(Map.of("shop_id",shop,"amount",new BigDecimal("7.81"),"cash_amount",BigDecimal.ZERO,"credit_amount",new BigDecimal("6.6"),"grant_amount",new BigDecimal("1.21")));

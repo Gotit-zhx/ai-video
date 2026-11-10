@@ -11,7 +11,7 @@ final class FinanceAdSpendImport {
     static List<Map<String,Object>> parse(List<List<String>> table,String platform,String accountId,String accountName,boolean debitNegative){
         if(!Set.of("TIKTOK_SHOP","SHOPEE").contains(platform))throw bad("请选择 TikTok 或 Shopee");
         if(accountName==null||accountName.isBlank()||accountName.length()>250)throw bad("请填写广告账户或独立报表来源名称");
-        accountId=text(accountId).trim();if(accountId.isBlank()||!accountId.matches("[A-Za-z0-9_-]{1,64}"))throw bad("请填写真实广告账户 ID（不要求已授权），用于核对 API 与导入重叠");
+        accountId=text(accountId).trim();if(accountId.isBlank()||!accountId.matches("[A-Za-z0-9_-]{1,64}"))throw bad("请填写来源平台 ID：TK 广告账户或 Shopee 店铺 ID，用于核对 API 与导入重叠");
         if(table.size()<2||table.size()>20001)throw bad("报表须包含 1 至 20,000 行明细");
         var h=new HashMap<String,Integer>();for(int i=0;i<table.getFirst().size();i++)h.put(table.getFirst().get(i).trim().toLowerCase(Locale.ROOT),i);
         var result=new ArrayList<Map<String,Object>>();var keys=new HashMap<String,Map<String,Object>>();

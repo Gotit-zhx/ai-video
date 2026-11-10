@@ -4,6 +4,7 @@ import {createAdvertisingFixture} from './fixtures/finance-advertising.mjs';
 const {JSDOM}=await import(process.env.JSDOM_MODULE||'jsdom');
 const dom=new JSDOM('<main id="finance-page"></main>',{url:'https://example.test/#finance-ads',runScripts:'outside-only',pretendToBeVisual:true});
 const w=dom.window,d=w.document,root=d.querySelector('main'),fixture=createAdvertisingFixture(),writes=[],reads=[];
+fixture.shops[1].external_shop_id='SHOP_123';
 w.currentUser={organizationId:'qa',userId:'reader',permissions:['finance:view']};w.matchMedia=()=>({matches:false});w.ResizeObserver=class{observe(){}disconnect(){}};
 w.echarts={init:()=>({setOption(){},resize(){},dispose(){}})};w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
 const summary={platform:'TIKTOK_SHOP',group_id:'baby',group_name:'母婴组',currency:'CNY',amount:10,cash_amount:0,credit_amount:9,grant_amount:1,records:2,shop_count:1,pending_records:1};
@@ -40,6 +41,8 @@ try{
  [...form.querySelectorAll('button')].find(b=>b.textContent==='保存核实金额').click();await wait(()=>writes.some(r=>r.endpoint.endsWith('/allocations')));await wait(()=>!d.querySelector('dialog'));
  const sent=JSON.parse(writes.at(-1).options.body);assert.equal(sent.allocations[0].shop_id,'a');assert.equal(sent.allocations[0].credit_amount,'9');assert.equal(sent.fingerprint,'verified');
  w.FinanceWorkspace.leave();w.currentUser={...w.currentUser,organizationId:'another-company'};w.FinanceWorkspace.enter('ads');await ready();assert.equal(reads.filter(r=>r.endpoint==='/advertising/spend').at(-1).q.search,'','spending search does not leak into the next company');assert.equal(reads.filter(r=>r.endpoint==='/advertising/spend').at(-1).q.page,'1');
+ [...root.querySelectorAll('button')].find(b=>b.textContent==='导入消耗报表').click();await wait(()=>d.querySelector('dialog [aria-label="平台"]'));const platform=d.querySelector('dialog [aria-label="平台"]');platform.value='SHOPEE';platform.dispatchEvent(new w.Event('change'));
+ const source=d.querySelector('dialog [aria-label="已有投放来源（可选）"]');assert(source,'Shopee has a shop source selector');source.value='SHOP_123';source.dispatchEvent(new w.Event('change'));assert.equal(d.querySelector('dialog input').value,'SHOP_123');assert(![...source.options].some(n=>n.value==='100001'),'TikTok accounts are not offered as Shopee source shops');d.querySelector('dialog').close();
  failSpend=true;w.FinanceWorkspace.enter('ads');await ready();assert(root.textContent.includes('店铺消耗读取失败'));assert(!root.querySelector('[data-ad-spend-workspace]'),'failed reads must not display stale primary amounts');
  console.log('Finance advertising spending workspace UI passed');
 }finally{w.FinanceWorkspace.leave();dom.window.close();}

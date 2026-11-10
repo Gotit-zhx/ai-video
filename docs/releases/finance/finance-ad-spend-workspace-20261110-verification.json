@@ -4,14 +4,14 @@
   "branch": "feature/finance-ad-spend-workspace",
   "baseCommit": "c2f25382470b04ebe23e34696f77f3a818b827c7",
   "javaUnit": {
-    "tests": 108,
+    "tests": 139,
     "failures": 0,
     "errors": 0,
     "skipped": 0
   },
   "isolatedDatabase": {
     "classes": 1,
-    "tests": 4,
+    "tests": 5,
     "allowedSkips": [],
     "unexpectedSkips": 0,
     "result": "passed",
@@ -19,7 +19,7 @@
   },
   "frontend": {
     "tests": 735,
-    "uiSuites": 34,
+    "uiSuites": 35,
     "unexpectedSkips": 0,
     "result": "passed",
     "assetReferences": "passed"
@@ -38,7 +38,9 @@
     "previewCurrency": "native",
     "sourceOwnership": "unassigned-until-confirmed",
     "liveShopeeDataLoaded": false,
-    "localOnly": true
+    "localOnly": true,
+    "sourceAccountPlaceholder": "explicit-local-preview-only",
+    "persistentPreview": "loopback-only"
   },
   "review": {
     "implementationBlockers": 0,
@@ -47,12 +49,26 @@
       "inflight-detail-query",
       "later-api-unknown-identity-overlap"
     ],
-    "designRefinement": "Actual source account ID is required for imports; OAuth and exclusive shop binding are not required."
+    "designRefinement": "Source identity is required, without prior advertising OAuth: TikTok advertiser ID or Shopee source shop ID. Accounts are not exclusive shop ownership.",
+    "finalPlatformReview": "passed-no-blockers"
   },
   "production": {
     "migrationApplied": false,
     "deployed": false,
     "realDataImported": false,
     "controlsModified": false
+  },
+  "upstreamIntegration": {
+    "developCommit": "6cce6272a6eb0db133a8748a46004528ee3479a1",
+    "mergeCommit": "0771f12",
+    "costExportQueueAndDownloadsPreserved": true,
+    "resetAndLeaveHooksPreserved": true,
+    "companySearchIsolation": "passed"
+  },
+  "sourceHandling": {
+    "shopeeExactShopSource": "passed",
+    "apiCampaignNotSelfExcluded": "passed",
+    "explicitManualSplitsPreservedAfterAutoMatch": "passed",
+    "singleFxQuoteForAllComponents": "passed"
   }
 }

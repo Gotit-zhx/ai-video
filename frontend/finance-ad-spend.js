@@ -2,7 +2,7 @@
   'use strict';
   const money=['amount','cash_amount','credit_amount','grant_amount'];
   const labels={amount:'消耗合计',cash_amount:'现金消耗',credit_amount:'信用额度消耗',grant_amount:'广告费用赠款消耗'};
-  const sources={IMPORT_FUNDING:'资金消耗报表',API_GMV:'GMV Max 报表',API_BASIC:'账户投放报表',LEGACY_IMPORT:'历史导入'};
+  const sources={IMPORT_FUNDING:'资金消耗报表',API_GMV:'GMV Max 报表',API_BASIC:'账户投放报表',API_CAMPAIGN:'系列 / 商品投放报表',LEGACY_IMPORT:'历史导入'};
   const states={PENDING:'待分配',PARTIAL:'余款待分配',CONFIRMED:'已核实分配',OFFICIAL:'来源已归店',REVIEW:'来源变化待复核',SOURCE_REVIEW:'账户来源待核实 · 未叠加'};
   const numeric=v=>v==null||v===''?'未提供':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:2});
   const moneyText=v=>v==null||v===''?'未提供':Number(v).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -31,7 +31,7 @@
     const search=el('form',null,detail.n,'fi-actions');const input=el('input',null,search);input.placeholder='系列名称 / ID / 账户 / 店铺';input.setAttribute('aria-label','消耗系列或账户查询');input.value=ctx.search||'';
     const assignment=el('select',null,search);assignment.setAttribute('aria-label','消耗归属状态');for(const [v,l]of [['','全部归属状态'],['PENDING','待分配（含余款及待复核）'],['CONFIRMED','已核实分配'],['OFFICIAL','来源已归店']]){const n=el('option',l,assignment);n.value=v;}assignment.value=ctx.assignment||'';
     const submit=el('button','查询',search);submit.type='submit';search.onsubmit=e=>{e.preventDefault();ctx.query(input.value,assignment.value);};
-    table(detail.n,['日期','平台','店铺','展示币种',...headers,'归属状态','广告账户 / ID','推广系列名称 / ID','分组','投放类型','原币','原币合计','来源','操作'],(report.items||[]).map(r=>{
+    table(detail.n,['日期','平台','店铺','展示币种',...headers,'归属状态','账户 / 来源店铺 ID','推广系列 / 广告名称及 ID','分组','投放类型','原币','原币合计','来源','操作'],(report.items||[]).map(r=>{
       const account=el('span',null),campaign=el('span',null);el('span',r.account_name||'账户未提供',account);el('small',r.account_id||'ID 未提供',account);el('span',r.campaign_name||'名称未提供',campaign);el('small',r.campaign_id||'账户汇总（未提供系列 ID）',campaign);
       const operation=ctx.canManage()&&!['OFFICIAL','SOURCE_REVIEW'].includes(r.assignment_status)&&(r.shop_id==='UNASSIGNED'||r.source==='IMPORT_FUNDING')?button('分配 / 核实',null,()=>allocate(ctx,r.source_key),'fi-action-link'):'—';if(operation instanceof Node)operation.dataset.adSpendAllocate='';
       return [r.record_date,ctx.platformBadge(r.platform),r.shop_name,r.currency,...values(r),states[r.assignment_status]||r.assignment_status,account,campaign,r.group_name||'未分组',r.report_type||'未提供',r.source_currency,moneyText(r.original_amount),sources[r.source]||r.source,operation];
@@ -57,7 +57,7 @@
       }
       for(const a of source.allocations||[])if(a.fingerprint===source.fingerprint)add(a);
       const addButton=button('添加店铺分配',d.body,()=>add());addButton.dataset.allocationAdd='';
-      el('p','移除全部分配行并保存会将此记录恢复待分配；此前版本仍保留。',d.body,'fi-muted');
+      el('p','移除全部人工分配后会重新尝试来源匹配，无法明确匹配的记录恢复待分配；此前版本仍保留。',d.body,'fi-muted');
       d.submit('保存核实金额',async()=>{
         current(ctx,owner);const allocations=rows.map(row=>({shop_id:row.shop.value,...Object.fromEntries(Object.entries(row.controls).map(([k,n])=>{if(n.value.trim()==='')throw Error('请填写来源已提供的全部金额分项');return [k,n.value];}))}));
         await ctx.request('/advertising/spend/'+encodeURIComponent(key)+'/allocations',ctx.json('PUT',{organizationId:owner,fingerprint:source.fingerprint,allocations}));current(ctx,owner);d.d.close();await ctx.reload();
@@ -68,10 +68,11 @@
     const owner=ctx.company(),{el,field,select}=ctx,d=ctx.dialog('导入广告资金消耗');let ready=false,previewSignature='',previewFile=null;
     el('p','API 自动同步继续运行。此入口补充平台资金报表的现金、信用额度、广告赠款三项，不重复发布到利润流水。无需填写令牌。',d.body,'fi-muted');
     const platform=select(d.body,'平台',[['TIKTOK_SHOP','TikTok'],['SHOPEE','Shopee']],ctx.filters.platform||'TIKTOK_SHOP',()=>{ready=false;sign.value=platform.value==='TIKTOK_SHOP'?'true':'false';});
-    const accounts=[['','其他账户 / 独立导入来源'],...(ctx.accounts||[]).map(a=>[a.advertiser_id,a.name||a.advertiser_id])];
-    let id,name;const account=select(d.body,'已有 TikTok 授权账户（可选）',accounts,'',value=>{id.value=value;name.value=(ctx.accounts||[]).find(a=>a.advertiser_id===value)?.name||'';ready=false;});account.disabled=platform.value!=='TIKTOK_SHOP';
-    id=field(d.body,'真实广告账户 ID（按文本填写，无需先授权）');name=field(d.body,'广告账户或来源名称');
-    platform.addEventListener('change',()=>{account.disabled=platform.value!=='TIKTOK_SHOP';account.value='';id.value='';name.value='';ready=false;});
+    const available=()=>platform.value==='TIKTOK_SHOP'?(ctx.accounts||[]).map(a=>({id:a.advertiser_id,name:a.name||a.advertiser_id})):(ctx.shops||[]).filter(s=>s.platform==='SHOPEE'&&s.external_shop_id).map(s=>({id:s.external_shop_id,name:s.display_name||s.name}));
+    const choices=()=>[['','手动填写来源平台 ID'],...available().map(s=>[s.id,s.name])];
+    let id,name;const account=select(d.body,'已有投放来源（可选）',choices(),'',value=>{id.value=value;name.value=available().find(a=>a.id===value)?.name||'';ready=false;});
+    id=field(d.body,'TK 广告账户 ID / Shopee 平台店铺 ID');name=field(d.body,'账户或来源店铺名称');
+    platform.addEventListener('change',()=>{account.replaceChildren();for(const [value,label]of choices())el('option',label,account).value=value;account.value='';id.value='';name.value='';ready=false;});
     const sign=select(d.body,'源金额符号',[['true','扣费为负数（TK 资金报表）'],['false','消耗为正数']],platform.value==='TIKTOK_SHOP'?'true':'false',()=>{ready=false;});
     const file=field(d.body,'广告消耗报表 CSV / XLSX','file');file.accept='.csv,.xlsx';
     el('p','必需列：日期、推广系列 ID（Shopee 可为广告 ID）、金额、币种。现金消耗、信用额度消耗、广告费用赠款消耗存在时自动读取。上限 12 MiB / 20,000 行；文件名和系列名称不用于自动归店。已有 API 记录时请填写真实账户 ID 核对重叠。',d.body,'fi-muted');
