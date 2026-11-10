@@ -42,11 +42,17 @@ class ReusedSmokeImages(unittest.TestCase):
         self.assertEqual({image['manifestDigest'] for image in images.values()},available)
         metadata.assert_called_once_with(images['frontend']['repository'],images['frontend']['manifestDigest'])
 
-    def test_documentation_only_and_fully_built_images_need_no_extra_pull(self):
-        for changed in ([],['app','frontend']):
+    def test_fully_built_images_need_no_extra_pull(self):
+        for changed in (['app','frontend'],):
             with self.subTest(changed=changed),patch.object(build,'image_metadata') as metadata:
                 build.prepare_reused_smoke_images(self.images(),changed)
                 metadata.assert_not_called()
+
+    def test_unchanged_pair_is_loaded_for_actual_candidate_smoke(self):
+        images=self.images()
+        with patch.object(build,'image_metadata',side_effect=lambda repository,digest:next(v for v in images.values() if v['repository']==repository)) as metadata:
+            build.prepare_reused_smoke_images(images,[])
+            self.assertEqual(2,metadata.call_count)
 
     def test_reused_identity_mismatch_stops_publication(self):
         images=self.images()

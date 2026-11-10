@@ -1,5 +1,18 @@
 name: Locked toolchain
 description: Install the exact Java, Maven and Node versions used locally and in CI
+inputs:
+  java:
+    description: Install locked JDK
+    default: 'true'
+  maven:
+    description: Install verified Maven archive
+    default: 'true'
+  node:
+    description: Install Node and QA dependencies
+    default: 'true'
+  media:
+    description: Provide FFmpeg for mapped media suites
+    default: 'true'
 runs:
   using: composite
   steps:
@@ -12,32 +25,54 @@ runs:
         with open(os.environ['GITHUB_OUTPUT'],'a') as f:
             for k in ['java','distribution','node','maven']: f.write(f'{k}={v[k]}\n')
         PY
-    - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+    - if: inputs.java == 'true'
+      uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
       with:
         distribution: ${{ steps.versions.outputs.distribution }}
         java-version: ${{ steps.versions.outputs.java }}
         cache: maven
-    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        cache-dependency-path: |
+          pom.xml
+          scripts/ci/runtime.json
+          scripts/ci/dependencies.sha256
+    - if: inputs.node == 'true'
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: ${{ steps.versions.outputs.node }}
         cache: npm
         cache-dependency-path: scripts/ci/qa/package-lock.json
-    - shell: bash
+    - if: inputs.maven == 'true'
+      shell: bash
       env:
         MAVEN_VERSION: ${{ steps.versions.outputs.maven }}
       run: |
         set -euo pipefail
         base="https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/$MAVEN_VERSION"
         archive="apache-maven-$MAVEN_VERSION-bin.tar.gz"
-        curl --fail --silent --show-error --location "$base/$archive" -o "$RUNNER_TEMP/$archive"
-        curl --fail --silent --show-error --location "$base/$archive.sha512" -o "$RUNNER_TEMP/maven.sha512"
-        python3 - "$RUNNER_TEMP/$archive" "$RUNNER_TEMP/maven.sha512" <<'PY'
+        cache="$HOME/.m2/repository/.heyi-toolchains/$MAVEN_VERSION-$(uname -s)-$(uname -m)"
+        mkdir -p "$cache"
+        curl --fail --silent --show-error --location --retry 2 --max-time 60 "$base/$archive.sha512" -o "$RUNNER_TEMP/maven.sha512"
+        if ! python3 - "$cache/$archive" "$RUNNER_TEMP/maven.sha512" <<'PYCODE'
+        import hashlib, pathlib, sys
+        p=pathlib.Path(sys.argv[1]); expected=pathlib.Path(sys.argv[2]).read_text().split()[0]
+        sys.exit(0 if p.is_file() and hashlib.sha512(p.read_bytes()).hexdigest()==expected else 1)
+        PYCODE
+        then
+          rm -f "$cache/$archive"
+          curl --fail --silent --show-error --location --retry 2 --max-time 180 "$base/$archive" -o "$cache/$archive"
+        fi
+        python3 - "$cache/$archive" "$RUNNER_TEMP/maven.sha512" <<'PYCODE'
         import hashlib, pathlib, sys
         assert hashlib.sha512(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest()==pathlib.Path(sys.argv[2]).read_text().split()[0]
-        PY
-        tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+        PYCODE
+        tar -xzf "$cache/$archive" -C "$RUNNER_TEMP"
         echo "$RUNNER_TEMP/apache-maven-$MAVEN_VERSION/bin" >> "$GITHUB_PATH"
-        npm --prefix scripts/ci/qa ci --ignore-scripts --no-audit --no-fund
+    - if: inputs.node == 'true'
+      shell: bash
+      run: npm --prefix scripts/ci/qa ci --ignore-scripts --no-audit --no-fund
+    - if: inputs.media == 'true'
+      shell: bash
+      run: |
         if ! command -v ffmpeg >/dev/null 2>&1; then
           sudo timeout 120s apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq
           sudo timeout 180s apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y -qq ffmpeg

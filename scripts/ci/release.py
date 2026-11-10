@@ -70,9 +70,42 @@ def changed(base, ref="HEAD"):
     return sorted({component(p) for p in run("git", "diff", "--name-only", base, ref).splitlines()})
 
 
+def validate_validation(value):
+    validation=value.get('validation',{})
+    if value['schemaVersion']==1:
+        if validation.get('profile','full')!='full':raise ValueError('v1 requires full validation')
+        return
+    digest=lambda value:isinstance(value,str) and re.fullmatch('[a-f0-9]{64}',value)
+    suites=validation.get('requiredSuites')
+    inputs=validation.get('suiteInputDigests',{})
+    if validation.get('profile') not in {'docs','module','full'} or not all(digest(validation.get(k)) for k in ['policyDigest','toolchainDigest']):
+        raise ValueError('Missing v2 validation policy')
+    if not isinstance(suites,list) or not suites or any(not isinstance(s,str) or not re.fullmatch('[a-z][a-z0-9-]{0,63}',s) for s in suites) or len(set(suites))!=len(suites):
+        raise ValueError('Invalid required suite catalog')
+    full={'core-policy','java-unit','all-db','all-frontend','container-smoke','systemd-recovery'}
+    if 'core-policy' not in suites or (validation['profile']=='full' and not full.issubset(suites)) or (validation['profile']=='docs' and set(suites)!={'core-policy'}):
+        raise ValueError('Validation profile lacks required coverage')
+    if validation['profile']=='module' and ('container-smoke' not in suites or len(suites)<3):raise ValueError('Module candidate requires regression and container smoke')
+    if not isinstance(inputs,dict) or not set(suites).issubset(inputs) or not all(digest(v) for v in inputs.values()):
+        raise ValueError('Missing suite input evidence')
+    evidence=validation.get('evidence')
+    if not isinstance(evidence,list) or not evidence:raise ValueError('Missing verified run references')
+    for item in evidence:
+        if (not isinstance(item,dict) or any(not re.fullmatch('[1-9][0-9]*',str(item.get(k,''))) for k in ['runId','runAttempt','artifactId'])
+            or item.get('workflow')!='.github/workflows/ci.yml' or not DIGEST.fullmatch(item.get('artifactDigest',''))
+            or any(not re.fullmatch('[a-f0-9]{40}',item.get(k,'')) for k in ['head','tree'])
+            or item['tree']!=value['source']['tree']):raise ValueError('Invalid validation evidence reference')
+    app=value['images']['app']
+    if not all(digest(app.get(k)) for k in ['compiledArtifactSha256','buildRecipeDigest']):raise ValueError('Missing compiled build proof')
+    runtime_keys={'runtimeBaseDigest','runtimeRecipeDigest'}
+    if runtime_keys.intersection(app) and (not runtime_keys.issubset(app) or not DIGEST.fullmatch(app['runtimeBaseDigest']) or not digest(app['runtimeRecipeDigest'])):
+        raise ValueError('Incomplete runtime proof')
+
+
 def validate_manifest(value, require_smoke=True):
-    if value.get("schemaVersion") != 1 or value.get("repository") != REPOSITORY or not VERSION.fullmatch(value.get("version", "")):
+    if type(value.get("schemaVersion")) is not int or value.get("schemaVersion") not in (1, 2) or value.get("repository") != REPOSITORY or not VERSION.fullmatch(value.get("version", "")):
         raise ValueError("Invalid manifest identity")
+    validate_validation(value)
     source = value["source"]
     for key in ("commit", "tree"):
         if not re.fullmatch(r"[a-f0-9]{40}", source[key]):
@@ -130,6 +163,8 @@ def check_tag(tag, manifest, production="origin/main-tree"):
 
 def check_pr(base, head):
     allowed = {"develop": ("feature/", "release/", "hotfix/"), "main-tree": ("release/", "hotfix/")}
+    if base.startswith("release/"):
+        allowed[base] = ("hotfix/",)
     if base not in allowed or not head.startswith(allowed[base]):
         raise ValueError("PR branch mapping violates Gitflow")
 
