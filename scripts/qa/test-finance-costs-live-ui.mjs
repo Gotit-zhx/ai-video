@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 const {JSDOM}=await import(process.env.JSDOM_MODULE||'jsdom');
 const dom=new JSDOM('<main id="finance-page"></main>',{url:'https://example.test/#finance-costs',runScripts:'outside-only',pretendToBeVisual:true});
 const w=dom.window,d=w.document,mutations=[];
-w.currentUser={permissions:['finance:manage']};w.matchMedia=()=>({matches:false});
+w.currentUser={organizationId:'org',userId:'user',permissions:['finance:manage']};w.matchMedia=()=>({matches:false});
 w.ResizeObserver=class{observe(){}disconnect(){}};
 w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
 w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
@@ -12,19 +12,18 @@ let costs={live:true,shopId:'shop',groupId:'group',groupName:'母婴组',sourceN
   products:[{shop_id:'shop',product_id:'product',sku_id:'variant',seller_sku:'PACK',name:'商品',spec:'一包'},{shop_id:'shop',product_id:'product',sku_id:'unmatched',seller_sku:'OTHER-CODE',name:'商品',spec:'其他规格'},{shop_id:'shop',product_id:'product',sku_id:'review',seller_sku:'（DUP） ×2',name:'商品',spec:'Pants-XXXL'}],sampleOrders:1,orderLimit:2000,
   settings:{warehouse:'海外仓',rules:{currency:'CNY',unit:'包',basis:'shipment',missing:'pending',freight:'',inbound:''}},settingsVersion:1,mappings:{},shopCatalogs:{shop:{costRows:1,sourceName:'成本.csv'},other:{costRows:0,sourceName:''}}};
 const reads=[];let failOther=false,otherGate=null;
-const exports=[];let exportFails=false,downloads=0;
-w.AbortSignal.timeout=()=>undefined;
-w.URL.createObjectURL=()=> 'blob:test-cost-export';w.URL.revokeObjectURL=()=>{};
-w.HTMLAnchorElement.prototype.click=function(){assert(this.download.endsWith('.xlsx'));downloads++;};
-w.fetch=async(path,options)=>{
-  exports.push({url:new URL(path,'https://example.test'),options});
-  return exportFails?{ok:false,json:async()=>({message:'导出范围过大，请缩小日期'})}:{ok:true,blob:async()=>new w.Blob(['xlsx'])};
-};
+const exports=[];let exportFails=false,downloads=0,exportJobs=[];
+w.HTMLAnchorElement.prototype.click=function(){let prevented=false;this.onclick?.({preventDefault:()=>{prevented=true;},currentTarget:this,target:this});if(!prevented){assert(this.download.endsWith('.xlsx'));downloads++;}};
+w.fetch=async()=>{throw Error('成本任务下载应保留同源可见链接');};
 let expenses={rows:[],rules:[],changes:[],totals:{records:0,amount:0,posted:0,included:0,pending:0},page:1,pageSize:50};
 w.api=async(path,options={})=>{
   const url=new URL(path,'https://example.test'),body=options.body?JSON.parse(options.body):null;
   if(options.method&&options.method!=='GET'){
     mutations.push({path:url.pathname,method:options.method,body});
+    if(url.pathname==='/api/v1/finance/cost-exports'){
+      exports.push({url,options,body});if(exportFails){const error=Error('导出范围过大，请缩小日期');error.status=400;throw error;}
+      const job={id:'export-'+exports.length,status:'READY',filename:'订单成本.xlsx',contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',orders:1,lines:2,parts:1,processed:2,total:2,start:body.start,end:body.end};exportJobs=[job,...exportJobs];return {data:job};
+    }
     if(path.endsWith('/auto-match')){for(const product of costs.products)for(const cost of costs.costs)if(product.seller_sku===cost.sku)costs.mappings['shop:product:'+product.sku_id+':'+cost.warehouse]??={code:cost.sku,warehouse:cost.warehouse,factor:null,method:'EXACT_CODE',version:1,groupId:'group'};return {data:structuredClone(costs)};}
     if(path.endsWith('/mapping')){costs.mappings['shop:product:'+body.sku_id+':海外仓']={...body,version:1,groupId:'group'};return {data:'已保存'};}
     if(path.endsWith('/settings')){costs.settings={rules:body.rules,warehouse:body.warehouse};costs.settingsVersion++;return {data:'已保存'};}
@@ -44,6 +43,7 @@ w.api=async(path,options={})=>{
   }
   if(url.pathname==='/api/v1/finance/workspace/charges')return {data:{rules:[],imports:[],rows:[],totals:{records:0,unmatched:0},marked:{orders:0,service_fee_cny:0}}};
   if(url.pathname==='/api/v1/finance/workspace/label-costs')return {data:{files:[],rows:[],period:{amount_cny:0,orders:0,shipments:0,conflicts:0},state:{},processing:false,total:0}};
+  if(url.pathname==='/api/v1/finance/cost-exports')return {data:structuredClone(exportJobs)};
   throw Error('Unexpected GET '+path);
 };
 for(const name of ['incremental-dom.js','incremental-charts.js','finance-label-costs.js','finance-costs.js','finance-charges.js','finance-workspace.js'])w.eval(await fs.readFile(new URL('../../frontend/'+name,import.meta.url),'utf8'));
@@ -73,10 +73,10 @@ assert.equal(costMutations,0,'unchanged costs keep all result nodes and cause no
 let numberInput=d.querySelector('.fi-number-search textarea');numberInput.value='585766520348574952\n585766481305634280';numberInput.closest('form').dispatchEvent(new w.Event('submit',{cancelable:true}));await settle();assert.equal(reads.at(-1).numbers,'585766520348574952,585766481305634280');
 field('结算开始日期','2026-10-01');await settle();
 await click('导出 Excel');
-assert.equal(downloads,1);assert.equal(exports.at(-1).url.pathname,'/api/v1/finance/workspace/costs/orders/export');
-assert.equal(exports.at(-1).url.searchParams.get('shopId'),'shop');assert.equal(exports.at(-1).url.searchParams.get('kind'),'SETTLED_ORDER');
-assert.equal(exports.at(-1).url.searchParams.get('start'),'2026-10-01');assert.equal(exports.at(-1).url.searchParams.get('numbers'),'585766520348574952,585766481305634280');
-assert(!exports.at(-1).url.searchParams.has('page'),'export includes every page');
+assert.equal(downloads,1);assert.equal(exports.at(-1).url.pathname,'/api/v1/finance/cost-exports');
+assert.equal(exports.at(-1).body.shopId,'shop');assert.equal(exports.at(-1).body.kind,'SETTLED_ORDER');
+assert.equal(exports.at(-1).body.start,'2026-10-01');assert.equal(exports.at(-1).body.numbers,'585766520348574952,585766481305634280');
+assert(!('page' in exports.at(-1).body),'export includes every page');
 exportFails=true;await click('导出 Excel');
 assert(d.body.textContent.includes('导出范围过大'));assert(!button('导出 Excel').disabled);
 exportFails=false;
@@ -90,8 +90,8 @@ assert.equal(reads.at(-1).recordId,'selected-bill');assert.equal(reads.at(-1).ki
 assert(d.querySelector('[aria-label="开始日期"]').disabled,'a single-record drill-down must not pretend the calendar filters it');
 assert(d.body.textContent.includes('所选记录关联的已结算订单'));
 await click('导出 Excel');
-assert.equal(exports.at(-1).url.searchParams.get('recordId'),'selected-bill');
-assert.equal(exports.at(-1).url.searchParams.get('kind'),'BILL','drilldown export preserves source scope');
+assert.equal(exports.at(-1).body.recordId,'selected-bill');
+assert.equal(exports.at(-1).body.kind,'BILL','drilldown export preserves source scope');
 await click('查看该店已结算订单');assert(!reads.at(-1).recordId);assert(!d.querySelector('[aria-label="结算开始日期"]').disabled);
 await click('SKU 关联');
 assert.equal(d.querySelectorAll('.fc-shop-parent').length,1);

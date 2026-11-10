@@ -13,9 +13,23 @@ import java.util.zip.*;
 final class FinanceCostWorkbook implements AutoCloseable {
     private final Path directory;
     private final List<Sheet> sheets = new ArrayList<>();
-    FinanceCostWorkbook() throws IOException { directory=Files.createTempDirectory("finance-cost-export-"); }
+    private long spoolBytes;
+    private final List<OutputStream> spools=new ArrayList<>();
+    FinanceCostWorkbook() throws IOException { this(null); }
+    FinanceCostWorkbook(Path parent) throws IOException { directory=parent==null?Files.createTempDirectory("finance-cost-export-"):Files.createTempDirectory(parent,"sheets-"); }
+    private OutputStream spool(Path path)throws IOException{
+        var output=new FilterOutputStream(Files.newOutputStream(path)) {
+            private void count(int amount)throws IOException{
+                if(spoolBytes>1024L*1024*1024-amount)throw new IOException("成本报表单片临时数据超过 1 GiB，请联系管理员核对异常商品资料");
+                spoolBytes+=amount;
+            }
+            @Override public void write(int b)throws IOException{count(1);out.write(b);}
+            @Override public void write(byte[] b,int off,int len)throws IOException{count(len);out.write(b,off,len);}
+        };
+        spools.add(output);return output;
+    }
     Sheet sheet(String name,List<String> headers) throws IOException {
-        var sheet=new Sheet(name,headers,directory.resolve("sheet"+(sheets.size()+1)+".xml"));
+        var sheet=new Sheet(name,headers,directory.resolve("sheet"+(sheets.size()+1)+".xml"),this);
         sheets.add(sheet);return sheet;
     }
     static String column(int index){
@@ -23,12 +37,13 @@ final class FinanceCostWorkbook implements AutoCloseable {
         for(int n=index+1;n>0;n=(n-1)/26)result.insert(0,(char)('A'+(n-1)%26));
         return result.toString();
     }
-    static final class Sheet {
+    interface RowSink { void row(List<?> values) throws IOException; }
+    static final class Sheet implements RowSink {
         final String name;final List<String> headers;final Path path;final Writer writer;
         final List<Integer> widths=new ArrayList<>();
         int count;boolean finished;
-        Sheet(String name,List<String> headers,Path path)throws IOException{
-            this.name=name;this.headers=headers;this.path=path;writer=Files.newBufferedWriter(path,StandardCharsets.UTF_8);
+        Sheet(String name,List<String> headers,Path path,FinanceCostWorkbook owner)throws IOException{
+            this.name=name;this.headers=headers;this.path=path;writer=new BufferedWriter(new OutputStreamWriter(owner.spool(path),StandardCharsets.UTF_8));
             writer.write("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetViews><sheetView workbookViewId=\"0\" showGridLines=\"0\">"
                 +(headers.size()>3?"<pane xSplit=\"3\" ySplit=\"1\" topLeftCell=\"D2\" activePane=\"bottomRight\" state=\"frozen\"/>":"")
                 +"</sheetView></sheetViews><sheetFormatPr defaultRowHeight=\"32\"/><cols>");
@@ -40,8 +55,9 @@ final class FinanceCostWorkbook implements AutoCloseable {
             }
             writer.write("</cols><sheetData>");row(new ArrayList<>(headers));
         }
-        void row(List<?> values)throws IOException{
+        public void row(List<?> values)throws IOException{
             if(finished)throw new IllegalStateException("Sheet already finished");
+            if(count>=1048576)throw FinanceData.bad("成本报表附表超过 Excel 单页行数上限，未生成部分报表");
             if(values.size()!=headers.size())throw new IllegalArgumentException("Wrong export column count: "+name);
             count++;int height=count==1?38:32;
             for(int i=0;i<values.size();i++)if(values.get(i) instanceof String s){
@@ -78,8 +94,11 @@ final class FinanceCostWorkbook implements AutoCloseable {
         }
     }
     byte[] bytes()throws IOException{
+        var bytes=new ByteArrayOutputStream();write(bytes);return bytes.toByteArray();
+    }
+    void write(OutputStream output)throws IOException{
         for(var s:sheets)s.finish();
-        try(var bytes=new ByteArrayOutputStream();var zip=new ZipOutputStream(bytes)){
+        try(var zip=new ZipOutputStream(output)){
             var types=new StringBuilder("<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>");
             var book=new StringBuilder("<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets>");
             var rels=new StringBuilder("<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">");
@@ -95,12 +114,16 @@ final class FinanceCostWorkbook implements AutoCloseable {
             FinanceWorkbook.put(zip,"_rels/.rels","<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>");
             FinanceWorkbook.put(zip,"xl/workbook.xml",book.append("</sheets></workbook>").toString());
             FinanceWorkbook.put(zip,"xl/_rels/workbook.xml.rels",rels.append("</Relationships>").toString());
-            FinanceWorkbook.put(zip,"xl/styles.xml",STYLES);zip.finish();return bytes.toByteArray();
+            FinanceWorkbook.put(zip,"xl/styles.xml",STYLES);zip.finish();
         }
     }
     @Override public void close()throws IOException{
         IOException failure=null;
-        for(var s:sheets)try{s.writer.close();Files.deleteIfExists(s.path);}catch(IOException e){failure=e;}
+        for(var s:sheets)try{s.writer.close();}catch(IOException e){failure=e;}
+        for(var stream:spools)try{stream.close();}catch(IOException e){failure=e;}
+        if(Files.exists(directory))try(var paths=Files.newDirectoryStream(directory)){
+            for(var path:paths)try{Files.deleteIfExists(path);}catch(IOException e){failure=e;}
+        }catch(IOException e){failure=e;}
         try{Files.deleteIfExists(directory);}catch(IOException e){failure=e;}
         if(failure!=null)throw failure;
     }
