@@ -10,6 +10,52 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class FinanceCostPerformanceTest {
+    @Test void returnSummarySharesGroupCatalogOnlyWithinItsRequestAndCompany(){
+        var db=mock(JdbcTemplate.class);var json=new ObjectMapper();var revision=new AtomicInteger(1);
+        var reads=new HashMap<String,Integer>();
+        when(db.queryForList(anyString(),any(Object[].class))).thenAnswer(call->{
+            String sql=call.getArgument(0);Object[] args=(Object[])call.getRawArguments()[1];
+            if(sql.contains("FROM finance_connections"))return List.of(Map.of("group_id","group","region","PH","timezone","Asia/Manila"));
+            if(sql.contains("FROM finance_cost_books")){
+                String org=args[0].toString();reads.merge(org,1,Integer::sum);
+                return List.of(Map.of("id",org+"-v"+revision.get(),"data_json",json.writeValueAsString(Map.of("costs",List.of(
+                    Map.of("sku","PACK","warehouse","海外仓-菲律宾","prices",Map.of("2026-10",revision.get())))))));
+            }
+            return List.of();
+        });
+        var repo=new FinanceRepository(db,json);var source=Map.<String,Object>of("receiveTime",1790784000000L,
+            "returnSkuList",List.of(Map.of("sku","PACK","quantity",1,"orderSkuId","line")));
+        var request=new FinanceQianyiReturnCostSummary(repo,"org-a");
+        assertEquals(0,decimal("1").compareTo(decimal(request.calculate("one",source).get("amountCny"))));revision.set(2);
+        assertEquals(0,decimal("1").compareTo(decimal(request.calculate("two",source).get("amountCny"))));
+        assertEquals(0,decimal("2").compareTo(decimal(new FinanceQianyiReturnCostSummary(repo,"org-b").calculate("one",source).get("amountCny"))));
+        assertEquals(Map.of("org-a",1,"org-b",1),reads);
+        assertEquals(0,decimal("2").compareTo(decimal(new FinanceQianyiReturnCostSummary(repo,"org-a").calculate("one",source).get("amountCny"))));
+        assertEquals(2,reads.get("org-a"));
+    }
+
+    @Test void returnSummaryBuildsSkuIndexOncePerShopWhileEachReceiptKeepsItsOwnMonth(){
+        var db=mock(JdbcTemplate.class);var json=mock(ObjectMapper.class);var skuReads=new AtomicInteger();
+        var cost=new LinkedHashMap<String,Object>(){
+            @Override public Object get(Object key){if("sku".equals(key))skuReads.incrementAndGet();return super.get(key);}
+        };
+        cost.putAll(Map.of("sku","PACK","warehouse","海外仓-泰国","prices",Map.of("2026-09",10,"2026-10",12)));
+        when(json.readValue("book-json",Map.class)).thenReturn(Map.of("costs",List.of(cost)));
+        when(db.queryForList(anyString(),any(Object[].class))).thenAnswer(call->{
+            String sql=call.getArgument(0);
+            if(sql.contains("FROM finance_connections"))return List.of(Map.of("group_id","group","region","TH","timezone","Asia/Bangkok"));
+            if(sql.contains("FROM finance_cost_books"))return List.of(Map.of("id","book","data_json","book-json"));
+            return List.of();
+        });
+        var request=new FinanceQianyiReturnCostSummary(new FinanceRepository(db,json),"org");
+        var source=new LinkedHashMap<String,Object>(Map.of("receiveTime",1790784000000L,
+            "returnSkuList",List.of(Map.of("sku","PACK","quantity",2,"orderSkuId","line"))));
+        assertEquals(0,decimal("24").compareTo(decimal(request.calculate("shop",source).get("amountCny"))));
+        source.put("receiveTime",1788192000000L);
+        assertEquals(0,decimal("20").compareTo(decimal(request.calculate("shop",source).get("amountCny"))));
+        assertEquals(1,skuReads.get(),"return rows must reuse the prepared cost index");
+    }
+
     @Test void oneBatchSharesOnlyItsCompanyGroupCatalogAndNextBatchReadsTheNewVersion(){
         var db=mock(JdbcTemplate.class);var json=new ObjectMapper();var revision=new AtomicInteger(1);
         var reads=new HashMap<String,Integer>();

@@ -11,11 +11,14 @@ final class FinanceQianyiReturnCostSummary {
     final FinanceRepository repo;
     final String organization;
     final Map<String,FinanceOrderCosts.Context> contexts=new HashMap<>();
+    final Map<FinanceOrderCosts.CatalogKey,FinanceOrderCosts.Catalog> catalogs=new HashMap<>();
+    final Map<String,FinanceOrderCosts.Lookup> lookups=new HashMap<>();
     FinanceQianyiReturnCostSummary(FinanceRepository repo,String organization){this.repo=repo;this.organization=organization;}
 
     Map<String,Object> calculate(String shop,Map<String,Object> source){
-        var context=contexts.computeIfAbsent(shop,id->new FinanceOrderCosts(repo).context(organization,id));
-        return value(source,context);
+        var context=contexts.computeIfAbsent(shop,id->new FinanceOrderCosts(repo).context(organization,id,catalogs));
+        var lookup=context==null?null:lookups.computeIfAbsent(shop,id->FinanceOrderCosts.lookup(receiptContext(context)));
+        return value(source,context,lookup);
     }
     static Map<String,Object> pending(String reason){
         var result=new LinkedHashMap<String,Object>();
@@ -25,6 +28,15 @@ final class FinanceQianyiReturnCostSummary {
         return result;
     }
     static Map<String,Object> value(Map<String,Object> source,FinanceOrderCosts.Context context){
+        return value(source,context,null);
+    }
+    static FinanceOrderCosts.Context receiptContext(FinanceOrderCosts.Context context){
+        var settings=new LinkedHashMap<>(context.settings());var rules=new LinkedHashMap<>(map(settings.get("rules")));
+        rules.put("basis","order");settings.put("rules",rules);
+        return new FinanceOrderCosts.Context(context.shopId(),context.groupId(),context.region(),
+            "Asia/Shanghai",context.bookId(),context.costs(),settings,Map.of());
+    }
+    static Map<String,Object> value(Map<String,Object> source,FinanceOrderCosts.Context context,FinanceOrderCosts.Lookup prepared){
         if(context==null)return pending("店铺成本资料尚未配置");
         long received=FinanceQianyiReceipt.received(source.get("receiveTime"));
         if(received<=0)return pending("缺少实际收货时间");
@@ -44,14 +56,11 @@ final class FinanceQianyiReturnCostSummary {
             items.add(item);
         }
         if(items.isEmpty())return pending("千易尚未返回有效退货商品数量");
-        var settings=new LinkedHashMap<>(context.settings());var rules=new LinkedHashMap<>(map(settings.get("rules")));
-        rules.put("basis","order");settings.put("rules",rules);
         // Qianyi orderSkuId is not a platform model ID: never apply platform mappings by guessed identifiers.
-        var receiptContext=new FinanceOrderCosts.Context(context.shopId(),context.groupId(),context.region(),
-            "Asia/Shanghai",context.bookId(),context.costs(),settings,Map.of());
+        var receiptContext=receiptContext(context);
         var result=FinanceOrderCosts.calculate(Map.of("status","COMPLETED","platform","SHOPEE",
             "record_date",Instant.ofEpochMilli(received).atZone(ZoneId.of("Asia/Shanghai")).toLocalDate()),
-            Map.of("item_list",items),receiptContext);
+            Map.of("item_list",items),receiptContext,prepared);
         result.put("basis","RETURN_RECEIPT_STANDARD");result.put("note",BASIS);
         return result;
     }
