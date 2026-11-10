@@ -1,6 +1,6 @@
 # GitHub Actions 与统一运维
 
-本指南描述已接通的一期运行方式及维护步骤。实际启用和验收状态以[一期验收记录](../releases/infrastructure/devops-phase1-20261106.md)为准，不能把仓库中的工作流文件视为生产已经接通。生产分支为 `main-tree`，集成分支为 `develop`，仍按 [AGENTS.md](../../AGENTS.md) 使用 Gitflow。
+本指南描述统一运维及维护步骤。快速发布、分级 CI、缓存和增量传输见[快速迭代指南](cicd-acceleration.md)，最新启用状态见[改造验收](../releases/infrastructure/cicd-acceleration-20261110.md)；[一期验收记录](../releases/infrastructure/devops-phase1-20261106.md)保留历史事实。不能把仓库中的工作流文件视为生产已经接通。生产分支为 `main-tree`，集成分支为 `develop`，仍按 [AGENTS.md](../../AGENTS.md) 使用 Gitflow。
 
 ## 构建与验证
 
@@ -22,12 +22,13 @@ MySQL 就绪检查使用认证 TCP `SELECT 1`，避免误认初始化时的临�
 
 `frontend/package.py` 是生产静态资源打包入口，校验 HTML、CSS 及 JavaScript 字面量资源引用，生成 SHA-256 资源清单与固定时间戳 gzip。生产镜像不再手工列举每个脚本。无法静态求值的业务 API/用户内容路径仍需相应页面测试。
 
-## 四条流水线
+## 流水线
 
 | 入口 | 触发 | 验证与产物 |
 | --- | --- | --- |
 | `CI` | PR、develop、手动、候选复用 | Gitflow、策略测试、Java 单元及隔离数据库、前端回归；稳定汇总检查 `CI required` |
-| `Candidate artifacts` | release/hotfix 分支、手动 | 仅本仓库受信任的版本分支；linux/amd64 全量构建、隔离容器冒烟、私有 GHCR、来源证明、候选 Release |
+| `Candidate artifacts` | 发布命令显式 dispatch、兼容手动 dispatch | 受信任版本分支及指定 CI run/attempt；复用编译产物、隔离容器冒烟、私有 GHCR、来源证明、`Candidate published` |
+| `Release ready`（PR 检查） | 面向 `main-tree` 的 PR | 只读核验同一候选、来源证明及实际完成的候选执行，满足 PR 必需门禁；不重复构建 |
 | `Production deployment` | `v*` 标签、手动重试 | 当前生产 HEAD、no-ff 第二父提交、候选树、来源证明、不可变镜像、主机执行及回执 |
 | `Operations` | 每五分钟、手动 | 外部 HTTPS、只读主机诊断、去重 Issue；已验收版本回滚 |
 
@@ -51,7 +52,7 @@ Docker 的经典存储和 containerd 存储可能报告不同含义的 `inspect.
 
 `release.json` 保存源码提交/树、组件指纹、迁移指纹、源码包校验值、OCI manifest digest、镜像 config digest、空间预算、前端资源指纹和验证结果。标签树必须等于候选树，不能在验收后再提交回执来改变正式候选；回执进入 GitHub Release 附件及服务器。
 
-仅文档变更复用已有镜像、同步源码并跳过容器切换。其他常驻服务、桌面应用、配置目录或 Compose 的变更会阻止普通自动上线。运维执行器与备份脚本另有 `operations` 指纹；这类更改必须先完成明确的主机维护和基线更新，再进入应用发布，不能仅同步源码就声称运维程序已更新。
+发布命令对纯文档返回 `no_runtime_release`，随下一应用版本同步；旧完整候选路径仍可读取既有文档版本并复用镜像。其他常驻服务、桌面应用、配置目录或 Compose 的变更会阻止普通自动上线。运维执行器与备份脚本另有 `operations` 指纹；这类更改必须先完成明确的主机维护和基线更新，再进入应用发布，不能仅同步源码就声称运维程序已更新。
 
 ## 生产控制面
 

@@ -1,13 +1,19 @@
 name: Candidate artifacts
 on:
-  push:
-    branches: ['release/**', 'hotfix/**']
   workflow_dispatch:
     inputs:
-      direct_publish:
-        description: 'Owner-authorized local validation for the fixed v2026.11.10.3 hotfix only'
-        type: boolean
-        default: false
+      expected_head:
+        description: 'Exact reviewed release/hotfix head (blank uses dispatch head)'
+        type: string
+        required: false
+      validation_run:
+        description: 'Successful trusted CI run with matching effective tree'
+        type: string
+        required: true
+      validation_attempt:
+        description: 'Exact successful CI run attempt'
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -17,16 +23,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  verify:
-    if: github.repository == 'Gotit-zhx/ai-video' && (startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/heads/hotfix/')) && !(github.event_name == 'workflow_dispatch' && inputs.direct_publish && github.actor == 'Gotit-zhx' && github.ref == 'refs/heads/hotfix/2026.11.10.3-cost-pending-all-shops')
-    uses: ./.github/workflows/ci.yml
+  qualify:
+    if: github.repository == 'Gotit-zhx/ai-video' && (startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/heads/hotfix/'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify GitHub run, attempt, tree, policy, reports and artifact digests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: ${{ inputs.expected_head || github.sha }}
+          VALIDATION_RUN: ${{ inputs.validation_run }}
+          VALIDATION_ATTEMPT: ${{ inputs.validation_attempt }}
+          HEYI_FAST_CI_ENABLED: ${{ vars.HEYI_FAST_CI_ENABLED || 'false' }}
+          HEYI_MANIFEST_V2_ENABLED: ${{ vars.HEYI_MANIFEST_V2_ENABLED || 'false' }}
+          HEYI_V2_BOOTSTRAPPED: ${{ vars.HEYI_V2_BOOTSTRAPPED || 'false' }}
+        run: python3 scripts/ci/candidate.py qualify
   publish:
-    needs: verify
-    if: always() && !cancelled() && (needs.verify.result == 'success' || (github.repository == 'Gotit-zhx/ai-video' && github.event_name == 'workflow_dispatch' && inputs.direct_publish && github.actor == 'Gotit-zhx' && github.ref == 'refs/heads/hotfix/2026.11.10.3-cost-pending-all-shops'))
+    name: Candidate published
+    needs: qualify
+    if: needs.qualify.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: write
+      actions: read
       packages: write
       id-token: write
       attestations: write
@@ -45,31 +72,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           INITIAL_ADOPTION: ${{ vars.HEYI_CD_ENABLED != 'true' }}
-          DIRECT_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.direct_publish && github.actor == 'Gotit-zhx' && github.ref == 'refs/heads/hotfix/2026.11.10.3-cost-pending-all-shops' }}
-        run: |
-          if [ "$DIRECT_PUBLISH" = true ]; then
-            python3 - <<'PY'
-          import sys
-          sys.path.insert(0,'scripts/ci')
-          import release
-          expected={'app':'4ce947359907bc966a27887fc2572992350716b315ab647564fd8bf786947108','frontend':'68c0a2b70015503fcb8649ba7e100e2c072eb3d5d96a3b4f31b25b76087c9db1','migrations':'bc1f4e21cd9b93bd1e584449eeb3ad7acd7bc57769142e9f05b3514a38bbf399','operations':'f51e9e1c041829cf9393949400c9b6aa1b62b4be97485a55a2b830ffc3cbdcf4','unsupported':'2917bef985a9f4fa92bc202310059676a59a0193574daaebff1b591168040a56'}
-          actual=release.inventory()['inputs']
-          assert all(actual[k]==v for k,v in expected.items()),'Direct publish differs from the locally validated hotfix'
-          PY
-          fi
-          python3 scripts/ci/candidate.py build
-          if [ "$DIRECT_PUBLISH" = true ]; then
-            python3 - <<'PY'
-          import json,pathlib
-          p=pathlib.Path('target/release/release.json');m=json.loads(p.read_text())
-          m['validation'].pop('ciRunId',None)
-          m['validation'].update(workflow='.github/workflows/candidate.yml',mode='user-authorized-local-validation',hostedCi='bypassed-by-owner-request-2026-11-10',localValidation={'sourceCommit':'e63d3fea720c35afe0cfa1767ba0dba04517fc77','unitTests':29,'isolatedDatabaseTests':70,'costUiSuites':7,'failed':0,'skipped':0})
-          p.write_text(json.dumps(m,sort_keys=True,indent=2)+'\n')
-          PY
-          fi
-      - name: Exercise the exact changed candidate digests
-        if: steps.build.outputs.app_changed == 'true' || steps.build.outputs.frontend_changed == 'true'
+          EXPECTED_HEAD: ${{ inputs.expected_head || github.sha }}
+          VALIDATION_RUN: ${{ inputs.validation_run }}
+          VALIDATION_ATTEMPT: ${{ inputs.validation_attempt }}
+          HEYI_FAST_CI_ENABLED: ${{ vars.HEYI_FAST_CI_ENABLED || 'false' }}
+          HEYI_MANIFEST_V2_ENABLED: ${{ vars.HEYI_MANIFEST_V2_ENABLED || 'false' }}
+          HEYI_V2_BOOTSTRAPPED: ${{ vars.HEYI_V2_BOOTSTRAPPED || 'false' }}
+          HEYI_RUNTIME_CACHE_ENABLED: ${{ vars.HEYI_RUNTIME_CACHE_ENABLED || 'false' }}
+          HEYI_RUNTIME_BOOTSTRAP: ${{ vars.HEYI_RUNTIME_BOOTSTRAP || 'false' }}
+        run: python3 scripts/ci/candidate.py build
+      - name: Verify JAR, fonts and real media in the candidate runtime
+        run: python3 scripts/ci/container.py --probe target/release/release.json
+      - name: Exercise the exact candidate digest combination
         run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 scripts/ci/smoke.py target/release/release.json --legacy-gate
+      - name: Attest qualified runtime
+        if: steps.build.outputs.runtime_digest != '' && vars.HEYI_RUNTIME_BOOTSTRAP == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-name: ghcr.io/gotit-zhx/ai-video/app
+          subject-digest: ${{ steps.build.outputs.runtime_digest }}
+          push-to-registry: true
       - name: Attest backend
         if: steps.build.outputs.app_changed == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

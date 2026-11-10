@@ -1,6 +1,6 @@
 # 项目文档中心
 
-更新日期：2026-11-07。文档按用途和业务归类，当前说明、历史验收、设计和实验分别阅读。代码与配置是实现依据，历史测试或旧镜像名称不能直接解释为今天的部署状态。
+更新日期：2026-11-10。文档按用途和业务归类，当前说明、历史验收、设计和实验分别阅读。代码与配置是实现依据，历史测试或旧镜像名称不能直接解释为今天的部署状态。
 
 ## 开发接手
 
@@ -14,7 +14,7 @@
 | 本地环境、配置、调试与测试 | [开发指南](guides/development.md) |
 | 登录、权限及接口查找 | [接口导航](guides/api.md) |
 | 发布、回滚、备份和排障 | [运维指南](guides/operations.md) |
-| GitHub Actions、统一发布入口和巡检 | [CI/CD 与统一运维](guides/cicd.md)（启用状态见一期验收记录） |
+| GitHub Actions、统一发布入口和巡检 | [CI/CD 与统一运维](guides/cicd.md)、[快速迭代发布](guides/cicd-acceleration.md)（启用状态见各期验收） |
 | 服务器现状、目录、证书、备份、维护任务及接管待办 | [服务器运维交接](guides/server-handoff.md)（含 v7 调度修复与回滚限制） |
 | 一期最终交接、调度故障与回滚资格隔离 | [自动化运维一期收尾](releases/infrastructure/devops-phase1-closure-20261107.md) |
 | 桌面构建与备份约定 | [桌面构建说明](guides/desktop-build-backup.md) |

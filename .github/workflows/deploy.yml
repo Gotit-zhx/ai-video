@@ -56,6 +56,7 @@ jobs:
           HEYI_KNOWN_HOSTS: ${{ secrets.HEYI_KNOWN_HOSTS }}
           VERSION: ${{ steps.validate.outputs.version }}
           MODE: ${{ inputs.mode || 'deploy' }}
+          HEYI_DELTA_TRANSFER_ENABLED: ${{ vars.HEYI_DELTA_TRANSFER_ENABLED }}
         run: |
           if [ "$MODE" = prepare ]; then
             python3 scripts/ci/remote.py "$VERSION" --prepare-only
@@ -68,6 +69,7 @@ jobs:
           name: deployment-receipt
           path: |
             target/deployment/receipt.json
+            target/deployment/timings.json
             target/promotion/release.json
           retention-days: 7
   receipt:

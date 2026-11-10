@@ -55,14 +55,15 @@ def validate(public):
         raise ValueError("Missing static references: " + json.dumps(sorted(missing), ensure_ascii=False))
 
 
-def build(output):
+def build(output, layered=False):
     public = files(); validate(public)
     if output.exists():
         raise ValueError("Output must be a new directory")
     output.mkdir(parents=True)
     manifest = {}
     for name, path in public.items():
-        data = path.read_bytes(); target = output / name
+        data = path.read_bytes(); layer = ("stable" if name.split("/")[0] in {"vendor","assets","plugin-downloads","i18n"} else "frequent")
+        target = output / layer / name if layered else output / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data); target.chmod(0o644)
         item = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
@@ -71,12 +72,13 @@ def build(output):
             target.with_name(target.name + ".gz").write_bytes(compressed)
             item["gzipSha256"] = hashlib.sha256(compressed).hexdigest()
         manifest[name] = item
-    (output / "asset-manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
+    ((output / "frequent" if layered else output) / "asset-manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
     return manifest
 
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(); p.add_argument("output", type=Path, nargs="?")
+    p.add_argument("--layered", action="store_true")
     a = p.parse_args()
-    if a.output: print(json.dumps({"files": len(build(a.output))}))
+    if a.output: print(json.dumps({"files": len(build(a.output, a.layered))}))
     else: validate(files()); print("Static and literal dynamic references passed")
