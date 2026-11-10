@@ -96,14 +96,21 @@ public class FinanceAds {
             last_success_at=IF(shop_id<>VALUES(shop_id),NULL,last_success_at),shop_id=VALUES(shop_id),
             gmv_store_id=VALUES(gmv_store_id),gmv_status=VALUES(gmv_status),gmv_error=NULL,timezone=VALUES(timezone),
             discovery_next_at=UTC_TIMESTAMP(6),
-            enabled=TRUE,status='READY',error_message=NULL,failures=0,lease_token=NULL,lease_until=NULL,next_at=UTC_TIMESTAMP(6)
+            status=IF(enabled,'READY','PAUSED'),error_message=NULL,failures=0,lease_token=NULL,lease_until=NULL,
+            next_at=IF(enabled,UTC_TIMESTAMP(6),next_at)
             """,storage.organizationId(),storage.userId(),id,first(advertiser,"name"),shopId,currency,encrypted,gmvStoreId,gmvStoreId.isBlank()?"DISABLED":"READY",first(advertiser,"timezone"));
         repo.jdbc().update("UPDATE finance_ad_streams SET next_at=UTC_TIMESTAMP(6),failures=0 WHERE organization_id=? AND advertiser_id=?",s.organizationId(),id);
     }
     public void pause(Scope s,String id,boolean enabled){
-        if(enabled&&list(s).stream().noneMatch(a->id.equals(text(a.get("advertiser_id")))))throw bad("广告账户不存在或绑定的财务店铺已移除");
-        if(repo.jdbc().update("UPDATE finance_ad_accounts SET enabled=?,next_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND advertiser_id=?",
-                enabled,s.organizationId(),id)!=1)throw bad("广告账户不存在");
+        if(enabled){
+            var account=list(s).stream().filter(a->id.equals(text(a.get("advertiser_id")))).findFirst()
+                    .orElseThrow(()->bad("广告账户不存在或绑定的财务店铺已移除"));
+            validateDestination(s,text(account.get("shop_id")),text(account.get("gmv_store_id")));
+        }
+        if(repo.jdbc().update("""
+            UPDATE finance_ad_accounts SET enabled=?,status=?,lease_token=NULL,lease_until=NULL,
+              next_at=GREATEST(next_at,UTC_TIMESTAMP(6)) WHERE organization_id=? AND advertiser_id=?
+            """,enabled,enabled?"READY":"PAUSED",s.organizationId(),id)!=1)throw bad("广告账户不存在");
     }
     static Long metricCount(Map<String,Object> metrics,String key){
         BigDecimal value=decimal(metrics.get(key));

@@ -284,7 +284,7 @@
     return n;
   }
   function adSyncStatus(account){
-    const n=el('div');n.append(account.status==='PARTIAL'?el('span','部分数据待补齐',null,'fi-status running'):badge(account.status));
+    const n=el('div');n.append(account.enabled===false||account.enabled===0?el('span','已暂停',null,'fi-status'):account.status==='PARTIAL'?el('span','部分数据待补齐',null,'fi-status running'):badge(account.status));
     if(account.error_message)el('small',account.error_message,n);
     if(account.discovery_error)el('small',account.discovery_error,n);
     for(const stream of account.streams||[])el('small',(stream.channel==='BASIC'?'普通广告':'GMV Max · '+stream.store_id)+'：'+(states[stream.status]||stream.status)+(stream.error_message?' · '+stream.error_message:''),n);
@@ -301,6 +301,37 @@
     if(accounts.some(a=>a.streams?.some(s=>s.status==='SYNCING'||s.status==='READY')))return '自动补齐中';
     return '待核实覆盖范围';
   }
+  function adGmvStoreLinks(shopId){
+    return (data.adAccounts||[]).filter(adAccountInScope).flatMap(account=>(account.stores||[])
+      .filter(store=>store.active&&store.match_status==='MATCHED'&&store.shop_id===shopId).map(store=>({account,store})));
+  }
+  function adScopedTikTokShops(){
+    return scopedShops().filter(shop=>shop.platform==='TIKTOK_SHOP'&&(!filters.shopId||shop.id===filters.shopId)
+      &&(!filters.currency||shop.currency===filters.currency||adGmvStoreLinks(shop.id).length));
+  }
+  function adStoreDiscoveryIssue(){
+    if(data.adAccountError)return '广告店铺关联状态暂不可用';
+    const accounts=(data.adAccounts||[]).filter(adAccountInScope);
+    if(!accounts.length)return '当前筛选暂无已核实的店铺发现结果';
+    if(accounts.some(account=>account.discovery_status==='ERROR'))return '店铺关系发现失败待重试';
+    return accounts.some(account=>!['SUCCESS','EMPTY'].includes(account.discovery_status))?'店铺关系发现待完成':'';
+  }
+  function adMissingGmv(shopId){
+    if(data.adAccountError)return '广告店铺关联状态暂不可用';
+    const links=adGmvStoreLinks(shopId),discoveryIssue=adStoreDiscoveryIssue();
+    if(shopId==='UNASSIGNED'&&!links.length)return '暂无可归属的 GMV Max 记录';
+    if(discoveryIssue)return (links.length?'已保留广告店铺关联 · ':'')+discoveryIssue;
+    if(!links.length)return '未关联广告店铺 · 未在当前发现关系范围';
+    const available=links.filter(({store})=>store.report_eligible!==false);
+    if(!available.length)return '已关联广告店铺 · 采集范围待核实';
+    const empty=available.every(({account,store})=>account.coverage?.some(row=>row.channel!=='BASIC'&&row.store_id===store.store_id
+      &&adCoverageRecordCount(row)===0&&Number(row.covered_days)>0));
+    return empty?'已关联广告店铺 · 所采集日期接口未返回记录':'已关联广告店铺 · 当前范围报表待返回或补齐';
+  }
+  function adCoverageRecordCount(row){
+    const value=row?.records;
+    return value!=null&&String(value).trim()!==''&&Number.isSafeInteger(Number(value))&&Number(value)>=0?Number(value):null;
+  }
   function advertisingCoverage(parent){
     const report=data?.advertising;if(!report)return;
     const count=(report.shops||[]).filter(row=>row.shop_id!=='UNASSIGNED'&&adHasRecords(row)).length;
@@ -308,6 +339,18 @@
     if(!adHasRecords(report.independent))note+=' 当前范围暂无独立广告报表或导入消耗，实际投放费用尚未完整核实。';
     if(view==='ads'&&!data.adAccountError&&Array.isArray(data.adAccounts)&&!data.adAccounts.length)note+=' 当前公司尚未连接广告账户。';
     footnote(parent,note);
+    if(view==='ads'&&Array.isArray(data.adAccounts)){
+      const shops=adScopedTikTokShops();
+      if(shops.length){
+        const linked=shops.filter(shop=>adGmvStoreLinks(shop.id).length).length;
+        const scope=el('div',null,parent,'fi-note');scope.dataset.financeAdStoreScope='';icon('info',scope);
+        const discoveryIssue=adStoreDiscoveryIssue();
+        el('span',`当前筛选有 ${shops.length} 家 TikTok 财务店铺，已关联 ${linked} 家，`+(discoveryIssue
+          ?discoveryIssue+'；其余店铺关系尚不能确认。'
+          :`${shops.length-linked} 家未在当前发现关系范围；此结论仅指已完成的店铺发现，不代表没有权限或没有投放。`)
+          +'按店铺去重，多账户访问关系不重复计数；历史已入库费用继续保留。',scope);
+      }
+    }
   }
   function sum(kind){const row=total(kind);return ['SETTLEMENT','BILL'].includes(kind)?row&&Number(row.known_revenues)===Number(row.records)?row.revenue:null:row?.amount;}
   function operatingAmount(profit=data?.profit,known=false){
@@ -817,9 +860,12 @@
         button(groupName(row.group_id),null,()=>selectFilters({groupId:row.group_id||'UNGROUPED',shopId:''}),'fi-action-link'),
         adAmountText(row.settlement),adAmountText(row.commission),adAmountText(row.independent),adAmountText(row.gmv),adAmountText(row)]));
       const stores=card(grid,'店铺广告消耗','GMV Max 自动按官方店铺归属；与账单重叠待核对，暂不叠加到入账合计。普通账户总额不按访问店铺分摊。',12);
-      table(stores.n,['店铺','分组 / 类别','平台账单广告费','其中广告佣金','普通独立广告消耗','GMV Max 报表消耗（待核对）','已入账合计（'+currency+'）'],report.shops.map(row=>[
+      const storeRows=[...report.shops];
+      for(const shop of adScopedTikTokShops())
+        if(!storeRows.some(row=>row.shop_id===shop.id))storeRows.push({shop_id:shop.id,group_id:shop.group_id});
+      table(stores.n,['店铺','分组 / 类别','平台账单广告费','其中广告佣金','普通独立广告消耗','GMV Max 报表消耗（待核对）','已入账合计（'+currency+'）'],storeRows.map(row=>[
         row.shop_id==='UNASSIGNED'?shopName(row.shop_id):button(shopName(row.shop_id),null,()=>selectFilters({shopId:row.shop_id}),'fi-action-link'),
-        groupName(row.group_id),adAmountText(row.settlement),adAmountText(row.commission),adHasRecords(row.independent)?adAmountText(row.independent):adMissingIndependent(row.shop_id),adAmountText(row.gmv),adAmountText(row)]));
+        groupName(row.group_id),adAmountText(row.settlement),adAmountText(row.commission),adHasRecords(row.independent)?adAmountText(row.independent):adMissingIndependent(row.shop_id),adHasRecords(row.gmv)?adAmountText(row.gmv):adMissingGmv(row.shop_id),adAmountText(row)]));
     }
     const gmv=report?.gmv||total('AD_GMV'),gmvCard=card(parent,'GMV Max 专项分析','自动获取商品及直播计划（含已删除计划）；与普通报表、账单的覆盖差异待核对，不直接相加。归因收入不是结算收入。',12);
     table(gmvCard.n,['专项消耗（'+currency+'）','归因收入','SKU 订单数','归因 ROI'],[[adAmountText(gmv),coverage('revenue','known_revenues',gmv),coverage('conversions','known_conversions',gmv),number(gmv?.roi)]]);
@@ -835,12 +881,17 @@
       const store=(account.stores||[]).find(s=>s.store_id===stream.store_id);
       if(stream.channel!=='BASIC'&&(!store?.active||store.match_status==='REMOVED'||filters.shopId&&store.shop_id!==filters.shopId||filters.groupId&&store.shop_id&&!inGroup(data.shops.find(s=>s.id===store.shop_id)||{})))continue;
       const coverage=(account.coverage||[]).find(r=>r.channel===stream.channel&&r.store_id===stream.store_id),days=Number(coverage?.covered_days||0),expected=Number(account.requestedDays||0);
-      const label=stream.channel==='BASIC'?'普通广告（账户总额）':'GMV Max · '+(store?.shop_id?shopName(store.shop_id):store?.store_name||stream.store_id);
-      const state=days===expected&&expected>0?(Number(coverage.amount)===0?'接口返回零消耗':'已采集范围内报表'):days?'已采集部分':'尚未取得范围内报表';
+      const label=stream.channel==='BASIC'?'普通广告（账户报表；不含部分 Shop 创建的 GMV Max）':'GMV Max · '+(store?.shop_id?shopName(store.shop_id):store?.store_name||stream.store_id);
+      const records=adCoverageRecordCount(coverage),complete=days===expected&&expected>0;
+      const result=!coverage?'尚未取得范围内报表':records==null?'返回记录数未核实':records===0?'接口未返回记录'
+        :coverage.amount!=null&&Number(coverage.amount)===0?'报表合计为0':'已返回报表记录';
+      const state=complete?result:days?'已采集部分 · '+result:result;
+      const amount=coverage?.amount,hasAmount=amount!=null&&String(amount).trim()!==''&&Number.isFinite(Number(amount));
+      const amountText=records!==0&&hasAmount&&(records>0||Number(amount)!==0)?number(amount)+' '+account.currency:'—';
       coverageRows.push([account.name||account.advertiser_id,label,(states[stream.status]||stream.status)+(stream.error_message?' · '+stream.error_message:''),expected?days+' / '+expected+' 天':'未选择范围',state+(coverage&&stream.status==='ERROR'?'（上次成功数据）':''),
-        coverage?number(coverage.amount)+' '+account.currency:'—',dateTimeCell(coverage?.oldest_observation,displayZone)||'—']);
+        number(records),amountText,dateTimeCell(coverage?.oldest_observation,displayZone)||'—']);
     }
-    if(coverageRows.length){table(health.n,['广告账户','报表范围','任务状态','日期覆盖','数据状态','已采集消耗（原币）','范围内最早采集时间'],coverageRows);footnote(health.n,'覆盖仅指接口成功返回对应日期，不等于结算对账完成；空报表与失败分开记录。当天及近期数据可能延迟，系统每小时回查近 7 天、每日回查近 31 天，首次补齐近 90 天。');}
+    if(coverageRows.length){table(health.n,['广告账户','报表范围','任务状态','日期覆盖','数据状态','返回记录数','已采集消耗（原币）','范围内最早采集时间'],coverageRows);footnote(health.n,'覆盖仅指接口请求成功覆盖对应日期；返回记录数来源于接口返回的报表行，按所选日期合计。没有返回记录不代表实际零消耗；报表合计为0也不代表每条记录都为0。普通账户报表不保证包含部分 Shop 创建的 GMV Max，不能当作全媒体消耗。覆盖不等于结算对账完成。当天及近期数据可能延迟，系统每小时回查近 7 天、每日回查近 31 天，首次补齐近 90 天。');}
     const detailKinds=el('div',null,parent,'fi-tabs');if(!['AD','FEE','AD_GMV'].includes(selectedKind))selectedKind='AD';
     for(const k of ['AD','FEE','AD_GMV'])button(k==='FEE'?'平台账单广告费明细':kinds[k]+'明细',detailKinds,()=>{selectedKind=k;page=1;load();}).setAttribute('aria-pressed',String(k===selectedKind));
     const detail=card(parent,selectedKind==='FEE'?'平台账单广告费明细':kinds[selectedKind]+'明细','当前筛选 · 共 '+number(records.total)+' 条 · 编号查询仅过滤明细，期间汇总不受分页影响',12);

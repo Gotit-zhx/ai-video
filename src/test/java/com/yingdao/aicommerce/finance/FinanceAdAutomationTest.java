@@ -13,6 +13,10 @@ class FinanceAdAutomationTest {
         assertThrows(RuntimeException.class,()->FinanceAdAutomation.requiredRows(Map.of("list",List.of("invalid")),"list"));
         assertEquals(1,FinanceAdAutomation.pages(Map.of("page_info",Map.of("total_page",0)),1,0));
     }
+    @Test void anEmptyReportMustStillHaveAConsistentPageAndNumericTotal(){
+        assertThrows(RuntimeException.class,()->FinanceAdAutomation.pages(Map.of("page_info",Map.of("total_page",0,"page",2,"total_number",0)),1,0));
+        assertThrows(RuntimeException.class,()->FinanceAdAutomation.pages(Map.of("page_info",Map.of("total_page",0,"page",1,"total_number","unknown")),1,0));
+    }
     @Test void reportIdentityIncludesTheCampaignAndDatesMustStayInsideTheRequestedWindow(){
         var day=LocalDate.of(2026,11,1);var row=Map.<String,Object>of("dimensions",Map.of("stat_time_day","2026-11-01 00:00:00","campaign_id","100001"),"metrics",Map.of("cost","1"));
         FinanceAdAutomation.validateRow(row,"GMV",day,day.plusDays(6));
