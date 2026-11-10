@@ -13,6 +13,7 @@ import java.util.concurrent.*;
 import java.util.zip.*;
 import static com.yingdao.aicommerce.finance.FinanceData.*;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 /** Same guarded disposable schema as the existing finance regression fixtures. */
 class FinanceCostExportFilesIntegrationTest extends FinanceConfigurationIntegrationTest {
@@ -43,7 +44,9 @@ class FinanceCostExportFilesIntegrationTest extends FinanceConfigurationIntegrat
         db.update("DELETE FROM finance_order_cost_jobs");
         String updatedId=db.queryForObject("SELECT id FROM finance_records WHERE kind='ORDER' AND order_id='present-b'",String.class);
         var totals=new ArrayList<Long>();
-        var renderer=proxied(new FinanceCostExport(repo,new FinanceCostExport.Limits(250,300,1000,8*1024*1024)));
+        var observed=spy(db);
+        var exportRepo=new FinanceRepository(observed,new tools.jackson.databind.ObjectMapper());
+        var renderer=proxied(new FinanceCostExport(exportRepo,new FinanceCostExport.Limits(250,300,1000,8*1024*1024)));
         var result=renderer.exportFile(owner,filter,"SETTLED_ORDER","","PENDING","",directory,(processed,total)->{
             assertTrue(TransactionSynchronizationManager.isActualTransactionActive());
             assertTrue(TransactionSynchronizationManager.isCurrentTransactionReadOnly());
@@ -60,6 +63,11 @@ class FinanceCostExportFilesIntegrationTest extends FinanceConfigurationIntegrat
             }
         });
         assertEquals(507,result.orders());assertEquals(507,result.lines());assertEquals(3,result.parts());
+        long repeatedSelectionScans=mockingDetails(observed).getInvocations().stream()
+            .filter(call->(call.getMethod().getName().equals("queryForList")&&call.getArgument(0) instanceof String sql&&sql.contains("export_sort_date"))
+                ||(call.getMethod().getName().equals("query")&&call.getArguments().length==2&&call.getArgument(0) instanceof org.springframework.jdbc.core.PreparedStatementCreator
+                    &&call.getArgument(1) instanceof org.springframework.jdbc.core.RowCallbackHandler)).count();
+        assertEquals(1,repeatedSelectionScans,"Selecting another JSON page must not repeat the full settlement aggregation");
         assertEquals(Set.of(507L),new HashSet<>(totals));
         var actual=new ArrayList<String>();int references=0;
         try(var zip=new ZipInputStream(Files.newInputStream(result.path()))){ZipEntry entry;while((entry=zip.getNextEntry())!=null){
