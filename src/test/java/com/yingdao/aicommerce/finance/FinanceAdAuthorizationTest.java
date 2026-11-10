@@ -82,7 +82,10 @@ class FinanceAdAuthorizationTest {
         when(http.postJson(any(),anyMap(),anyString())).thenReturn(Map.of("code",0,"data",Map.of("access_token","unit-only-access-token","advertiser_ids",List.of())));
         when(http.get(any(),anyMap())).thenReturn(Map.of("code",0,"data",Map.of("list",List.of(Map.of("advertiser_id","100001")))));
         assertTrue(auth.complete(state,"unit-only-code",null).startsWith("true:"));
-        verify(http,times(1)).get(argThat(uri->uri.getPath().equals("/open_api/v1.3/oauth2/advertiser/get/")),eq(Map.of()));
+        verify(http,times(1)).get(argThat(uri->uri.getPath().equals("/open_api/v1.3/oauth2/advertiser/get/")
+                && uri.getQuery().contains("app_id=12345678") && uri.getQuery().contains("secret=")
+                && !uri.getQuery().contains("access_token") && !uri.getQuery().contains("unit-only-access-token")),
+                eq(Map.of("Access-Token","unit-only-access-token")));
         verify(http,times(1)).postJson(any(),anyMap(),anyString());
         verify(ads).connectVerified(any(),eq("100001"),eq(""),eq("unit-only-access-token"),eq(""),anyMap(),any());
     }

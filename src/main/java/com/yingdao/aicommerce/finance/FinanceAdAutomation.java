@@ -12,6 +12,7 @@ final class FinanceAdAutomation {
     private final FinanceAds ads;
     private final FinanceRepository repo;
     private static final class ReportChanged extends RuntimeException {}
+    private static final class EmptyReportRefresh extends RuntimeException {}
     FinanceAdAutomation(FinanceAds ads){this.ads=ads;this.repo=ads.repo;}
 
     void tick(Scope s,Map<String,Object> account,String lease){
@@ -217,15 +218,21 @@ final class FinanceAdAutomation {
         if(!shop.equals("UNASSIGNED"))repo.requireShopWrite(s,shop);
         var daily=new HashMap<LocalDate,List<Map<String,Object>>>();
         for(var item:staged){var row=repo.read(text(item.get("raw_json")));daily.computeIfAbsent(day(row),k->new ArrayList<>()).add(row);}
-        // Only this source's successfully completed window is replaced; imported records remain intact.
-        repo.jdbc().update("""
-            DELETE FROM finance_records WHERE organization_id=? AND user_id=? AND kind=? AND source='API'
+        String sourceWindow="""
+            WHERE organization_id=? AND user_id=? AND kind=? AND source='API'
               AND record_date BETWEEN ? AND ? AND JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$.advertiser_id'))=?
               AND (JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$._finance_channel'))=?
                 AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$._finance_store_id')),'')=?
                 OR ? AND JSON_EXTRACT(raw_json,'$._finance_channel') IS NULL)
-            """,s.organizationId(),s.userId(),basic?"AD":"AD_GMV",from.toString(),to.toString(),advertiser,channel,store,
-                basic||store.equals(text(account.get("gmv_store_id"))));
+            """;
+        Object[] windowKeys={s.organizationId(),s.userId(),basic?"AD":"AD_GMV",from.toString(),to.toString(),advertiser,channel,store,
+                basic||store.equals(text(account.get("gmv_store_id")))};
+        var previousDays=repo.jdbc().queryForList("SELECT DISTINCT record_date FROM finance_records "+sourceWindow,windowKeys);
+        if(previousDays.stream().anyMatch(row->!daily.containsKey(LocalDate.parse(text(row.get("record_date"))))))
+            throw new EmptyReportRefresh();
+        // Empty means no available rows, not an explicit reversal of previously returned spend.
+        // Only this source's completed non-conflicting window is replaced; imports remain intact.
+        repo.jdbc().update("DELETE FROM finance_records "+sourceWindow,windowKeys);
         for(var item:staged){
             var row=repo.read(text(item.get("raw_json")));var metrics=map(row.get("metrics"));
             var raw=new LinkedHashMap<>(row);raw.put("advertiser_id",advertiser);raw.put("_finance_channel",channel);raw.put("_finance_store_id",store);
@@ -277,10 +284,12 @@ final class FinanceAdAutomation {
         Object value=at(data,"page_info.total_page");
         if(value==null||!text(value).matches("\\d{1,6}"))throw bad("广告接口缺少有效分页状态");
         int total=(int)number(value);
-        if(total==0&&page==1&&size==0)return 1;
-        if(total<page||total>1000||size>100||page<total&&size==0)throw bad("广告接口分页不完整");
         Object actual=at(data,"page_info.page");
         if(actual!=null&&number(actual)!=page)throw bad("广告接口页码不一致");
+        Object records=at(data,"page_info.total_number");
+        if(records!=null&&!text(records).matches("\\d{1,10}"))throw bad("广告接口记录总数无效");
+        if(total==0&&page==1&&size==0)return 1;
+        if(total<page||total>1000||size>100||page<total&&size==0)throw bad("广告接口分页不完整");
         return total;
     }
     static LocalDate day(Map<String,Object> row){
@@ -296,6 +305,7 @@ final class FinanceAdAutomation {
     }
     static long backoff(long failures){return Math.min(21600,120*(1L<<Math.min(7,failures)));}
     static String safeError(String stage,RuntimeException failure){
+        if(failure instanceof EmptyReportRefresh)return stage+"部分日期返回空报表；已保留上次成功数据和进度，待核对并自动重试。";
         if(failure instanceof FinanceAdFailures.ProviderFailure)return stage+"："+failure.getMessage()+" 系统将自动重试，不影响其他报表。";
         return stage+"暂未完成或返回不完整；已保留进度和上次数据，系统将自动重试。";
     }

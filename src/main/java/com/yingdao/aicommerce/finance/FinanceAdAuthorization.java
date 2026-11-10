@@ -143,7 +143,7 @@ public class FinanceAdAuthorization {
             if(rawIds instanceof List<?> list)list.forEach(id->ids.add(text(id)));
             if(ids.isEmpty()){
                 var available=successful(http.get(MarketplaceHttp.uri("https://business-api.tiktok.com","/open_api/v1.3/oauth2/advertiser/get/",
-                        Map.of("app_id",app.get("app_id"),"secret",secret,"access_token",token)),Map.of()));
+                        Map.of("app_id",app.get("app_id"),"secret",secret)),Map.of("Access-Token",token)));
                 rows(available.get("list")).forEach(row->ids.add(text(row.get("advertiser_id"))));
             }
             if(ids.isEmpty())throw new FinanceAdFailures.DiscoveryFailure(FinanceAdFailures.DiscoveryReason.NO_AUTHORIZED_ADVERTISERS);

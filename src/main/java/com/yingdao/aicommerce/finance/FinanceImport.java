@@ -10,6 +10,9 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 
 @Service
 public class FinanceImport {
+    private static final Set<String> AD_NON_SPEND_CATEGORIES=Set.of("充值","广告充值","账户充值","广告账户充值",
+            "TOPUP","TOP_UP","TOP UP","RECHARGE","AD_RECHARGE","BALANCE_TRANSFER","TRANSFER",
+            "资金划转","账户划转","转账","广告充值或技术支持费","GMV_PAYMENT_FOR_TIKTOK_ADS");
     final FinanceService service;final FinanceRepository repo;
     public FinanceImport(FinanceService service,FinanceRepository repo){this.service=service;this.repo=repo;}
     public Map<String,Object> preview(byte[] bytes,String filename){
@@ -22,8 +25,8 @@ public class FinanceImport {
         if(!Set.of("BILL","COST","AD").contains(kind))throw bad("支持导入结算账单、物流贴单成本和广告费用");
         var shop=service.ownedShop(s,shopId);
         s=service.shopScope(s,shopId);
-        if(kind.equals("AD")&&repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_ad_accounts WHERE organization_id=? AND shop_id=? AND enabled=TRUE",
-                Integer.class,s.organizationId(),shopId)>0)throw bad("该店铺已启用广告接口同步，请勿重复导入广告费用");
+        if(kind.equals("AD")&&repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_ad_accounts WHERE organization_id=? AND shop_id=?",
+                Integer.class,s.organizationId(),shopId)>0)throw bad("该店铺已关联广告接口（包含已暂停账户），请勿重复导入广告费用；请先核对来源及报表覆盖");
         String digest=hash(Base64.getEncoder().encodeToString(bytes)+repo.write(new TreeMap<>(mapping)));
         var old=repo.jdbc().queryForList("SELECT row_count FROM finance_imports WHERE organization_id=? AND user_id=? AND shop_id=? AND kind=? AND content_hash=?",
                 s.organizationId(),s.userId(),shopId,kind,digest);
@@ -36,6 +39,8 @@ public class FinanceImport {
             BigDecimal number=decimal(amount.replace(",",""));if(number==null)throw bad("第 "+(i+1)+" 行金额无法识别");
             LocalDate date;try{date=LocalDate.parse(day);}catch(Exception e){throw bad("第 "+(i+1)+" 行日期请使用 YYYY-MM-DD 文本格式");}
             String order=value(row,mapping,"order_id"),statement=value(row,mapping,"statement_id");
+            if(kind.equals("AD")&&AD_NON_SPEND_CATEGORIES.contains(value(row,mapping,"category").toUpperCase(Locale.ROOT)))
+                throw bad("第 "+(i+1)+" 行属于充值、资金划转或未拆分费用，请导入实际广告消耗报表");
             if(kind.equals("BILL")&&!statement.isBlank())id=statement;
             if(!unique.add(id))throw bad("第 "+(i+1)+" 行编号重复，请先合并同一账单或补充唯一记录编号");
             Entry entry=new Entry(shopId,text(shop.get("platform")),kind,id,order,kind.equals("BILL")?id:statement,
