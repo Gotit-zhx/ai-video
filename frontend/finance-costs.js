@@ -443,15 +443,16 @@
       action(bar,'刷新成本',()=>refresh(),'fi-record-link');
       let exporting=false;
       const exportButton=action(bar,'导出 Excel',async()=>{
-        exporting=true;exportButton.textContent='正在生成 Excel…';
+        exporting=true;exportButton.textContent='正在提交…';
         try{
           if(!context.downloadOrderCosts)throw Error('导出功能未加载，请刷新页面后重试');
-          await context.downloadOrderCosts(selection);
-          toast('订单成本 Excel 已生成，包含汇总说明、当前筛选的订单及 SKU 计算明细。');
+          const result=await context.downloadOrderCosts(selection);
+          toast(result?.status==='READY'?'订单成本导出已完成，已请求浏览器保存；若未开始，请点击下载。':result?.status==='UNCERTAIN'?'提交结果待确认，请在导出任务中确认上次任务。':'订单成本导出任务已提交，可在导出任务中查看进度。');
         }finally{exporting=false;exportButton.textContent='导出 Excel';}
       },'fi-primary');
       exportButton.disabled=true;
       exportButton.title='导出当前筛选的全部订单，含 SKU 单价、数量、成本月份与缺失原因';
+      context.mountOrderCostExports?.(bar,selection);
       const amountSummary=el('div',null,bar,'fc-order-amount-summary');amountSummary.setAttribute('role','status');
       const amountLabel=el('span','成本金额合计（人民币）',amountSummary);
       const amountValue=el('strong','查询中…',amountSummary),amountNote=el('small','按当前筛选汇总全部页',amountSummary);
