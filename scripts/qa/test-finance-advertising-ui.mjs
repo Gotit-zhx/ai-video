@@ -113,6 +113,18 @@ try{
   assert(root.querySelector('[data-metric="AD"]').textContent.includes('其中广告佣金：6.5'));
   assert.equal(root.querySelector('[data-metric="PROFIT"] strong').textContent,'369.5');
   assert(card('店铺经营明细').textContent.includes('其中广告佣金'));
+  const allFacts=[...fixture.facts];
+  fixture.facts.splice(0,fixture.facts.length,...allFacts.filter(row=>row.kind!=='AD'));
+  await click('刷新');
+  root.querySelector('[data-metric="AD"]').click();assert.equal(w.location.hash,'#finance-ads');
+  w.FinanceWorkspace.enter('ads');await ready();
+  assert.equal(reads.filter(x=>x.endpoint==='/records').at(-1).q.kind,'FEE','a ledger-funded ad card must open its populated source instead of an empty ordinary report');
+  fixture.facts.splice(0,fixture.facts.length,...allFacts.filter(row=>row.kind==='AD_GMV'));
+  w.FinanceWorkspace.enter('overview');await ready();
+  root.querySelector('[data-metric="AD"]').click();w.FinanceWorkspace.enter('ads');await ready();
+  assert.equal(reads.filter(x=>x.endpoint==='/records').at(-1).q.kind,'AD_GMV','a GMV-only card must open its separate report without changing booked totals');
+  fixture.facts.splice(0,fixture.facts.length,...allFacts);
+  w.FinanceWorkspace.enter('overview');await ready();
   await select('开始日期','2026-08-01');await select('结束日期','2026-08-31');
   assert(card('店铺经营明细').textContent.includes('暂无记录'));assert(card('分组经营明细').textContent.includes('暂无记录'));
   if(process.env.FINANCE_ADS_PREVIEW_DIR){

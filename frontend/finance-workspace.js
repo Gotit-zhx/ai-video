@@ -372,7 +372,10 @@
     const definitions=[['SETTLEMENT','销售收入','销售收入 · 按结算账单日期','wallet','settlements'],['ORDER','已结算订单金额','原订单金额合计，按首次结算日期归属；非平台净结算，不参与利润计算。','shop','orders'],['FEE','已结算平台费用','已结算订单的佣金、物流、税费及平台调整；逐项可查','fee','fee-records'],['AD','广告费用','当前期间已同步 / 已导入费用','ad','ads'],['OPERATING_COST','营业成本',partialCost?'仅已算部分 · 查看商品、贴单、样品及退货退款明细':'商品成本 + 物流贴单成本 · 查看样品及退货退款明细','chart',''],['PROFIT','利润额',profit?.amount==null?'数据待补齐 · 查看计算口径':profit.estimated?'暂估 · 查看费用完整性':'扣除平台费用、广告及营业成本','wallet','']];
     definitions.forEach(([kind,label,description,symbol,route],i)=>{
       const amount=kind==='SETTLEMENT'?profit?.settledGrossAmount??(partialSettlement&&Number(settled?.known_revenues)>0?settled.revenue:null):kind==='OPERATING_COST'?operatingAmount()??operatingAmount(profit,true):kind==='PROFIT'?profit?.amount:kind==='AD'&&data.advertising?adAmount(data.advertising.total):total(kind)?.amount;
-      const n=button('',cards,()=>{if(kind==='PROFIT'){profitDialog();return;}if(kind==='OPERATING_COST'){operatingCostDialog();return;}selectedKind=kind;if(kind==='ORDER')orderScope='SETTLED';navigate(route);},'fi-metric'+(i===0?' is-featured':'')+(kind==='PROFIT'?' is-profit':''));
+      const n=button('',cards,()=>{if(kind==='PROFIT'){profitDialog();return;}if(kind==='OPERATING_COST'){operatingCostDialog();return;}selectedKind=kind;
+        if(kind==='AD'&&data.advertising&&!adHasRecords(data.advertising.independent))
+          selectedKind=adHasRecords(data.advertising.settlement)?'FEE':adHasRecords(data.advertising.gmv)?'AD_GMV':'AD';
+        if(kind==='ORDER')orderScope='SETTLED';navigate(route);},'fi-metric'+(i===0?' is-featured':'')+(kind==='PROFIT'?' is-profit':''));
       n.dataset.updateKey='metric:'+kind;n.dataset.metric=kind;
       if(kind==='PROFIT'&&amount!=null&&Number(amount)<0)n.classList.add('is-negative');
       n.style.setProperty('--accent',colors[i%colors.length]);const title=el('div',null,n,'fi-metric-label');el('span',label,title);icon(symbol,el('span',null,title,'fi-metric-icon'));
