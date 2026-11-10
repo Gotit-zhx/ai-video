@@ -7,6 +7,11 @@ import subprocess
 from pathlib import Path
 import build
 import release
+import evidence
+import scope
+import java
+import io
+import zipfile
 
 
 def baseline_for(tag):
@@ -29,6 +34,60 @@ def baseline_for(tag):
         '--source-digest',baseline['source']['commit'],'--source-ref',baseline['source']['ref'],
         '--deny-self-hosted-runners'],check=True)
     return baseline
+
+
+def qualify(expected_head,run_id,attempt,download=False,baseline=None):
+    head=release.run('git','rev-parse','HEAD')
+    if not re.fullmatch('[a-f0-9]{40}',expected_head) or expected_head!=head:raise ValueError('Candidate expected head differs')
+    ref=os.environ.get('GITHUB_REF','')
+    if not re.fullmatch(r'refs/heads/(release|hotfix)/[A-Za-z0-9._-]+',ref):raise ValueError('Untrusted candidate ref')
+    remote=release.run('git','ls-remote','origin',ref).split()
+    if len(remote)!=2 or remote[0]!=head:raise ValueError('Candidate branch moved')
+    paths=release.run('git','diff','--name-only','origin/main-tree','HEAD').splitlines()
+    context=scope.full_baseline_context()
+    if os.environ.get('HEYI_MANIFEST_V2_ENABLED')=='true':
+        if baseline is None:
+            versions=[tag for tag in release.run('git','tag','--points-at','origin/main-tree').splitlines() if release.VERSION.fullmatch(tag)]
+            if len(versions)!=1:raise ValueError('Production requires a unique formal baseline')
+            baseline=baseline_for(versions[0])
+        context['firstV2']=baseline.get('schemaVersion')!=2
+    context.update(forceFull=os.environ.get('HEYI_FAST_CI_ENABLED')!='true',firstV2=context.get('firstV2',False) or os.environ.get('HEYI_V2_BOOTSTRAPPED')!='true')
+    plan=scope.classify_changed_paths(paths,context)
+    if plan['unsupported']:raise ValueError('Unsupported runtime component changes')
+    request=scope.inputs(plan['requiredSuites'])
+    verified=evidence.fetch_verified(run_id,attempt,request)
+    if os.environ.get('HEYI_MANIFEST_V2_ENABLED')!='true' and verified.get('profile')!='full':raise ValueError('v1 requires qualified full CI')
+    if download:download_compiled(verified)
+    return verified
+
+
+def check_compiled_proof(verified,metadata):
+    proof=verified.get('build',{})
+    if any(not re.fullmatch('[a-f0-9]{64}',proof.get(k,'')) or proof[k]!=metadata.get(k) for k in ['archiveSha256','compiledArtifactSha256','buildRecipeDigest']):
+        raise ValueError('Compiled output not covered by validation')
+
+
+def download_compiled(verified):
+    prefix='repos/'+release.REPOSITORY
+    artifacts=evidence.api(f"{prefix}/actions/runs/{verified['runId']}/artifacts?per_page=100")
+    matches=[a for a in artifacts['artifacts'] if a['name']==f"compiled-{verified['runAttempt']}"]
+    if len(matches)!=1 or matches[0].get('expired') is not False:raise ValueError('Missing compiled artifact')
+    artifact=matches[0]
+    if artifact.get('size_in_bytes',0)>512*1024**2:raise ValueError('Oversized compiled artifact')
+    if str(artifact.get('workflow_run',{}).get('id'))!=str(verified['runId']) or artifact.get('workflow_run',{}).get('head_sha')!=verified['head']:
+        raise ValueError('Compiled artifact source differs')
+    raw=evidence.api(f"{prefix}/actions/artifacts/{artifact['id']}/zip",raw=True)
+    if artifact.get('digest')!='sha256:'+release.sha(raw):raise ValueError('Compiled API artifact digest differs')
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        if set(archive.namelist())!={'build.json','compiled.tar.gz'} or len(archive.namelist())!=2 or sum(i.file_size for i in archive.infolist())>512*1024**2:
+            raise ValueError('Invalid compiled artifact members')
+        metadata=json.loads(archive.read('build.json'));check_compiled_proof(verified,metadata)
+        compiled=archive.read('compiled.tar.gz')
+        if release.sha(compiled)!=metadata['archiveSha256']:raise ValueError('Compiled archive digest differs')
+        target=release.ROOT/'target/compiled';target.mkdir(parents=True,exist_ok=True)
+        (target/'build.json').write_text(json.dumps(metadata));(target/'compiled.tar.gz').write_bytes(compiled)
+    java.load_compiled(target)
+    return metadata
 
 
 def main(action):
@@ -65,8 +124,13 @@ def main(action):
         tag=versions[0]
         if release.VERSION.fullmatch(tag):
             baseline=baseline_for(tag)
-    build.build("v"+match[1],baseline)
+    verified=qualify(os.environ['EXPECTED_HEAD'],os.environ['VALIDATION_RUN'],os.environ['VALIDATION_ATTEMPT'],download=True,baseline=baseline)
+    build.build("v"+match[1],baseline,verified)
 
 
 if __name__=="__main__":
-    p=argparse.ArgumentParser();p.add_argument("action",choices=("build","publish"));main(p.parse_args().action)
+    p=argparse.ArgumentParser();p.add_argument("action",choices=("build","publish","qualify"));args=p.parse_args()
+    if args.action=='qualify':
+        value=qualify(os.environ['EXPECTED_HEAD'],os.environ['VALIDATION_RUN'],os.environ['VALIDATION_ATTEMPT'])
+        print(json.dumps({'qualified':True,'runId':value['runId'],'runAttempt':value['runAttempt'],'tree':value['tree']}))
+    else:main(args.action)

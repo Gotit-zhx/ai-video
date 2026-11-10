@@ -18,12 +18,13 @@ CONFIG = Path("/etc/heyi-ops/config.json")
 def context():
     config=read(CONFIG)
     if not config: raise RuntimeError("heyi-ops is not installed")
-    return config,Store(config["root"],config["lockPath"],config.get("compatibilityLockPath")),Host(config),Artifacts(config["root"])
+    store=Store(config["root"],config["lockPath"],config.get("compatibilityLockPath"));host=Host(config);store.timings=host.timings
+    return config,store,host,Artifacts(config["root"])
 
 
 def public_operation(op):
     if not op: return None
-    return {key:op[key] for key in ("id","phase","createdAt","updatedAt","finishedAt","errorType","switched","restart","adoption","recovered") if key in op} | {"version":op["target"]["version"]}
+    return {key:op[key] for key in ("id","phase","createdAt","updatedAt","finishedAt","errorType","switched","restart","adoption","recovered","timings") if key in op} | {"version":op["target"]["version"]}
 
 
 def reject_unstarted(store,request,reason):
@@ -35,8 +36,11 @@ def reject_unstarted(store,request,reason):
 
 
 def status(store, host):
-    current=store.active()
-    return {"protocol":1,"version":current["version"] if current else None,
+    current=store.active();baseline=read(store.root/"baseline.json",{});config=getattr(host,"config",{})
+    if not isinstance(config,dict):config={}
+    return {"protocol":1,"observedAt":int(time.time()),"releaseSchemas":[1,2],"transferProtocols":[1,2],
+            "sourceCommit":(current or {}).get("source",{}).get("commit"),"controlPlaneRevision":config.get("controlPlaneRevision"),
+            **{k:baseline.get(k) for k in ("operationsInputs","migrationInputs","schemaFingerprint")},"version":current["version"] if current else None,
             "maintenance":host.marker.exists(),"operations":[public_operation(o) for o in store.incomplete()]}
 
 
@@ -46,10 +50,16 @@ def recover_operations(store,host):
     return results+Engine(store,host).recover()
 
 
+def validate_asset_sizes(sizes):
+    if (not isinstance(sizes,dict) or set(sizes)!={'release.json','source.tar.gz'} or
+        any(type(v) is not int for v in sizes.values()) or not 0<sizes['release.json']<=1024*1024 or
+        not 0<sizes['source.tar.gz']<=512*1024**2):raise ValueError('Invalid upload size bounds')
+
+
 def dispatch(args, role="local"):
     allowed={"monitoring":{"status","doctor","receipt"},
-             "deploy":{"status","doctor","receipt","stage","image-cache","deploy","rollback","preflight"},
-             "local":{"status","doctor","receipt","stage","image-cache","deploy","rollback","preflight","recover","cleanup","monitor","execute","watchdog","finalize","adopt","tls-reload"}}
+             "deploy":{"status","doctor","receipt","stage","stage-plan","image-cache","deploy","rollback","preflight"},
+             "local":{"status","doctor","receipt","stage","stage-plan","image-cache","deploy","rollback","preflight","recover","cleanup","monitor","execute","watchdog","finalize","adopt","tls-reload"}}
     if not args or args[0] not in allowed.get(role,set()): raise ValueError("Action is not allowed for this identity")
     action=args[0];config,store,host,artifacts=context()
     if action in {"status","doctor","recover","cleanup","monitor","watchdog","tls-reload"} and len(args)!=1: raise ValueError("Unexpected arguments")
@@ -66,12 +76,30 @@ def dispatch(args, role="local"):
         if len(args)!=2: raise ValueError("Operation ID required")
         value=read(store.path(args[1]));request=read(store.root/"requests"/(args[1]+".json"))
         return public_operation(value) if value else ({"id":request["id"],"version":request["version"],"phase":"queued","createdAt":request.get("createdAt")} if request else None)
+    if action=='stage-plan':
+        if len(args)!=3 or not REQUEST.fullmatch(args[2]):raise ValueError('Expected version and plan ID')
+        raw=sys.stdin.buffer.readline(16385)
+        if len(raw)>16384:raise ValueError('Plan header too large')
+        payload=json.loads(raw)
+        if not isinstance(payload,dict) or set(payload)!={'pullToken','assetSizes','metadataSizes'}:raise ValueError('Unexpected plan fields')
+        validate_asset_sizes(payload['assetSizes'])
+        with store.exclusive():
+            if store.incomplete() or host.marker.exists():raise RuntimeError('Recover maintenance before preparing another release')
+            return artifacts.prepare_plan(args[1],args[2],payload['pullToken'],sys.stdin.buffer,payload['assetSizes'],payload['metadataSizes'])
     if action in {"stage","preflight"}:
         if len(args)!=2: raise ValueError("Version required")
         if action=="stage":
-            raw=sys.stdin.buffer.readline(16385)
-            if len(raw)>16384: raise ValueError("Credential input too large")
+            raw=sys.stdin.buffer.readline(65537)
+            if len(raw)>65536: raise ValueError("Credential input too large")
             payload=json.loads(raw)
+            if isinstance(payload,dict) and payload.get('protocol')==2:
+                from .transfer import unique_descriptors
+                if set(payload)!={'protocol','planId','blobs'} or type(payload['protocol']) is not int or not isinstance(payload['planId'],str) or not REQUEST.fullmatch(payload['planId']):raise ValueError('Invalid delta header')
+                if payload['blobs']!=unique_descriptors(payload['blobs']):raise ValueError('Invalid delta descriptors')
+                with store.exclusive():
+                    if store.incomplete() or host.marker.exists():raise RuntimeError('Recover maintenance before preparing another release')
+                    return artifacts.stage_delta(args[1],payload,sys.stdin.buffer)
+            if len(raw)>16384:raise ValueError('Credential input too large')
             if set(payload) not in ({"pullToken"},{"pullToken","assetSizes"},{"pullToken","assetSizes","imageArchives"}): raise ValueError("Unexpected input fields")
             upload=None
             if 'assetSizes' in payload:
@@ -86,7 +114,7 @@ def dispatch(args, role="local"):
             with store.exclusive():
                 if store.incomplete() or host.marker.exists():raise RuntimeError("Recover maintenance before preparing another release")
                 target=artifacts.prepare(args[1],payload["pullToken"],upload=upload)
-            return {"version":target["version"],"prepared":True}
+            return {"version":target["version"],"prepared":True,"timings":artifacts.timings.snapshot(),"serverReceiveCompletedAtMs":artifacts.receive_completed_at}
         with store.exclusive(): host.preflight(artifacts.load(args[1]),store.active())
         return {"preflight":"passed","version":args[1]}
     if action=='adopt':
