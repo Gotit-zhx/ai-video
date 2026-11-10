@@ -26,11 +26,11 @@ class CompiledTests(unittest.TestCase):
     def test_reports_missing_failed_skipped_cannot_qualify(self):
         with tempfile.TemporaryDirectory() as d:
             folder=Path(d)
-            with self.assertRaises(ValueError):evidence.audit_reports(folder,['java-unit'])
+            with self.assertRaises(ValueError):evidence.audit_reports(folder,['java-unit'],1)
             report=folder/'java-unit-1/unit/summary.json';report.parent.mkdir(parents=True)
             for value in [{'result':'failed','unexpectedSkips':0},{'result':'passed','unexpectedSkips':1}]:
                 report.write_text(json.dumps(value))
-                with self.assertRaises(ValueError):evidence.audit_reports(folder,['java-unit'])
+                with self.assertRaises(ValueError):evidence.audit_reports(folder,['java-unit'],1)
     def test_balanced_db_shards_keep_every_class_exactly_once(self):
         classes=['A','B','C','D','E'];durations={'A':90,'B':40,'C':30,'D':20,'E':10}
         shards=java.balanced_shards(classes,3,durations)
@@ -43,3 +43,16 @@ class CompiledTests(unittest.TestCase):
             folder=Path(d);tests=folder/'src/test/java';tests.mkdir(parents=True)
             (tests/'HiddenSpec.java').write_text('class HiddenSpec { @Test void required() {} }')
             with patch.object(java,'ROOT',folder),self.assertRaises(ValueError):java.inventory()
+    def test_failed_old_attempt_does_not_poison_successful_current_reports(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            for attempt,result in [(1,'failed'),(2,'passed')]:
+                report=root/f'java-unit-{attempt}'/'unit/summary.json';report.parent.mkdir(parents=True)
+                report.write_text(json.dumps({'result':result,'unexpectedSkips':0}))
+            self.assertEqual(['java-unit'],evidence.audit_reports(root,['java-unit'],2))
+            with self.assertRaises(ValueError):evidence.audit_reports(root,['java-unit'],3)
+    def test_old_success_cannot_fill_current_attempt_report_gap(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);report=root/'java-unit-1/unit/summary.json';report.parent.mkdir(parents=True)
+            report.write_text(json.dumps({'result':'passed','unexpectedSkips':0}))
+            with self.assertRaises(ValueError):evidence.audit_reports(root,['java-unit'],2)

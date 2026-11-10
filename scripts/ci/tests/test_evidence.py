@@ -67,3 +67,15 @@ class EvidenceTests(unittest.TestCase):
         record, request, metadata, raw=self.fixture()
         metadata.update(event='schedule',head_sha='f'*40)
         with self.assertRaises(ValueError):evidence.verify_evidence(record,request,metadata,raw)
+    def test_recent_full_baseline_survives_mapped_test_change_without_reusing_it(self):
+        import scope
+        record,request,metadata,_=self.fixture()
+        record.update(profile='full',requiredSuites=scope.FULL,passedSuites=scope.FULL,
+                      suiteInputDigests={s:'d'*64 for s in scope.FULL})
+        raw=json.dumps(record).encode();metadata['artifact']['digest']='sha256:'+hashlib.sha256(raw).hexdigest()
+        request.update(requiredSuites=scope.FULL,suiteInputDigests={s:'f'*64 for s in scope.FULL})
+        verified=evidence.verify_full_baseline(record,request,metadata,raw)
+        self.assertEqual('full',verified['profile'])
+        self.assertFalse(evidence.can_reuse(verified,request))
+        for key in ['policyDigest','toolchainDigest']:
+            with self.assertRaises(ValueError):evidence.verify_full_baseline(record,dict(request,**{key:'f'*64}),metadata,raw)

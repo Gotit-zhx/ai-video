@@ -431,7 +431,8 @@
     "scripts/qa/test-finance-sync-priority-ui.mjs",
     "scripts/qa/test-incremental-charts.mjs",
     "scripts/qa/test-incremental-dom.mjs",
-    "scripts/qa/test-video-direct-downloads.mjs"
+    "scripts/qa/test-video-direct-downloads.mjs",
+    "scripts/qa/test-desktop-downloads.cjs"
   ],
   "modules": {
     "product": [
@@ -545,5 +546,33 @@
   "mediaSuites": [
     "java-unit",
     "container-smoke"
-  ]
+  ],
+  "fixtureRoots": [
+    "frontend/test/fixtures",
+    "scripts/qa/fixtures"
+  ],
+  "testHelpers": {
+    "frontend/test/public-assets.cjs": "Imported by Node tests; does not define an independent test."
+  },
+  "excludedTests": {
+    "frontend/test/commerce-navigation.browser.cjs": "Opt-in browser fixture requires separately authorized local login and Playwright.",
+    "frontend/test/hr-workspace-preview.py": "Interactive local visual preview server, not an automated test.",
+    "frontend/test/main-image-style-preview.mjs": "Interactive local visual preview server, not an automated test.",
+    "scripts/qa/test-commerce-schema.sql": "Manual SQL fixture must be applied only by a separately reviewed disposable-database harness.",
+    "scripts/qa/commerce-http-smoke.cjs": "Manual HTTP smoke requires a separately authorized local application fixture.",
+    "scripts/qa/feikua-observe-smoke.js": "External observation probe is outside credential-free PR validation.",
+    "scripts/qa/pi-agent-smoke.js": "Manual runtime probe requires separately authorized service setup.",
+    "scripts/qa/pi-plan-smoke.js": "Manual runtime probe requires separately authorized service setup.",
+    "scripts/qa/pi-result-smoke.js": "Manual runtime probe requires separately authorized service setup.",
+    "scripts/qa/java/FinanceAdvertisingReleaseVerify.java": "Manual data/recovery probe; production or local fixture authorization is required separately.",
+    "scripts/qa/java/FinanceBiLedgerProbe.java": "Manual data/recovery probe; production or local fixture authorization is required separately.",
+    "scripts/qa/java/FinanceBiPerformanceProbe.java": "Manual data/recovery probe; production or local fixture authorization is required separately.",
+    "scripts/qa/java/FinanceBrushSourceSummaryVerify.java": "Manual data/recovery probe; production or local fixture authorization is required separately.",
+    "scripts/qa/java/FinanceColdReadProbe.java": "Manual data/recovery probe; production or local fixture authorization is required separately.",
+    "scripts/qa/java/ProductSizeChartRecovery.java": "Manual data/recovery probe; production or local fixture authorization is required separately.",
+    "scripts/qa/java/WatermarkBackgroundFixtureCheck.java": "Manual data/recovery probe; production or local fixture authorization is required separately.",
+    "scripts/qa/java/WatermarkRecompose.java": "Manual data/recovery probe; production or local fixture authorization is required separately.",
+    "scripts/qa/test-product-watermark-model.mjs": "需要已授权的真实模型/容器及独立验收；禁止在 PR CI 读取生产容器或调用付费模型。",
+    "scripts/qa/test-product-watermark-enhanced.mjs": "需要已授权的真实模型/容器及独立验收；禁止在 PR CI 读取生产容器或调用付费模型。"
+  }
 }

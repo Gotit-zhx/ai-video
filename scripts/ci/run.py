@@ -15,12 +15,12 @@ def frontend_selection(required):
     import scope
     required=set(required);catalog=scope.catalog()
     if 'all-frontend' in required:
-        selected=catalog['all-frontend']['files']
-    elif 'finance-frontend' in required:selected=catalog['finance-frontend']['files']
-    elif required=={'frontend-assets'}:selected=[]
+        selected=catalog['all-frontend']
+    elif 'finance-frontend' in required:selected=catalog['finance-frontend']
+    elif required=={'frontend-assets'}:selected={}
     else:raise ValueError('Unknown frontend suite selection')
-    tests=[ROOT/p for p in selected if p.startswith(('frontend/test/','frontend/tests/'))]
-    qa=[ROOT/p for p in selected if p.startswith('scripts/qa/test-')]
+    tests=[ROOT/p for p in selected.get('nodeTests',[])]
+    qa=[ROOT/p for p in selected.get('scripts',[])]
     return tests,qa
 
 
@@ -43,12 +43,13 @@ def frontend(required=None):
              "result":"passed" if not (skips or failures or returncode) else "failed", "requiredSuites":required}
     (reports/"summary.json").write_text(json.dumps(summary,ensure_ascii=False,indent=2)+"\n")
     if summary["result"]!="passed":raise RuntimeError("Frontend tests failed, were skipped or produced no reports")
-    excluded=json.loads((ROOT/"scripts/ci/optional-tests.json").read_text())["excludedQaScripts"]
+    import scope
+    excluded=scope.frontend_inventory()['excluded']
     summary.update(uiSuites=[],excludedSuites=excluded,result="running")
     try:
         for test in qa:
             result=subprocess.run(["node",str(test)],cwd=ROOT,env=env)
-            summary["uiSuites"].append({"name":test.name,"result":"passed" if result.returncode==0 else "failed"})
+            summary["uiSuites"].append({"name":str(test.relative_to(ROOT)),"result":"passed" if result.returncode==0 else "failed"})
             if result.returncode:raise RuntimeError("UI regression failed: "+test.name)
         subprocess.run([sys.executable, "scripts/ci/frontend.py"], cwd=ROOT, check=True)
         summary.update(result="passed",assetReferences="passed")

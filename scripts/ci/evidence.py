@@ -35,11 +35,10 @@ def can_reuse(verified_evidence, request):
                     for s in request['requiredSuites']))
 
 
-def verify_evidence(evidence, request, run_metadata, artifact_bytes):
+def _verify_identity(evidence, run_metadata, artifact_bytes):
     run=run_metadata;artifact=run.get('artifact',{})
     checks = [run.get('repository',{}).get('full_name')==release.REPOSITORY,
               run.get('head_repository',{}).get('full_name')==release.REPOSITORY,
-              request.get('repository')==release.REPOSITORY,
               run.get('path')==WORKFLOW, evidence.get('workflow')==WORKFLOW,
               run.get('event') in {'push','workflow_dispatch','schedule'},
               run.get('status')=='completed',run.get('conclusion')=='success',
@@ -61,7 +60,27 @@ def verify_evidence(evidence, request, run_metadata, artifact_bytes):
     else:decoded=json.loads(artifact_bytes)
     if decoded!=evidence:raise ValueError('Evidence record differs from artifact')
     verified=VerifiedEvidence(dict(evidence, artifactId=artifact.get('id'), artifactDigest=artifact['digest']), _TOKEN)
-    if not can_reuse(verified,request):raise ValueError('CI evidence does not cover requested tree and suites')
+    return verified
+
+
+def verify_evidence(evidence, request, run_metadata, artifact_bytes):
+    verified=_verify_identity(evidence,run_metadata,artifact_bytes)
+    if request.get('repository')!=release.REPOSITORY or not can_reuse(verified,request):
+        raise ValueError('CI evidence does not cover requested tree and suites')
+    return verified
+
+
+def verify_full_baseline(record, request, run_metadata, artifact_bytes):
+    """Freshness evidence is not permission to reuse changed suite inputs."""
+    from scope import FULL
+    verified=_verify_identity(record,run_metadata,artifact_bytes)
+    if (verified.get('profile')!='full' or verified.get('result')!='passed' or verified.get('unexpectedSkips')!=0
+        or request.get('repository')!=release.REPOSITORY
+        or any(verified.get(k)!=request.get(k) for k in ['repository','policyDigest','toolchainDigest'])
+        or not set(FULL).issubset(verified.get('requiredSuites',[]))
+        or not set(FULL).issubset(verified.get('passedSuites',[]))
+        or any(not re.fullmatch('[a-f0-9]{64}',verified.get('suiteInputDigests',{}).get(k,'')) for k in FULL)):
+        raise ValueError('No qualified full baseline under current policy and toolchain')
     return verified
 
 
@@ -70,7 +89,7 @@ def api(path, raw=False):
     return data if raw else json.loads(data)
 
 
-def fetch_verified(run_id, attempt, request):
+def _fetch_record(run_id, attempt):
     if not re.fullmatch('[1-9][0-9]*',str(run_id)) or not re.fullmatch('[1-9][0-9]*',str(attempt)):
         raise ValueError('Invalid run identity')
     prefix='repos/'+release.REPOSITORY
@@ -91,10 +110,26 @@ def fetch_verified(run_id, attempt, request):
         if archive.namelist()!=['evidence.json'] or archive.getinfo('evidence.json').file_size>1024*1024:
             raise ValueError('Invalid evidence archive')
         value=json.loads(archive.read('evidence.json'))
+    return value,run,raw
+
+
+def fetch_verified(run_id, attempt, request):
+    value,run,raw=_fetch_record(run_id,attempt)
     return verify_evidence(value,request,run,raw)
 
 
-def audit_reports(folder, suites):
+def fetch_full_baseline(run_id, attempt, request):
+    value,run,raw=_fetch_record(run_id,attempt)
+    return verify_full_baseline(value,request,run,raw)
+
+
+def current_reports(folder, prefix, attempt):
+    if not re.fullmatch('[1-9][0-9]*',str(attempt)):raise ValueError('Invalid report attempt')
+    pattern=(r'database-[0-2]-' if prefix=='database-' else re.escape(prefix))+str(attempt)
+    return [p for p in folder.rglob('summary.json') if re.fullmatch(pattern,p.relative_to(folder).parts[0])]
+
+
+def audit_reports(folder, suites, attempt):
     import scope
     prefixes={'java-unit':'java-unit-','all-db':'database-','all-frontend':'frontend-',
               'finance-frontend':'frontend-','frontend-assets':'frontend-','container-smoke':'container-smoke-',
@@ -103,7 +138,7 @@ def audit_reports(folder, suites):
     for suite in suites:
         if suite=='core-policy':continue  # required job independently checks policy job result
         prefix='database-' if suite.endswith('-db') else prefixes[suite]
-        reports=[p for p in folder.rglob('summary.json') if p.relative_to(folder).parts[0].startswith(prefix)]
+        reports=current_reports(folder,prefix,attempt)
         if not reports:raise ValueError('Missing suite summaries: '+suite)
         for report in reports:
             value=json.loads(report.read_text())
@@ -117,12 +152,15 @@ def audit_reports(folder, suites):
 def emit(plan_path, reports, output):
     import os
     plan=json.loads(plan_path.read_text())
-    passed=audit_reports(reports,plan['requiredSuites'])
+    attempt=os.environ['GITHUB_RUN_ATTEMPT']
+    passed=audit_reports(reports,plan['requiredSuites'],attempt)
     value={k:plan[k] for k in ['repository','tree','policyDigest','toolchainDigest','suiteInputDigests','requiredSuites','profile']}
     value.update(runId=int(os.environ['GITHUB_RUN_ID']),runAttempt=int(os.environ['GITHUB_RUN_ATTEMPT']),
                  head=release.run('git','rev-parse','HEAD'),workflow=WORKFLOW,passedSuites=passed,result='passed',unexpectedSkips=0)
-    value['dbDurations']={p.parent.name:json.loads(p.read_text()).get('durationSeconds',1) for p in reports.rglob('summary.json') if p.relative_to(reports).parts[0].startswith('database-')}
+    value['dbDurations']={p.parent.name:json.loads(p.read_text()).get('durationSeconds',1) for p in current_reports(reports,'database-',attempt)}
     metadata=reports/('compiled-'+os.environ['GITHUB_RUN_ATTEMPT'])/'build.json'
+    if any(plan.get('jobs',{}).get(k) for k in ['container','unit']) and not metadata.exists():
+        raise ValueError('Current-attempt compilation missing; rerun all CI jobs')
     if metadata.exists():
         compiled=json.loads(metadata.read_text())
         if compiled['tree']!=value['tree']:raise ValueError('Compilation tree differs')

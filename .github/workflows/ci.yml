@@ -90,6 +90,47 @@ jobs:
           path: target/compiled/*
           if-no-files-found: error
           retention-days: 7
+  prepare-runtime:
+    needs: policy
+    if: needs.policy.outputs.container == 'true' && vars.HEYI_RUNTIME_CACHE_ENABLED == 'true' && github.repository == 'Gotit-zhx/ai-video' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/heads/hotfix/'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    outputs:
+      available: ${{ steps.prepare.outputs.available }}
+      proof: ${{ steps.prepare.outputs.proof }}
+      artifact_id: ${{ steps.archive.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - id: registry
+        continue-on-error: true
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: prepare
+        if: steps.registry.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci/runtime_recipe.py prepare-ci
+      - id: archive
+        if: steps.prepare.outputs.available == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: qualified-runtime-${{ github.run_attempt }}-cache
+          path: target/ci-runtime/runtime.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
   unit:
     needs: [policy, compile]
     if: needs.policy.outputs.unit == 'true'
@@ -178,8 +219,8 @@ jobs:
           path: target/ci-reports/frontend/summary.json
           retention-days: 7
   container:
-    needs: [policy, compile]
-    if: needs.policy.outputs.container == 'true'
+    needs: [policy, compile, prepare-runtime]
+    if: always() && !cancelled() && needs.policy.result == 'success' && needs.compile.result == 'success' && needs.policy.outputs.container == 'true' && (needs.prepare-runtime.result == 'success' || needs.prepare-runtime.result == 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -193,7 +234,15 @@ jobs:
           path: target/compiled
       - run: python3 scripts/ci/java.py restore
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
-      - run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 scripts/ci/container.py --legacy-gate --compiled
+      - if: needs.prepare-runtime.outputs.available == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          artifact-ids: ${{ needs.prepare-runtime.outputs.artifact_id }}
+          path: target/ci-runtime
+          merge-multiple: true
+      - env:
+          CI_RUNTIME_PROOF: ${{ needs.prepare-runtime.outputs.proof }}
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,GITHUB_RUN_ID,GITHUB_RUN_ATTEMPT,GITHUB_SHA,CI_RUNTIME_PROOF python3 scripts/ci/container.py --legacy-gate --compiled
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -246,6 +295,7 @@ jobs:
           PYCODE
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
+          pattern: '*-${{ github.run_attempt }}'
           path: target/downloaded
       - name: Audit complete reports and emit evidence
         run: python3 scripts/ci/evidence.py emit

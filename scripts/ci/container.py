@@ -5,6 +5,8 @@ Only disposable, uniquely labelled images/containers are created. No registry
 credentials, production settings, source business data or external egress.
 """
 import json
+import os
+import re
 import secrets
 import subprocess
 import tempfile
@@ -35,9 +37,21 @@ def main(legacy_gate=False, compiled=False):
     output.mkdir(parents=True,exist_ok=True)
     result={"result":"failed"}
     try:
+        runtime=None;builder=[]
+        if os.environ.get('CI_RUNTIME_PROOF'):
+            import runtime_recipe
+            proof=json.loads(os.environ['CI_RUNTIME_PROOF'])
+            if proof:
+                runtime=runtime_recipe.load_ci_runtime(release.ROOT/'target/ci-runtime',proof)
+                # The built-in Docker driver sees the verified image loaded into this daemon.
+                context=subprocess.check_output(['docker','context','show'],text=True).strip()
+                details=subprocess.check_output(['docker','buildx','inspect',context],text=True)
+                if not re.search(r'^Driver:\s+docker\s*$',details,re.M):raise ValueError('Qualified runtime requires the local Docker builder')
+                builder=['--builder',context]
         for name,tag in images.items():
             extra=["--build-arg","JAR_SOURCE=compiled"] if name=="app" and compiled else []
-            subprocess.run(["docker","buildx","build",*extra,"--platform=linux/amd64","--load","--provenance=false",
+            if name=="app" and runtime:extra += ["--build-arg","RUNTIME_BASE="+runtime]
+            subprocess.run(["docker","buildx","build",*builder,*extra,"--platform=linux/amd64","--load","--provenance=false",
                 "--label","org.heyi.owner="+owner,"--tag",tag,"--file",
                 "Dockerfile" if name=="app" else "frontend/Dockerfile",
                 "." if name=="app" else "frontend"],cwd=release.ROOT,check=True)
@@ -51,7 +65,7 @@ def main(legacy_gate=False, compiled=False):
             manifest.write_text(json.dumps({"images":{"frontend":{"smokeAssets":{p:assets[p]["sha256"] for p in
                 ["index.html","app.js","finance-workspace.js","finance-charges.js"]}}},"validation":{}}))
             smoke.smoke(manifest,images,legacy_gate)
-            result={"result":"passed","containerSmoke":"passed","runtimeMediaFonts":"passed","noProductionAccess":True,'legacyIngressFixture':'passed' if legacy_gate else 'not_run'}
+            result={"result":"passed","containerSmoke":"passed","runtimeMediaFonts":"passed","runtimePreparation":"qualified" if runtime else "pinned-cold","noProductionAccess":True,'legacyIngressFixture':'passed' if legacy_gate else 'not_run'}
     finally:
         (output/"summary.json").write_text(json.dumps(result,indent=2)+"\n")
         # Never prune a shared Docker daemon or remove an image another task owns.

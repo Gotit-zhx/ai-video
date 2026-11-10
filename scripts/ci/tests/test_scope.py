@@ -29,3 +29,25 @@ class ScopeTests(unittest.TestCase):
     def test_component_readme_is_documentation_but_runtime_prompt_is_not(self):
         self.assertEqual('docs',self.classify(['services/pi-runtime/README.md'])['profile'])
         self.assertEqual('full',self.classify(['src/main/resources/prompts/worker.md'])['profile'])
+
+class RecursiveInventoryTests(unittest.TestCase):
+    def fixture(self,root,path):
+        file=root/path;file.parent.mkdir(parents=True,exist_ok=True);file.write_text('// synthetic test\n');return file
+    def test_nested_frontend_and_qa_tests_are_in_full_inventory(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            self.fixture(root,'frontend/test/nested/new.test.cjs')
+            self.fixture(root,'scripts/qa/nested/test-new.mjs')
+            with patch.object(scope,'ROOT',root),patch.object(scope,'config',return_value={'excludedTests':{},'testHelpers':{},'fixtureRoots':[]}):
+                inventory=scope.frontend_inventory()
+            self.assertIn('frontend/test/nested/new.test.cjs',inventory['nodeTests'])
+            self.assertIn('scripts/qa/nested/test-new.mjs',inventory['scripts'])
+    def test_unsupported_discovered_test_fails_policy_instead_of_silent_full(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);self.fixture(root,'frontend/test/nested/new.test.ts')
+            with patch.object(scope,'ROOT',root),patch.object(scope,'config',return_value={'excludedTests':{},'testHelpers':{},'fixtureRoots':[]}),self.assertRaises(ValueError):
+                scope.frontend_inventory()

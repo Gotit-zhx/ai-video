@@ -16,20 +16,46 @@ FULL=['core-policy','java-unit','all-db','all-frontend','container-smoke','syste
 def config():return json.loads((ROOT/'scripts/ci/test-scopes.json').read_text())
 
 
+def frontend_inventory():
+    """Every file under test roots is executable, fixture/helper, or explicitly excluded."""
+    cfg=config();result={'nodeTests':[],'scripts':[],'helpers':[],'excluded':{}}
+    exclusions=cfg.get('excludedTests',{});helpers=cfg.get('testHelpers',{});fixtures=cfg.get('fixtureRoots',[])
+    for base in ['frontend/test','frontend/tests','scripts/qa']:
+        for file in sorted((ROOT/base).rglob('*')):
+            if not file.is_file():continue
+            path=str(file.relative_to(ROOT));name=file.name
+            if file.is_symlink():raise ValueError('Symlink in frontend test inventory: '+path)
+            if path in exclusions:
+                if not exclusions[path]:raise ValueError('Missing explicit exclusion reason: '+path)
+                result['excluded'][path]=exclusions[path];continue
+            if name.endswith(('.test.cjs','.test.mjs')) or (base=='scripts/qa' and name.startswith('test-') and file.suffix=='.cjs'):
+                result['nodeTests'].append(path);continue
+            if base=='scripts/qa' and name.startswith('test-') and file.suffix=='.mjs':
+                result['scripts'].append(path);continue
+            if '.test.' in name or name.startswith('test-'):
+                raise ValueError('Unsupported test entry requires an executable mapping or explicit exclusion: '+path)
+            if path in helpers or any(path.startswith(root+'/') for root in fixtures) or file.suffix=='.md':
+                result['helpers'].append(path);continue
+            raise ValueError('Unclassified file in test inventory: '+path)
+    return result
+
+
 def catalog():
     cfg=config();sources,database=java.inventory()
     java_paths={p.stem:str(p.relative_to(ROOT)) for p in (ROOT/'src/test/java').rglob('*Test.java')}
-    tests=sorted(str(p.relative_to(ROOT)) for base in ['frontend/test','frontend/tests'] for p in (ROOT/base).glob('*') if '.test.' in p.name)
-    qa=sorted(str(p.relative_to(ROOT)) for p in (ROOT/'scripts/qa').glob('test-*.mjs') if p.name not in java.OPTIONAL['excludedQaScripts'])
+    discovered=frontend_inventory();tests=discovered['nodeTests'];qa=discovered['scripts']
     def entry(files,classes=()):return dict(files=sorted(files),classes=sorted(classes),media=False)
     result={'core-policy':entry(['scripts/ci/release.py','scripts/ci/scope.py']+[str(p.relative_to(ROOT)) for p in (ROOT/'scripts/ci/tests').glob('test_*.py')]+[str(p.relative_to(ROOT)) for p in (ROOT/'ops/heyi-ops/tests').glob('test_*.py')]),
             'frontend-assets':entry(['scripts/ci/frontend.py','frontend/package.py']),
-            'finance-frontend':entry([p for p in qa if '/test-finance-' in p or '/test-incremental-' in p]),
+            'finance-frontend':entry([p for p in tests+qa if 'finance' in Path(p).name or 'incremental' in Path(p).name]),
             'all-frontend':entry(tests+qa+['scripts/ci/frontend.py']),
             'java-unit':entry([java_paths[n] for n in sources if n not in database and n not in java.OPTIONAL['excludedClasses']],set(sources)-set(database)-set(java.OPTIONAL['excludedClasses'])),
             'all-db':entry([java_paths[n] for n in database],database),
             'container-smoke':entry(['scripts/ci/container.py','scripts/ci/smoke.py']),
             'systemd-recovery':entry(['scripts/ci/systemd_test.py'])}
+    for name in ['all-frontend','finance-frontend']:
+        result[name]['nodeTests']=[p for p in tests if p in result[name]['files']]
+        result[name]['scripts']=[p for p in qa if p in result[name]['files']]
     for module,prefixes in cfg['modules'].items():
         classes=[name for name in database if any(name.startswith(p) for p in prefixes)]
         result[module+'-db']=entry([java_paths[n] for n in classes],classes)
@@ -47,7 +73,7 @@ def classify_changed_paths(paths,context):
             host=True;reasons.add('host_maintenance');full=True
         if path.startswith(('services/','apps/','config/','compose')):
             unsupported=True;full=True;reasons.add('unsupported_component')
-        if path.startswith(('src/test/','frontend/test/','frontend/tests/','scripts/qa/test-')):
+        if path.startswith(('src/test/','frontend/test/','frontend/tests/','scripts/qa/')):
             if path not in cfg['mappedTests']:
                 full=True;reasons.add('unmapped_test')
             elif path.startswith('src/test/'):
@@ -93,7 +119,8 @@ def inputs(suites):
     all_suites=catalog()
     policy=[str(p.relative_to(ROOT)) for base in ['.github','scripts/ci'] for p in (ROOT/base).rglob('*') if p.is_file() and not any(x in p.parts for x in ['tests','__pycache__','node_modules']) and p.suffix in {'.py','.yml','.json','.java','.sha256'}]
     tools=['pom.xml','maven-settings.xml','scripts/ci/runtime.json','scripts/ci/dependencies.sha256','scripts/ci/qa/package-lock.json','Dockerfile','frontend/Dockerfile','frontend/package.py','src/main/docker/runtime.json','src/main/docker/runtime.Dockerfile','src/main/docker/runtime-packages.lock','src/main/docker/runtime-bom.sha256']
-    fixtures=[str(p.relative_to(ROOT)) for base in ['src/test/resources','scripts/qa/fixtures'] for p in (ROOT/base).rglob('*') if p.is_file()]
+    fixtures=[str(p.relative_to(ROOT)) for base in ['src/test/resources',*config().get('fixtureRoots',[])] for p in (ROOT/base).rglob('*') if p.is_file()]
+    fixtures+=list(config().get('testHelpers',{}))
     # Include inherited Java helpers (not only *Test.java) and production inputs.
     helpers=[str(p.relative_to(ROOT)) for p in (ROOT/'src/test/java').rglob('*.java') if not p.name.endswith('Test.java')]
     result={name:file_digest(all_suites[name]['files']+fixtures+(helpers if name.endswith('-db') or name=='java-unit' else [])) for name in suites}
@@ -110,7 +137,7 @@ def full_baseline_context():
             if run.get('event') not in {'schedule','push','workflow_dispatch'} or run.get('status')!='completed':continue
             if run.get('conclusion')!='success':return {'lastFullPassed':False,'lastFullAgeHours':0}
             tree=evidence.api('repos/'+release.REPOSITORY+'/git/commits/'+run['head_sha'])['tree']['sha']
-            try:verified=evidence.fetch_verified(run['id'],run['run_attempt'],dict(request,tree=tree))
+            try:verified=evidence.fetch_full_baseline(run['id'],run['run_attempt'],dict(request,tree=tree))
             except (ValueError,KeyError,subprocess.CalledProcessError,subprocess.TimeoutExpired):continue
             if verified.get('profile')!='full':continue
             date=datetime.datetime.fromisoformat(run['updated_at'].replace('Z','+00:00'))
