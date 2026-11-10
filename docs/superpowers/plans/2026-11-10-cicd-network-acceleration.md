@@ -10,7 +10,7 @@
 
 **Spec:** [大陆服务器 CI/CD 总体设计](../specs/2026-11-10-cicd-network-acceleration-design.md)。所有接口字段和默认值以该设计与本计划共同约束。
 
-**Status:** 仅文档交付，以下实现任务均未执行。本文中的未来命令与测试示例不是已通过的验收。
+**Status:** 实现已进入审查及上线验证。实际通过项和待验证边界见[改造验收](../../releases/infrastructure/cicd-acceleration-20261110.md)；未勾选项不能视为已上线。
 
 ## Global Constraints
 
