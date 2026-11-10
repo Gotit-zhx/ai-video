@@ -12,6 +12,7 @@ import urllib.request
 from pathlib import Path
 from .state import atomic, read, Busy
 from .storage import require_space
+from .timing import TimingRecorder
 
 GIB = 1024 ** 3
 SERVICES = {"app": "ai-commerce-app", "frontend": "ai-commerce-frontend"}
@@ -94,7 +95,7 @@ def config_hash(info, env_keys=None): return sha(json.dumps(configuration(info,e
 
 class Host:
     def __init__(self, config):
-        self.config = config; self.root = Path(config["root"])
+        self.config = config; self.root = Path(config["root"]); self.timings = TimingRecorder()
         self.control = self.root / "control"; self.marker = self.control / "maintenance.json"
 
     def sql(self, query):
@@ -204,6 +205,10 @@ class Host:
         return dict(zip(ACTIVE, map(int, rows)))
 
     def drain(self, owner):
+        with self.timings.measure('businessDrain'):
+            return self._drain(owner)
+
+    def _drain(self, owner):
         deadline = time.monotonic()+self.config.get("drainTimeoutSeconds",180)
         quiet = 0
         while time.monotonic()<deadline:
@@ -234,6 +239,10 @@ class Host:
                        "-f",str(self.root/"compose/production.json"),"-f",str(images_file),*args,timeout=240)
 
     def activate(self, target, changed):
+        with self.timings.measure('containerStart'):
+            return self._activate(target, changed)
+
+    def _activate(self, target, changed):
         images = self.root/"releases"/target["version"]/"images.json"
         desired = {"services":{name:{"image":info["repository"]+"@"+info["manifestDigest"]} for name,info in target["images"].items()}}
         atomic(images,desired)
@@ -242,6 +251,10 @@ class Host:
         self.compose(images,"up","-d","--force-recreate","--no-deps","--no-build","--pull","never","--timeout","120",*changed)
 
     def verify(self, target, maintenance=False):
+        with self.timings.measure('postVerify'):
+            return self._verify(target, maintenance)
+
+    def _verify(self, target, maintenance=False):
         deadline = time.monotonic()+180
         while True:
             try:

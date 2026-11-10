@@ -41,6 +41,8 @@ class StorageBudgetTest(unittest.TestCase):
                   'sourceUnpackedBytes': mib,
                   'images': {'app': {'compressedBytes': 2*mib, 'unpackedBytes': 4*mib},
                              'frontend': {'compressedBytes': mib, 'unpackedBytes': 2*mib}}}
+        for name,image in target['images'].items():
+            image.update(repository='ghcr.io/gotit-zhx/ai-video/'+name,manifestDigest='sha256:'+'a'*64,sourceCommit='a'*40,sourceRef='refs/heads/release/1.0.0')
         manifest = json.dumps(target).encode()
         sizes = {'release.json': len(manifest), 'source.tar.gz': len(source)}
         api = {'git/ref/heads/main-tree': {'object': {'sha': 'production'}},
@@ -51,8 +53,6 @@ class StorageBudgetTest(unittest.TestCase):
         def command(*args, **kwargs):
             if args[:2] == ('gh', 'api'):
                 return json.dumps(api[args[2].split('Gotit-zhx/ai-video/', 1)[1]]).encode()
-            if args[:2] == ('docker', 'login'):
-                raise ReadyToImport()
             return b''
 
         for cached, archives in [(set(), {'app': 2*mib, 'frontend': mib}), ({'app'}, {}), ({'app', 'frontend'}, {})]:
@@ -65,6 +65,7 @@ class StorageBudgetTest(unittest.TestCase):
                          patch('heyi_ops.artifacts.validate_manifest', side_effect=lambda value: value), \
                          patch.object(Artifacts, 'cached', side_effect=lambda image: any(image == target['images'][name] for name in cached)), \
                          patch('heyi_ops.oci.validate_archive'), \
+                         patch.object(Artifacts, 'verify_import', side_effect=ReadyToImport), \
                          patch('heyi_ops.storage.shutil.disk_usage', return_value=SimpleNamespace(free=10*GIB + budget - missing_byte)):
                         error = RuntimeError if missing_byte else ReadyToImport
                         with self.assertRaises(error):

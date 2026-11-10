@@ -105,13 +105,23 @@ def validate_archive(path,image):
                 not (entry.name in {'oci-layout','index.json'} or re.fullmatch(r'blobs/sha256/[a-f0-9]{64}',entry.name))):
                 raise ValueError('Unsafe OCI archive member')
             entries[entry.name]=entry
+            if len(entries)>134:raise ValueError('Too many OCI archive members')
+        end=max((entry.offset_data+((entry.size+511)//512)*512 for entry in entries.values()),default=0)
+        with Path(path).open('rb') as padding:
+            padding.seek(end);tail_size=0
+            while block:=padding.read(64*1024):
+                tail_size+=len(block)
+                if any(block):raise ValueError('Trailing OCI archive data')
+        if tail_size<1024:raise ValueError('Truncated OCI archive end')
         def metadata(name):
             if name not in entries or entries[name].size>MIB:raise ValueError('Missing or oversized OCI metadata')
             return json.load(tar.extractfile(entries[name]))
         if metadata('oci-layout')!={'imageLayoutVersion':'1.0.0'}:raise ValueError('Invalid OCI layout')
+        descriptors=[]
         def fetch(value,size,manifest,is_metadata):
             name='blobs/sha256/'+value.split(':')[1];entry=entries.get(name)
             if not entry or (size is not None and entry.size!=size) or (is_metadata and entry.size>MIB):raise ValueError('OCI blob size differs')
+            descriptors.append({'digest':value,'size':entry.size})
             hashed=hashlib.sha256();data=[]
             with tar.extractfile(entry) as source:
                 while block:=source.read(MIB):
@@ -123,3 +133,60 @@ def validate_archive(path,image):
         if metadata('index.json')!=index_for(image,descriptor):raise ValueError('OCI import names or root manifest differ')
         if set(entries)!={'oci-layout','index.json',*('blobs/sha256/'+v.split(':')[1] for v in seen)}:
             raise ValueError('Unreferenced OCI archive member')
+        return {'root':descriptor,'descriptors':descriptors}
+
+
+class Registry:
+    """Bounded runner-side registry downloads; authorization never enters receipts."""
+    def __init__(self,image,token):
+        if image['repository'] not in {'ghcr.io/gotit-zhx/ai-video/app','ghcr.io/gotit-zhx/ai-video/frontend'}:
+            raise ValueError('Unexpected registry repository')
+        self.image=image;self.name=image['repository'].removeprefix('ghcr.io/')
+        self.opener=urllib.request.build_opener(RegistryRedirect())
+        url='https://ghcr.io/token?'+urllib.parse.urlencode({'service':'ghcr.io','scope':'repository:'+self.name+':pull'})
+        credentials=base64.b64encode(('Gotit-zhx:'+token).encode()).decode()
+        with self.opener.open(urllib.request.Request(url,headers={'Authorization':'Basic '+credentials}),timeout=30) as response:
+            self.bearer=json.loads(response.read(MIB))['token']
+    def download(self,value,size,output,manifest=False,metadata=False):
+        if not DIGEST.fullmatch(value) or (size is not None and (type(size) is not int or size<0)):
+            raise ValueError('Invalid OCI descriptor')
+        maximum=MIB if metadata else self.image['compressedBytes']
+        if size is not None:maximum=min(maximum,size)
+        request=urllib.request.Request('https://ghcr.io/v2/'+self.name+('/manifests/' if manifest else '/blobs/')+value,
+            headers={'Authorization':'Bearer '+self.bearer,'Accept':','.join(sorted(MANIFESTS|INDEXES))})
+        count=0;hashed=hashlib.sha256()
+        with self.opener.open(request,timeout=60) as response:
+            while block:=response.read(min(MIB,max(1,maximum+1-count))):
+                count+=len(block)
+                if count>maximum:raise ValueError('Registry blob exceeded size')
+                hashed.update(block);output.write(block)
+        if (size is not None and count!=size) or 'sha256:'+hashed.hexdigest()!=value:raise ValueError('Registry blob verification failed')
+
+
+def export_metadata(image,token):
+    registry=Registry(image,token);metadata={}
+    def fetch(value,size,manifest,is_metadata):
+        if not is_metadata:return None
+        if value not in metadata:
+            output=io.BytesIO();registry.download(value,size,output,manifest,is_metadata);metadata[value]=output.getvalue()
+        if size is not None and len(metadata[value])!=size:raise ValueError('Conflicting metadata size')
+        return metadata[value]
+    graph(image,fetch)
+    result={value:base64.b64encode(data).decode() for value,data in metadata.items()}
+    if len(json.dumps(result).encode())>MIB:raise ValueError('Metadata frame exceeds budget')
+    return result
+
+
+def export_blobs(image,descriptors,folder,token):
+    registry=Registry(image,token);folder=Path(folder);folder.mkdir(mode=0o700,parents=True,exist_ok=True)
+    for item in descriptors:
+        path=folder/item['digest'].split(':')[1]
+        if path.exists():
+            from .transfer import verified
+            with path.open('rb') as cached:verified(cached,item)
+            continue
+        temporary=path.with_suffix('.part')
+        try:
+            with temporary.open('xb') as output:registry.download(item['digest'],item['size'],output)
+            temporary.replace(path)
+        finally:temporary.unlink(missing_ok=True)

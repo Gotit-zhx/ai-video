@@ -62,3 +62,29 @@ class OCITransport(unittest.TestCase):
         self.assertEqual(unset,host.configuration(info))
         info['HostConfig']['OomKillDisable']=True
         self.assertNotEqual(unset,host.configuration(info))
+
+class MetadataOnlyExport(unittest.TestCase):
+    def test_metadata_negotiation_does_not_download_layers(self):
+        from test_transfer import fixture
+        image,metadata,blobs=fixture();requested=[]
+        class Response(io.BytesIO):pass
+        class Opener:
+            def open(self,request,timeout):
+                if '/token?' in request.full_url:return Response(b'{"token":"synthetic"}')
+                value=request.full_url.rsplit('/',1)[1];requested.append(value)
+                if value not in metadata:raise AssertionError('Layer fetched before negotiation')
+                return Response(blobs[value])
+        with patch.object(oci.urllib.request,'build_opener',return_value=Opener()):
+            actual=oci.export_metadata(image,'synthetic')
+        self.assertEqual(metadata,actual)
+        self.assertEqual(set(metadata),set(requested))
+    def test_archive_extra_bytes_or_truncated_end_are_rejected(self):
+        image,_,files=OCITransport().fixture()
+        for suffix,truncate in [(b'evil',0),(b'',9500)]:
+            with tempfile.TemporaryDirectory() as temporary:
+                path=Path(temporary)/'image.tar'
+                with tarfile.open(path,'w') as tar:
+                    for name,data in files.items():
+                        entry=tarfile.TarInfo(name);entry.size=len(data);tar.addfile(entry,io.BytesIO(data))
+                raw=path.read_bytes();path.write_bytes((raw[:-truncate] if truncate else raw)+suffix)
+                with self.assertRaises((ValueError,tarfile.TarError)):oci.validate_archive(path,image)
