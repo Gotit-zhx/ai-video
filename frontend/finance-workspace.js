@@ -1308,7 +1308,7 @@
           request,shops:data.shops,groups:data.groups,selection:{...filters,dateField:'RECEIPT',...qianyiSelection},
           onSelection:value=>{
             if(run!==generation||!active)return;
-            qianyiSelection=Object.fromEntries(['type','returnStatus','refundStatus','costStatus','receiptScope','receiptStatus','dateField','numbers'].map(k=>[k,value[k]]));
+            qianyiSelection=Object.fromEntries(['type','returnStatus','refundStatus','costStatus','receiptScope','receiptStatus','dateField','numbers'].map(k=>[k,value[k]]).filter(([,value])=>value!=null));
             if(!value.start&&!value.end)Object.assign(qianyiSelection,{start:'',end:''});
             for(const key of ['shopId','groupId','platform'])filters[key]=value[key]||'';
             filters.currency='';filters.fxSnapshot='';
