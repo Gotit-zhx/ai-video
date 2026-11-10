@@ -147,6 +147,22 @@ def full_baseline_context():
     return {}
 
 
+def apply_pr_reuse(plan,environment):
+    """Only release/backmerge PRs reuse; trusted pushes and full runs execute."""
+    import evidence
+    if (environment.get('GITHUB_EVENT_NAME')!='pull_request' or environment.get('GITHUB_REPOSITORY')!=release.REPOSITORY
+        or environment.get('PR_HEAD_REPOSITORY')!=release.REPOSITORY or environment.get('HEYI_FAST_CI_ENABLED')!='true'
+        or environment.get('FORCE_FULL')=='true' or not environment.get('GH_TOKEN')
+        or not environment.get('GITHUB_HEAD_REF','').startswith(('release/','hotfix/'))
+        or set(plan.get('reasonCodes',[])).intersection({'full_failed','full_stale','no_full_baseline'})):
+        return plan
+    verified=evidence.find_reusable_execution(plan)
+    if verified is not None:
+        plan['reusedExecution']=evidence.execution_reference(verified)
+        plan['jobs']={job:False for job in plan['jobs']}
+    return plan
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--base');parser.add_argument('--output',default='target/ci-plan.json');args=parser.parse_args()
     paths=release.run('git','diff','--name-only',args.base,'HEAD').splitlines() if args.base and args.base!='0'*40 else ['unknown.bin']
@@ -156,8 +172,10 @@ if __name__=='__main__':
     context['firstV2']=os.environ.get('HEYI_V2_BOOTSTRAPPED')!='true'
     plan=classify_changed_paths(paths,context);plan.update(inputs(plan['requiredSuites']));plan['dbDurations']=context.get('dbDurations',{})
     plan['jobs']={k: any(s in plan['requiredSuites'] for s in v) for k,v in {'unit':['java-unit'],'database':['all-db','product-db','video-db','knowledge-db','finance-db'],'frontend':['all-frontend','finance-frontend','frontend-assets'],'container':['container-smoke'],'systemd':['systemd-recovery']}.items()}
+    apply_pr_reuse(plan,os.environ)
     out=Path(args.output);out.parent.mkdir(parents=True,exist_ok=True);out.write_text(json.dumps(plan,sort_keys=True,indent=2)+'\n')
     if os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'],'a') as f:
             f.write('plan='+json.dumps(plan,separators=(',',':'))+'\n')
+            f.write('reused='+str(bool(plan.get('reusedExecution'))).lower()+'\n')
             for key,value in plan['jobs'].items():f.write(key+'='+str(value).lower()+'\n')

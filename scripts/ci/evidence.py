@@ -5,6 +5,7 @@ import io
 import json
 import re
 import subprocess
+import time
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -123,6 +124,61 @@ def fetch_full_baseline(run_id, attempt, request):
     return verify_full_baseline(value,request,run,raw)
 
 
+def execution_reference(verified):
+    if not isinstance(verified,VerifiedEvidence):raise ValueError('Unverified execution reference')
+    return {key:verified[key] for key in ['runId','runAttempt','artifactId','artifactDigest','head','tree','workflow']}
+
+
+def compiled_available(verified):
+    if not isinstance(verified,VerifiedEvidence):return False
+    proof=verified.get('build',{})
+    if any(not re.fullmatch('[a-f0-9]{64}',proof.get(k,'')) for k in ['archiveSha256','compiledArtifactSha256','buildRecipeDigest']):return False
+    artifacts=api(f"repos/{release.REPOSITORY}/actions/runs/{verified['runId']}/artifacts?per_page=100")
+    matches=[a for a in artifacts['artifacts'] if a.get('name')==f"compiled-{verified['runAttempt']}"]
+    if len(matches)!=1:return False
+    item=matches[0]
+    return (item.get('expired') is False and type(item.get('size_in_bytes')) is int and 0<item['size_in_bytes']<=512*1024**2
+            and str(item.get('workflow_run',{}).get('id'))==str(verified['runId'])
+            and item.get('workflow_run',{}).get('head_sha')==verified['head']
+            and bool(re.fullmatch('sha256:[a-f0-9]{64}',item.get('digest',''))))
+
+
+def find_reusable_execution(request):
+    """Bounded read-only discovery; no PR execution is a trusted producer."""
+    prefix='repos/'+release.REPOSITORY;deadline=time.monotonic()+45
+    try:runs=api(prefix+'/actions/workflows/ci.yml/runs?per_page=30')['workflow_runs']
+    except (ValueError,KeyError,subprocess.CalledProcessError,subprocess.TimeoutExpired):return None
+    checked=0
+    for run in runs:
+        if checked>=8 or time.monotonic()>deadline:break
+        if (run.get('event') not in {'push','workflow_dispatch'} or run.get('status')!='completed' or run.get('conclusion')!='success'
+            or run.get('repository',{}).get('full_name')!=release.REPOSITORY or run.get('head_repository',{}).get('full_name')!=release.REPOSITORY
+            or run.get('path')!=WORKFLOW or not re.fullmatch(r'(develop|(?:release|hotfix)/[A-Za-z0-9._-]+)',run.get('head_branch',''))):continue
+        checked+=1
+        try:
+            tree=api(prefix+'/git/commits/'+run['head_sha'])['tree']['sha']
+            if tree!=request['tree']:continue
+            verified=fetch_verified(run['id'],run['run_attempt'],request)
+            if 'container-smoke' in request['requiredSuites'] and not compiled_available(verified):continue
+            return verified
+        except (ValueError,KeyError,TypeError,zipfile.BadZipFile,subprocess.CalledProcessError,subprocess.TimeoutExpired):continue
+    return None
+
+
+def reused_scope_summary(plan):
+    """Revalidate at the final PR gate; emit a reference, never new execution proof."""
+    import scope
+    request=scope.inputs(plan['requiredSuites'])
+    if any(plan.get(k)!=v for k,v in request.items()):raise ValueError('PR validation inputs changed after scope selection')
+    reference=plan['reusedExecution']
+    verified=fetch_verified(reference['runId'],reference['runAttempt'],request)
+    if execution_reference(verified)!=reference:raise ValueError('Original execution artifact changed; rerun all CI jobs')
+    if 'container-smoke' in request['requiredSuites'] and not compiled_available(verified):raise ValueError('Original compiled artifact unavailable; rerun all CI jobs')
+    return dict(request,profile=plan['profile'],kind='coverage-reference',execution='reused',
+                executedSuites=['core-policy'],reusedSuites=[s for s in plan['requiredSuites'] if s!='core-policy'],
+                originalExecution=execution_reference(verified))
+
+
 def current_reports(folder, prefix, attempt):
     if not re.fullmatch('[1-9][0-9]*',str(attempt)):raise ValueError('Invalid report attempt')
     pattern=(r'database-[0-2]-' if prefix=='database-' else re.escape(prefix))+str(attempt)
@@ -153,6 +209,12 @@ def emit(plan_path, reports, output):
     import os
     plan=json.loads(plan_path.read_text())
     attempt=os.environ['GITHUB_RUN_ATTEMPT']
+    if plan.get('reusedExecution'):
+        if os.environ.get('GITHUB_EVENT_NAME')!='pull_request':raise ValueError('Only PR gates can reference prior execution')
+        value=reused_scope_summary(plan)
+        value['scopeRun']={'runId':int(os.environ['GITHUB_RUN_ID']),'runAttempt':int(attempt),'head':release.run('git','rev-parse','HEAD')}
+        output.parent.mkdir(parents=True,exist_ok=True);output.write_text(json.dumps(value,sort_keys=True,indent=2)+'\n')
+        return value
     passed=audit_reports(reports,plan['requiredSuites'],attempt)
     value={k:plan[k] for k in ['repository','tree','policyDigest','toolchainDigest','suiteInputDigests','requiredSuites','profile']}
     value.update(runId=int(os.environ['GITHUB_RUN_ID']),runAttempt=int(os.environ['GITHUB_RUN_ATTEMPT']),

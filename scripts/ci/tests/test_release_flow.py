@@ -1117,3 +1117,43 @@ class ReviewCommandTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class PrReusedExecutionAdapterTest(unittest.TestCase):
+    def fixture(self):
+        import zipfile
+        server=RepositoryServer()
+        server.refs['heads/develop']='9'*40
+        server.commits['9'*40]=server.commit('9'*40,'c'*40,['a'*40])
+        adapter=flow.GitHubAPI(server,clock=lambda:1794304860)
+        journal=adapter.plan('develop','2026-11-10')
+        adapter.perform('create_branch',journal,{})
+        journal.update(adapter.perform('open_pr',journal,{}));journal['phase']='validating'
+        source=json.loads(zipfile.ZipFile(io.BytesIO(server.archives[100])).read('evidence.json'))
+        artifact=server.artifacts[100][0]
+        reference={'runId':100,'runAttempt':1,'artifactId':artifact['id'],'artifactDigest':artifact['digest'],
+                   'head':'a'*40,'tree':'c'*40,'workflow':'.github/workflows/ci.yml'}
+        fields=('repository','tree','policyDigest','toolchainDigest','requiredSuites','suiteInputDigests')
+        summary={k:source[k] for k in fields}
+        summary.update(kind='coverage-reference',execution='reused',originalExecution=reference)
+        pr_run=server.workflow_runs['ci.yml'][-1]
+        server.bundle(pr_run['id'],'validation-evidence-1',{'evidence.json':summary})
+        return server,adapter,journal,summary,pr_run
+    def test_same_tree_other_head_uses_original_execution_without_dispatch_loop(self):
+        server,adapter,journal,summary,_=self.fixture()
+        observed=adapter.observe(journal)
+        self.assertTrue(observed['ciReady'])
+        self.assertEqual(100,observed.get('validationRun'))
+        self.assertFalse(observed.get('needsTrustedValidation',False))
+        self.assertEqual('dispatch_candidate',flow.next_action(journal,observed))
+        self.assertEqual('9'*40,journal['head'])
+        self.assertNotIn('build',summary)
+    def test_replaced_source_attempt_or_forged_pointer_needs_fresh_execution(self):
+        for change in ['attempt','digest']:
+            server,adapter,journal,summary,pr_run=self.fixture()
+            if change=='attempt':server.workflow_runs['ci.yml'][0]['run_attempt']=2
+            else:
+                summary['originalExecution']['artifactDigest']='sha256:'+'f'*64
+                server.bundle(pr_run['id'],'validation-evidence-1',{'evidence.json':summary})
+            observed=adapter.observe(journal)
+            self.assertTrue(observed.get('needsTrustedValidation'),change)
+            self.assertNotIn('validationRun',observed)

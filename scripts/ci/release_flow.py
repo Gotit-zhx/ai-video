@@ -703,6 +703,8 @@ class GitHubAPI:
             observed['validationObservedRun'] = max((r['id'] for r in runs), default=0)
             request = self.validation_request(journal)
             qualified = [r for r in runs if trusted_run(r, 'ci.yml', journal['head']) and self.qualified_ci(r, journal, request)]
+            referenced=self.referenced_validation_run(journal,request)
+            if referenced is not None:qualified.append(referenced)
             if qualified:
                 chosen = max(qualified, key=lambda r: (r['id'], r['run_attempt']))
                 observed.update(validationRun=chosen['id'], validationAttempt=chosen['run_attempt'])
@@ -769,6 +771,7 @@ class GitHubAPI:
     def validation_request(self, journal):
         # Synthetic PR evidence is only a requested coverage description. It is
         # never passed to verify_evidence as proof of trusted CI execution.
+        self.validation_execution_reference=None
         run = getattr(self, 'pr_run', None)
         if not run or run['status'] != 'completed' or run['conclusion'] != 'success':
             return None
@@ -779,17 +782,36 @@ class GitHubAPI:
         if value.get('tree') != journal['tree'] or value.get('repository') != REPOSITORY:
             return None
         fields = ('repository', 'tree', 'policyDigest', 'toolchainDigest', 'requiredSuites', 'suiteInputDigests')
+        reference=value.get('originalExecution',{})
+        if (value.get('kind')=='coverage-reference' and value.get('execution')=='reused'
+            and isinstance(reference,dict) and reference.get('tree')==journal['tree']
+            and reference.get('workflow')=='.github/workflows/ci.yml'
+            and all(re.fullmatch('[1-9][0-9]*',str(reference.get(k,''))) for k in ['runId','runAttempt','artifactId'])
+            and re.fullmatch('[a-f0-9]{40}',reference.get('head',''))
+            and re.fullmatch('sha256:[a-f0-9]{64}',reference.get('artifactDigest',''))):
+            self.validation_execution_reference=reference
         return {key: value[key] for key in fields}
 
-    def qualified_ci(self, run, journal, request):
+    def referenced_validation_run(self,journal,request):
+        # The PR payload is a lookup hint only; real source run/artifacts are reverified.
+        reference=getattr(self,'validation_execution_reference',None)
+        if not reference or request is None:return None
+        run=self.api('/actions/runs/'+str(reference['runId']),missing=True)
+        if not run or str(run.get('run_attempt'))!=str(reference['runAttempt']) or run.get('head_sha')!=reference['head']:return None
+        if not self.qualified_ci(run,journal,request,reference=reference):return None
+        return run
+
+    def qualified_ci(self, run, journal, request, reference=None):
         import evidence
         import scope
-        if not trusted_run(run, 'ci.yml', journal['head']):
+        expected_head=reference['head'] if reference else journal['head']
+        if not trusted_run(run, 'ci.yml', expected_head):
             return False
         bundle = self.artifact_bundle(run, 'validation-evidence-' + str(run['run_attempt']), {'evidence.json'})
         if not bundle:
             return False
         artifact, raw, files = bundle
+        if reference and (str(artifact.get('id'))!=str(reference['artifactId']) or artifact.get('digest')!=reference['artifactDigest']):return False
         value = json.loads(files['evidence.json'])
         tree = self.api('/commits/' + run['head_sha'])['commit']['tree']['sha']
         if tree != journal['tree']:
