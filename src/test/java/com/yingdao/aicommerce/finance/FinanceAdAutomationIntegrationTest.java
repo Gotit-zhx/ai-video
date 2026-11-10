@@ -151,8 +151,9 @@ class FinanceAdAutomationIntegrationTest extends FinanceConfigurationIntegration
         db.update("UPDATE finance_ad_streams SET checkpoint_json=? WHERE channel='GMV' AND store_id=?",cp,storeA);run("GMV",storeA);
         assertEquals(1,count("SELECT COUNT(*) FROM finance_records WHERE id=?",first));assertEquals(3,count("SELECT COUNT(*) FROM finance_records"));
         empty=true;db.update("UPDATE finance_ad_streams SET checkpoint_json=? WHERE channel='GMV' AND store_id=?",cp,storeA);run("GMV",storeA);
-        assertEquals(0,count("SELECT COUNT(*) FROM finance_records WHERE id=?",first));
-        assertEquals(1,count("SELECT COUNT(*) FROM finance_records WHERE source='IMPORT'"));assertEquals(1,count("SELECT COUNT(*) FROM finance_records WHERE kind='AD_GMV'"));
+        assertEquals(1,count("SELECT COUNT(*) FROM finance_records WHERE id=?",first));
+        assertEquals("ERROR",state("GMV",storeA));
+        assertEquals(1,count("SELECT COUNT(*) FROM finance_records WHERE source='IMPORT'"));assertEquals(2,count("SELECT COUNT(*) FROM finance_records WHERE kind='AD_GMV'"));
     }
     @Test void automationAdoptsBlockedLegacyProgressWithoutBlockingDiscoveryOrSkippingOlderDates(){
         LocalDate from=LocalDate.now(ZoneId.of("Asia/Manila")).minusDays(120);
@@ -172,5 +173,99 @@ class FinanceAdAutomationIntegrationTest extends FinanceConfigurationIntegration
         db.update("UPDATE finance_ad_streams SET checkpoint_json=?",repo.write(Map.of("from",today,"until",today,"page",1)));
         run("BASIC","");assertEquals("EMPTY",db.queryForObject("SELECT discovery_status FROM finance_ad_accounts",String.class));
         assertEquals("SUCCESS",db.queryForObject("SELECT status FROM finance_ad_accounts",String.class));assertEquals(0,count("SELECT COUNT(*) FROM finance_records"));
+    }
+
+    @Test void automationReauthorizationKeepsAnExplicitlyPausedAccountPaused(){
+        remoteStores.add(store(storeA));discover();run("GMV",storeA);
+        ads.pause(owner,advertiser,false);
+        String checkpoint=db.queryForObject("SELECT checkpoint_json FROM finance_ad_streams WHERE channel='GMV'",String.class);
+        String oldToken=db.queryForObject("SELECT access_token_encrypted FROM finance_ad_accounts",String.class);
+        ads.connectVerified(owner,advertiser,"","new-unit-only-ad-token","",Map.of("advertiser_id",advertiser,"name","Updated","currency","PHP","timezone","Asia/Manila"));
+        assertFalse(db.queryForObject("SELECT enabled FROM finance_ad_accounts",Boolean.class),"credential refresh must preserve a manual pause");
+        assertEquals("PAUSED",db.queryForObject("SELECT status FROM finance_ad_accounts",String.class));
+        assertNotEquals(oldToken,db.queryForObject("SELECT access_token_encrypted FROM finance_ad_accounts",String.class));
+        assertEquals(checkpoint,db.queryForObject("SELECT checkpoint_json FROM finance_ad_streams WHERE channel='GMV'",String.class));
+        assertEquals(1,count("SELECT COUNT(*) FROM finance_records WHERE kind='AD_GMV'"));
+    }
+
+    @Test void automationPauseAndResumeRevokesAnEarlierInFlightResponse(){
+        remoteStores.add(store(storeA));discover();
+        doAnswer(invocation->{
+            ads.pause(owner,advertiser,false);ads.pause(owner,advertiser,true);
+            var q=params(invocation.getArgument(0));
+            return Map.of("code",0,"data",Map.of("list",List.of(Map.of("dimensions",Map.of("stat_time_day",q.get("start_date"),"campaign_id","800001"),"metrics",Map.of("cost","13"))),"page_info",Map.of("page",1,"total_page",1,"total_number",1)));
+        }).when(http).get(any(),anyMap());
+        run("GMV",storeA);
+        assertEquals(0,count("SELECT COUNT(*) FROM finance_records"),"a response from the revoked lease cannot publish after resume");
+        assertEquals(0,count("SELECT COUNT(*) FROM finance_ad_coverage"));
+        assertNull(db.queryForObject("SELECT lease_token FROM finance_ad_accounts",String.class));
+        assertEquals("READY",db.queryForObject("SELECT status FROM finance_ad_accounts",String.class));
+        assertNotNull(db.queryForObject("SELECT checkpoint_json FROM finance_ad_streams WHERE channel='GMV'",String.class));
+    }
+
+    @Test void automationPausedDedicatedAccountCannotImportASecondCopyOfItsReport(){
+        String a=shop(owner,storeA);db.update("UPDATE finance_ad_accounts SET shop_id=?",a);discover();run("BASIC","");ads.pause(owner,advertiser,false);
+        LocalDate day=LocalDate.now(ZoneId.of("Asia/Manila")).minusDays(89);
+        byte[] bytes=("id,date,currency,amount\ncopy,"+day+",PHP,7\n").getBytes(StandardCharsets.UTF_8);
+        var mapping=Map.<String,Object>of("external_id",0,"date",1,"currency",2,"amount",3);
+        assertThrows(RuntimeException.class,()->new FinanceImport(service,repo).commit(owner,a,"AD",mapping,bytes,"duplicate.csv"));
+        assertEquals(1,count("SELECT COUNT(*) FROM finance_records WHERE kind='AD'"));
+        assertEquals(0,decimal(db.queryForObject("SELECT SUM(amount) FROM finance_records WHERE kind='AD'",String.class)).compareTo(decimal("7")));
+        assertEquals(0,count("SELECT COUNT(*) FROM finance_imports WHERE kind='AD'"));
+    }
+
+    @Test void automationResumeRefusesAnExistingConflictingManualSource(){
+        String a=shop(owner,storeA);db.update("UPDATE finance_ad_accounts SET shop_id=?",a);ads.pause(owner,advertiser,false);
+        // Models a conflicting source saved by the old paused-account import path.
+        repo.save(owner,new Entry(a,"TIKTOK_SHOP","AD","legacy-import","","","Manual","IMPORTED",LocalDate.now(),"PHP",decimal("7"),null,null,null,null,"IMPORT",Map.of()));
+        assertThrows(RuntimeException.class,()->ads.pause(owner,advertiser,true));
+        assertFalse(db.queryForObject("SELECT enabled FROM finance_ad_accounts",Boolean.class));
+        assertEquals(1,count("SELECT COUNT(*) FROM finance_records WHERE source='IMPORT'"));
+    }
+
+    @Test void automationEmptyRefreshPreservesPreviouslyPublishedFinancialRecords(){
+        remoteStores.add(store(storeA));discover();run("GMV",storeA);
+        LocalDate day=LocalDate.now(ZoneId.of("Asia/Manila")).minusDays(89);
+        String identity=db.queryForObject("SELECT id FROM finance_records",String.class);
+        db.update("UPDATE finance_ad_streams SET checkpoint_json=? WHERE channel='GMV'",repo.write(Map.of("from",day.toString(),"until",day.plusDays(6).toString(),"page",1)));
+        empty=true;run("GMV",storeA);
+        assertEquals(1,count("SELECT COUNT(*) FROM finance_records WHERE id=?",identity),"empty is unknown, not an explicit reversal of the previous spend");
+        assertEquals(0,decimal(db.queryForObject("SELECT amount FROM finance_records WHERE id=?",String.class,identity)).compareTo(decimal("13")));
+        assertEquals("ERROR",state("GMV",storeA));
+        assertTrue(db.queryForObject("SELECT error_message FROM finance_ad_streams WHERE channel='GMV'",String.class).contains("空报表"));
+        assertEquals(1,count("SELECT COUNT(*) FROM finance_ad_coverage WHERE row_count=1"));
+    }
+
+    @Test void automationPartialDateRefreshDoesNotEraseAPreviouslyReportedDay(){
+        remoteStores.add(store(storeA));discover();run("GMV",storeA);
+        LocalDate day=LocalDate.now(ZoneId.of("Asia/Manila")).minusDays(89);
+        String identity=db.queryForObject("SELECT id FROM finance_records",String.class);
+        db.update("UPDATE finance_ad_streams SET checkpoint_json=? WHERE channel='GMV'",repo.write(Map.of("from",day.toString(),"until",day.plusDays(6).toString(),"page",1)));
+        doAnswer(invocation->{var q=params(invocation.getArgument(0));return Map.of("code",0,"data",Map.of("list",List.of(Map.of("dimensions",Map.of("stat_time_day",LocalDate.parse(q.get("start_date")).plusDays(1).toString(),"campaign_id","800001"),"metrics",Map.of("cost","9"))),"page_info",Map.of("page",1,"total_page",1,"total_number",1)));}).when(http).get(any(),anyMap());
+        run("GMV",storeA);
+        assertEquals(1,count("SELECT COUNT(*) FROM finance_records WHERE id=?",identity));
+        assertEquals(0,decimal(db.queryForObject("SELECT amount FROM finance_records WHERE id=?",String.class,identity)).compareTo(decimal("13")));
+        assertEquals(1,count("SELECT COUNT(*) FROM finance_records"),"do not publish a partial replacement");
+        assertEquals("ERROR",state("GMV",storeA));
+        assertEquals(1,count("SELECT COUNT(*) FROM finance_ad_coverage WHERE row_count=1"));
+    }
+
+    @Test void automationAnExplicitZeroReportCanReplaceEarlierSpend(){
+        remoteStores.add(store(storeA));discover();run("GMV",storeA);
+        LocalDate day=LocalDate.now(ZoneId.of("Asia/Manila")).minusDays(89);
+        db.update("UPDATE finance_ad_streams SET checkpoint_json=? WHERE channel='GMV'",repo.write(Map.of("from",day.toString(),"until",day.plusDays(6).toString(),"page",1)));
+        doAnswer(invocation->{var q=params(invocation.getArgument(0));return Map.of("code",0,"data",Map.of("list",List.of(Map.of("dimensions",Map.of("stat_time_day",q.get("start_date"),"campaign_id","800001"),"metrics",Map.of("cost","0"))),"page_info",Map.of("page",1,"total_page",1,"total_number",1)));}).when(http).get(any(),anyMap());
+        run("GMV",storeA);
+        assertEquals(1,count("SELECT COUNT(*) FROM finance_records WHERE amount=0"));
+        assertEquals(1,count("SELECT COUNT(*) FROM finance_ad_coverage WHERE amount=0 AND row_count=1"));
+        assertEquals("SUCCESS",state("GMV",storeA));
+    }
+
+    @Test void automationTopupImportIsNotAcceptedAsAdvertisingSpend(){
+        String a=shop(owner,storeA);
+        byte[] bytes="id,date,currency,amount,category\ntopup,2026-10-31,PHP,100,广告充值\n".getBytes(StandardCharsets.UTF_8);
+        var mapping=Map.<String,Object>of("external_id",0,"date",1,"currency",2,"amount",3,"category",4);
+        assertThrows(RuntimeException.class,()->new FinanceImport(service,repo).commit(owner,a,"AD",mapping,bytes,"topup.csv"));
+        assertEquals(0,count("SELECT COUNT(*) FROM finance_records WHERE kind='AD'"));
     }
 }
