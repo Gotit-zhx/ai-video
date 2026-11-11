@@ -5,6 +5,7 @@ COPY index.html /usr/share/nginx/html/index.html
 COPY resend-theme.css /usr/share/nginx/html/resend-theme.css
 COPY image-progress.css /usr/share/nginx/html/image-progress.css
 COPY app.js /usr/share/nginx/html/app.js
+COPY dev-live.js /usr/share/nginx/html/
 COPY finance-workspace.js finance-workspace.css /usr/share/nginx/html/
 COPY finance-ad-spend.js /usr/share/nginx/html/
 COPY video-script-terminal.js video-script-terminal.css /usr/share/nginx/html/
