@@ -15,7 +15,7 @@
 | 登录、权限及接口查找 | [接口导航](guides/api.md) |
 | 共享服务器源码运行、恢复、备份和排障 | [运维指南](guides/operations.md) |
 | 源码模式下的 CI、旧自动发布和网络传输边界 | [CI/CD 与统一运维](guides/cicd.md)、[CI/CD 加速历史边界](guides/cicd-acceleration.md) |
-| 服务器现状、源码目录、证书、备份、维护任务及接管待办 | [服务器运维交接](guides/server-handoff.md)（源码切换完成前以现场回执为准） |
+| 服务器现状、源码目录、证书、备份、维护任务及接管待办 | [服务器运维交接](guides/server-handoff.md)、[源码运行现场状态](guides/source-runtime-status.md) |
 | 一期最终交接、调度故障与回滚资格隔离 | [自动化运维一期收尾](releases/infrastructure/devops-phase1-closure-20261107.md) |
 | 桌面构建与备份约定 | [桌面构建说明](guides/desktop-build-backup.md) |
 
@@ -32,7 +32,7 @@
 
 ## 当前业务规则与历史验收
 
-以下十一份业务规则/验收文件保留根目录原路径，由本索引统一导航；它们描述各自日期的业务和验收，不固定当前运行状态。历史自动发布、版本和回滚资格见对应回执；当前源码模式及共享服务器状态见[运维指南](guides/operations.md)和[服务器运维交接](guides/server-handoff.md)。源码切换完成前以现场回执为准。广告业务接入仍按其独立授权与数据验收处理，不能从应用健康推断账户/数据已完成。共享服务器操作先读 [AGENTS.md](../AGENTS.md)。
+以下十一份业务规则/验收文件保留根目录原路径，由本索引统一导航；它们描述各自日期的业务和验收，不固定当前运行状态。历史自动发布、版本和回滚资格见对应回执；当前源码模式及共享服务器状态见[运维指南](guides/operations.md)和[服务器运维交接](guides/server-handoff.md)。主应用与前端切换已实测完成，耗时和未完成项目见[现场状态](guides/source-runtime-status.md)。广告业务接入仍按其独立授权与数据验收处理，不能从应用健康推断账户/数据已完成。共享服务器操作先读 [AGENTS.md](../AGENTS.md)。
 
 | 主题 | 固定入口 |
 | --- | --- |

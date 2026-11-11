@@ -1,13 +1,13 @@
 # 阿里云共享服务器源码运行交接
 
-核对日期：**2026-11-11（北京时间）**，服务器 `8.163.34.81`。目标运行方式已改为在 `/opt/heyi/dev/ai-video` 直接运行 Java 与前端源码。**实际切换仍待现场回执确认**；在真实启动、页面/Java 热更新和保护项核对完成前，旧容器/镜像仍是现场基线。
+核对日期：**2026-11-11（北京时间）**，服务器 `8.163.34.81`。主应用和前端已在 `/opt/heyi/dev/ai-video` 完成源码运行切换。实际入口、耗时、保护项和剩余验收见[源码运行现场状态](source-runtime-status.md)。
 
 ## 1. 接手时先处理什么
 
 1. 通过公司交接渠道取得云控制台、SSH、Docker、域名/证书、备份和私有配置权限；不要在文档或日志记录密钥值。
 2. 核对其他会话正在进行的维护、实际进程/容器、端口、挂载、数据库、Redis、备份 timer 和磁盘空间。
 3. 核对 `/opt/heyi/dev/ai-video` 的 revision、未提交差异、所有者和写权限；不能用本地工作树覆盖服务器未知修改。
-4. 读取最新源码切换回执。没有回执时只做只读核对，不把仓库设计或脚本存在解释为已切换。
+4. 读取[源码运行现场状态](source-runtime-status.md)及服务器原始回执，并复核当前状态是否有后续变化。
 
 历史自动发布、版本和回滚资料见[旧发布工作流归档](../history/legacy-release-workflows/)与各期 `docs/releases/` 回执。
 
@@ -20,7 +20,7 @@
 ## 3. 当前服务与访问链路
 
 - 外部 HTTPS、域名、TLS、登录、角色权限和 API 路由继续沿用现有已验收链路。
-- 目标主应用在本机 `8080` 提供 API 与 UI，同一外部入口反向代理到该服务；前端直接从规范源码根的 `frontend/` 读取。
+- 主应用在本机 `8080` 提供 API；服务器前端仍由 Nginx bind 规范源码根的 `frontend/`，保留外部 TLS 和既有代理链。本地开发才由 Spring 同源提供 API/UI。
 - MySQL、Redis、Pi Runtime、招聘、ERP、文档转换、水印、下载和桌面服务保留各自边界。主应用健康不能证明这些链路全部通过。
 - 广告官方 HTTPS 连接、私有代理/节点和真实账户授权继续按其专用配置与验收处理；源码切换不重置连接或凭据。
 
@@ -40,21 +40,21 @@
 - 将 DevTools 远程更新端点暴露到公网；
 - 通过源码同步清理真实数据库、Redis、队列、卷或历史回执。
 
-服务器使用既有私有生产环境，不由 `scripts/dev.py init` 生成或覆盖。本地 `compose.dev.yaml` 仅用于隔离 MySQL/Redis，不能部署到共享服务器替代真实依赖。目标 watcher 为 `python3 scripts/shared_dev.py watch --config /etc/heyi-dev/runtime.json`，并提供 `recover`/`status`；服务管理器、受限配置及环境加载方式由实际实施回执记录，未验收前不视为已安装。
+服务器使用既有私有生产环境，不由 `scripts/dev.py init` 生成或覆盖。本地 `compose.dev.yaml` 仅用于隔离 MySQL/Redis，不能部署到共享服务器替代真实依赖。watcher 入口为 `python3 scripts/shared_dev.py watch --config /etc/heyi-dev/runtime.json`，并提供 root 使用的 `recover`/`status`；`heyi-source-watch.service` 已 enabled、active。完整 Compose 链和受限配置见现场状态。
 
 ## 5. 热更新和安全点
 
-前端保存后由运行应用直接读取源码；可选浏览器自动刷新只在 dev profile 使用。Java 保存后 watcher 仅编译到 `target/classes`，成功后触发 DevTools 重启。Java 仍需编译和上下文重建时间，不能宣称任意修改零延迟。
+服务器前端保存后由 Nginx 直接读取 bind 的源码；本地由 Spring 提供静态源码。服务器同页自动刷新已通过真实图形浏览器验证，源码新增和还原内容均无需手动刷新。Java 保存后 watcher 仅编译到 `target/classes`，成功后触发 DevTools 重启。Java 仍需编译和上下文重建时间，不能宣称任意修改零延迟。
 
 共享数据环境每次 Java 重启都必须：持有现有维护锁，停止领取新工作，等待已领取工作达到安全点，成功编译后触发重启，核对健康/TLS/鉴权/关键页面，再恢复本次门控。未知租约、残留锁、已跨外部副作用边界的任务或并行维护会阻止重启。
 
-编译失败不触发重启，上一可用上下文继续服务。依赖、Flyway 迁移、Maven 插件、启动配置、JDK/系统库变化需要显式停止/启动和专项验证，不走自动 watcher。
+编译失败不触发重启，上一可用上下文继续服务。`pom.xml` 依赖变化由 watcher 受控重启 app；Flyway 迁移、环境配置、JDK/Maven 与 watcher/运行工具本身变化须显式维护。共享 Flyway 自动执行已禁用，migration 源码/hash/history 守卫禁止普通保存执行 DDL。
 
 ## 6. 持久化、配置与日志
 
 保留真实 MySQL、Redis Session/Stream、业务文件卷、OSS 配置、TLS、登录、权限、模型/店铺加密密钥、内部令牌、同步计划、检查点、租约和上游限流。密钥变化必须提供已有密文兼容或迁移方案。
 
-生产沿用现有脱敏日志策略。临时诊断使用有界短期输出和小型回执，不记录完整请求/响应、Cookie、令牌、密钥或业务导出。源码 watcher 和浏览器轮询不得形成无限持久日志。
+生产沿用现有脱敏日志策略。临时诊断使用有界短期输出和小型回执，不记录完整请求/响应、Cookie、令牌、密钥或业务导出。源码 watcher 使用 `heyi-source` journal namespace，容量上限 64 MiB、保留 3 天；revision 路由 `access_log off`。
 
 ## 7. 备份、恢复与容量
 
@@ -79,6 +79,6 @@
 
 积压只作为诊断数据，不能自动触发重启。源码运行异常先判断是否为编译、上下文、环境或代理问题；不得通过清队列、删库、重写迁移或停掉无关容器来取得表面健康。
 
-## 9. 待完成回执
+## 9. 实际验收与后续事项
 
-当前还需要真实记录服务器 JDK/Maven 准备、源码进程启动、前端保存到页面更新、Java 保存到编译/重启/新结果、失败编译保留可用状态，以及 gate/drain/restore 对真实工作器的保护。该回执完成前，本文只表示目标与保护边界，不表示切换完成。
+共享后端冷启动、Java 成功热更新、失败编译保留 context/output/health、schema/history 保持与会话验证已完成，回执路径与耗时见[源码运行现场状态](source-runtime-status.md)。服务器前端同一页面自动刷新、还原及登录保持也已通过图形验收；GitHub 合并/默认分支变更仍按该记录跟进，不提前标记完成。

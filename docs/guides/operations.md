@@ -1,6 +1,6 @@
 # 源码运行、恢复与运维交接
 
-核对时间：2026-11-11（北京时间）。主应用目标已切换为源码开发运行方式；共享服务器实际切换仍待最新现场回执确认。本文描述目标运行边界和操作保护，不以仓库文件存在推断服务器已启用。旧版本、镜像和自动发布结果保留在历史回执中。
+核对时间：2026-11-11（北京时间）。共享服务器主应用和前端已实际切换，验证结果与未完成事项见[源码运行现场状态](source-runtime-status.md)。本文规定日常运行边界和操作保护。旧版本、镜像和自动发布结果保留在历史回执中。
 
 共享服务器操作先读 [AGENTS.md](../../AGENTS.md)，重新核对实际进程、源码工作区、配置、挂载、数据库和其他会话维护状态。多个会话共用服务器，任何启动、热重启、迁移、恢复和清理都须串行协调。
 
@@ -13,17 +13,17 @@ python3 scripts/dev.py init
 python3 scripts/dev.py run
 ```
 
-共享服务器规范源码根为 `/opt/heyi/dev/ai-video`。服务器应使用 JDK 21、Maven 3.9.11、Maven dev profile 和同一源码运行机制；前端由应用直接读取该工作区的 `frontend/`。实际服务管理器、环境文件、进程号、端口和热更新耗时只以本次现场回执为准。
+共享服务器规范源码根为 `/opt/heyi/dev/ai-video`。服务器已使用 JDK 21.0.9+10、Maven 3.9.11 和 dev profile；前端由既有 Nginx bind 该工作区的 `frontend/`，本地才由 Spring 直接提供静态源码。完整 Compose 叠加链与实测耗时见现场状态。
 
-目标共享 watcher 入口为：
+共享 watcher 由已 enabled、active 的 `heyi-source-watch.service` 管理，其入口为：
 
 ```bash
 python3 scripts/shared_dev.py watch --config /etc/heyi-dev/runtime.json
 ```
 
-中断恢复和只读状态分别使用 `recover`、`status`。该命令只有在受限配置、维护锁和现场基线完成安装验收后才能作为常驻入口；当前是否已安装仍查最新回执。
+中断恢复和只读状态分别使用 `recover`、`status`。受限配置和常驻入口已经安装验收；执行恢复前仍须核对本次门控归属及其他会话维护状态。
 
-判断“已切换”至少需要同时记录：
+后续接手和变更验收继续核对：
 
 - 实际源码路径及工作区 revision/diff 边界；
 - Java/Maven 版本、启动命令和 dev profile；
@@ -32,13 +32,13 @@ python3 scripts/shared_dev.py watch --config /etc/heyi-dev/runtime.json
 - 编译失败时上一可用上下文仍可服务；
 - 真实数据库、Redis、卷、密钥、会话、同步检查点、租约、限流和任务门控保持。
 
-上述证据完成前，旧容器/镜像状态仍是现场基线，不能声称源码模式已激活。
+本次后端切换、成功/失败编译、健康及会话证据已落盘；服务器前端同页自动刷新已通过真实图形浏览器验证，源码新增及还原内容均自动反映在保持登录的原页面。业务模块的完整回归仍按各自变更范围执行。
 
 ## 源码变更与热重启
 
 允许通过 VS Code Remote SSH 直接编辑规范工作区，或使用团队批准的定向同步。同步前读取服务器差异，只覆盖本任务已核对文件。不得自动上传所有本地 worktree，不得覆盖其他会话的未提交修改，不得同步 `.env.development`、生产密钥、Cookie 或业务导出。
 
-前端 HTML/JS/CSS 直接读取源码，不生成静态包、gzip 或前端镜像。Java watcher 只编译到 `target/classes`；编译成功后才更新 DevTools trigger。Java 修改需要实际编译和上下文重启的数秒时间，不能承诺零延迟。依赖、Maven 插件、Flyway 迁移、启动配置和系统依赖变化必须显式重启并单独验证。
+前端 HTML/JS/CSS 直接读取源码，不生成静态包、gzip 或前端镜像。Java watcher 只编译到 `target/classes`；编译成功后才更新 DevTools trigger。Java 修改需要实际编译和上下文重启的数秒时间，不能承诺零延迟。`pom.xml` 依赖变化会受控重启 app；Flyway 迁移、环境配置、工具链及 watcher/运行工具本身变化必须显式维护并单独验证。
 
 共享真实数据环境的 Java 重启顺序：
 
@@ -53,9 +53,9 @@ python3 scripts/shared_dev.py watch --config /etc/heyi-dev/runtime.json
 ## 配置与数据保护
 
 - 生产/共享环境继续使用既有私有环境、TLS、登录和权限配置；DevTools 远程更新接口不得对外开放。
-- Flyway 只追加新迁移，不编辑、重命名已应用 SQL，不用 `repair` 掩盖校验差异。迁移失败或部分 DDL 不清库，保留门控和证据后处理。
+- 共享环境 Flyway 自动执行已禁用，migration 源码/hash/history 守卫阻止普通保存执行 DDL；Flyway 只追加新迁移，不编辑、重命名已应用 SQL，不用 `repair` 掩盖校验差异。迁移失败或部分 DDL 不清库，保留门控和证据后处理。
 - 保留财务口径、公司/店铺隔离、同步游标、检查点、租约、上游限流和结果未知状态。源码运行方式变化不得顺带改变业务规则。
-- 日志沿用脱敏、有界策略，不记录完整请求/响应、凭据、Cookie、令牌或业务导出。
+- watcher 使用 `heyi-source` journal namespace，容量上限 64 MiB、保留 3 天；revision 路由关闭访问日志。其他日志沿用既有脱敏策略，不记录完整请求/响应、凭据、Cookie、令牌或业务导出。
 - 备份保持已验收的数量、体积、空间和时长上限；timer 维持 `Persistent=false`，源码重启不触发漏跑补备份。
 
 ## 历史恢复
@@ -82,7 +82,7 @@ python3 scripts/shared_dev.py watch --config /etc/heyi-dev/runtime.json
 | 前端保存后页面未更新 | 实际读取的 `frontend/` 路径、浏览器缓存、dev 自动刷新是否启用；无需构建 gzip/镜像 |
 | Java 修改未生效 | watcher 编译结果、`target/classes`、trigger、DevTools 重启和健康；不要执行 `package` 作为日常补救 |
 | 编译失败后服务异常 | 是否错误触发重启；恢复上一可用 classes/进程状态并修复编译，不清数据库或队列 |
-| 依赖或迁移变化未生效 | 执行显式停止/启动及专项验证；watcher 不负责这类变化 |
+| 依赖或迁移变化未生效 | `pom.xml` 依赖变化检查受控 app 重启；迁移/运行配置/工具变更走显式维护，不能让普通保存执行 DDL |
 | 共享服务器状态不明 | 先做只读现场核对并查最新回执，不从旧 Release 或镜像名称推断 |
 
 ## 历史事实入口

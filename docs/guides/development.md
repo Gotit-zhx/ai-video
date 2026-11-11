@@ -14,7 +14,7 @@
 
 日常主应用不使用 Dockerfile、`app-local.jar` 或 Maven `package`。`python3 scripts/dev.py run` 以 dev profile 执行 `spring-boot:run`；watcher 只把必要 Java/资源编译到 `target/classes`，编译成功后更新 DevTools trigger。Java 保存到可用新上下文仍需要编译和重启时间。Dockerfile、JAR 和镜像入口保留为历史恢复或明确的独立分发资料，不是当前开发命令。
 
-普通前端不需要 `npm install` 或 `npm run build`。应用直接从 `frontend/` 读取 HTML/JS/CSS；保存后刷新即可，开发专用浏览器轮询可自动刷新。新增资源仍须检查 `index.html` 引用和相关页面测试，但日常运行不生成 gzip、静态发布目录或前端镜像。
+普通前端不需要 `npm install` 或 `npm run build`。本地 Spring 直接从 `frontend/` 读取 HTML/JS/CSS；服务器由 Nginx bind 同一源码目录。保存后刷新即可，开发专用浏览器轮询可自动刷新。新增资源仍须检查 `index.html` 引用和相关页面测试，但日常运行不生成 gzip、静态发布目录或前端镜像。
 
 ## 配置入口及优先级
 
@@ -54,7 +54,7 @@ python3 scripts/dev.py run
 
 无参数执行 `python3 scripts/dev.py` 等同于 `run`。已有兼容的 MySQL/Redis 时可用 `python3 scripts/dev.py run --no-deps`。默认 `compose.dev.yaml` 只启动项目隔离的 MySQL/Redis，宿主端口为 `3307`/`6380`，数据库为 `ai_commerce_dev`，使用项目命名持久卷；它不构建或启动 app/frontend。
 
-默认访问 `http://localhost:8080`，API 与 UI 同源。Java watcher 编译失败时保留上一个可用上下文，不触发重启；修复编译后才触发 DevTools。依赖、插件、Flyway 迁移、启动类和环境配置变化需显式重启并验证。不要把两套 App 同时连到共享真实数据库来验证。
+默认访问 `http://localhost:8080`，API 与 UI 同源。Java watcher 编译失败时保留上一个可用上下文，不触发重启；修复编译后才触发 DevTools。`pom.xml` 依赖变化由 watcher 受控重启 app；Flyway 迁移、环境配置、工具链和 watcher 本身变化须显式维护并验证。共享服务器自动 Flyway 已禁用，普通保存不执行 DDL，见[现场状态](source-runtime-status.md)。不要把两套 App 同时连到共享真实数据库来验证。
 
 Pi 源码开发使用：
 
@@ -112,7 +112,7 @@ Windows 使用 WSL2 Linux 环境运行源码启动器：在 WSL2 内安装 JDK 2
 
 ## 数据库迁移
 
-最高现存文件为 V150，V149 缺号；是否已在共享环境执行须核对现场。新迁移先确认没有并行冲突，使用下一个未占用版本。迁移编号有历史缺口，保留现状。已应用 SQL 不编辑、不重命名、不用 `repair` 掩盖校验差异。
+最高现存文件为 V150，V149 缺号；本次共享环境已核对 V150，schema/history 指纹保持，后续变更仍须重新核对现场。新迁移先确认没有并行冲突，使用下一个未占用版本。迁移编号有历史缺口，保留现状。已应用 SQL 不编辑、不重命名、不用 `repair` 掩盖校验差异。
 
 先在隔离 MySQL 验证迁移、旧数据保留、索引与幂等行为；涉及财务时核对租户/分组限制、零值与缺失值、首次结算及样品/取消订单。生产回滚应用镜像不会自动回滚 MySQL，需要明确旧应用与新结构的兼容性。
 

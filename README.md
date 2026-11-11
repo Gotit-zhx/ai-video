@@ -2,7 +2,7 @@
 
 面向电商运营、AI 图片与视频生产、财务分析和招聘管理的多租户平台。
 
-文档核对日期：**2026-11-11（北京时间）**。主应用当前采用源码开发运行模式：本地和共享服务器直接运行 Java 与前端源码，代码生效不再以打包、Candidate、版本标签或正式发布流水线为条件。共享服务器切换仍须以最新现场回执为准；在回执完成前不能把本文理解为已完成服务器切换。设计边界见[源码开发运行设计](docs/design/source-development-20261111.md)。
+文档核对日期：**2026-11-11（北京时间）**。主应用当前采用源码开发运行模式：本地和共享服务器直接运行 Java 与前端源码，代码生效不再以打包、Candidate、版本标签或正式发布流水线为条件。共享服务器主应用与前端已完成实际切换，运行入口、实测耗时与剩余验收项见[源码运行现场状态](docs/guides/source-runtime-status.md)。设计边界见[源码开发运行设计](docs/design/source-development-20261111.md)。
 
 ## 接手入口
 
@@ -32,7 +32,7 @@
 | --- | --- |
 | Java 后端 | Java 21、Spring Boot 4.1.0、MyBatis-Plus 3.5.17、Maven |
 | 数据层 | MySQL 8.4、Flyway、Redis 8、Spring Session |
-| Web 前端 | 原生 HTML / JavaScript / CSS，由主应用直接读取源码；共享服务器保留 Nginx/TLS 代理，无独立 npm 构建步骤 |
+| Web 前端 | 原生 HTML / JavaScript / CSS；本地 Spring 直接读取源码，服务器 Nginx bind `frontend/` 并保留 TLS/代理，无独立 npm 构建步骤 |
 | 模型运行时 | Node.js 22、Pi Agent SDK，位于 `services/pi-runtime/` |
 | 本机执行 | Electron 自动化助手、招聘助手及浏览器扩展，各自独立构建 |
 | 文件 | Docker 持久卷及按环境配置的 OSS；数据库备份不包含全部素材 |
@@ -65,7 +65,7 @@ python3 scripts/dev.py run
 curl -fsS http://localhost:8080/actuator/health
 ```
 
-Java 以 Maven dev profile 的 `spring-boot:run` 启动。watcher 在保存后仅增量编译到 `target/classes`，成功后再触发 DevTools 重启；Java 修改需要编译和上下文重建的数秒时间，不能承诺零延迟。HTML/JS/CSS 直接从 `frontend/` 读取，无 npm 打包、gzip 或镜像构建；开发专用浏览器轮询刷新可选。依赖、Flyway 迁移及启动配置变化需显式重启并单独验证。
+Java 以 Maven dev profile 的 `spring-boot:run` 启动。watcher 在保存后仅增量编译到 `target/classes`，成功后再触发 DevTools 重启；Java 修改需要编译和上下文重建的数秒时间，不能承诺零延迟。HTML/JS/CSS 直接从 `frontend/` 读取，无 npm 打包、gzip 或镜像构建；开发专用浏览器轮询刷新可选。`pom.xml` 依赖变化由 watcher 受控重启 app；Flyway 迁移、环境配置与运行工具本身变化须显式维护并单独验证。
 
 需要单独开发 Pi Runtime 时运行：
 
@@ -78,9 +78,9 @@ npm --prefix services/pi-runtime run dev
 ## 开发时必须保留的约束
 
 - Web API 使用 `HEYI_SESSION` Cookie；先调用 `POST /api/v1/auth/login`。旧版 `Authorization: Basic` 工作流示例不适用。插件 Bearer、内部令牌和签名素材链接有各自边界，见[接口导航](docs/guides/api.md)。
-- 所有数据库结构变更通过 `src/main/resources/db/migration/` 的 Flyway 迁移完成；不重写已应用迁移。当前最高现存文件为 V150，V149 缺号；不补造旧文件，也不据此推断共享环境已执行到 V150。
+- 所有数据库结构变更通过 `src/main/resources/db/migration/` 的 Flyway 迁移完成；不重写已应用迁移。当前最高现存文件为 V150，V149 缺号；共享环境本次已核对 V150。自动 Flyway 已禁用，普通保存不执行 DDL；不补造旧文件。
 - 企业隔离、财务公司共享范围、店铺/分组权限、加密凭据归属和人工审核不能只靠前端保证。
 - 保持同步游标、租约、限流和结果未知时的处理规则；不要用删除队列或重发请求代替恢复。
-- 共享服务器不增加持久应用/诊断日志；源码热重启、历史恢复、临时文件清理及备份边界以 [AGENTS.md](AGENTS.md) 为准。
+- 共享 watcher 使用有界 `heyi-source` journal（64 MiB/3 天）；其他日志策略及源码热重启、历史恢复、临时文件清理和备份边界以 [AGENTS.md](AGENTS.md) 为准。
 
 修改业务时同时更新对应常驻说明及本次验收记录，避免只留下按日期命名的发布文件。
