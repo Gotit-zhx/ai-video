@@ -6,6 +6,8 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.zip.*;
 import java.util.concurrent.atomic.AtomicReference;
+import org.springframework.jdbc.core.PreparedStatementCreator;
+import org.springframework.jdbc.core.RowCallbackHandler;
 import javax.xml.stream.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -15,12 +17,24 @@ class FinanceCostExportFilesTest extends FinanceCostExportTest {
     @TempDir Path directory;
     void fileResults(List<Map<String,Object>> data){
         when(db.queryForObject(startsWith("SELECT COUNT(*)"),eq(Long.class),any(Object[].class))).thenReturn((long)data.size());
-        var pages=new ArrayDeque<List<Map<String,Object>>>();
-        for(int i=0;i<data.size();i+=500)pages.add(data.subList(i,Math.min(data.size(),i+500)));
-        when(db.queryForList(contains("export_sort_date"),any(Object[].class))).thenAnswer(call->pages.isEmpty()?List.of():pages.removeFirst());
+        streamKeys(data);
         var details=new ArrayDeque<List<Map<String,Object>>>();
         for(int i=0;i<data.size();i+=500)details.add(data.subList(i,Math.min(data.size(),i+500)));
         when(db.queryForList(contains("cost_json"),any(Object[].class))).thenAnswer(call->details.removeFirst());
+    }
+    void streamKeys(Iterable<Map<String,Object>> data){
+        doAnswer(call->{
+            var current=new AtomicReference<Map<String,Object>>();
+            var result=(java.sql.ResultSet)java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),new Class<?>[]{java.sql.ResultSet.class},(proxy,method,args)->{
+                if(!method.getName().equals("getString"))throw new UnsupportedOperationException(method.getName());
+                Object value=current.get().get(args[0]);
+                if(value==null&&args[0].equals("reference"))value=current.get().get("order_id");
+                return value==null?null:value.toString();
+            });
+            RowCallbackHandler callback=call.getArgument(1);
+            for(var row:data){current.set(row);callback.processRow(result);}
+            return null;
+        }).when(db).query(any(PreparedStatementCreator.class),any(RowCallbackHandler.class));
     }
     List<byte[]> parts(Path path)throws Exception{
         var result=new ArrayList<byte[]>();
@@ -62,25 +76,39 @@ class FinanceCostExportFilesTest extends FinanceCostExportTest {
         assertThrows(RuntimeException.class,()->tiny.exportFile(scope,filter,"ORDER","","ALL","",directory,(p,t)->{}));
         assertEquals(0,Files.list(directory).count());
     }
+    @Test void interruptedKeySelectionRemovesItsPrivatePartialIndex()throws Exception{
+        when(db.queryForObject(startsWith("SELECT COUNT(*)"),eq(Long.class),any(Object[].class))).thenReturn(2L);
+        streamKeys(()->new Iterator<>(){
+            boolean read;
+            public boolean hasNext(){if(read)throw new org.springframework.dao.DataAccessResourceFailureException("interrupted selection");return true;}
+            public Map<String,Object> next(){read=true;return row("READY","first");}
+        });
+        assertThrows(org.springframework.dao.DataAccessResourceFailureException.class,
+            ()->export.exportFile(scope,filter,"SETTLED_ORDER","","ALL","",directory,(p,t)->{}));
+        try(var files=Files.list(directory)){assertEquals(0,files.count(),"partial index must not outlive a failed selection");}
+    }
     @Test void defaultLimitsExport50001OrdersAsTwoCompleteFilesWithBoundedPageFixtures()throws Exception{
         // Raising the legacy rejection threshold or dropping the final order must fail this test.
         final long total=50_001,firstNumber=100_000_000_000_000_000L;
         var template=new LinkedHashMap<>(row("INCOMPLETE","template"));
         template.put("raw_json","{}");template.put("cost_json","{}");template.put("amount_cny",null);template.put("known_amount_cny",null);
-        var page=new AtomicReference<List<Map<String,Object>>>(List.of());long[] next={0};
         when(db.queryForObject(startsWith("SELECT COUNT(*)"),eq(Long.class),any(Object[].class))).thenReturn(total);
-        when(db.queryForList(contains("export_sort_date"),any(Object[].class))).thenAnswer(call->{
-            var keys=new ArrayList<Map<String,Object>>();var data=new ArrayList<Map<String,Object>>();
-            for(int position=0;position<500&&next[0]<total;position++,next[0]++){
-                String number=Long.toString(firstNumber+next[0]);
-                keys.add(Map.of("order_record_id","record-"+number,"organization_id","org","shop_id","shop","reference",number,
-                    "export_sort_date",java.sql.Date.valueOf("2026-10-23"),"first_settlement_date",java.sql.Date.valueOf("2026-10-23")));
-                var value=new LinkedHashMap<>(template);value.put("order_record_id","record-"+number);value.put("order_id",number);
-                value.put("reference",number);value.put("page_position",position);data.add(value);
+        streamKeys(()->new Iterator<>(){
+            long next;
+            public boolean hasNext(){return next<total;}
+            public Map<String,Object> next(){
+                String number=Long.toString(firstNumber+next++);
+                return Map.of("order_record_id","record-"+number,"shop_id","shop","reference",number,"first_settlement_date",java.sql.Date.valueOf("2026-10-23"));
             }
-            page.set(data);return keys;
         });
-        when(db.queryForList(contains("cost_json"),any(Object[].class))).thenAnswer(call->page.getAndSet(List.of()));
+        when(db.queryForList(contains("cost_json"),any(Object[].class))).thenAnswer(call->{
+            Object[] args=(Object[])call.getRawArguments()[1];var data=new ArrayList<Map<String,Object>>();
+            for(int i=0;i<args.length;i+=6){
+                var value=new LinkedHashMap<>(template);value.put("order_record_id",args[i]);value.put("order_id",args[i+3]);
+                value.put("reference",args[i+3]);value.put("page_position",args[i+5]);data.add(value);
+            }
+            return data;
+        });
         Path output=Files.createDirectory(directory.resolve("output"));
         long[] lastProgress={-1};
         var result=export.exportFile(scope,filter,"SETTLED_ORDER","","ALL","",output,(processed,expected)->{
