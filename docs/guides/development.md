@@ -1,26 +1,26 @@
 # 开发与验证指南
 
-核对日期：2026-11-05。首次 Compose 启动见[项目首页](../../README.md)；本文说明配置边界、日常开发和验证条件。
+核对日期：2026-11-11。首次源码启动见[项目首页](../../README.md)；本文说明配置边界、日常开发和验证条件。
 
 ## 环境与构建
 
 | 范围 | 要求 |
 | --- | --- |
-| 主应用容器 | Docker Desktop / Engine；Compose 2.24.4+，支持 `!override` / `!reset` |
-| 宿主机 Java 调试 | JDK 21、Maven 3.9 系列；仓库没有 `mvnw` |
+| 主应用源码运行 | JDK 21、Maven 3.9.11、Python 3；仓库没有 `mvnw` |
+| 本地依赖容器 | Docker Desktop / Engine；Compose 2.24.4+，仅启动 MySQL/Redis |
 | Runtime / Node 测试 | Node.js 22；Pi 使用 `package-lock.json` 和 `npm ci` |
 | 招聘桌面 | 依平台构建，Node 22、Python 3.12、pnpm 11.25.0；完整流程见 HR README 与工作流 |
 | 视频抽帧及 watch | FFmpeg、Python，以及 Runtime 镜像内的 watch 工具目录 |
 
-根 `Dockerfile` 在容器里全量编译，运行 Maven 测试后生成 JAR；`Dockerfile.local` 和 `Dockerfile.runtime` 则读取预构建 JAR，不能直接在新检出目录构建。具体 COPY 输入应以各 Dockerfile 为准。根 `pom.xml` 产物为 `target/ai-commerce-platform-0.1.0-SNAPSHOT.jar`；本地 Dockerfile 要求复制成根目录 `app-local.jar`。修改 Java 后必须重新打包、复制并重建 `app`，容器不会热读宿主源码。
+日常主应用不使用 Dockerfile、`app-local.jar` 或 Maven `package`。`python3 scripts/dev.py run` 以 dev profile 执行 `spring-boot:run`；watcher 只把必要 Java/资源编译到 `target/classes`，编译成功后更新 DevTools trigger。Java 保存到可用新上下文仍需要编译和重启时间。Dockerfile、JAR 和镜像入口保留为历史恢复或明确的独立分发资料，不是当前开发命令。
 
-普通前端不需要 `npm install` 或 `npm run build`。首页本机方案使用只读源码挂载，修改后刷新页面即可；发布镜像仍需检查脚本引用、普通/gzip 文件和缓存版本。本次目录整理已补齐两个前端 Dockerfile 原有的页面资源缺项，后续新增资源仍需同步清单并运行打包检查。
+普通前端不需要 `npm install` 或 `npm run build`。本地 Spring 直接从 `frontend/` 读取 HTML/JS/CSS；服务器由 Nginx bind 同一源码目录。保存后刷新即可，开发专用浏览器轮询可自动刷新。新增资源仍须检查 `index.html` 引用和相关页面测试，但日常运行不生成 gzip、静态发布目录或前端镜像。
 
 ## 配置入口及优先级
 
+- `.env.development` 是源码开发的私有环境文件；`python3 scripts/dev.py init` 只在它缺失时生成，不覆盖已有内容，也不修改 `.env` 或其他环境文件。
 - `.env.example` 是示例，不包含所有配置；后端默认及变量映射见 `src/main/resources/application.yml`，其他 `@Value` 配置要查所属服务。
-- `.env` 用于 **Compose 变量插值**，并不会自动把每个变量传给容器。要核对 `services.app.environment` 或相应覆盖文件是否真正注入。
-- 直接运行 Java / Node 时也不会自动加载根 `.env`。使用 IDE 的私有环境变量配置，或明确注入当前进程，不把生产配置复制到源码里。
+- 不把生产配置复制到源码或提交私有环境文件。IDE 单独启动时须明确加载 `.env.development` 或等价私有配置。
 - Compose 通过 `DB_URL`、`DB_USERNAME`、`DB_PASSWORD` 连接 MySQL；`MYSQL_*` 是数据库容器初始化配置。已有数据库不会因改 `.env` 自动改密码。
 - 新装管理员由 `SaasBootstrap` 初始化；已有账号不因改变 `APP_ADMIN_PASSWORD` 被重置。
 
@@ -43,59 +43,42 @@
 
 容量配置 `APP_DISPATCH_WORKER_THREADS=8`、`APP_MAX_ACTIVE_TASKS=80`、`APP_MAX_MODEL_CALLS=20` 属于通用调度；财务同步有独立并发/分页控制，不能通过调大这几个变量改变财务上游限额。
 
-## 本地迭代
+## 本地源码迭代
 
-Java 修改后，在根目录执行：
+初始化并运行：
 
 ```bash
-mvn -B -s maven-settings.xml -DskipTests package
-cp target/ai-commerce-platform-0.1.0-SNAPSHOT.jar app-local.jar
-docker compose -f compose.yaml -f compose.local.yaml up -d --build app
+python3 scripts/dev.py init
+python3 scripts/dev.py run
 ```
 
-未安装宿主 Maven 时，用首页的 Maven 容器构建命令替代第一行。首页的前端源码挂载无需因修改静态文件重建容器；更改 Nginx 或需要重建前端时，重新使用首页带标准输入覆盖的完整命令，保留挂载。正式候选镜像须检查 COPY 清单并单独验收。
+无参数执行 `python3 scripts/dev.py` 等同于 `run`。已有兼容的 MySQL/Redis 时可用 `python3 scripts/dev.py run --no-deps`。默认 `compose.dev.yaml` 只启动项目隔离的 MySQL/Redis，宿主端口为 `3307`/`6380`，数据库为 `ai_commerce_dev`，使用项目命名持久卷；它不构建或启动 app/frontend。
 
-宿主机调试可先启动 MySQL、Redis 和 Pi Runtime，再在 IDE 配置 `DB_*`、`REDIS_*`、内部令牌及可写存储目录，运行 `AiCommercePlatformApplication`。`APP_PI_RUNTIME_URL` 使用 `http://localhost:8090`，数据库地址使用本机发布端口。不要把两套 App 同时连到生产数据库来验证。
+默认访问 `http://localhost:8080`，API 与 UI 同源。Java watcher 编译失败时保留上一个可用上下文，不触发重启；修复编译后才触发 DevTools。`pom.xml` 依赖变化由 watcher 受控重启 app；Flyway 迁移、环境配置、工具链和 watcher 本身变化须显式维护并验证。共享服务器自动 Flyway 已禁用，普通保存不执行 DDL，见[现场状态](source-runtime-status.md)。不要把两套 App 同时连到共享真实数据库来验证。
 
 Pi 源码开发使用：
 
 ```bash
-npm --prefix services/pi-runtime ci
-npm --prefix services/pi-runtime start
+npm --prefix services/pi-runtime run dev
 ```
 
-运行前注入私有 `PI_RUNTIME_TOKEN`，确认 8090 未被容器占用。涉及完整 watch 链路时优先用 Runtime 镜像；其 Dockerfile 安装上游固定提交的 Python 工具和 FFmpeg，仅 `npm ci` 不会补齐这些工具。
+运行前注入私有 `PI_RUNTIME_TOKEN`，确认 8090 未被占用。该命令使用 Node `--watch` 监听自身源码；普通 Pi 源码修改不强制重建完整镜像或重新安装 FFmpeg。涉及媒体系统依赖变化时再按 Runtime README 做显式验证。
 
-Windows PowerShell 与首页相同步骤：
+Windows 使用 WSL2 Linux 环境运行源码启动器：在 WSL2 内安装 JDK 21、Maven 3.9.11 和 Python 3，配置 `JAVA_HOME` 与 `MAVEN`（或 `MAVEN_HOME`），并启用 Docker Desktop 对该 WSL2 发行版的集成。在 WSL2 终端的仓库根目录执行 `python3 scripts/dev.py init` 与 `python3 scripts/dev.py run`。启动器依赖 Unix 的 `fcntl` 文件锁、信号和进程组，原生 Windows PowerShell/Python 不支持该入口。路径、端口和环境变量以 WSL2 内的 `.env.development` 为准。
 
-```powershell
-# 只在新检出且尚无 .env 时复制，然后编辑配置
-Copy-Item .env.example .env
-docker run --rm -v "${PWD}:/workspace" -v heyi-maven-cache:/root/.m2 -w /workspace maven:3.9-eclipse-temurin-21 mvn -B -s maven-settings.xml -DskipTests package
-Copy-Item target/ai-commerce-platform-0.1.0-SNAPSHOT.jar app-local.jar
-@'
-services:
-  frontend:
-    volumes:
-      - ./frontend:/usr/share/nginx/html:ro
-'@ | docker compose -f compose.yaml -f compose.local.yaml -f - up --build -d
-```
+## Git 协作与个人 fork
 
-## Gitflow 与个人 fork
-
-2026-11-06 为个人 fork `Gotit-zhx/ai-video` 建立以下映射，保留上游 `HaLoBAI/ai-video` 的分支名称和历史：
+日常协作使用以下映射，保留上游和个人 fork 的旧分支名称与历史：
 
 | 分支 | 角色及使用方式 |
 | --- | --- |
-| `main-tree` | 发布基线；沿用上游默认分支，不直接提交日常开发改动 |
-| `develop` | 集成分支；从已同步的 `main-tree` 建立，接收验证后的功能分支合并 |
-| `feature/*` | 从 `develop` 建立，按独立变更提交，用 `--no-ff` 合回 `develop` |
-| `release/*` | 从 `develop` 准备正式版本，按 [AGENTS.md](../../AGENTS.md) 合入发布基线、打标签并合回 |
-| `hotfix/*` | 从已发布基线修复线上问题，按 Gitflow 合回所有需要接收修复的分支 |
+| `develop` | 日常共享集成基线 |
+| `feature/*` | 从 `develop` 建立，完成相应验证后通过 PR 合入 `develop`；需要保留关系时使用 `--no-ff` |
+| `main-tree`、`release/*`、`hotfix/*`、历史标签 | 旧发布与恢复资料；只有明确的独立分发或历史恢复任务才使用 |
 
-本地 `origin` 保留上游地址，`fork` 指向个人仓库；默认推送目标为 `fork`。本地配置明确 `gitflow.branch.master=main-tree`、`gitflow.branch.develop=develop` 和对应支持分支前缀。新检出时这些本地 Git 配置不会随源码复制，需要按本表重新配置并核对远端归属。
+本地 `origin` 保留上游地址，`fork` 指向个人仓库；推送前核对远端归属。源码可以在提交前运行和验证，不需要版本标签或 Candidate；提交仍只包含本任务文件，不覆盖其他会话的工作。
 
-目录整理、交接文档与刷单合计先经 `feature/project-handoff-and-brush-summary` 合入个人 fork 的 `develop`。随后通过 `release/2026.11.6-project-sync` 完成正式上线，发布标签为 `v2026.11.6`；当前镜像、源提交、验证边界与服务器源码入口见[发布验收](../releases/infrastructure/project-sync-20261106.md)。后续功能仍先进入 `develop`，不得绕过发布流程直接推向 `main-tree`。
+旧 Gitflow 映射和历次正式标签保留在[历史资料](../history/README.md)及各期回执中，不再作为日常代码运行步骤。
 
 ## 测试入口
 
@@ -129,14 +112,14 @@ services:
 
 ## 数据库迁移
 
-最高现存编号 V148（广告自动化候选，是否已部署须核对现场）；新迁移先确认没有并行冲突，使用下一个未占用版本。迁移编号有历史缺口，保留现状。已发布 SQL 不编辑、不重命名、不用 `repair` 掩盖校验差异。
+最高现存文件为 V150，V149 缺号；本次共享环境已核对 V150，schema/history 指纹保持，后续变更仍须重新核对现场。新迁移先确认没有并行冲突，使用下一个未占用版本。迁移编号有历史缺口，保留现状。已应用 SQL 不编辑、不重命名、不用 `repair` 掩盖校验差异。
 
 先在隔离 MySQL 验证迁移、旧数据保留、索引与幂等行为；涉及财务时核对租户/分组限制、零值与缺失值、首次结算及样品/取消订单。生产回滚应用镜像不会自动回滚 MySQL，需要明确旧应用与新结构的兼容性。
 
 ## 已知开发缺口
 
-- 本地 Nginx 没有生产招聘/ERP 的专用代理；默认 Compose 不启动 Connector。招聘及安装包交接需要独立环境。
-- 前端镜像仍采用手工 COPY 清单；原先缺失的 13/15 个入口资源已补齐并通过资源测试，本地源码挂载用于开发热更新。后续新增资源仍须检查，完整浏览器及真实外部链路另行验收。
-- 缺少统一的后端/前端服务 CI。当前 GitHub 工作流主要是 HR 安装包；普通分支推送不等于通过服务回归。
-- 历史发布脚本依赖 `/opt/heyi/releases/...` 的已保留文件，清理后的目录未必能重新构建；源码可编译不等于完整镜像与线上逐字节相同。
+- 源码模式默认同源端口不等于生产 Nginx 的全部招聘/ERP 代理均已复现；招聘及安装包交接需要独立环境。
+- 浏览器自动刷新仅用于开发，不能注入生产页面或开放 DevTools 远程更新接口。
+- [Development checks](../../.github/workflows/development-checks.yml) 已覆盖源码启动器契约、前端语法与资源引用、开发刷新及 Java 开发模式/维护安全测试；在 `develop`、`feature/**` 推送和面向 `develop` 的 PR 上运行。这些定向检查不等于完整业务回归，真实依赖和业务链路仍按本次变更单独验证。
+- 历史发布脚本依赖 `/opt/heyi/releases/...` 的已保留文件，清理后的目录未必能重新构建；它们是恢复资料，不是源码运行入口。
 - 真实模型、官方授权/发布、Windows 安装和所有店铺独立对账，需要各自的授权环境与验收证据。

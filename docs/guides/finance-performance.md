@@ -101,4 +101,4 @@ flowchart LR
 
 入口：`FinanceReadCache`、`FinanceService.prewarm`、`FinanceOrderCosts`、`FinanceCostWorker`；可销毁队列测试为 `FinanceCostQueueIntegrationTest`。只读探测程序位于 `scripts/qa/java/FinanceBiPerformanceProbe.java`，必须显式设置 `FINANCE_PERF_READ_ONLY=true`，只输出耗时、大小、计数和哈希，并清理自己的 Redis 命名空间。
 
-生产发布前后按[运维指南](operations.md)核对其他会话、镜像、配置链、后台工作和空间；发布工具为 `scripts/release/release-finance-bi-performance.py`。测试账号、测试库、临时类、JAR 和上传物清理后保留小型回执；不新增持久诊断日志，不扩盘。
+共享服务器源码变更前后按[运维指南](operations.md)核对其他会话、配置、后台工作和安全点；Java 编译成功后受控重启并保存小型回执，不执行日常 JAR/镜像发布。历史工具 `scripts/release/release-finance-bi-performance.py` 仅用于追溯当时上线。测试账号、测试库、临时类和上传物清理后保留小型回执；不新增持久诊断日志，不扩盘。

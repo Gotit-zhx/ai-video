@@ -1,0 +1,20 @@
+# Source-only development; no remotely writable DevTools endpoint.
+spring:
+  devtools:
+    restart:
+      enabled: true
+      trigger-file: .reloadtrigger
+    livereload:
+      enabled: false
+  web:
+    resources:
+      static-locations: file:frontend/
+      cache:
+        period: 0
+        cachecontrol:
+          no-store: true
+      chain:
+        cache: false
+heyi:
+  dev:
+    state-file: ${HEYI_DEV_STATE_FILE:.dev/source-state.json}

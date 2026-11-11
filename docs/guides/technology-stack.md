@@ -1,19 +1,19 @@
 # 项目技术栈
 
-主体清单核对日期：2026-11-05；广告连接和 CI/CD 状态补充于 2026-11-07。版本取自仓库声明、锁文件、镜像及 vendored 资源，不代表已连接生产核验全部运行版本。带 `^` 或范围的依赖保留原声明；实际安装版本应由对应锁文件确定。
+主体清单核对日期：2026-11-11。版本取自仓库声明、锁文件及 vendored 资源；共享服务器实际版本以现场源码运行回执为准。带 `^` 或范围的依赖保留原声明；实际安装版本应由对应锁文件确定。
 
 ## 主系统与基础设施
 
 | 层次 | 技术与仓库版本 | 主要来源 |
 | --- | --- | --- |
-| 后端语言 / 框架 | Java 21、Spring Boot 4.1.0、Maven 3.9 构建镜像 | [pom.xml](../../pom.xml)、[Dockerfile](../../Dockerfile) |
+| 后端语言 / 框架 | Java 21、Spring Boot 4.1.0、Maven 3.9.11；dev profile `spring-boot:run` | [pom.xml](../../pom.xml)、[开发指南](development.md) |
 | HTTP / 权限 | Spring MVC、Spring Security、Bean Validation、Spring Session Redis、BCrypt | [后端清单](../../pom.xml)、`auth/`、`config/` |
 | 数据访问 | MyBatis-Plus 3.5.17、JdbcTemplate、MySQL Connector/J | [后端清单](../../pom.xml) |
-| 数据库 / 迁移 | MySQL 8.4、Flyway；最高现存迁移 V148（广告自动化候选），历史有缺号 | [Compose](../../compose.yaml)、[迁移](../../src/main/resources/db/migration/) |
-| 缓存 / 会话 / 队列 | Redis 8、Redis Session、Redis Stream 与业务持久任务表 | [Compose](../../compose.yaml)、`workflow/`、`finance/` |
+| 数据库 / 迁移 | MySQL 8.4、Flyway；最高现存迁移 V150，V149 缺号 | [开发 Compose](../../compose.dev.yaml)、[迁移](../../src/main/resources/db/migration/) |
+| 缓存 / 会话 / 队列 | Redis 8、Redis Session、Redis Stream 与业务持久任务表 | [开发 Compose](../../compose.dev.yaml)、`workflow/`、`finance/` |
 | Web | 原生 HTML / JavaScript / CSS；没有 React/Vue 构建工程 | [前端](../../frontend/) |
 | 图表 / 3D | Apache ECharts 6.1.0、Three.js r170（0.170.0） | [本地第三方资源](../../frontend/vendor/) |
-| 反向代理 | Nginx 1.29 Alpine | [前端 Dockerfile](../../frontend/Dockerfile) |
+| Web 运行 | 应用从 `frontend/` 直接提供同源 UI/API；共享服务器保留既有 Nginx/TLS 代理 | [开发指南](development.md)、[服务器交接](server-handoff.md) |
 | 图像 / 媒体 | FFmpeg、Java ImageIO/WebP；图片传输与模型运行时另有实现 | [后端 Dockerfile](../../Dockerfile)、[Runtime](../../services/pi-runtime/Dockerfile) |
 | 文件 | Aliyun OSS SDK 3.18.4、Dayan/S3 兼容对象存储、Docker 持久卷 | [后端清单](../../pom.xml)、[存储说明](../business/storage/dayan-object-storage.md) |
 
@@ -47,6 +47,6 @@
 
 测试包含 JUnit / Spring Boot Test / Mockito、Node 原生测试、JSDOM 页面模拟、Python unittest、隔离 MySQL 与本地 HTTP 模拟。真实模型、官方发布、完整 Windows 账号流程和恢复演练需分别记录验收。
 
-GitHub Actions 已提供主业务后端/前端必需 CI、隔离数据库分片、真实镜像冒烟、候选来源证明和生产发布，详见 [CI/CD 指南](cicd.md)。桌面构建按平台显式选择，CircleCI 提供显式触发的 Windows 备用构建。自动检查覆盖范围与真实账户授权、完整业务验收分别记录。
+GitHub Actions 可继续执行协作检查和后台回归；Candidate、镜像冒烟和生产发布属于旧体系，不是源码生效条件，详见 [CI/CD 指南](cicd.md)。桌面构建按平台显式选择，CircleCI 的 Windows 构建只在明确分发任务中触发。自动检查覆盖范围与真实账户授权、完整业务验收分别记录。
 
-项目目录及模块关系见[组织结构](project-structure.md)，Git 协作遵守 [AGENTS.md](../../AGENTS.md) 的 Gitflow 规则。
+项目目录及模块关系见[组织结构](project-structure.md)，Git 协作遵守 [AGENTS.md](../../AGENTS.md) 的轻量 feature → develop 规则。

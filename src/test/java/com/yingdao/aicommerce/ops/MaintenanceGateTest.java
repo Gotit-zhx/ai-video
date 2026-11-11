@@ -41,4 +41,17 @@ class MaintenanceGateTest {
         filter.doFilter(request, result, (a,b) -> fail());
         assertTrue(result.getContentAsString().contains("\"activeRequests\":0"));
     }
+    @Test void statusIdentifiesTheSpecificRuntimeContext() throws Exception {
+        Path token = temp.resolve("context-token"); Files.writeString(token, "test-token");
+        var gate = new MaintenanceGate(temp.resolve("context-marker"));
+        var first = new MaintenanceFilter(gate, token);
+        var second = new MaintenanceFilter(gate, token);
+        assertNotEquals(first.contextId(), second.contextId());
+        var request = new MockHttpServletRequest("GET", "/_heyi/ops/status");
+        request.addHeader("X-Heyi-Ops-Token", "test-token");
+        var response = new MockHttpServletResponse();
+        first.doFilter(request, response, (a,b) -> fail());
+        assertTrue(response.getContentAsString().contains("\"contextId\":\"" + first.contextId() + "\""));
+        assertTrue(response.getContentAsString().contains("\"protocol\":1"));
+    }
 }

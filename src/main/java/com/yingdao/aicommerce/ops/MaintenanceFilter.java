@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.util.UUID;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -23,6 +24,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class MaintenanceFilter extends OncePerRequestFilter {
     private final MaintenanceGate gate;
     private final Path tokenFile;
+    private final String contextId = UUID.randomUUID().toString();
+
+    public String contextId() { return contextId; }
     public MaintenanceFilter() {
         this(MaintenanceGate.instance(), Path.of(System.getenv().getOrDefault(
                 "HEYI_OPS_TOKEN_FILE", "/run/heyi-ops/status-token")));
@@ -42,7 +46,7 @@ public class MaintenanceFilter extends OncePerRequestFilter {
             response.setContentType("application/json");
             response.setHeader("Cache-Control", "no-store");
             response.getWriter().write("{\"protocol\":1,\"maintenance\":" + gate.closed()
-                    + ",\"activeRequests\":" + gate.activeRequests() + ",\"activeWorkers\":" + gate.activeWorkers() + "}");
+                    + ",\"contextId\":\"" + contextId + "\",\"activeRequests\":" + gate.activeRequests() + ",\"activeWorkers\":" + gate.activeWorkers() + "}");
             return;
         }
         if ((path.equals("/actuator/health") || path.startsWith("/actuator/health/"))

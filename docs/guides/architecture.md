@@ -1,6 +1,6 @@
 # 架构与代码导航
 
-主体架构核对日期：2026-11-05；广告连接边界补充于 2026-11-07。版本依据为根目录 `pom.xml`、Compose、Nginx、各模块源码和迁移。
+主体架构核对日期：2026-11-11。版本依据为根目录 `pom.xml`、源码开发配置、Nginx、各模块源码和迁移。
 
 仓库目录树及模块组织图见[项目组织结构](project-structure.md)，版本及清单来源见[技术栈](technology-stack.md)。
 
@@ -8,9 +8,9 @@
 
 ```mermaid
 flowchart LR
-    Web[浏览器静态前端] --> Nginx[Nginx]
+    Web[浏览器] --> App[Spring Boot API + 前端源码]
     Extension[商品采集扩展] --> App[Spring Boot API]
-    Nginx --> App
+    Nginx[共享服务器 Nginx / TLS] --> App
     Nginx --> HR[招聘 Python Connector]
     Nginx --> ERP[独立 ERP]
     App --> MySQL[(MySQL)]
@@ -34,11 +34,11 @@ flowchart LR
     Desktop --> Boss[BOSS 官方页面 / SDK]
 ```
 
-这张图表示仓库中的集成边界，不表示默认 Compose 已启动所有服务。`compose.yaml` 只包含 `app`、`frontend`、`mysql`、`redis`、`services/pi-runtime`。招聘服务、ERP、下载服务、可选转换及水印服务独立部署。
+这张图表示仓库中的集成边界，不表示默认开发命令已启动所有服务。当前 `compose.dev.yaml` 只启动隔离 MySQL/Redis；主 Java/Web 由 `scripts/dev.py` 直接从源码运行。Pi Runtime、招聘服务、ERP、下载服务、可选转换及水印服务按需独立启动。根 `compose.yaml` 和镜像入口保留为历史恢复资料。
 
 广告授权、账户发现和报表通过 `FinanceAdHttp` 使用服务器上的专用连接，仅允许官方广告 HTTPS 域名，TLS 由 Java 与官方终点完成。节点凭据由原生服务独立读取，应用只读取私网地址/端口；普通店铺客户端沿用既有通道。部署与验证见[广告连接验收](../releases/finance/finance-ad-connection-acceptance-20261107.md)。
 
-生产 `frontend/nginx.conf` 将 `/api/v1/hr/` 代理给宿主侧招聘服务，将 `/erphoyee/` 代理给 ERP；其余主业务 API 交给 Java。`frontend/nginx.local.conf` 只代理主应用 API，不包含生产 HR/ERP/安装包下载的完整路由。在本地看见招聘菜单并不代表招聘服务已连接。
+共享服务器 Nginx 继续承担 TLS 及招聘/ERP 等既有反向代理；主应用源码模式在 `8080` 同源提供 API 与 UI。本地同源入口不包含共享服务器所有 HR/ERP/安装包代理，在本地看见菜单不代表独立服务已连接。
 
 ## 代码位置
 
@@ -62,7 +62,7 @@ Java 包根目录为 [`src/main/java/com/yingdao/aicommerce/`](../../src/main/ja
 | `apps/hr-desktop/`、`apps/hr-desktop/client-workbench/` | 招聘桌面壳与 Ai boss 工作台；须按目标系统构建 |
 | `apps/automation-agent/`、`apps/browser-extension/` | 通用桌面执行程序与商品采集扩展，分别发布 |
 
-前端没有 React/Vue 工程或根目录 npm 构建链。修改 JS/CSS 后需检查 `index.html` 引用、缓存版本及两个前端 Dockerfile 的 COPY 输入；新增静态资源只放进源码目录不会自动进入镜像。
+前端没有 React/Vue 工程或根目录 npm 构建链。源码模式直接读取 `frontend/`；修改 JS/CSS 后检查 `index.html` 引用、缓存行为和相关页面测试，无需构建 gzip、静态包或镜像。历史 Dockerfile COPY 清单只在明确恢复旧镜像时检查。
 
 ## 主要数据流
 
@@ -90,7 +90,7 @@ Java 包根目录为 [`src/main/java/com/yingdao/aicommerce/`](../../src/main/ja
 | 招聘 Python 私有存储与本机 Profile | 业务 SQLite、附件追踪、设备身份、招聘浏览器登录态 | 与 MySQL 分开备份；不把 Cookie 复制进源码或跨设备迁移 |
 | ERP / 家务 SQLite | 独立子项目业务 | 按各自 README 维护，不与主平台数据混用 |
 
-数据库结构以 [`src/main/resources/db/migration/`](../../src/main/resources/db/migration) 为准。当前最高 V148（广告自动化候选）；迁移序列有历史缺号，不能用最大编号推断实际已执行条数。重点域包括 `organizations`/RBAC、`workflow_*`、`captured_*`/`commerce_*`、`ai_video_*`、`finance_*`、`knowledge_*`。查表与索引应读迁移和 SQL，不把本文当作完整 ERD。
+数据库结构以 [`src/main/resources/db/migration/`](../../src/main/resources/db/migration) 为准。当前最高现存文件为 V150，V149 缺号；不能用最大编号推断现场已执行版本或实际条数。重点域包括 `organizations`/RBAC、`workflow_*`、`captured_*`/`commerce_*`、`ai_video_*`、`finance_*`、`knowledge_*`。查表与索引应读迁移和 SQL，不把本文当作完整 ERD。
 
 广告自动化由 `FinanceAdAutomation` 在既有单线程、账户租约内执行：店铺发现 → 同公司官方 ID 匹配 → 普通报表和各店 GMV Max 独立进度 → 分页暂存 → 完整窗口事务发布 → 覆盖状态。`finance_ad_stores` 保存访问与匹配关系，`finance_ad_streams` 保存游标及退避，`finance_ad_report_stage` 暂存未完成分页，`finance_ad_coverage` 区分空报表与未获取数据。公司账本中的 GMV Max 记录身份与本地归属解耦，账户访问关系不用于推定普通费用归属。实现与边界见[开发验收](../history/finance-ad-automation-20261109.md)。
 

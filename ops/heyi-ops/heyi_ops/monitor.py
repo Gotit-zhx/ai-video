@@ -2,6 +2,7 @@
 import datetime
 import json
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -9,12 +10,47 @@ from .host import GIB, command, inspect
 from .state import atomic, read, Busy
 from .storage import RESERVE_BYTES
 
+SOURCE_RUNTIME_CONFIG = Path('/etc/heyi-dev/runtime.json')
+SOURCE_RELOAD_PHASES = {'gating', 'draining', 'prepared', 'mutating', 'compiling',
+    'compiled', 'compile_failed', 'restoring', 'restored', 'restarting',
+    'recovery_restarting', 'releasing'}
+
+
+def source_reload_status(marker, now):
+    """Recognize only the configured source journal and its bounded, owned gate."""
+    try:
+        if SOURCE_RUNTIME_CONFIG.stat().st_size > 1024 * 1024: return None
+        config = read(SOURCE_RUNTIME_CONFIG)
+        source = Path(config['sourceRoot'])
+        if not source.is_absolute() or source.resolve(strict=True) != source or not source.is_dir(): return None
+        journal = source / '.dev/shared-reload.json'
+        if not journal.exists(): return 'idle' if not marker else None
+        if journal.resolve(strict=True) != journal or journal.stat().st_size > 8 * 1024 * 1024: return None
+        state = read(journal)
+        owner = state.get('owner')
+        if not isinstance(owner, str) or not re.fullmatch(r'[a-f0-9]{32}', owner): return None
+        phase = state.get('phase')
+        if phase in {'ready', 'recovered'}: return 'idle' if not marker else None
+        if phase not in SOURCE_RELOAD_PHASES | {'needs_attention'} or marker.get('owner') != owner: return None
+        started, updated, gated = state.get('createdAt'), state.get('updatedAt'), marker.get('createdAt')
+        if any(type(value) is not int for value in (started, updated, gated)): return None
+        if not 0 < started <= updated <= now or not started <= gated <= now: return None
+        if phase == 'needs_attention' or now - started > 1200 or now - updated > 300: return 'stalled'
+        return 'planned'
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+
 
 def diagnose(config, store, host):
     alerts=[]; containers={};verified={"disk","app","deployment"}
     operations=store.incomplete();marker=read(host.marker,{})
-    planned=any(op["id"]==marker.get("owner") and op["phase"] in {"switching","verifying","source_sync","restoring","recovering"}
+    legacy_planned=any(op["id"]==marker.get("owner") and op["phase"] in {"switching","verifying","source_sync","restoring","recovering"}
         and time.time()-op["updatedAt"]<300 and time.time()-op["createdAt"]<1200 for op in operations)
+    source_status = source_reload_status(marker, time.time())
+    planned = legacy_planned or source_status == 'planned'
+    if source_status is not None: verified.add('source-development')
+    if source_status == 'stalled':
+        alerts.append({'service': 'source-development', 'type': 'source_reload_stalled', 'severity': 'critical'})
     for name in config["permanentContainers"]:
         try:
             info=inspect(name); state=info["State"]
@@ -68,7 +104,10 @@ def diagnose(config, store, host):
     if watchdog.get("state") in {"credential_missing","failed"}:
         alerts.append({"service":"monitoring-workflow","type":watchdog["state"],"severity":"warning"})
     if planned:
-        suppressed={"app","ai-commerce-app","ai-commerce-frontend"}
+        suppressed={"app","ai-commerce-app"}
+        if legacy_planned: suppressed.add("ai-commerce-frontend")
+        elif containers.get("ai-commerce-app", {}).get("oomKilled"):
+            suppressed.discard("ai-commerce-app")
         alerts=[a for a in alerts if a["service"] not in suppressed]
         verified-=suppressed
     return {"observedAt":int(time.time()),"version":(store.active() or {}).get("version"),

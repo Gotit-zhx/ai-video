@@ -4,7 +4,8 @@
 
 | 文档 | 内容 |
 | --- | --- |
-| [rapid-delivery-20261110.md](rapid-delivery-20261110.md) | 小团队高频热修复：项目审查、真实耗时、文件发布选型与最短迁移顺序（新入口尚未实现） |
+| [source-development-20261111.md](source-development-20261111.md) | **当前方案**：小团队直接运行 Java/前端源码，本地隔离依赖与共享服务器安全热重启 |
+| [rapid-delivery-20261110.md](rapid-delivery-20261110.md) | **已被取代**：未实施的文件制品发布选型及当时测量，仅作决策历史 |
 | [apple.md](apple.md) | Apple 界面设计参考 |
 | [commerce-workflow-20260907.md](commerce-workflow-20260907.md) | 多店商品开发与运营工作流 — 第一阶段 |
 | [garment-surface-workflow-20260914.md](garment-surface-workflow-20260914.md) | 商品原图、三维印花与裂变流程 |

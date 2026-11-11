@@ -39,15 +39,8 @@ on:
         description: "可选：经源码树一致性验证的原生安装包业务提交"
         type: string
         required: false
-  # Code uploads are free of build side effects. An explicit build tag also
-  # works before this workflow has been merged into the default branch.
-  push:
-    tags:
-      - "hr-desktop-build-windows-v*"
-      - "hr-desktop-build-macos-v*"
-      - "hr-desktop-build-all-v*"
 concurrency:
-  group: hr-desktop-${{ github.ref }}-${{ inputs.platform || 'tag' }}-${{ inputs.nativeProbe || false }}
+  group: hr-desktop-${{ github.ref }}-${{ inputs.platform }}-${{ inputs.nativeProbe || false }}
   cancel-in-progress: true
 permissions:
   contents: write
@@ -57,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((inputs.platform == 'all' || startsWith(github.ref_name, 'hr-desktop-build-all-')) && '["windows-latest","macos-latest"]' || (inputs.platform == 'macos' || startsWith(github.ref_name, 'hr-desktop-build-macos-')) && '["macos-latest"]' || '["windows-latest"]') }}
+        os: ${{ fromJSON(inputs.platform == 'all' && '["windows-latest","macos-latest"]' || inputs.platform == 'macos' && '["macos-latest"]' || '["windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     defaults:
