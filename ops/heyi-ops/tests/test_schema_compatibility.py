@@ -27,6 +27,13 @@ class SchemaCompatibilityTest(unittest.TestCase):
     def test_actual_history_drift_is_never_overridden(self):
         with patch.object(self.host,'schema',return_value='changed'):
             with self.assertRaises(RuntimeError):self.host.compatible(self.target)
+    def test_verified_v150_append_admits_old_runtime_only_with_exact_reviewed_sql(self):
+        self.receipt.update(addedVersions=['150'],sqlSha256='a8dfff7b4f3b722e137dd7bc39aebc0a8b5df9201b75a29199dc55211e7c1e13')
+        self.save()
+        self.assertTrue(self.host.additive_compatibility(self.target,self.baseline))
+        for change in [{'sqlSha256':'unreviewed'}, {'addedVersions':['149','150']}, {'oldRuntimeRestartPassed':False}]:
+            original=copy.deepcopy(self.receipt);self.receipt.update(change);self.save()
+            self.assertFalse(self.host.additive_compatibility(self.target,self.baseline));self.receipt=original
     def test_missing_modified_or_unverified_receipt_is_rejected(self):
         self.path.unlink();self.assertFalse(self.host.additive_compatibility(self.target,self.baseline));self.save()
         self.path.write_text('{}');self.assertFalse(self.host.additive_compatibility(self.target,self.baseline))

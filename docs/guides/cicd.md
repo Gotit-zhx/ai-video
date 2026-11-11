@@ -105,6 +105,16 @@ Spring 门控必须包住业务回调，不能跳过底层 `RunnableScheduledFut
 
 验证入口为 `ops/heyi-ops/tests/test_schema_compatibility.py` 和隔离数据库 `FinanceAdSchemaMaintenanceIntegrationTest`；正式回执另记录当前容器、配置、账户/检查点保护及门控恢复结果。普通发布仍须满足完整下载/解包预算和 10 GiB 保护线。
 
+## V150 广告资金与归属维护
+
+店铺广告消耗工作台新增 V150，使用专用 `FinanceAdSpendSchemaMaintenance.java` 和 `finance_ad_spend_schema_maintenance.py`，不能套用 V148 工具。唯一允许的 SQL 为 `V150__finance_ad_spend_workspace.sql`，SHA-256 为 `a8dfff7b4f3b722e137dd7bc39aebc0a8b5df9201b75a29199dc55211e7c1e13`；当前维护只接受 V148 到 V150 的单条追加。V149 未进入本次代码，不补造迁移。V148 工具与既有回执继续保留。
+
+先完成候选来源证明和源码核验，独立安装并验收该候选的控制面；再由 root 在 `/opt/heyi/ops/schema-maintenance/<操作ID>/` 准备候选清单、精确 SQL、已核验 Java runner 和仅本次的输入。输入固定当前版本、应用容器 ID、清单及 runner 摘要。独立 systemd 主命令执行该候选目录内的 `finance_ad_spend_schema_maintenance.py <操作ID>`，`ExecStopPost` 追加 `--recover`，SSH 断开不终止维护。
+
+维护持双锁，门控并等待安全点，只创建三张新表；原迁移历史前缀、广告账户、官方店铺关系、同步状态、分页及上游限流摘要必须保留。旧应用实际重启、健康及旧 Flyway 校验通过后，才登记真实新 schema 指纹和兼容回执。已接受操作的恢复仅复核当前运行时，不重新迁移，也不把恢复后的正常业务变化与旧快照比较。失败或部分 DDL 不清库、不改校验和，保留待处理状态和必要门控。
+
+旧版本兼容判断仅新增允许准确 SQL 摘要的 `addedVersions=["150"]` 回执，仍要求原有四项保护/校验及历史、来源摘要完全匹配；不会为其他未来迁移开放通用例外。隔离验证入口为 `FinanceAdSpendSchemaIntegrationTest`、`test_ad_spend_schema_maintenance.py` 及 `test_schema_compatibility.py`。生产是否完成维护以独立回执为准。
+
 ## 监控、备份与权限
 
 本机每分钟巡检全部常驻容器、主应用、任务状态、备份、磁盘及 TLS。积压仅作为诊断数据，不能触发重启。有限自愈需连续三次失败、没有发布、数据库任务到达安全点且依赖正常；每个故障事件最多一次，同类尝试冷却至少 30 分钟。上线前保持关闭，故障演练通过后才启用。
