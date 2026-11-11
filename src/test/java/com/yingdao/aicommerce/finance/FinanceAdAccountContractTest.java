@@ -46,6 +46,7 @@ class FinanceAdAccountContractTest {
         });
         when(db.queryForList(anyString(),any(Object[].class))).thenAnswer(call->{
             String sql=call.getArgument(0);
+            if(sql.startsWith("SELECT checkpoint_json FROM finance_ad_bc_sync"))return List.of(new LinkedHashMap<String,Object>());
             return sql.startsWith("SELECT advertiser_id,name,shop_id,currency")?new ArrayList<>(saved):List.of();
         });
         when(db.update(anyString(),any(Object[].class))).thenAnswer(call->{

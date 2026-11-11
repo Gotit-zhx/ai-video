@@ -340,7 +340,15 @@ public class FinanceRepository {
             }
             if(number(row.get("known_amounts"))==0)row.put("amount",null);
         }
-        return buckets.stream().filter(row->number(row.get("records"))>0).toList();
+        var corrections=FinanceFxDates.ledger(this,s,f);
+        if(advertising!=null&&!corrections.isEmpty()){
+            var revised=FinanceFxDates.split(advertising,corrections.stream().filter(FinanceAdvertisingReport::includes).toList(),
+                FinanceFxDates.LEDGER_KEYS,FinanceFxDates.LEDGER_SUMS,"records","fx_date");
+            advertising.clear();advertising.addAll(revised);
+        }
+        return FinanceFxDates.split(buckets.stream().filter(row->number(row.get("records"))>0).toList(),
+            corrections.stream().filter(row->number(row.get("fx_operating"))==1).toList(),
+            FinanceFxDates.LEDGER_KEYS,FinanceFxDates.LEDGER_SUMS,"records","fx_date");
     }
     /** Daily groups are disjoint across windows. Bound the MySQL aggregate's working
      * set without increasing global memory or spilling a whole month to disk.
@@ -450,13 +458,13 @@ public class FinanceRepository {
     List<Map<String,Object>> settledOrderBuckets(Scope s,Filter f,String kind){
         var q=query(s,f,"r");
         return db.queryForList("""
-            SELECT o.shop_id,r.record_date,o.kind,o.currency,'' category,
+            SELECT o.shop_id,r.record_date,o.record_date fx_date,o.kind,o.currency,'' category,
               CASE WHEN o.kind='ORDER' THEN o.status ELSE '' END status,
               COUNT(*) records,COUNT(o.amount) known_amounts,COUNT(o.revenue) known_revenues,
               SUM(o.amount) amount,SUM(o.revenue) revenue,SUM(o.impressions) impressions,
               SUM(o.clicks) clicks,SUM(o.conversions) conversions
             """+settledOrderRelation(s,f,kind,true)
-                +" GROUP BY o.shop_id,r.record_date,o.kind,o.currency,CASE WHEN o.kind='ORDER' THEN o.status ELSE '' END",q.args().toArray());
+                +" GROUP BY o.shop_id,r.record_date,o.record_date,o.kind,o.currency,CASE WHEN o.kind='ORDER' THEN o.status ELSE '' END",q.args().toArray());
     }
     Map<String,Object> settledOrderDetails(Scope s,Filter f,String kind,int page,int size,String numbers){
         var q=FinanceRecordSearch.apply(query(s,f,"r"),"o",numbers,false);
@@ -533,10 +541,10 @@ public class FinanceRepository {
     }
     public List<Map<String,Object>> hourlyOrders(Scope s,Filter f){
         var q=query(s,f);
-        return db.queryForList("SELECT shop_id,currency,FLOOR(CAST(JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$.create_time')) AS UNSIGNED)/3600) utc_hour,"
+        return db.queryForList("SELECT shop_id,record_date fx_date,currency,FLOOR(CAST(JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$.create_time')) AS UNSIGNED)/3600) utc_hour,"
                 +"SUM(amount) amount,COUNT(amount) paid_count FROM finance_records WHERE "+q.where
                 +" AND "+FinanceOrderCharges.normalOrder("finance_records")+" AND kind='ORDER' AND JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$.create_time')) REGEXP '^[0-9]{10}$'"
-                +" GROUP BY shop_id,currency,utc_hour ORDER BY utc_hour",q.args.toArray());
+                +" GROUP BY shop_id,record_date,currency,utc_hour ORDER BY utc_hour",q.args.toArray());
     }
     public List<Map<String,Object>> recentOrders(Scope s,Filter f){
         var q=query(s,f);
@@ -588,5 +596,27 @@ public class FinanceRepository {
         if(partial)row.put("difference",null);
         var d=decimal(row.get("difference"));
         row.put("result",partial?"PARTIAL":d==null?"MISSING":d.signum()==0?"MATCHED":"DIFFERENCE");
+    }
+    /** Kept out of native reconciliation; CNY readers need each underlying transaction's own date. */
+    void reconciliationFxDays(Scope scope,List<Map<String,Object>> bills){
+        for(int start=0;start<bills.size();start+=200){
+            var batch=bills.subList(start,Math.min(start+200,bills.size()));
+            var conditions=new ArrayList<String>();var args=new ArrayList<Object>();args.add(scope.organizationId());
+            var wanted=new HashMap<List<String>,List<Map<String,Object>>>();
+            for(var bill:batch){
+                String shop=text(bill.get("shop_id")),statement=text(bill.get("external_id")),currency=text(bill.get("currency"));
+                conditions.add("(shop_id=? AND statement_id=? AND currency=?)");Collections.addAll(args,shop,statement,currency);
+                wanted.put(List.of(shop,statement,currency),new ArrayList<>());
+            }
+            if(conditions.isEmpty())continue;
+            String fxDate="COALESCE("+FinanceFxDates.trustedDate("finance_records")+",CASE WHEN JSON_EXTRACT(raw_json,'$._finance_reporting_month') IS NULL THEN record_date END)";
+            for(var part:db.queryForList("SELECT shop_id,statement_id,currency,"+fxDate+" fx_date,SUM(amount) amount,COUNT(*) records,COUNT(amount) known_amounts"
+                +" FROM finance_records WHERE organization_id=? AND kind='SETTLEMENT' AND source='API' AND ("+String.join(" OR ",conditions)+")"
+                +" GROUP BY shop_id,statement_id,currency,fx_date",args.toArray())){
+                var target=wanted.get(List.of(text(part.get("shop_id")),text(part.get("statement_id")),text(part.get("currency"))));
+                if(target!=null)target.add(part);
+            }
+            for(var bill:batch)bill.put("_fx_detail_daily",wanted.get(List.of(text(bill.get("shop_id")),text(bill.get("external_id")),text(bill.get("currency")))));
+        }
     }
 }

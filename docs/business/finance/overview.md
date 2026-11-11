@@ -46,11 +46,13 @@
 
 “原币 / 人民币 ¥”一键切换常规看板、图表、明细及支持换算的导出。费用矩阵「全体导出」始终按原币分工作表，不受该开关影响；商品成本及刷单费中的 CNY 字段保留其原有人民币口径。原币模式按单一币种统计；人民币模式可把不同币种分别换算后汇总。原始账单永不被改写。
 
-参考汇率来源：ExchangeRate-API 免费接口 `https://open.er-api.com/v6/latest/CNY`，页面及导出提供来源链接。将以 CNY 为基准的报价取倒数，得到每一单位原币对应的 CNY。使用 BigDecimal 计算，换算金额保留六位用于汇总，页面显示两位。
+历史参考汇率固定使用 ECB 公布数据，经 Frankfurter v2 获取。每笔订单或待结算按店铺当地原下单日、退款按原退款发生日、账单/结算/平台费用按可信官方结算日、广告按账户报表日换算。商品及贴单成本由人民币转原币时按首次实际结算业务日处理；筛选归属日期与 `fx_date` 分开保留。只有月份归属而真实日期未核实的记录不能使用月初锚点代替业务日。
 
-每天缓存一个参考快照。外部服务故障时最多使用三天内快照，并显示汇率日期；没有可用汇率或某币种缺失时明确报错，绝不只换算部分金额后冒充总额。刷新按钮重新选取可用快照；翻页及导出固定使用当前看板快照。
+先按每笔业务日换算，再汇总到店铺、分组、趋势和总额；不能用月度总额乘单一汇率。以 EUR 为共同基准，`1 外币兑 CNY = EUR→CNY / EUR→外币`，使用 BigDecimal，金额保留六位用于汇总、页面显示两位。非公布日使用不晚于业务日的最近已核验公布日。非零金额缺历史价时保留已知部分及未知状态，不以当前行情或零值补齐；明确数值零仍为零。原币事实和原币对账状态不改写，人民币差额可能包含各自业务日期汇率影响。
 
-采用同一参考汇率重述所选时期的金额，**不等同历史交易汇率、银行结汇金额或人民币会计账簿**。原币对账结果不受人民币四舍五入影响。
+同一查询、分页、下钻和导出沿用冻结的历史汇率快照，允许补入尚未覆盖的业务日，已经使用的日期与汇率不变。原币报表若涉及人民币成本换算，也携带同一快照。CSV 强制保留来源、业务日及公布日；XLSX 另有实际使用的历史汇率证据页。V151 单独保存历史率和快照，旧参考率快照表继续保留，不用于新历史报表。
+
+财务总览「当前参考汇率」卡独立读取 `/api/v1/finance/fx/market`，展示最近公布日、获取时间、来源与 `1 外币 = x CNY`。这是每日参考行情，不是秒级成交价或银行实际结汇价。刷新行情不改变当前历史金额；当前行情失败时显示异常或上次参考值，历史已核验缓存仍可使用。
 
 ## 官方接口与口径
 
@@ -158,6 +160,7 @@ GMV Max 需在广告账户连接弹窗填写可选的广告平台店铺 ID（不
 - TikTok 广告授权：`https://business-api.tiktok.com/portal/docs?id=1738373141733378`
 - TikTok 官方 OAuth SDK：`https://github.com/tiktok/tiktok-business-api-sdk/blob/main/java_sdk/docs/AuthenticationApi.md`
 - Shopee Open Platform：`https://open.shopee.com/developer-guide`
-- 参考汇率说明：`https://www.exchangerate-api.com/docs/free`
+- 历史参考率：`https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html`
+- Frankfurter v2：`https://frankfurter.dev/`
 
 实时大屏视觉参考：阿里云 DataV 官方模板库中的“双11网店销售看板”，采用醒目的成交主数字、暖白卡片、橙红与金色重点；未复制模板图片或示例数据。官方模板库：`https://cn.aliyun.com/activity/intelligent/datav-showcase`。

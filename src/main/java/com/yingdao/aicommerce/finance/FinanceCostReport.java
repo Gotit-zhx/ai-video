@@ -117,8 +117,8 @@ public final class FinanceCostReport {
     /** Read first-settled orders and their cost snapshots once for every dashboard metric. */
     List<Map<String,Object>> dashboardFacts(Scope scope,Filter filter){
         var q=repo.query(scope,filter,"r");
-        return repo.jdbc().queryForList("""
-            SELECT r.shop_id,r.record_date,r.currency settlement_currency,o.currency,'ORDER' kind,'' category,
+        var facts=repo.jdbc().queryForList("""
+            SELECT r.shop_id,r.record_date,o.record_date fx_date,r.currency settlement_currency,o.currency,'ORDER' kind,'' category,
               o.status,COUNT(o.id) records,COUNT(o.amount) known_amounts,COUNT(o.revenue) known_revenues,
               SUM(o.amount) amount,SUM(o.revenue) revenue,SUM(o.impressions) impressions,
               SUM(o.clicks) clicks,SUM(o.conversions) conversions,
@@ -130,7 +130,9 @@ public final class FinanceCostReport {
             LEFT JOIN finance_order_costs c ON c.order_record_id=o.id
             LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=o.id
             """+FinanceLabelCosts.join("r.organization_id","r.shop_id","r.order_id")+" WHERE "+firstSettlement("r",true)+" AND "+q.where()
-                +" GROUP BY r.shop_id,r.record_date,r.currency,o.currency,o.status",q.args().toArray());
+                +" GROUP BY r.shop_id,r.record_date,o.record_date,r.currency,o.currency,o.status",q.args().toArray());
+        var sums=new LinkedHashSet<>(FinanceFxDates.LEDGER_SUMS);sums.addAll(COST_SUMS);sums.add("amount_cny");
+        return FinanceFxDates.split(facts,FinanceFxDates.costs(repo,scope,filter,"SETTLED_ORDER"),FinanceFxDates.COST_KEYS,new ArrayList<>(sums),"order_count","cost_fx_date");
     }
     Map<String,Object> dashboardSummary(Scope scope,Filter filter,List<Map<String,Object>> facts){
         var byShop=new LinkedHashMap<String,Map<String,Object>>();
@@ -145,6 +147,76 @@ public final class FinanceCostReport {
         return result;
     }
     static final List<String> COST_SUMS=List.of("order_count","missing_order_count","excluded_count","ready_count","actual_count","estimated_count","pending_count","queued_count","product_queued_count","label_queued_count","known_amount_cny","pending_known_amount_cny","label_cost_cny","charges_pending","label_matched_count","label_missing_count");
+    /** Costs stay CNY facts; the display projection uses each order's first settlement day. */
+    static void displayAmounts(Map<String,Object> summary,List<Map<String,Object>> daily,String currency,FinanceFx.Quote quote){
+        String target=currency==null||currency.isBlank()?"CNY":currency;
+        if(quote!=null)quote.preload(daily.stream().map(FinanceCostReport::costDate).filter(Objects::nonNull).toList());
+        var perShop=new HashMap<String,List<Map<String,Object>>>();daily.forEach(row->perShop.computeIfAbsent(text(row.get("shop_id")),k->new ArrayList<>()).add(row));
+        for(var row:rows(summary.get("shops")))displayCostRow(row,perShop.getOrDefault(text(row.get("shop_id")),List.of()),target,quote);
+        displayCostRow(map(summary.get("total")),daily,target,quote);summary.put("displayCurrency",target);
+        if(quote!=null)summary.put("fx",quote.metadata());
+    }
+    private static void displayCostRow(Map<String,Object> out,List<Map<String,Object>> daily,String currency,FinanceFx.Quote quote){
+        BigDecimal known=BigDecimal.ZERO,labels=BigDecimal.ZERO;boolean complete=true,labelComplete=true;
+        if("CNY".equals(currency)){
+            known=decimal(out.get("known_amount_cny"));labels=decimal(out.get("label_cost_cny"));
+            if(labels==null)labels=BigDecimal.ZERO;
+        }else{
+            if(daily.isEmpty()&&(decimal(out.get("known_amount_cny"))!=null&&decimal(out.get("known_amount_cny")).signum()!=0
+                ||decimal(out.get("label_cost_cny"))!=null&&decimal(out.get("label_cost_cny")).signum()!=0)){complete=false;labelComplete=false;}
+            for(var row:daily){
+                java.time.LocalDate date=costDate(row);
+                BigDecimal product=decimal(row.get("known_amount_cny")),label=decimal(row.get("label_cost_cny"));
+                BigDecimal productDisplay=product==null?null:product.signum()==0?BigDecimal.ZERO:quote==null?null:quote.fromCny(product,currency,date);
+                BigDecimal labelDisplay=label==null?null:label.signum()==0?BigDecimal.ZERO:quote==null?null:quote.fromCny(label,currency,date);
+                if(productDisplay==null&&product!=null)complete=false;else if(productDisplay!=null)known=known.add(productDisplay);
+                if(labelDisplay==null&&label!=null)labelComplete=false;else if(labelDisplay!=null)labels=labels.add(labelDisplay);
+            }
+        }
+        out.put("currency",currency);out.put("known_display_amount",known);
+        out.put("display_amount",complete&&out.get("amount_cny")!=null?known:null);
+        out.put("known_label_display_amount",labels);out.put("label_display_amount",labelComplete?labels:null);
+        out.put("fx_complete",complete&&labelComplete);out.put("display_basis","人民币成本按每笔订单首次结算归属日的历史参考率换算后合计");
+    }
+    private static java.time.LocalDate costDate(Map<String,Object> row){
+        Object value=row.containsKey("cost_fx_date")?row.get("cost_fx_date"):row.get("record_date");
+        try{return value==null?null:java.time.LocalDate.parse(text(value).substring(0,10));}catch(RuntimeException invalid){return null;}
+    }
+    Map<String,Object> displaySummary(Scope scope,Filter filter,String kind,String currency,FinanceFx.Quote quote){
+        if("CNY".equals(currency)){
+            var nativeResult=summary(scope,filter,kind);displayAmounts(nativeResult,List.of(),currency,quote);return nativeResult;
+        }
+        String selected=scopeKind(kind,false);var q=repo.query(scope,filter,"r");
+        var data=repo.readSnapshot(180,()->{
+            var nativeRows=repo.aggregateWindows(filter,q,"r.record_date",1,part->
+            repo.jdbc().queryForList("SELECT x.shop_id,x.settlement_date record_date,"+AGGREGATE+" FROM ("+related(selected)+part.where()+") x"
+                +" LEFT JOIN finance_order_costs c ON c.order_record_id=x.order_record_id"
+                +" LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=x.order_record_id"
+                +FinanceLabelCosts.join("x.organization_id","x.shop_id","x.reference")+" GROUP BY x.shop_id,x.settlement_date",part.args().toArray()));
+            return Map.of("native",nativeRows,"corrected",FinanceFxDates.costs(repo,scope,filter,selected));
+        });
+        // Cost sums are not ledger monetary fields; fold their small correction relation explicitly.
+        var costCorrections=new LinkedHashMap<List<Object>,Map<String,Object>>();
+        for(var row:data.get("corrected")){
+            var key=Arrays.<Object>asList(text(row.get("shop_id")),text(row.get("record_date")),row.get("cost_fx_date"));
+            var target=costCorrections.computeIfAbsent(key,k->{
+                var copy=new LinkedHashMap<String,Object>();copy.put("shop_id",row.get("shop_id"));copy.put("record_date",row.get("record_date"));copy.put("cost_fx_date",row.get("cost_fx_date"));return copy;
+            });
+            for(String field:COST_SUMS){var value=decimal(row.get(field));if(value!=null)target.merge(field,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));}
+        }
+        costCorrections.values().forEach(row->row.put("amount_cny",number(row.get("pending_count"))==0?row.get("known_amount_cny"):null));
+        var costFields=new ArrayList<>(COST_SUMS);costFields.add("amount_cny");
+        var daily=FinanceFxDates.split(data.get("native"),new ArrayList<>(costCorrections.values()),List.of("shop_id","record_date"),costFields,"order_count","cost_fx_date");
+        var byShop=new LinkedHashMap<String,Map<String,Object>>();
+        for(var row:daily){
+            var target=byShop.computeIfAbsent(text(row.get("shop_id")),key->new LinkedHashMap<>(Map.of("shop_id",key)));
+            for(String field:COST_SUMS){var value=decimal(row.get(field));if(value!=null)target.merge(field,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));}
+        }
+        byShop.values().forEach(row->row.put("amount_cny",number(row.get("pending_count"))==0?row.get("known_amount_cny"):null));
+        var result=summary(scope,selected,new ArrayList<>(byShop.values()));
+        if("SETTLED_ORDER".equals(selected))new FinanceActualCosts(repo).attachReturns(scope,filter,result);
+        displayAmounts(result,daily,currency,quote);return result;
+    }
     private Map<String,Object> summary(Scope scope,String kind,FinanceRepository.Query q){
         String selected=text(kind).toUpperCase(Locale.ROOT);
         return summary(scope,selected,summaryRows(selected,q));

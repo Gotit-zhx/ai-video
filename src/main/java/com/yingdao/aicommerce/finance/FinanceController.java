@@ -45,6 +45,9 @@ public class FinanceController {
         catch(java.time.format.DateTimeParseException e){throw bad("日期格式不正确");}
     }
     @GetMapping("/overview") public ApiResponse<?> overview(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(service.dashboard(s(p),filter(q),"CNY".equals(q.get("displayCurrency")),q.get("fxSnapshot")));}
+    @GetMapping("/fx/market") public ApiResponse<?> market(@AuthenticationPrincipal PlatformPrincipal p){
+        s(p);return ApiResponse.ok(service.exchangeRates().market());
+    }
     @PostMapping("/screen") public ApiResponse<?> screen(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(service.screen(s(p),filter(q),"CNY".equals(q.get("displayCurrency")),q.get("fxSnapshot")));}
     @GetMapping("/shops") public ApiResponse<?> shops(@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(Map.of("items",service.shops(s(p)),"sync",service.syncStates(s(p)),"groups",service.groups(s(p)),"deletions",service.deletions(s(p))));}
     record ShopConfig(boolean enabled,String currency,String timezone,String groupId,String alias){}
@@ -88,7 +91,7 @@ public class FinanceController {
                 &&(!sharedCostScope||!"false".equals(q.get("includeProductCosts"))))
             result.put("productCosts",new FinanceCostReport(repo).summary(s(p),filter(q),q.get("kind")));
         if("CNY".equals(q.get("displayCurrency"))){
-            var quote=service.exchangeRates().quote(q.get("fxSnapshot"));
+            var quote=service.exchangeRates().historical(q.get("fxSnapshot"),selected.start(),selected.end());
             service.exchangeRates().enrich(rows(result.get("items")),quote);if(allOrders)result.put("fx",quote.metadata());
         }
         return ApiResponse.ok(result);
@@ -100,7 +103,7 @@ public class FinanceController {
     }
     @GetMapping("/records/{id}") public ApiResponse<?> record(@PathVariable("id") String id,@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var row=repo.detail(s(p),id,"ALL".equals(q.get("orderScope")));
-        if("CNY".equals(q.get("displayCurrency")))service.exchangeRates().enrich(List.of(row),service.exchangeRates().quote(q.get("fxSnapshot")));
+        if("CNY".equals(q.get("displayCurrency")))service.exchangeRates().enrich(List.of(row),service.exchangeRates().historical(q.get("fxSnapshot"),java.util.stream.Stream.of(FinanceFx.businessDate(row)).filter(Objects::nonNull).toList()));
         return ApiResponse.ok(row);
     }
     @GetMapping("/reconciliation") public ApiResponse<?> reconciliation(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
@@ -111,7 +114,11 @@ public class FinanceController {
         int page=(int)Math.min(Integer.MAX_VALUE,Math.max(1,number(q.getOrDefault("page","1"))));
         var result=new LinkedHashMap<>(repo.reconciliationPage(scope,selected,page,50,q.get("numbers")));
         result.putAll(context);result.put("fieldSettings",fields.settings(personal(p),"RECONCILIATION"));
-        if(cny)service.exchangeRates().enrich(rows(result.get("items")),service.exchangeRates().quote(text(map(context.get("fx")).get("id"))));
+        if(cny){
+            repo.reconciliationFxDays(scope,rows(result.get("items")));
+            var quote=service.exchangeRates().historical(text(map(context.get("fx")).get("id")),requested.start(),requested.end());
+            service.exchangeRates().enrich(rows(result.get("items")),quote);result.put("fx",quote.metadata());
+        }
         return ApiResponse.ok(result);
     }
     @GetMapping("/fields/{view}") public ApiResponse<?> fields(@PathVariable("view") String view,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(fields.settings(personal(p),view));}
@@ -149,9 +156,15 @@ public class FinanceController {
         String view=FinanceFields.view(q.getOrDefault("view",q.get("kind")));
         boolean advertisingOnly=advertisingOnly(q,view);
         boolean rec=view.equals("RECONCILIATION"),cny="CNY".equals(q.get("displayCurrency"));
-        FinanceFx.Quote quote=cny?service.exchangeRates().quote(q.get("fxSnapshot")):null;
+        FinanceFx.Quote quote=cny?service.exchangeRates().historical(q.get("fxSnapshot"),f.start(),f.end()):null;
         boolean allOrders=allOrders(q,view);
         var columns=exportColumns(fields.selected(personal(p),view,true,cny));
+        if(cny){
+            var evidenceColumns=new ArrayList<>(columns);
+            for(var field:FinanceFields.catalog(view))if(Set.of("fx_business_date","fx_rate_date","fx_provider").contains(field.id())
+                &&evidenceColumns.stream().noneMatch(existing->existing.id().equals(field.id())))evidenceColumns.add(field);
+            columns=evidenceColumns;
+        }
         if(allOrders){
             columns=new ArrayList<>(columns.stream().map(field->field.id().equals("record_date")
                     ?new FinanceFields.Field(field.id(),"下单日期（店铺时区）",field.type(),field.group(),field.cny(),field.views(),field.path()):field).toList());
@@ -197,10 +210,12 @@ public class FinanceController {
                 appendReconciliation(rr,rc,s,f,quote,q.get("numbers"));sheets.put("结算对账",rr);
             }
             if(cny){
-                var rateRows=new ArrayList<List<String>>();rateRows.add(List.of("原币","参考汇率"));
-                quote.rates().forEach((currency,rate)->rateRows.add(List.of(currency,rate.toPlainString())));
-                rateRows.add(List.of("汇率时间",quote.time().toString()));rateRows.add(List.of("汇率来源","ExchangeRate-API · https://www.exchangerate-api.com"));
-                rateRows.add(List.of("换算口径","同一参考汇率折算展示，不是历史结汇金额；原币账单不变"));sheets.put("人民币汇率快照",rateRows);
+                var rateRows=new ArrayList<List<String>>();rateRows.add(List.of("业务日期","汇率公布日期","原币","历史参考汇率","来源"));
+                for(var rate:quote.evidence())rateRows.add(List.of(text(rate.get("businessDate")),text(rate.get("rateDate")),text(rate.get("currency")),text(rate.get("rate")),text(rate.get("provider"))));
+                rateRows.add(List.of("冻结快照",quote.id()));rateRows.add(List.of("换算口径",FinanceFx.BASIS));
+                rateRows.add(List.of("缺少历史汇率日期",text(quote.metadata().get("missingDates"))));
+                rateRows.add(List.of("对账人民币差额","账单和每笔交易分别按自身业务日换算，可能包含汇率日期影响；原币对账状态不变"));
+                sheets.put("人民币历史汇率",rateRows);
             }
             bytes=FinanceWorkbook.xlsx(sheets);
         }
@@ -225,7 +240,7 @@ public class FinanceController {
     void appendReconciliation(List<List<String>> rows,List<FinanceFields.Field> columns,Scope s,Filter f,FinanceFx.Quote quote,String numbers){
         var items=repo.reconciliation(s,f,100001,numbers);
         if(items.size()>100000)throw bad("对账导出超过 100,000 张账单，请缩小日期或店铺范围");
-        if(quote!=null)service.exchangeRates().enrich(items,quote);
+        if(quote!=null){repo.reconciliationFxDays(s,items);service.exchangeRates().enrich(items,quote);}
         var names=exportShopNames(s);
         for(var item:items){item.put("shop_name",names.getOrDefault(text(item.get("shop_id")),""));rows.add(columns.stream().map(field->FinanceFields.cell(item,field)).toList());}
     }

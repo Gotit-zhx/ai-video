@@ -206,7 +206,7 @@ public class FinanceService {
         result.put("currencies",currencies);result.put("shops",shops(s));result.put("groups",groups(s));result.put("sync",syncStates(s,requested));
         result.put("dateBasis",FinanceCalendar.contract());
         result.put("dateWindows",FinanceCalendar.windows(requested,rows(result.get("shops"))));
-        if(cny)result.put("fx",fx.quote(snapshotId).metadata());
+        if(cny)result.put("fx",fx.historical(snapshotId,requested.start(),requested.end()).metadata());
         result.put("productCosts",new FinanceCostReport(repo).summary(s,new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),currency,requested.granularity(),requested.groupId()),"RECONCILIATION"));
         return result;
     }
@@ -225,15 +225,14 @@ public class FinanceService {
         Filter f=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),currency,requested.granularity(),requested.groupId());
         var ranking=allRanking.stream().filter(r->currency.isBlank()||currency.equals(text(r.get("currency")))).toList();
         List<Map<String,Object>> totals=nativeTotals(ranking);
-        FinanceFx.Quote quote=cny?fx.quote(snapshotId):null;
-        if(cny)totals=FinanceFx.groups(totals,quote,"kind");
+        FinanceFx.Quote quote=cny?fx.historical(snapshotId,requested.start(),requested.end()):null;
+        if(cny)totals=FinanceFx.groups(buckets.stream().filter(r->currency.isBlank()||currency.equals(text(r.get("currency")))).toList(),quote,"kind");
         LinkedHashMap<String,Map<String,Object>> points=new LinkedHashMap<>();
         for(LocalDate d=f.start();!live&&!d.isAfter(f.end());d=d.plusDays(1)){
             String key=bucket(d,trendGranularity);points.computeIfAbsent(key,k->{var m=new LinkedHashMap<String,Object>();m.put("period",k);return m;});
         }
         var selected=buckets.stream().filter(r->currency.isBlank()||currency.equals(text(r.get("currency")))).toList();
-        var daily=live?List.<Map<String,Object>>of():aggregate(selected,"record_date","kind");
-        if(cny)daily=FinanceFx.groups(daily,quote,"record_date","kind");
+        var daily=live?List.<Map<String,Object>>of():cny?FinanceFx.groups(selected,quote,"record_date","kind"):aggregate(selected,"record_date","kind");
         daily=FinanceProfitReport.withGross(daily,"record_date");
         var incompletePoints=new HashSet<String>();
         for(var row:daily){
@@ -241,6 +240,7 @@ public class FinanceService {
             var point=points.get(key);String kind=text(row.get("kind"));if(point==null)continue;
             BigDecimal value=Set.of("SETTLEMENT","BILL").contains(kind)?FinanceProfitReport.goods(row):decimal(row.get("amount"));if(value!=null)point.merge(kind,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));
             if(Set.of("SETTLEMENT","BILL").contains(kind)&&value==null)incompletePoints.add(key+"\0"+kind);
+            if(cny&&Boolean.FALSE.equals(row.get("fx_complete")))incompletePoints.add(key+"\0"+kind);
             BigDecimal gross=decimal(row.get("settled_gross_amount"));if(gross!=null)point.merge("SETTLEMENT_GROSS",gross,(a,b)->((BigDecimal)a).add((BigDecimal)b));
             point.merge(kind+"_count",number(row.get("records")),(a,b)->(Long)a+(Long)b);
         }
@@ -257,18 +257,24 @@ public class FinanceService {
         out.put("dateWindows",FinanceCalendar.windows(f,rows(out.get("shops"))));
         var fees=live?List.<Map<String,Object>>of():aggregate(selected.stream().filter(r->"FEE".equals(r.get("kind"))).toList(),"category","kind");
         var statuses=aggregate(selected.stream().filter(r->"ORDER".equals(r.get("kind"))).toList(),"status","kind");
-        out.put("ranking",FinanceProfitReport.withGross(cny?FinanceFx.groups(ranking,quote,"shop_id","kind"):ranking,"shop_id"));
-        out.put("fees",(cny?FinanceFx.groups(fees,quote,"category","kind"):fees).stream().filter(r->"FEE".equals(r.get("kind"))).toList());
-        out.put("statuses",cny?FinanceFx.groups(statuses,quote,"status","kind"):statuses);out.put("sync",syncStates(s,requested));
+        out.put("ranking",FinanceProfitReport.withGross(cny?FinanceFx.groups(selected,quote,"shop_id","kind"):ranking,"shop_id"));
+        out.put("fees",(cny?FinanceFx.groups(selected.stream().filter(r->"FEE".equals(r.get("kind"))).toList(),quote,"category","kind"):fees).stream().filter(r->"FEE".equals(r.get("kind"))).toList());
+        out.put("statuses",cny?FinanceFx.groups(selected.stream().filter(r->"ORDER".equals(r.get("kind"))).toList(),quote,"status","kind"):statuses);out.put("sync",syncStates(s,requested));
         out.put("updatedAt",Instant.now().toString());
         var productCosts=costReport.dashboardSummary(s,f,rows(facts.get("orders")));
         productCosts.put("labelConfiguration",new FinanceOrderCharges(repo).labelConfiguration(s,rows(out.get("shops")),rows(productCosts.get("shops"))));
         out.put("productCosts",productCosts);
         FinanceFx.Quote profitQuote=quote;
-        if(!cny&&!"CNY".equals(currency)&&(decimal(map(productCosts.get("total")).get("known_amount_cny")).signum()!=0||decimal(map(productCosts.get("total")).get("label_cost_cny")).signum()!=0||decimal(map(productCosts.get("total")).get("return_cost_cny")).signum()!=0)&&fx!=null){
-            try{profitQuote=fx.quote(snapshotId);}catch(RuntimeException unavailable){/* Native-currency ledger stays available when a reference quote is unavailable. */}
+        boolean costConversionNeeded=rows(facts.get("orders")).stream()
+            .filter(row->currency.isBlank()||currency.equals(text(row.get("settlement_currency"))))
+            .anyMatch(row->java.util.stream.Stream.of(row.get("known_amount_cny"),row.get("label_cost_cny"))
+                .map(FinanceData::decimal).filter(Objects::nonNull).anyMatch(amount->amount.signum()!=0));
+        if(!cny&&!"CNY".equals(currency)&&costConversionNeeded&&fx!=null){
+            try{profitQuote=fx.historical(snapshotId,requested.start(),requested.end());}catch(RuntimeException unavailable){/* Native-currency ledger stays available when a reference quote is unavailable. */}
         }
+        FinanceCostReport.displayAmounts(productCosts,rows(facts.get("orders")).stream().filter(row->currency.isBlank()||currency.equals(text(row.get("settlement_currency")))).toList(),cny?"CNY":currency,profitQuote);
         out.put("profit",FinanceProfitReport.calculate(totals,productCosts,cny?"CNY":currency,profitQuote));
+        if(profitQuote!=null)out.put("fx",profitQuote.metadata());
         out.put("basis","销售收入已扣除商家优惠和退款；平台佣金、物流、税费及调整另列，不重复扣减。"
                 +(live?"实时订单按下单日显示；销售收入与成本按结算账单日期。":"日期筛选按对应官方报表：TikTok 本土店按当地余额入账日，跨境店按 Statement Date，Shopee 按当地实际收入释放日。订单、关联退款和商品成本按首次结算账单日期归属，不限制下单月份。")
                 +"已核对的 TikTok 账单日期优先于历史手工月份校正，原始平台时间保留。"
@@ -318,7 +324,7 @@ public class FinanceService {
         return rows.stream().map(row->{
             var copy=new LinkedHashMap<String,Object>(row);
             // JDBC calendar dates must survive Redis as ISO dates, not epoch milliseconds.
-            if(row.get("record_date")!=null)copy.put("record_date",text(row.get("record_date")));
+            for(String date:List.of("record_date","fx_date","source_record_date"))if(row.get(date)!=null)copy.put(date,text(row.get(date)));
             return (Map<String,Object>)copy;
         }).toList();
     }
@@ -378,16 +384,19 @@ public class FinanceService {
             """,s.organizationId(),requested.shopId(),requested.shopId(),requested.platform(),requested.platform(),requested.groupId(),requested.groupId(),requested.groupId());
         var out=buildDashboard(s,requested,cny,snapshotId,true);
         var f=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),text(map(out.get("filters")).get("currency")),"day",requested.groupId());
-        FinanceFx.Quote quote=cny?fx.quote(text(map(out.get("fx")).get("id"))):null;
+        FinanceFx.Quote quote=cny?fx.historical(text(map(out.get("fx")).get("id")),requested.start(),requested.end()):null;
         var shops=rows(out.get("shops"));var hourly=new LinkedHashMap<Integer,Map<String,Object>>();
         for(int h=0;h<24;h++)hourly.put(h,new LinkedHashMap<>(Map.of("hour",String.format("%02d:00",h))));
+        var missingHours=new HashSet<Integer>();
         for(var row:repo.hourlyOrders(s,f)){
             String zone=shops.stream().filter(shop->Objects.equals(shop.get("id"),row.get("shop_id"))).map(shop->text(shop.get("timezone"))).findFirst().orElse("UTC");
             int hour=Instant.ofEpochSecond(number(row.get("utc_hour"))*3600).atZone(ZoneId.of(zone)).getHour();
-            var point=hourly.get(hour);BigDecimal amount=cny?quote.convert(row.get("amount"),text(row.get("currency"))):decimal(row.get("amount"));
+            var point=hourly.get(hour);BigDecimal amount=cny?quote.convert(row.get("amount"),text(row.get("currency")),FinanceFx.businessDate(row)):decimal(row.get("amount"));
             if(amount!=null)point.merge("amount",amount,(a,b)->((BigDecimal)a).add((BigDecimal)b));
+            else if(cny&&row.get("amount")!=null)missingHours.add(hour);
             point.merge("count",number(row.get("paid_count")),(a,b)->(Long)a+(Long)b);
         }
+        for(int hour:missingHours){var point=hourly.get(hour);point.put("known_amount",point.get("amount"));point.put("amount",null);}
         out.put("hourly",new ArrayList<>(hourly.values()));
         var recent=repo.recentOrders(s,f);if(cny)fx.enrich(recent,quote);out.put("recent",recent);
         out.put("refreshSeconds",15);out.put("orderSyncTargetSeconds",60);

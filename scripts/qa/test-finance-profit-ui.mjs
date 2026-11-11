@@ -32,7 +32,7 @@ assert.equal(d.querySelectorAll('.fi-metric').length,6);assert(d.querySelector('
 assert.equal(d.querySelector('.fi-pills [aria-pressed="true"]').textContent,'人民币 ¥');
 assert.equal(d.querySelector('select[aria-label="原币"]').value,'');
 assert([...d.querySelectorAll('.fi-metric-value small')].every(n=>n.textContent==='CNY'));
-assert.deepEqual([...d.querySelectorAll('.fi-metric-label>span:first-child')].map(n=>n.textContent),['销售收入','已结算订单金额','已结算平台费用','广告费用','营业成本','利润额']);
+assert.deepEqual([...d.querySelectorAll('.fi-metric-label>span:first-child')].map(n=>n.textContent),['销售收入','已结算订单金额','已结算平台费用','广告费用（已入账）','营业成本','利润额']);
 assert(metric('ORDER').querySelector('.fi-metric-note').textContent.includes('原订单金额合计，按首次结算日期归属；非平台净结算，不参与利润计算。'));
 assert(metric('SETTLEMENT').textContent.includes('116,622.69'));assert(!metric('SETTLEMENT').textContent.includes('82,646.26'));
 assert(metric('OPERATING_COST').textContent.includes('78,473.52'));assert(metric('OPERATING_COST').textContent.includes('CNY'));

@@ -13,7 +13,7 @@
 | 本地前端 | dev profile 的 Spring 直接读取本地 `frontend/`，API/UI 同源 |
 | Compose | 保留 base → production → `.2images` → `source-development.frontend.json` → `source-development.app.json` 完整叠加链；精确路径以受限 runtime 配置及现场回执为准，不只运行最后一份覆盖文件 |
 | watcher | `heyi-source-watch.service` 已 enabled、active，最终状态 ready、健康且无遗留 gate；配置 `/etc/heyi-dev/runtime.json` |
-| 数据库 | 已核对 V150，schema fingerprint 前缀 `06b53a20` 在切换与热更新前后不变，完整值保存在现场回执 |
+| 数据库 | 源码切换时已核对 V150（`06b53a20…`）；随后广告/历史汇率任务显式新增 V151/V152，当前指纹 `cf786196…`，详情及实际范围见[本轮验收](../releases/finance/finance-ad-history-fx-20261111.md) |
 | 自动迁移 | 共享环境 Flyway 自动执行已禁用；migration 源码/hash/history 守卫阻止普通保存执行 DDL |
 
 共享源码状态与中断恢复由 root 在源码根执行：

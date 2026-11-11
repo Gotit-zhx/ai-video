@@ -74,6 +74,7 @@ class FinanceConfigurationIntegrationTest {
         migration("V143__finance_calendar_month_completion.sql");
         migration("V144__qianyi_receipt_qualification.sql");
         migration("V148__finance_ad_automation.sql");
+        migration("V152__finance_ad_bc_funding.sql");
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_cost_sources",Integer.class));
         assertEquals(1,db.queryForObject("SELECT legacy_merged FROM finance_cost_sources WHERE id='old2'",Integer.class));
         assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_cost_books",Integer.class),"legacy snapshots remain for audit");
@@ -88,6 +89,7 @@ class FinanceConfigurationIntegrationTest {
         for(String statement:sql.split(";"))if(!statement.isBlank())db.execute(statement);
     }
     @BeforeEach void setup(){
+        for(String table:List.of("finance_ad_bc_stage","finance_ad_bc_costs","finance_ad_bc_sync"))db.update("DELETE FROM "+table);
         for(String table:List.of("finance_ad_report_stage","finance_ad_coverage","finance_ad_streams","finance_ad_stores"))db.update("DELETE FROM "+table);
         db.update("UPDATE finance_api_pacing SET next_allowed_at=UTC_TIMESTAMP(6),interval_seconds=5,throttle_count=0,success_count=0");
         for(String table:List.of("finance_qianyi_return_costs","finance_qianyi_returns","finance_qianyi_connections","finance_qianyi_accounts"))db.update("DELETE FROM "+table);
@@ -99,7 +101,10 @@ class FinanceConfigurationIntegrationTest {
         var settings=new ShopIntegrationSettings(Duration.ofMinutes(30),Duration.ofMinutes(5),URI.create("https://example.test"),URI.create("https://example.test"),false,"DRY_RUN");
         auth=new FinanceShopAuthorization(repo,new MarketplaceClientRegistry(List.of(client)),cipher,settings,tx);
         var policy=mock(OrganizationAccessPolicy.class);when(policy.isPlatformAdmin(any())).thenReturn(true);
-        fx=spy(new FinanceFx(repo,new ObjectMapper()));doReturn(new FinanceFx.Quote("fixed",Instant.EPOCH,Map.of("PHP",new BigDecimal("0.125")))).when(fx).quote(any());
+        fx=spy(new FinanceFx(repo,new ObjectMapper()));var fixedQuote=new FinanceFx.Quote("fixed",Instant.EPOCH,Map.of("PHP",new BigDecimal("0.125")));
+        doReturn(fixedQuote).when(fx).quote(any());
+        doReturn(fixedQuote).when(fx).historical(any(),any(LocalDate.class),any(LocalDate.class));
+        doReturn(fixedQuote).when(fx).historical(any(),anyCollection());
         service=FinanceTest.classProxy(new FinanceService(FinanceTest.classProxy(repo),policy,FinanceTest.classProxy(auth),fx));
     }
     MarketplaceAccess.TokenSet tokens(boolean expired){return new MarketplaceAccess.TokenSet("finance-access","finance-refresh",Instant.now().plusSeconds(expired?-1:3600),Instant.now().plusSeconds(86400),List.of("order","finance"));}
@@ -964,7 +969,8 @@ class FinanceConfigurationIntegrationTest {
         for(String format:List.of("csv","xlsx")){
             var q=Map.of("start","2026-10-21","end","2026-10-21","view","ORDER","format",format,"displayCurrency","CNY","fxSnapshot","fixed");
             var content=controller().export(q,principal()).getBody();var table=FinanceWorkbook.read(content,"export."+format);
-            assertEquals(List.of("店铺（优先别名）","记录编号","支付方式","折算人民币"),table.getFirst());assertEquals(List.of(controller().exportShopNames(owner).get(id),"00123456789012345678","CARD","12.500000"),table.get(1));
+            assertEquals(List.of("店铺（优先别名）","记录编号","支付方式","折算人民币","汇率来源","换算业务日期","汇率公布日期"),table.getFirst());
+            assertEquals(List.of(controller().exportShopNames(owner).get(id),"00123456789012345678","CARD","12.500000","ExchangeRate-API","2026-10-21",""),table.get(1));
         }
         var q=Map.of("start","2026-10-21","end","2026-10-21","view","RECONCILIATION","format","csv");
         var table=FinanceWorkbook.read(controller().export(q,principal()).getBody(),"rec.csv");

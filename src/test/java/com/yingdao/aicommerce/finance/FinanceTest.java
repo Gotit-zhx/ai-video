@@ -409,7 +409,7 @@ class FinanceTest {
         var repo=mock(FinanceRepository.class);when(repo.jdbc()).thenReturn(mock(JdbcTemplate.class));var policy=mock(OrganizationAccessPolicy.class);var fx=spy(new FinanceFx(repo,new ObjectMapper()));
         var principal=user("heyi");when(policy.isPlatformAdmin(principal)).thenReturn(true);
         var quote=new FinanceFx.Quote("fixed",Instant.EPOCH,Map.of("PHP",new BigDecimal("0.125")));
-        doReturn(quote).when(fx).quote("fixed");
+        doReturn(quote).when(fx).historical(eq("fixed"),any(LocalDate.class),any(LocalDate.class));
         var service=classProxy(new FinanceService(repo,policy,mock(FinanceShopAuthorization.class),fx));
         var controller=new FinanceController(service,repo,mock(FinanceImport.class),mock(FinanceAds.class));
         var item=new HashMap<String,Object>(Map.of("external_id","00123456789012345678","currency","PHP","amount",new BigDecimal("100"),"product_skus","SKU-A\n（SKU-B）*2"));
@@ -421,7 +421,8 @@ class FinanceTest {
         assertEquals("12.500000",table.get(1).get(table.getFirst().indexOf("折算人民币")));
         assertEquals("00123456789012345678",table.get(1).get(table.getFirst().indexOf("记录编号")));
         assertEquals("SKU-A\n（SKU-B）*2",table.get(1).get(table.getFirst().indexOf("商品 SKU")));
-        verify(fx).quote("fixed");
+        assertTrue(table.getFirst().containsAll(List.of("换算业务日期","汇率公布日期","汇率来源")));
+        verify(fx).historical("fixed",LocalDate.of(2026,10,1),LocalDate.of(2026,10,20));
     }
     @Test void importedComparisonBillsNeverDoubleCountOfficialStatementCharts(){
         var db=mock(JdbcTemplate.class);var repo=new FinanceRepository(db,new ObjectMapper());

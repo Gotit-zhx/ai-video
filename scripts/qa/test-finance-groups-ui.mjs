@@ -26,6 +26,7 @@ const costLinks=[];w.FinanceCosts={openOrders:value=>costLinks.push(value),reset
 w.api=async(path,options={})=>{
   const url=new URL(path,'https://example.test'),method=options.method||'GET',body=options.body?JSON.parse(options.body):{};
   requests.push({url,method,body});const endpoint=url.pathname.replace('/api/v1/finance','');
+  if(endpoint==='/fx/market')return {data:{status:'UNAVAILABLE',rates:{},error:'No market fixture'}};
   if(endpoint==='/shops')return {data:{items:shops,sync:[],groups}};
   if(endpoint==='/ads')return {data:[]};
   if(endpoint==='/ads/application')return {data:{configured:adConfigured,managed:true}};
@@ -119,7 +120,7 @@ await choose('店铺分组','shoes');assert.equal(requests.at(-1).url.searchPara
 assert.equal(d.querySelector('[aria-label="店铺"]').options.length,2);
 for(const route of ['overview','reconciliation','settlements','fees','fee-records','ads','live']){
   w.FinanceWorkspace.enter(route);await ready();
-  assert.equal(requests.at(-1).url.searchParams.get('groupId'),'shoes',route+' retains group');
+  assert.equal(requests.findLast(r=>!r.url.pathname.endsWith('/fx/market')).url.searchParams.get('groupId'),'shoes',route+' retains group');
   if(route==='settlements'){assert.equal(d.querySelectorAll('.fi-settlement-totals strong').length,3);assert(d.querySelector('.fi-settlement-chart'));assert(d.querySelector('.fi-settlement-totals').textContent.includes('1,200'));}
   if(['reconciliation','settlements','fees','fee-records','ads','live'].includes(route)){assert.equal(d.querySelectorAll('.fi-market-badge').length,4,route+' identifies every detail record');assert(!d.querySelector('.fi-table-wrap:last-of-type')?.textContent.includes('AWAITING_COLLECTION'));}
   if(['reconciliation','settlements','fees','fee-records','ads','live'].includes(route))assert([...d.querySelectorAll('th')].some(n=>n.textContent==='商品 SKU'),route+' includes merchant SKU column');

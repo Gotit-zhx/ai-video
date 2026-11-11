@@ -12,6 +12,7 @@ w.clearInterval=key=>intervals.delete(key);
 w.setTimeout=(fn,ms)=>{const key=id++;timeouts.set(key,{fn,ms});return key;};
 w.clearTimeout=key=>timeouts.delete(key);
 w.api=async path=>{
+  if(path==='/api/v1/finance/fx/market')return {data:{status:'UNAVAILABLE',rates:{},error:'No market fixture'}};
   reads++;
   const q=Object.fromEntries(new URL(path,'https://example.test').searchParams);
   await new Promise((ok,no)=>{release=ok;reject=no;});

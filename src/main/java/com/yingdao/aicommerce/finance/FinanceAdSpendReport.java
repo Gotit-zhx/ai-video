@@ -55,11 +55,13 @@ final class FinanceAdSpendReport {
         var known=new HashMap<String,Map<String,Object>>();shops.forEach(s->known.put(text(s.get("id")),s));
         var normalized=new ArrayList<Map<String,Object>>();
         for(var source:sources){var row=new LinkedHashMap<>(source);var shop=known.getOrDefault(text(row.get("shop_id")),Map.of());if("SHOPEE".equals(row.get("platform"))&&text(row.get("source")).startsWith("API_")&&text(row.get("account_id")).isBlank()&&!text(shop.get("external_shop_id")).isBlank())row.put("account_id",shop.get("external_shop_id"));FinanceAdFunding.completeNet(row);normalized.add(row);}sources=normalized;
+        var media=sources.stream().filter(r->!"API_BC_COST".equals(r.get("source"))).toList();
+        if(quote!=null)quote.preload(sources.stream().map(FinanceFx::businessDate).filter(Objects::nonNull).toList());
         var imports=new HashSet<String>();var series=new HashSet<String>();var importCounts=new HashMap<String,Integer>();var officialByCampaign=new HashMap<String,List<Map<String,Object>>>();var apiPeriods=new HashSet<String>();var fundingPeriods=new HashSet<String>();
-        for(var r:sources){String key=campaignKey(r);if(text(r.get("source")).startsWith("API_"))apiPeriods.add(periodKey(r));if("IMPORT_FUNDING".equals(r.get("source"))){imports.add(key);importCounts.merge(key,1,Integer::sum);fundingPeriods.add(periodKey(r));}if(Set.of("API_GMV","API_CAMPAIGN").contains(text(r.get("source"))))officialByCampaign.computeIfAbsent(key,k->new ArrayList<>()).add(r);if(!text(r.get("campaign_id")).isBlank())series.add(bucket(r));}
+        for(var r:media){String key=campaignKey(r);if(text(r.get("source")).startsWith("API_"))apiPeriods.add(periodKey(r));if("IMPORT_FUNDING".equals(r.get("source"))){imports.add(key);importCounts.merge(key,1,Integer::sum);fundingPeriods.add(periodKey(r));}if(Set.of("API_GMV","API_CAMPAIGN").contains(text(r.get("source"))))officialByCampaign.computeIfAbsent(key,k->new ArrayList<>()).add(r);if(!text(r.get("campaign_id")).isBlank())series.add(bucket(r));}
         var splits=new HashMap<String,List<Map<String,Object>>>();assignments.forEach(a->splits.computeIfAbsent(text(a.get("source_key")),k->new ArrayList<>()).add(a));
         var prepared=new ArrayList<Map<String,Object>>();int excluded=0,unresolved=0;
-        for(var source:sources){
+        for(var source:media){
             String currency=text(source.get("currency")),platform=text(source.get("platform"));LocalDate day=LocalDate.parse(text(source.get("record_date")));
             if(day.isBefore(f.start())||day.isAfter(f.end())||!f.platform().isBlank()&&!platform.equals(f.platform())||!f.currency().isBlank()&&!currency.equals(f.currency()))continue;
             if(!"IMPORT_FUNDING".equals(source.get("source"))&&imports.contains(campaignKey(source))||"API_BASIC".equals(source.get("source"))&&!text(source.get("account_id")).isBlank()&&series.contains(bucket(source))){excluded++;continue;}
@@ -82,7 +84,8 @@ final class FinanceAdSpendReport {
                 row.put("group_id",group);row.put("group_name",text(details.get("group_name")));row.put("shop_name",shop.equals("UNASSIGNED")?"待分配店铺":first(details,"display_name","name"));
                 if(unknownIdentity)row.put("assignment_status","SOURCE_REVIEW");
                 row.put("source_currency",currency);row.put("currency",quote==null?currency:"CNY");
-                for(String k:FinanceAdFunding.AMOUNTS){row.put("original_"+k,decimal(row.get(k)));if(quote!=null)row.put(k,quote.convert(row.get(k),currency));}
+                for(String k:FinanceAdFunding.AMOUNTS){row.put("original_"+k,decimal(row.get(k)));if(quote!=null){row.put(k,quote.convert(row.get(k),currency,day));if(row.get("original_"+k)!=null&&row.get(k)==null)row.put("reason_"+k,"业务日汇率缺失");}}
+                if(quote!=null){row.put("fx_date",day.toString());row.put("cny_rate",quote.rate(currency,day));row.put("fx",quote.metadata(day));}
                 if(prepared.size()>=50000)throw bad("分配后的明细超过 50,000 条，请缩小日期范围");prepared.add(row);
             }
         }
@@ -103,21 +106,25 @@ final class FinanceAdSpendReport {
         var visibleBuckets=new HashSet<String>();prepared.forEach(r->visibleBuckets.add(String.join("\0",text(r.get("platform")),text(r.get("account_id")),text(r.get("record_date")),text(r.get("source_currency")))));
         var funding=new ArrayList<Map<String,Object>>();
         for(var source:sources){
-            if(!"API_BASIC".equals(source.get("source"))||!"TIKTOK_SHOP".equals(source.get("platform")))continue;
+            if(!Set.of("API_BASIC","API_BC_COST").contains(text(source.get("source")))||!"TIKTOK_SHOP".equals(source.get("platform")))continue;
             String currency=text(source.get("currency"));LocalDate date=LocalDate.parse(text(source.get("record_date")));
             if(date.isBefore(f.start())||date.isAfter(f.end())||!f.platform().isBlank()&&!f.platform().equals(source.get("platform"))||!f.currency().isBlank()&&!f.currency().equals(currency))continue;
-            if((!f.shopId().isBlank()||!f.groupId().isBlank())&&!visibleBuckets.contains(bucket(source)))continue;
+            var assigned=known.get(text(source.get("shop_id")));String group=assigned==null?"":text(assigned.get("group_id"));
+            boolean direct=assigned!=null&&(f.shopId().isBlank()||f.shopId().equals(source.get("shop_id")))&&(f.groupId().isBlank()||(f.groupId().equals("UNGROUPED")?group.isBlank():f.groupId().equals(group)));
+            if((!f.shopId().isBlank()||!f.groupId().isBlank())&&!direct&&!visibleBuckets.contains(bucket(source)))continue;
             var row=new LinkedHashMap<>(source);row.put("currency",quote==null?currency:"CNY");
-            for(String k:FinanceAdFunding.AMOUNTS)if(quote!=null)row.put(k,quote.convert(row.get(k),currency));funding.add(row);
+            for(String k:accountMoney(source))if(quote!=null){Object original=row.get(k);row.put(k,quote.convert(original,currency,date));if(original!=null&&row.get(k)==null)row.put("reason_"+k,"业务日汇率缺失");}funding.add(row);
         }
-        result.put("accountFunding",summaries(funding,"platform","account_id","account_name","currency"));
+        result.put("accountFunding",summaries(funding,"source","platform","account_id","account_name","currency"));
         result.put("scopeRecords",prepared.size());return result;
     }
+    static List<String> accountMoney(Map<String,Object> row){var keys=new ArrayList<>(FinanceAdFunding.AMOUNTS);if(row.containsKey("tax_amount"))keys.add("tax_amount");return keys;}
     static List<Map<String,Object>> summaries(List<Map<String,Object>> rows,String...keys){
         var groups=new LinkedHashMap<List<String>,List<Map<String,Object>>>();for(var r:rows)groups.computeIfAbsent(Arrays.stream(keys).map(k->text(r.get(k))).toList(),k->new ArrayList<>()).add(r);
         var result=new ArrayList<Map<String,Object>>();groups.forEach((key,items)->{
             var r=new LinkedHashMap<String,Object>();for(int i=0;i<keys.length;i++)r.put(keys[i],key.get(i));r.put("records",items.size());r.put("shop_count",items.stream().map(x->text(x.get("shop_id"))).filter(x->!x.equals("UNASSIGNED")).distinct().count());r.put("pending_records",items.stream().filter(x->"UNASSIGNED".equals(x.get("shop_id"))||"IDENTITY_REQUIRED".equals(x.get("overlap_status"))).count());r.put("source_review_records",items.stream().filter(x->"IDENTITY_REQUIRED".equals(x.get("overlap_status"))).count());
-            for(String k:FinanceAdFunding.AMOUNTS){long count=items.stream().filter(x->x.get(k)!=null&&!"IDENTITY_REQUIRED".equals(x.get("overlap_status"))).count();var sum=items.stream().filter(x->!"IDENTITY_REQUIRED".equals(x.get("overlap_status"))).map(x->decimal(x.get(k))).filter(Objects::nonNull).reduce(BigDecimal.ZERO,BigDecimal::add);r.put("known_"+k,count);r.put(k,count==items.size()?sum:null);r.put("partial_"+k,sum);
+            var fields=new ArrayList<>(FinanceAdFunding.AMOUNTS);if(items.stream().anyMatch(x->x.containsKey("tax_amount")))fields.add("tax_amount");
+            for(String k:fields){long count=items.stream().filter(x->x.get(k)!=null&&!"IDENTITY_REQUIRED".equals(x.get("overlap_status"))).count();var sum=items.stream().filter(x->!"IDENTITY_REQUIRED".equals(x.get("overlap_status"))).map(x->decimal(x.get(k))).filter(Objects::nonNull).reduce(BigDecimal.ZERO,BigDecimal::add);r.put("known_"+k,count);r.put(k,count==items.size()?sum:null);r.put("partial_"+k,sum);
                 if(count<items.size()){var reasons=items.stream().filter(x->x.get(k)==null).map(x->text(x.get("reason_"+k))).filter(x->!x.isBlank()).distinct().toList();r.put("reason_"+k,reasons.size()==1?reasons.getFirst():"来源未完整提供");}}
             result.add(r);
         });return result;

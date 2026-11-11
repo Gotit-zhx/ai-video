@@ -61,10 +61,19 @@ public class MarketplaceHttp {
     }
 
     public Map<String, Object> get(URI uri, Map<String, String> headers) {
+        return get(uri, headers, false);
+    }
+
+    /** Opt-in financial response reader; never rounds JSON decimal numbers through binary floating point. */
+    public Map<String, Object> getExact(URI uri, Map<String, String> headers) {
+        return get(uri, headers, true);
+    }
+
+    private Map<String, Object> get(URI uri, Map<String, String> headers, boolean exact) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
                 .timeout(Duration.ofSeconds(90)).GET();
         headers.forEach(builder::header);
-        return sendJson(builder.build());
+        return sendJson(builder.build(), exact);
     }
 
     public Map<String, Object> postJson(URI uri, Map<String, String> headers, String body) {
@@ -111,6 +120,10 @@ public class MarketplaceHttp {
     }
 
     Map<String, Object> sendJson(HttpRequest request) {
+        return sendJson(request, false);
+    }
+
+    private Map<String, Object> sendJson(HttpRequest request, boolean exact) {
         CompletableFuture<HttpResponse<String>> pending = null;
         try {
             long timeoutNanos = request.timeout().orElse(Duration.ofSeconds(60)).toNanos();
@@ -128,6 +141,8 @@ public class MarketplaceHttp {
                         + "：" + safeBody(body));
             }
             if (body.isBlank()) throw new MarketplaceApiException("店铺官方接口返回空响应");
+            if (exact) return objectMapper.readerFor(new TypeReference<Map<String, Object>>() {})
+                    .with(tools.jackson.databind.DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).readValue(body);
             return objectMapper.readValue(body, new TypeReference<>() {});
         } catch (MarketplaceApiException exception) {
             throw exception;
