@@ -8,9 +8,11 @@
 
 ```mermaid
 flowchart LR
-    Web[浏览器] --> App[Spring Boot API + 前端源码]
-    Extension[商品采集扩展] --> App[Spring Boot API]
-    Nginx[共享服务器 Nginx / TLS] --> App
+    Web[浏览器] -->|本地 8080 同源 UI/API| App[Spring Boot API / 本地静态源码]
+    Web -->|共享服务器 HTTPS| Nginx[共享服务器 Nginx / TLS]
+    Extension[商品采集扩展] --> App
+    Nginx -->|API 代理| App
+    Nginx --> Frontend[bind frontend/ 源码]
     Nginx --> HR[招聘 Python Connector]
     Nginx --> ERP[独立 ERP]
     App --> MySQL[(MySQL)]
@@ -34,11 +36,11 @@ flowchart LR
     Desktop --> Boss[BOSS 官方页面 / SDK]
 ```
 
-这张图表示仓库中的集成边界，不表示默认开发命令已启动所有服务。当前 `compose.dev.yaml` 只启动隔离 MySQL/Redis；主 Java/Web 由 `scripts/dev.py` 直接从源码运行。Pi Runtime、招聘服务、ERP、下载服务、可选转换及水印服务按需独立启动。根 `compose.yaml` 和镜像入口保留为历史恢复资料。
+这张图表示仓库中的集成边界，不表示默认开发命令已启动所有服务。本地 `compose.dev.yaml` 只启动隔离 MySQL/Redis；主 Java/Web 由 `scripts/dev.py` 直接从源码运行，其他独立服务按需启动。根 `compose.yaml` 仍是基础配置来源；共享服务器实际使用保留的 `base.json`、`production.json` 及源码覆盖配置组成完整 Compose 链，保留既有依赖与独立服务，精确叠加顺序见[现场状态](source-runtime-status.md)。修改仓库 Compose 文件不会自动替换现场配置。旧 Candidate、应用镜像构建与部署动作保留作历史恢复资料。
 
 广告授权、账户发现和报表通过 `FinanceAdHttp` 使用服务器上的专用连接，仅允许官方广告 HTTPS 域名，TLS 由 Java 与官方终点完成。节点凭据由原生服务独立读取，应用只读取私网地址/端口；普通店铺客户端沿用既有通道。部署与验证见[广告连接验收](../releases/finance/finance-ad-connection-acceptance-20261107.md)。
 
-共享服务器 Nginx 继续承担 TLS 及招聘/ERP 等既有反向代理；主应用源码模式在 `8080` 同源提供 API 与 UI。本地同源入口不包含共享服务器所有 HR/ERP/安装包代理，在本地看见菜单不代表独立服务已连接。
+共享服务器 Nginx 直接读取 bind 的 `frontend/` 源码，承担 TLS、主应用 API 及招聘/ERP 等既有反向代理；本地 Spring 才在 `8080` 同源提供 UI/API。本地入口不包含共享服务器所有 HR/ERP/安装包代理，在本地看见菜单不代表独立服务已连接。共享源码 watcher 继续复用 `heyi-ops` 的 `Store`/`Host` 维护锁、门控和安全点，`doctor`、`monitor` 与受限 SSH 网关继续承担巡检和通知边界。
 
 ## 代码位置
 

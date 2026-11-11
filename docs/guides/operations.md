@@ -23,6 +23,10 @@ python3 scripts/shared_dev.py watch --config /etc/heyi-dev/runtime.json
 
 中断恢复和只读状态分别使用 `recover`、`status`。受限配置和常驻入口已经安装验收；执行恢复前仍须核对本次门控归属及其他会话维护状态。
 
+当前仍复用 `heyi-ops` 的 `Store`/`Host` 维护锁、门控与安全点，保留 `doctor`、`monitor` 和受限 SSH 网关。日常只读巡检使用 `heyi-ops doctor`；源码上下文与恢复状态使用上述 `scripts/shared_dev.py status`。`scripts/ci/host_status.py` 和旧 `heyi-ops status` 输出的是历史发布版本/指纹协议，不能作为当前源码内容或上下文的验收证明。完整 Compose 链继续参与运行，不能把基础配置和其他覆盖文件一并停用。
+
+GitHub 的 Operations 从 `develop` 读取巡检代码，日常菜单只保留 `doctor` 和通知测试；`monitoring` 环境也只允许 `develop`。旧 `release-check` 已退出日常菜单，历史发布状态仍可在明确的恢复核对中读取。
+
 后续接手和变更验收继续核对：
 
 - 实际源码路径及工作区 revision/diff 边界；
@@ -60,7 +64,7 @@ python3 scripts/shared_dev.py watch --config /etc/heyi-dev/runtime.json
 
 ## 历史恢复
 
-旧 `heyi-ops`、Compose、镜像、Candidate/Release 和 `scripts/release/` helpers 保留作历史恢复与审计资料，不是日常源码运行入口。恢复前重新核对旧应用与当前数据库结构、接口、配置、密钥和卷的兼容性。镜像恢复只恢复应用运行方式，不回滚数据库或外部写入。
+旧 Candidate/Release、应用镜像构建与部署动作、发布版本证明和 `scripts/release/` helpers 保留作历史恢复与审计资料，不是日常源码运行入口；当前复用的 `heyi-ops` 组件与完整 Compose 链仍按上文运行。恢复旧应用前重新核对当前数据库结构、接口、配置、密钥和卷的兼容性。镜像恢复只恢复应用运行方式，不回滚数据库或外部写入。
 
 2026-11-07 的 v3/v4/v5 因定时器缺陷已撤销回滚资格；原证明保留在隔离目录，不能复制资格文件重新启用。其他历史版本的“已验收”也只代表当时状态。精确镜像、配置和回执见[服务器运维交接](server-handoff.md)及对应发布记录。
 

@@ -20,6 +20,8 @@
 
 日常本地开发先运行 `python3 scripts/dev.py init`，再运行 `python3 scripts/dev.py run`；已有兼容 MySQL/Redis 时可加 `--no-deps`。它不执行 Maven `package`、JAR/OCI/静态包构建。目录名不代表只读或可批量安全执行。QA、诊断、恢复和历史发布脚本中均可能存在真实 API、数据库或 Docker 写操作；运行前读取具体实现、确认目标与授权范围，不能对全目录直接执行。
 
+共享服务器日常只读巡检使用 `heyi-ops doctor`，源码状态使用 `python3 scripts/shared_dev.py status --config /etc/heyi-dev/runtime.json`。当前仍复用 `heyi-ops` 的 `Store`/`Host`、`monitor`、受限 SSH 网关和完整 Compose 链。`scripts/ci/host_status.py` 为旧正式发布版本/指纹协议保留，不能证明当前源码上下文，也不替代日常 `doctor` 或源码 `status`；Candidate、镜像构建与部署动作才属于历史恢复范围。
+
 历史发布脚本中的 `git show <旧提交>:<旧路径>` 用于读取当时源码，保留旧路径是必要行为。当前工作树读取使用新路径；服务器 `/opt/...`、容器 `/app/...` 与业务卷路径不随仓库目录重排改写。
 
 客户端及服务的模块内部构建脚本仍放所属模块附近。独立桌面制品只在明确分发任务中构建。新增工具归入对应目录；常用开发及测试入口见[开发指南](../docs/guides/development.md)，共享服务器源码运行与历史恢复遵守[运维指南](../docs/guides/operations.md)。
