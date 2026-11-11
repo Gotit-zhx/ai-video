@@ -17,6 +17,40 @@ class FinanceAdSpendReportTest {
         var r=new LinkedHashMap<String,Object>();r.put("source_key",id);r.put("platform",platform);r.put("account_id","123");r.put("account_name","账户");r.put("campaign_id","series");r.put("campaign_name","系列");r.put("record_date","2026-10-02");r.put("currency","USD");r.put("amount",new BigDecimal(amount));r.put("source","API_GMV");r.put("shop_id",shop);return r;
     }
     Map<String,Object> report(List<Map<String,Object>> sources,List<Map<String,Object>> splits){return FinanceAdSpendReport.build(sources,splits,shops,filter,null,"","");}
+    Map<String,Object> apiRecord(String kind){return new LinkedHashMap<>(Map.of("id","api","shop_id","a","platform","TIKTOK_SHOP","kind",kind,"record_date","2026-10-02","currency","USD","amount",new BigDecimal("10"),"source","API"));}
+    @Test void gmvNetCostIsNotMislabelledAsCashOrCreditAndExplicitZeroIsRetained(){
+        var r=FinanceAdSpendReport.api(apiRecord("AD_GMV"),Map.of("advertiser_id","123","dimensions",Map.of("campaign_id","series"),"metrics",Map.of("cost","10","net_cost","0","cash_spend","99","spend_credits","77")));
+        assertEquals(BigDecimal.ZERO,r.get("net_amount"));assertNull(r.get("cash_amount"));assertNull(r.get("credit_amount"));assertNull(r.get("grant_amount"));
+        assertEquals("接口未拆分",r.get("reason_cash_amount"));assertTrue(text(r.get("funding_basis")).contains("net_cost"));
+    }
+    @Test void advertiserFundingUsesOnlyMatchingOfficialFieldsAndNeverAppConversionCreditEvents(){
+        var r=FinanceAdSpendReport.api(apiRecord("AD"),Map.of("advertiser_id","123","metrics",Map.of("spend","10","billed_cost","8","cash_spend","0","voucher_spend","2","spend_credits","19")));
+        assertEquals(BigDecimal.ZERO,r.get("cash_amount"));assertEquals(new BigDecimal("2"),r.get("grant_amount"));assertEquals(new BigDecimal("8"),r.get("net_amount"));assertNull(r.get("credit_amount"));
+        var missing=FinanceAdSpendReport.api(apiRecord("AD"),Map.of("metrics",Map.of("cash_spend","-","voucher_spend","","billed_cost","-")));
+        assertNull(missing.get("cash_amount"));assertNull(missing.get("net_amount"));
+    }
+    @Test void netCostUsesSameFxAndReportsPartialCoverageWithoutChangingFundingFingerprint(){
+        var a=source("1","TIKTOK_SHOP","a","10");String fingerprint=FinanceAdSpendReport.fingerprint(a);a.put("net_amount",new BigDecimal("8"));assertEquals(fingerprint,FinanceAdSpendReport.fingerprint(a));
+        var b=source("2","TIKTOK_SHOP","a","5");var quote=new FinanceFx.Quote("fixed",java.time.Instant.EPOCH,Map.of("USD",new BigDecimal("7")));
+        var result=FinanceAdSpendReport.build(List.of(a,b),List.of(),shops,filter,quote,"","");var total=rows(result.get("totals")).getFirst();
+        assertNull(total.get("net_amount"));assertEquals(1L,total.get("known_net_amount"));assertEquals(new BigDecimal("56.000000"),total.get("partial_net_amount"));
+        var detail=rows(result.get("items")).stream().filter(r->"1".equals(r.get("source_key"))).findFirst().orElseThrow();assertEquals(new BigDecimal("8"),detail.get("original_net_amount"));
+    }
+    @Test void accountFundingSurvivesExcludedAccountTotalWithoutBeingAllocatedToCampaigns(){
+        var basic=FinanceAdSpendReport.api(apiRecord("AD"),Map.of("advertiser_id","123","metrics",Map.of("spend","10","billed_cost","8","cash_spend","6","voucher_spend","2")));
+        basic.put("shop_id","UNASSIGNED");var campaign=source("gmv","TIKTOK_SHOP","a","10");campaign.put("net_amount",new BigDecimal("8"));
+        var result=report(List.of(basic,campaign),List.of());assertEquals(BigDecimal.TEN,rows(result.get("totals")).getFirst().get("amount"));
+        var account=rows(result.get("accountFunding")).getFirst();assertEquals(new BigDecimal("6"),account.get("cash_amount"));assertEquals(BigDecimal.TEN,account.get("amount"));
+        var detail=rows(result.get("items")).getFirst();assertNull(detail.get("cash_amount"));
+        var otherShop=new Filter(filter.start(),filter.end(),"b","TIKTOK_SHOP","USD","day");assertTrue(rows(FinanceAdSpendReport.build(List.of(basic,campaign),List.of(),shops,otherShop,null,"","").get("accountFunding")).isEmpty());
+    }
+    @Test void manualSplitsDoNotDuplicateSourceNetCostAndFundingSplitsCanUseTheirOwnKnownComponents(){
+        var r=source("split","TIKTOK_SHOP","","10");r.put("net_amount",new BigDecimal("8"));
+        var split=Map.<String,Object>of("source_key","split","fingerprint",FinanceAdSpendReport.fingerprint(r),"shop_id","a","amount",new BigDecimal("4"));
+        for(var row:rows(report(List.of(r),List.of(split)).get("items")))assertNull(row.get("net_amount"));
+        var funds=imported().getFirst();var confirmed=Map.<String,Object>of("source_key",funds.get("source_key"),"fingerprint",FinanceAdSpendReport.fingerprint(funds),"shop_id","a","amount",new BigDecimal("4"),"cash_amount",BigDecimal.ZERO,"credit_amount",new BigDecimal("3.5"),"grant_amount",new BigDecimal("0.5"));
+        assertEquals(new BigDecimal("6.60"),rows(report(List.of(funds),List.of(confirmed)).get("totals")).getFirst().get("net_amount"));
+    }
     @Test void fundingFileKeepsAllThreeComponentsAndReversesDebitRatherThanTakingAbsoluteValue(){
         var r=imported().getFirst();assertEquals(new BigDecimal("0"),r.get("cash_amount"));assertEquals(new BigDecimal("6.60"),r.get("credit_amount"));assertEquals(new BigDecimal("1.21"),r.get("grant_amount"));assertEquals(new BigDecimal("7.81"),r.get("amount"));assertEquals("9012345678901234",r.get("campaign_id"));
         var refunds=FinanceAdSpendImport.parse(List.of(List.of("日期","推广系列ID","金额","币种"),List.of("2026-10-02","s","2.50","USD")),"TIKTOK_SHOP","123","账户",true);assertEquals(new BigDecimal("-2.50"),refunds.getFirst().get("amount"));

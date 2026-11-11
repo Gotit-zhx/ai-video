@@ -22,6 +22,18 @@ class FinanceAdSpendIntegrationTest {
         shop=fixture.groupedShop(fixture.owner,"spend-shop",fixture.service.saveGroup(fixture.owner,null,"服装"));fixture.db.update("UPDATE finance_connections SET platform='TIKTOK_SHOP' WHERE id=?",shop);
         spend=new FinanceAdSpendService(fixture.repo,fixture.service);
     }
+    @Test void persistedGmvNetCostFlowsIntoThreeTablesAndNativeNumericExportWithoutChangingProfitFacts()throws Exception{
+        fixture.repo.save(fixture.owner,new Entry(shop,"TIKTOK_SHOP","AD_GMV","official-series","","","GMV Max","REPORTED",LocalDate.of(2026,10,2),"USD",new BigDecimal("10"),null,null,null,null,"API",Map.of("advertiser_id","123","dimensions",Map.of("campaign_id","9012345678901234"),"metrics",Map.of("cost","10","net_cost","8"))));
+        var report=spend.report(fixture.owner,filter,false,"","","");for(String key:List.of("groups","shops","items")){
+            var row=rows(report.get(key)).stream().filter(r->r.get("net_amount")!=null).findFirst().orElseThrow();assertEquals(0,new BigDecimal("8").compareTo(decimal(row.get("net_amount"))));assertNull(row.get("cash_amount"));assertNull(row.get("credit_amount"));assertNull(row.get("grant_amount"));
+        }
+        var controller=new FinanceAdSpendController(spend,fixture.controller());byte[] bytes=controller.export(Map.of("start","2026-10-01","end","2026-10-31","currency","USD"),fixture.principal()).getBody();
+        var factory=javax.xml.parsers.DocumentBuilderFactory.newInstance();factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl",true);
+        try(var zip=new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(bytes))){for(var entry=zip.getNextEntry();entry!=null;entry=zip.getNextEntry())if(entry.getName().equals("xl/worksheets/sheet3.xml")){
+            var doc=factory.newDocumentBuilder().parse(new java.io.ByteArrayInputStream(zip.readAllBytes()));var cells=((org.w3c.dom.Element)doc.getElementsByTagName("row").item(1)).getElementsByTagName("c");var value=(org.w3c.dom.Element)cells.item(19);assertFalse(value.hasAttribute("t"));assertEquals(0,new BigDecimal("8").compareTo(new BigDecimal(value.getTextContent())));
+        }}
+        assertEquals(1,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_records",Integer.class));assertEquals(new BigDecimal("10.000000"),fixture.db.queryForObject("SELECT amount FROM finance_records",BigDecimal.class));
+    }
     @Test void importIsIdempotentAndDoesNotChangeProfitFactsOrCredentials(){
         var imported=FinanceAdSpendImport.parse(file,"TIKTOK_SHOP","123","共享账户",true);
         assertEquals(1,spend.saveImport(fixture.owner,"actor",imported,"report.xlsx").get("inserted"));

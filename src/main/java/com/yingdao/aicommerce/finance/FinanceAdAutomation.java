@@ -195,7 +195,7 @@ final class FinanceAdAutomation {
         if(channel.equals("BASIC")){
             query.put("report_type","BASIC");query.put("data_level","AUCTION_ADVERTISER");
             query.put("dimensions",repo.write(List.of("stat_time_day")));
-            query.put("metrics",repo.write(List.of("spend","impressions","clicks","conversion")));
+            query.put("metrics",repo.write(List.of("spend","billed_cost","cash_spend","voucher_spend","impressions","clicks","conversion")));
         }else{
             query.put("store_ids",repo.write(List.of(store)));
             query.put("dimensions",repo.write(List.of("campaign_id","stat_time_day")));

@@ -6,6 +6,15 @@ import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class FinanceAdAutomationTest {
+    @Test void advertiserReportRequestsDocumentedCashVoucherAndNetCostAtAdvertiserDayLevel(){
+        var repo=org.mockito.Mockito.mock(FinanceRepository.class);org.mockito.Mockito.when(repo.write(org.mockito.ArgumentMatchers.any())).thenAnswer(i->i.getArgument(0).toString());
+        var ads=new FinanceAds(repo,null,(com.yingdao.aicommerce.shop.infrastructure.MarketplaceHttp)null,null);
+        try{var query=new FinanceAdAutomation(ads).query("100001","BASIC","",LocalDate.of(2026,10,1),LocalDate.of(2026,10,7),1);
+            assertEquals("AUCTION_ADVERTISER",query.get("data_level"));assertEquals("[stat_time_day]",query.get("dimensions"));
+            for(String name:List.of("billed_cost","cash_spend","voucher_spend"))assertTrue(query.get("metrics").toString().contains(name),name);
+            assertFalse(query.get("metrics").toString().contains("spend_credits"));
+        }finally{ads.stop();}
+    }
     @Test void incompletePagesAndMalformedListsCannotBeAcceptedAsZero(){
         assertThrows(RuntimeException.class,()->FinanceAdAutomation.pages(Map.of(),1,0));
         assertThrows(RuntimeException.class,()->FinanceAdAutomation.pages(Map.of("page_info",Map.of("total_page",2)),1,0));
