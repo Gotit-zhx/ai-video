@@ -39,7 +39,7 @@
     }));
     const pager=el('div',null,detail.n,'fi-pagebar');el('span','共 '+numeric(report.total)+' 条 · 第 '+numeric(report.page)+' 页 · 每页 50 条',pager);const buttons=el('div',null,pager,'fi-actions');
     button('上一页',buttons,()=>ctx.page(-1)).disabled=report.page<=1;const next=button('下一页',buttons,()=>ctx.page(1));next.dataset.adSpendNext='';next.disabled=report.page*report.pageSize>=report.total;
-    const funding=el('details',null,main,'fi-card');funding.dataset.adFunding='';el('summary','账户级资金核对（不计入店铺合计）',funding);
+    const funding=el('details',null,main,'fi-card fi-ad-spend-support');funding.dataset.adFunding='';el('summary','账户级资金核对（不计入店铺合计）',funding);
     el('p','以下为普通投放账户日报的资金指标，仅供账户核对；与 GMV Max 或店铺明细的覆盖范围可能不同，不能相加或按比例拆店。现金和赠券指标可能延迟 24–48 小时，净消耗可能延迟 11 小时。余额、充值、授信额度均不等于广告消耗。',funding,'fi-muted');
     if((report.accountFunding||[]).length)table(funding,['平台','账户','账户 ID','展示币种',...headers],report.accountFunding.map(r=>[ctx.platformBadge(r.platform),r.account_name||'账户名称未提供',r.account_id,r.currency,...values(r)]));
     else el('p','当前范围尚无可核对的账户资金日报；店铺已取得的 GMV Max 净消耗仍在上方展示。',funding,'fi-empty');
