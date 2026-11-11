@@ -13,7 +13,7 @@
 | 缓存 / 会话 / 队列 | Redis 8、Redis Session、Redis Stream 与业务持久任务表 | [开发 Compose](../../compose.dev.yaml)、`workflow/`、`finance/` |
 | Web | 原生 HTML / JavaScript / CSS；没有 React/Vue 构建工程 | [前端](../../frontend/) |
 | 图表 / 3D | Apache ECharts 6.1.0、Three.js r170（0.170.0） | [本地第三方资源](../../frontend/vendor/) |
-| Web 运行 | 应用从 `frontend/` 直接提供同源 UI/API；共享服务器保留既有 Nginx/TLS 代理 | [开发指南](development.md)、[服务器交接](server-handoff.md) |
+| Web 运行 | 本地 Spring 从 `frontend/` 提供同源 UI/API；共享服务器 Nginx bind `frontend/`，保留 TLS、主应用 API 和独立服务代理 | [开发指南](development.md)、[服务器交接](server-handoff.md) |
 | 图像 / 媒体 | FFmpeg、Java ImageIO/WebP；图片传输与模型运行时另有实现 | [后端 Dockerfile](../../Dockerfile)、[Runtime](../../services/pi-runtime/Dockerfile) |
 | 文件 | Aliyun OSS SDK 3.18.4、Dayan/S3 兼容对象存储、Docker 持久卷 | [后端清单](../../pom.xml)、[存储说明](../business/storage/dayan-object-storage.md) |
 

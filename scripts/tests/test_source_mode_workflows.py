@@ -131,8 +131,12 @@ class DevelopmentWorkflowTest(unittest.TestCase):
 
     def test_active_operations_workflow_is_read_only(self):
         operations = (WORKFLOWS / "operations.yml").read_text()
-        self.assertIn("host_status.py", operations)
         self.assertIn("notify.py", operations)
+        self.assertIn("ref: develop", operations)
+        self.assertIn("options: [doctor, notification-test]", operations)
+        self.assertNotIn("main-tree", operations)
+        self.assertNotIn("release-check", operations)
+        self.assertNotIn("host_status.py", operations)
         self.assertNotIn("rollback:", operations)
         self.assertNotIn("environment: production", operations)
         self.assertNotIn("scripts/ci/remote.py", operations)
