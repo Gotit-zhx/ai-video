@@ -30,3 +30,7 @@ apps/automation-agent/*ui-check*.png
 /docs_work/
 
 .watermark.local.env
+
+# Private source-development configuration, compiler state and local data
+.env.development
+.dev/

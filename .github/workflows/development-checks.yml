@@ -1,0 +1,87 @@
+name: Development checks
+
+on:
+  pull_request:
+    branches: [develop]
+  push:
+    branches: [develop, 'feature/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: development-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-contracts:
+    name: Source mode contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify source launcher, dependency stack and workflow contracts
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+      - name: Verify source maintenance monitoring and existing control boundaries
+        run: |
+          python3 -m unittest discover -s ops/heyi-ops/tests -p 'test_source_monitor.py' -v
+          python3 -m unittest discover -s ops/heyi-ops/tests -p 'test_control.py' -v
+      - name: Check patch whitespace
+        run: git diff --check
+
+  frontend:
+    name: Frontend source checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Check application JavaScript syntax
+        run: find frontend -maxdepth 2 -type f -name '*.js' ! -path 'frontend/vendor/*' -print0 | xargs -0 -n 1 node --check
+      - name: Verify frontend source references
+        run: node --test frontend/test/public-assets.cjs
+      - name: Verify development live reload contract
+        run: node --test frontend/test/dev-live.test.cjs
+
+  java:
+    name: Java development checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+        with:
+          node: 'false'
+          media: 'false'
+      - name: Run source-mode and maintenance safety tests
+        run: mvn -B -ntp -Dtest=DevRevisionControllerTest,DevWebConfigurationTest,MaintenanceGateTest test
+
+  required:
+    name: Development checks
+    if: always()
+    needs: [source-contracts, frontend, java]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every development check
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          results = {name: job['result'] for name, job in json.loads(os.environ['NEEDS']).items()}
+          failed = {name: result for name, result in results.items() if result != 'success'}
+          if failed:
+              raise SystemExit(f"Development checks did not all pass: {failed}")
+          PY

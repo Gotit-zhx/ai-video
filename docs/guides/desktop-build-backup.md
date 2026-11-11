@@ -2,7 +2,7 @@
 
 > 构建/备份约定说明。发行版本和下载入口需结合[桌面 README](../../apps/hr-desktop/README.md)、[工作台安装](../../apps/hr-desktop/client-workbench/INSTALL.md)与当前 CI 配置核对，文中历史包和远端目录不作为今日部署状态。
 
-GitHub Actions 仍是主构建环境。额度、排队或平台故障导致 Windows 虚拟机不可用时，使用 CircleCI Free 的原生 Windows 备用环境；Mac 可继续使用已验证的本机 arm64 构建。不切换到收费套餐，不改变私有仓库可见性。
+本指南只用于明确的招聘桌面安装包分发，不是主 Java/Web 内部源码运行步骤。GitHub Actions 仍是桌面主构建环境。额度、排队或平台故障导致 Windows 虚拟机不可用时，使用 CircleCI Free 的原生 Windows 备用环境；Mac 可继续使用已验证的本机 arm64 构建。不切换到收费套餐，不改变私有仓库可见性。
 
 2026-10-09 核对官方资料：Free 计划支持私有仓库及 Windows/macOS，提供每月 30,000 credits，不结转。免费额度不是无限机器时间。Windows 配置使用官方文档中的 `windows-server-2022-gui:current`、`windows.medium` 和 PowerShell。
 
