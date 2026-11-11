@@ -1,0 +1,46 @@
+name: Release readiness
+on:
+  pull_request:
+    branches: [main-tree]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions:
+  contents: read
+  actions: read
+  attestations: read
+
+concurrency:
+  group: release-readiness-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  ready:
+    name: Release ready
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Reject unsupported production PR sources before checkout
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          event=json.load(open(os.environ['GITHUB_EVENT_PATH']))
+          pr=event['pull_request']
+          assert event['repository']['full_name']=='Gotit-zhx/ai-video', 'Untrusted repository'
+          assert pr['head']['repo']['full_name']=='Gotit-zhx/ai-video', 'Fork PR cannot qualify production'
+          assert pr['base']['repo']['full_name']=='Gotit-zhx/ai-video' and pr['base']['ref']=='main-tree', 'Unexpected production base'
+          assert re.fullmatch(r'(release|hotfix)/[0-9]+(?:\.[0-9]+){2,3}(?:-[A-Za-z0-9._-]+)?',pr['head']['ref']), 'Invalid production source branch'
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Wait for and verify the existing immutable candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci/release_ready.py --wait-seconds 2700 --poll-seconds 30
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: release-ready-${{ github.run_attempt }}
+          path: target/release-readiness/summary.json
+          if-no-files-found: error
+          retention-days: 7

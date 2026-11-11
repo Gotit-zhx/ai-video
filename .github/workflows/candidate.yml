@@ -46,7 +46,7 @@ jobs:
           HEYI_V2_BOOTSTRAPPED: ${{ vars.HEYI_V2_BOOTSTRAPPED || 'false' }}
         run: python3 scripts/ci/candidate.py qualify
   publish:
-    name: Release ready
+    name: Candidate published
     needs: qualify
     if: needs.qualify.result == 'success'
     runs-on: ubuntu-24.04
