@@ -95,6 +95,12 @@ GET /api/v1/finance/records?kind=ORDER&orderScope=ALL&start=2026-10-01&end=2026-
 
 任务只读固定快照，临时文件与进度不写账本或同步状态。结果保留 30 分钟，重启后不存在的任务明确提示重新生成。原同步 `/workspace/costs/orders/export` 接口保留其容量保护；页面大范围导出使用后台接口。单片、任务及临时存储上限见[成本说明](../business/finance/costs.md#全店待补齐与批量导出)。
 
+## Shopee 独立广告授权与采集
+
+`GET /api/v1/finance/shopee-ads` 返回服务端正式配置可用性、同公司广告店铺授权、采集状态及覆盖边界，不返回密钥或令牌。`POST .../authorize` 接收 `organizationId`，为当前公司生成一次性官方授权链接；`PUT .../{external_shop_id}` 接收 `organizationId`、`enabled`，暂停或恢复该广告来源。写操作需财务管理权限及同源/当前公司校验。
+
+官方回调 `GET /api/v1/shop-authorizations/callback/shopee_ads` 以一次性 state 识别公司和应用，不依赖管理员浏览器继续登录。原 ERP 财务店铺授权不变。日报仅进入 `/advertising/spend` 的三张投放表及导出，不改变已入账费用与利润。完整范围、缺失值和上线前置条件见[广告说明](../business/finance/advertising.md#shopee-官方店铺-cpc-日报)。
+
 ## 接口变更时的最低核对
 
 修改请求字段、枚举、分页或错误格式时，同步检查前端、插件及桌面客户端调用方。核对未登录 401、无权限 403、跨企业/店铺访问、重复提交及过期结果；需要完整接口清单时从 Controller 和服务端测试维护，避免复制一份不再更新的手写协议。

@@ -1,0 +1,5 @@
+# 独立 Shopee Ads Service 正式应用。真实文件在 Git 外，权限 0600，供应用只读挂载。
+# 必须先通过 Go Live 审核并完成新应用的店铺授权；禁止填原 ERP 或沙箱凭据。
+live-enabled=false
+partner-id=
+partner-key=

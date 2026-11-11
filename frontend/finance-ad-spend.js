@@ -3,7 +3,7 @@
   const money=['amount','cash_amount','credit_amount','grant_amount'];
   const labels=Object.freeze({amount:'广告消耗（投放报表）',cash_amount:'现金消耗',credit_amount:'信用额度消耗',grant_amount:'广告费用赠款消耗',net_amount:'净广告消耗'});
   const displayAmounts=['cash_amount','credit_amount','grant_amount','amount','net_amount'];
-  const sources={IMPORT_FUNDING:'资金消耗报表',API_GMV:'GMV Max 报表',API_BASIC:'普通账户投放',API_BC_COST:'BC资金费用',API_CAMPAIGN:'系列 / 商品投放报表',LEGACY_IMPORT:'历史导入'};
+  const sources={IMPORT_FUNDING:'资金消耗报表',API_GMV:'GMV Max 报表',API_BASIC:'普通账户投放',API_BC_COST:'BC资金费用',API_SHOPEE_CPC:'Shopee 店铺 CPC 日报',API_CAMPAIGN:'系列 / 商品投放报表',LEGACY_IMPORT:'历史导入'};
   const states={PENDING:'待分配',PARTIAL:'余款待分配',CONFIRMED:'已核实分配',OFFICIAL:'来源已归店',REVIEW:'来源变化待复核',SOURCE_REVIEW:'账户来源待核实 · 未叠加'};
   const numeric=v=>v==null||v===''?'未提供':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:2});
   const moneyText=v=>v==null||v===''?'未提供':Number(v).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -15,6 +15,7 @@
   function render(parent,ctx){
     const {el,card,table,button,report}=ctx,main=el('section',null,parent,'fi-ad-spend');main.dataset.adSpendWorkspace='';main.dataset.updateKey='ad-spend-workspace';
     el('p','统一展示 TikTok 与 Shopee 已取得的投放消耗。现金、信用额度、广告赠款分别保留；账户、推广系列可能跨店，缺少可靠依据的金额保留待分配。当前合计不表示已完整同步或完成对账。',main,'fi-muted');
+    if(window.FinanceShopeeAds)window.FinanceShopeeAds.render(main,{...ctx,status:ctx.shopeeAds},true);
     const totals=el('div',null,main,'fi-ad-currency-groups');
     for(const total of report.totals||[]){
       const group=el('section',null,totals,'fi-ad-currency');group.dataset.adCurrency=total.currency;group.dataset.updateKey='ad-currency:'+total.currency;
@@ -23,7 +24,7 @@
       for(const k of displayAmounts){const box=el('div',null,cards,'fi-metric');box.dataset.adAmount=k;el('span',labels[k],box,'fi-metric-label');el('strong',amount(total,k),box);el('small',total.currency,box);}
     }
     if(!(report.totals||[]).length)el('p','当前范围没有已取得的投放消耗，不能解释为实际零消耗。',main,'fi-empty');
-    if(report.overlapExcluded)el('p','已排除 '+numeric(report.overlapExcluded)+' 条重叠来源：相同系列资金明细优先；账户汇总与系列明细不叠加。来源覆盖尚需核对，不能视为全量已完成对账。',main,'fi-muted');
+    if(report.overlapExcluded)el('p','已排除 '+numeric(report.overlapExcluded)+' 条重叠来源：同身份同日的 Shopee 官方 CPC 总额优先；其他平台相同系列资金明细优先，账户汇总与系列明细不叠加。来源覆盖尚需核对，不能视为全量已完成对账。',main,'fi-muted');
     if(report.overlapUnresolved)el('p',numeric(report.overlapUnresolved)+' 条历史来源缺少账户身份，与 API 存在潜在重叠；明细保留，汇总显示可确认的已知部分，请使用真实账户 ID 核实来源。',main,'fi-feedback');
     const headers=displayAmounts.map(k=>labels[k]);
     const values=r=>displayAmounts.map(k=>amount(r,k));

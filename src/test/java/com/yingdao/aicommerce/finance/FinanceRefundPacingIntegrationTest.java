@@ -23,12 +23,12 @@ class FinanceRefundPacingIntegrationTest extends FinanceConfigurationIntegration
         assertTrue(repo.transaction(()->FinanceRefundPacing.reserve(repo,Map.of("platform","TIKTOK_SHOP","channel","ORDER_LIVE"))));
         Instant first=FinanceRefundPacing.cooldown(repo);
         assertTrue(first.isAfter(Instant.now().plusSeconds(290)));
-        assertEquals(10,db.queryForObject("SELECT interval_seconds FROM finance_api_pacing",Integer.class));
+        assertEquals(10,db.queryForObject("SELECT interval_seconds FROM finance_api_pacing WHERE platform='TIKTOK_SHOP' AND channel='REFUND'",Integer.class));
         assertFalse(repo.transaction(()->FinanceRefundPacing.reserve(new FinanceRepository(db,new tools.jackson.databind.ObjectMapper()),refund)));
         Instant second=FinanceRefundPacing.cooldown(repo);assertTrue(second.isAfter(first.plusSeconds(290)));
-        db.update("UPDATE finance_api_pacing SET success_count=59");FinanceRefundPacing.succeeded(repo,refund);
-        assertEquals(10,db.queryForObject("SELECT interval_seconds FROM finance_api_pacing",Integer.class));
-        assertTrue(db.queryForObject("SELECT next_allowed_at>UTC_TIMESTAMP(6) FROM finance_api_pacing",Boolean.class),"recovery does not bypass an existing cooldown");
+        db.update("UPDATE finance_api_pacing SET success_count=59 WHERE platform='TIKTOK_SHOP' AND channel='REFUND'");FinanceRefundPacing.succeeded(repo,refund);
+        assertEquals(10,db.queryForObject("SELECT interval_seconds FROM finance_api_pacing WHERE platform='TIKTOK_SHOP' AND channel='REFUND'",Integer.class));
+        assertTrue(db.queryForObject("SELECT next_allowed_at>UTC_TIMESTAMP(6) FROM finance_api_pacing WHERE platform='TIKTOK_SHOP' AND channel='REFUND'",Boolean.class),"recovery does not bypass an existing cooldown");
     }
     @Test void refund429PreservesCursorAndDefersSharedLane(){
         String shop=refundShop("refund");

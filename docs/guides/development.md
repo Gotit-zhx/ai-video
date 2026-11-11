@@ -36,7 +36,8 @@
 | 发布 | `APP_PRODUCT_PUBLISHING_PROVIDER`、`APP_SHOP_LIVE_PUBLISHING_ENABLED` | 初始 `DRY_RUN`/false；需要已有授权及目标店铺字段校验 |
 | 图片 | `APP_PRODUCT_WATERMARK_PROVIDER/MODEL_ID`、`APP_PRODUCT_WATERMARK_LOCAL_*` | 本地检测只是证据；默认关闭不能当作已验收无水印 |
 | OSS | `APP_OSS_*`、`ALIBABA_CLOUD_ECS_METADATA` | 核对 endpoint、签名身份、私有凭据挂载及素材权限；本机不直接使用生产实例角色 |
-| 广告 | `APP_TIKTOK_ADS_CREDENTIALS_FILE` 或 `APP_TIKTOK_ADS_APP_ID/APP_SECRET` | 文件优先；模板在 `config/`，挂载覆盖见 `compose.finance-ads.yaml` |
+| TikTok 广告 | `APP_TIKTOK_ADS_CREDENTIALS_FILE` 或 `APP_TIKTOK_ADS_APP_ID/APP_SECRET` | 文件优先；模板在 `config/`，挂载覆盖见 `compose.finance-ads.yaml` |
+| Shopee 广告 | `APP_SHOPEE_ADS_CREDENTIALS_FILE` | 独立 Ads Service 正式配置；模板 `config/shopee-ads.properties.example`，默认关闭，审核和新店铺授权前不借用 ERP 凭据 |
 | 文档转换 | `APP_KNOWLEDGE_PREVIEW_URL/TOKEN`、`DOCUMENT_PREVIEW_TOKEN` | 通过 `compose.document-preview.yaml` 显式启用，内部令牌一致 |
 
 `.env.example` 保持 `APP_SESSION_COOKIE_SECURE=true`，这不是本地 HTTP 的适用值。若出现登录成功后立即 401，先核对 Cookie 及访问主机，不要先重置账号或清空 Redis。
