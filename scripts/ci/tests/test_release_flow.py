@@ -1274,5 +1274,81 @@ class ReleaseReadyOrderingTest(unittest.TestCase):
         self.assertFalse(any(effect[0] == 'PUT' and effect[1].endswith('/merge') for effect in server.effects))
 
 
+class CandidateVisibilityRaceTest(unittest.TestCase):
+    def fixture(self, hidden_reads=1):
+        server = RepositoryServer()
+        state = {'hidden': 0, 'now': 1794304860}
+        original = server.api
+        def api_call(path, method='GET', payload=None, missing=False):
+            if path == '/releases/tags/candidate-'+'a'*40 and state['hidden']:
+                state['hidden'] -= 1
+                return None
+            return original(path, method, payload, missing)
+        server.api = api_call
+        api = flow.GitHubAPI(server, clock=lambda: state['now'])
+        journal = api.plan('develop', '2026-11-10')
+        api.perform('create_branch', journal, {})
+        journal.update(api.perform('open_pr', journal, {}))
+        journal.update(api.perform('dispatch_candidate', journal, api.observe(journal)))
+        state['hidden'] = hidden_reads
+        return server, api, journal, state
+
+    def candidate_dispatches(self, server):
+        return [effect for effect in server.effects if effect[:2] == ('POST', '/actions/workflows/candidate.yml/dispatches')]
+
+    def test_success_seen_after_missing_manifest_waits_then_reverifies_manifest(self):
+        server, api, journal, state = self.fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            store = flow.JournalStore(Path(directory))
+            self.assertEqual('wait_candidate', flow.advance(journal, api, store, enabled=True))
+            self.assertIsNone(api.candidate, 'Run success is not candidate proof')
+            self.assertEqual('dispatch_host_check', flow.advance(journal, api, store, enabled=True))
+            self.assertEqual(journal['head'], api.candidate['source']['commit'])
+        self.assertEqual(1, len(self.candidate_dispatches(server)))
+
+    def test_completed_failure_stops_immediately_during_publication_grace(self):
+        server, api, journal, state = self.fixture(hidden_reads=20)
+        server.workflow_runs['candidate.yml'][0]['conclusion'] = 'failure'
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual('validation_failed', flow.advance(journal, api, flow.JournalStore(Path(directory)), enabled=True))
+        self.assertEqual(1, len(self.candidate_dispatches(server)))
+
+    def test_success_without_manifest_has_bounded_grace_across_resume(self):
+        server, api, journal, state = self.fixture(hidden_reads=20)
+        with tempfile.TemporaryDirectory() as directory:
+            store = flow.JournalStore(Path(directory))
+            self.assertEqual('wait_candidate', flow.advance(journal, api, store, enabled=True))
+            resumed = store.read(journal['id'])
+            state['now'] += 59
+            self.assertEqual('wait_candidate', flow.advance(resumed, api, store, enabled=True))
+            state['now'] += 2
+            self.assertEqual('validation_failed', flow.advance(resumed, api, store, enabled=True))
+            self.assertIsNone(api.candidate)
+        self.assertEqual(1, len(self.candidate_dispatches(server)))
+
+    def test_grace_never_bypasses_candidate_attestation(self):
+        server, api, journal, state = self.fixture()
+        original = server.command
+        def command(*args, **kwargs):
+            if args[:2] == ('attestation', 'verify'):
+                raise flow.FlowError('Candidate attestation rejected')
+            return original(*args, **kwargs)
+        server.command = command
+        with tempfile.TemporaryDirectory() as directory:
+            store = flow.JournalStore(Path(directory))
+            self.assertEqual('wait_candidate', flow.advance(journal, api, store, enabled=True))
+            with self.assertRaisesRegex(flow.FlowError, 'attestation'):
+                flow.advance(journal, api, store, enabled=True)
+        self.assertEqual(1, len(self.candidate_dispatches(server)))
+
+    def test_newest_failed_candidate_attempt_does_not_inherit_success_grace(self):
+        server, api, journal, state = self.fixture(hidden_reads=20)
+        previous = server.workflow_runs['candidate.yml'][0]
+        server.workflow_runs['candidate.yml'].append({**previous, 'run_attempt': 2, 'conclusion': 'failure'})
+        observed = api.observe(journal)
+        self.assertEqual(2, observed['candidateAttempt'])
+        self.assertEqual('validation_failed', flow.next_action(journal, observed))
+
+
 if __name__ == '__main__':
     unittest.main()
