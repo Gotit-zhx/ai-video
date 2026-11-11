@@ -85,6 +85,8 @@ Shopee 独立投放自动采集尚未接入。官方提供 CPC 日报/小时报�
 - [Shopee CPC 日报](https://open.shopee.com/documents/v2/v2.ads.get_all_cpc_ads_daily_performance?module=117&type=1)。
 - [Shopee GMS 报表](https://open.shopee.com/documents/v2/v2.ads.get_gms_campaign_performance?module=117&type=1)。
 
+本次真实接口及源码生效验收见 [资金 API 修复记录](../../releases/finance/finance-ad-funding-api-20261111.md)。
+
 ## 辅助核对区（原广告分析内容）
 
 - 四张卡片：总广告费、平台账单广告费、独立广告消耗、未分配费用；账单卡片另列其中广告佣金。普通独立明细页签明确命名「普通独立广告消耗明细」，避免将此单一来源空列表误认为全部广告费为空。
