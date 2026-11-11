@@ -59,6 +59,7 @@ class Store:
         return self.root / "operations" / (request + ".json")
 
     def save(self, operation, phase, **fields):
+        if hasattr(self,"timings"):operation["timings"]=self.timings.snapshot()
         operation.update(phase=phase, updatedAt=int(time.time()), **fields)
         atomic(self.path(operation["id"]), operation)
         return operation

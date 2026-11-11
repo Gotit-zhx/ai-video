@@ -61,3 +61,34 @@ class ReleaseTest(unittest.TestCase):
 
 
 if __name__=="__main__": unittest.main()
+
+class V2ManifestTest(ReleaseTest):
+    def v2(self):
+        value=self.manifest();value['schemaVersion']=2
+        value['validation'].update(profile='full',policyDigest='a'*64,toolchainDigest='b'*64,
+            suiteInputDigests={s:'c'*64 for s in ['core-policy','java-unit','all-db','all-frontend','container-smoke','systemd-recovery']},requiredSuites=['core-policy','java-unit','all-db','all-frontend','container-smoke','systemd-recovery'],
+            evidence=[{'runId':123,'runAttempt':1,'artifactId':456,'artifactDigest':'sha256:'+'d'*64,
+                       'workflow':'.github/workflows/ci.yml','head':'a'*40,'tree':'b'*40}])
+        value['images']['app'].update(compiledArtifactSha256='e'*64,buildRecipeDigest='f'*64)
+        return value
+    def test_v2_valid_and_missing_proof_rejected(self):
+        release.validate_manifest(self.v2())
+        for field in ['profile','policyDigest','toolchainDigest','suiteInputDigests','requiredSuites','evidence']:
+            value=self.v2();value['validation'].pop(field)
+            with self.subTest(field=field),self.assertRaises(ValueError):release.validate_manifest(value)
+    def test_v2_invalid_profile_duplicates_and_incomplete_input(self):
+        for key,data in [('profile','fast'),('requiredSuites',['core-policy','core-policy']),('suiteInputDigests',{}),('evidence',[])]:
+            value=self.v2();value['validation'][key]=data
+            with self.assertRaises(ValueError):release.validate_manifest(value)
+    def test_v1_cannot_carry_fast_validation(self):
+        value=self.manifest();value['validation']['profile']='module'
+        with self.assertRaises(ValueError):release.validate_manifest(value)
+    def test_hotfix_enters_active_release(self):
+        release.check_pr('release/2026.11.11','hotfix/2026.11.10.4')
+        with self.assertRaises(ValueError):release.check_pr('release/2026.11.11','feature/no')
+
+class FullCoverageTest(ReleaseTest):
+    def test_v2_full_profile_cannot_omit_required_full_suites(self):
+        value=V2ManifestTest().v2()
+        value['validation']['requiredSuites']=['core-policy']
+        with self.assertRaises(ValueError):release.validate_manifest(value)

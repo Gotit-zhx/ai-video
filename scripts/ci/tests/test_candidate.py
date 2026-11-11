@@ -29,3 +29,11 @@ class InitialBaseline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder,patch.object(candidate.release,'ROOT',Path(folder)),patch.dict(candidate.os.environ,{'INITIAL_ADOPTION':'true'}),patch.object(candidate.release,'run',return_value='a'*40),patch.object(candidate.subprocess,'run',return_value=SimpleNamespace(returncode=1)) as run:
             with self.assertRaises(ValueError):candidate.baseline_for('v1.0.0')
             self.assertEqual(1,run.call_count)
+
+class QualificationTests(unittest.TestCase):
+    def test_expected_head_rejected_before_api_access(self):
+        with patch.object(candidate.release,'run',return_value='a'*40),patch.object(candidate.evidence,'fetch_verified') as fetch:
+            with self.assertRaises(ValueError):candidate.qualify('b'*40,'123','1')
+            fetch.assert_not_called()
+    def test_artifact_recipe_must_match_validation(self):
+        with self.assertRaises(ValueError):candidate.check_compiled_proof({'build':{'archiveSha256':'a'*64}}, {'archiveSha256':'b'*64})

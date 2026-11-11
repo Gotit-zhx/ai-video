@@ -5,6 +5,8 @@ Only disposable, uniquely labelled images/containers are created. No registry
 credentials, production settings, source business data or external egress.
 """
 import json
+import os
+import re
 import secrets
 import subprocess
 import tempfile
@@ -13,7 +15,21 @@ import release
 import smoke
 
 
-def main(legacy_gate=False):
+def runtime_probe(image):
+    """Exercise the immutable image without network, credentials or business volumes."""
+    script="""set -eu
+    test -s /app/app.jar
+    java -version
+    test -s /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+    fc-match 'DejaVu Sans' | head -1
+    ffmpeg -hide_banner -loglevel error -f lavfi -i 'color=c=blue:s=160x120:d=0.1' -vf 'drawtext=fontfile=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc:text=验收:fontcolor=white:x=10:y=10' -frames:v 1 -threads 1 /tmp/probe.png
+    test -s /tmp/probe.png
+    """
+    subprocess.run(['docker','run','--rm','--platform','linux/amd64','--network','none','--read-only','--tmpfs','/tmp:rw,size=32m',
+                    '--label','org.heyi.owner=ci-runtime-probe','--entrypoint','sh',image,'-c',script],check=True,timeout=60)
+
+
+def main(legacy_gate=False, compiled=False):
     owner="heyi-ci-full-"+secrets.token_hex(8)
     images={name:owner+"-"+name for name in ("app","frontend")}
     container=owner+"-assets"
@@ -21,11 +37,25 @@ def main(legacy_gate=False):
     output.mkdir(parents=True,exist_ok=True)
     result={"result":"failed"}
     try:
+        runtime=None;builder=[]
+        if os.environ.get('CI_RUNTIME_PROOF'):
+            import runtime_recipe
+            proof=json.loads(os.environ['CI_RUNTIME_PROOF'])
+            if proof:
+                runtime=runtime_recipe.load_ci_runtime(release.ROOT/'target/ci-runtime',proof)
+                # The built-in Docker driver sees the verified image loaded into this daemon.
+                context=subprocess.check_output(['docker','context','show'],text=True).strip()
+                details=subprocess.check_output(['docker','buildx','inspect',context],text=True)
+                if not re.search(r'^Driver:\s+docker\s*$',details,re.M):raise ValueError('Qualified runtime requires the local Docker builder')
+                builder=['--builder',context]
         for name,tag in images.items():
-            subprocess.run(["docker","buildx","build","--platform=linux/amd64","--load","--provenance=false",
+            extra=["--build-arg","JAR_SOURCE=compiled"] if name=="app" and compiled else []
+            if name=="app" and runtime:extra += ["--build-arg","RUNTIME_BASE="+runtime]
+            subprocess.run(["docker","buildx","build",*builder,*extra,"--platform=linux/amd64","--load","--provenance=false",
                 "--label","org.heyi.owner="+owner,"--tag",tag,"--file",
                 "Dockerfile" if name=="app" else "frontend/Dockerfile",
                 "." if name=="app" else "frontend"],cwd=release.ROOT,check=True)
+        runtime_probe(images['app'])
         with tempfile.TemporaryDirectory(prefix=owner) as temporary:
             root=Path(temporary)
             subprocess.run(["docker","create","--label","org.heyi.owner="+owner,"--name",container,images["frontend"]],check=True,stdout=subprocess.DEVNULL)
@@ -35,7 +65,7 @@ def main(legacy_gate=False):
             manifest.write_text(json.dumps({"images":{"frontend":{"smokeAssets":{p:assets[p]["sha256"] for p in
                 ["index.html","app.js","finance-workspace.js","finance-charges.js"]}}},"validation":{}}))
             smoke.smoke(manifest,images,legacy_gate)
-            result={"result":"passed","containerSmoke":"passed","noProductionAccess":True,'legacyIngressFixture':'passed' if legacy_gate else 'not_run'}
+            result={"result":"passed","containerSmoke":"passed","runtimeMediaFonts":"passed","runtimePreparation":"qualified" if runtime else "pinned-cold","noProductionAccess":True,'legacyIngressFixture':'passed' if legacy_gate else 'not_run'}
     finally:
         (output/"summary.json").write_text(json.dumps(result,indent=2)+"\n")
         # Never prune a shared Docker daemon or remove an image another task owns.
@@ -50,5 +80,8 @@ def main(legacy_gate=False):
 
 if __name__=="__main__":
     import argparse
-    p=argparse.ArgumentParser();p.add_argument('--legacy-gate',action='store_true')
-    main(p.parse_args().legacy_gate)
+    p=argparse.ArgumentParser();p.add_argument('--legacy-gate',action='store_true');p.add_argument('--compiled',action='store_true');p.add_argument('--probe',type=Path)
+    args=p.parse_args()
+    if args.probe:
+        app=json.loads(args.probe.read_text())['images']['app'];runtime_probe(app['repository']+'@'+app['manifestDigest'])
+    else:main(args.legacy_gate,args.compiled)

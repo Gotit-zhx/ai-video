@@ -63,7 +63,6 @@ def image_metadata(repository,digest):
 def prepare_reused_smoke_images(images,changed):
     # The privileged smoke process does not inherit the publisher's registry login.
     # Cache every reused private digest while that authenticated client is available.
-    if not changed:return
     for name,image in images.items():
         if name in changed:continue
         actual=image_metadata(image['repository'],image['manifestDigest'])
@@ -71,8 +70,18 @@ def prepare_reused_smoke_images(images,changed):
             raise ValueError('Reused smoke image differs from the verified baseline')
 
 
-def build(version,baseline=None):
+def frontend_recipe_digest():
+    import scope
+    return scope.file_digest(['frontend/Dockerfile','frontend/package.py','frontend/nginx.conf','scripts/ci/build.py'])
+
+
+def build(version,baseline=None,validation=None):
     if not release.VERSION.fullmatch(version):raise ValueError("Invalid version")
+    import evidence
+    import java
+    import runtime_recipe
+    if not isinstance(validation,evidence.VerifiedEvidence):raise ValueError('Candidate requires externally qualified CI evidence')
+    compiled=java.load_compiled(ROOT/'target/compiled')
     source=release.inventory();ref=os.environ["GITHUB_REF"]
     match=re.fullmatch(r"refs/heads/(release|hotfix)/([0-9]+(?:\.[0-9]+){2,3})(?:-[A-Za-z0-9._-]+)?",ref)
     if not match or "v"+match[2]!=version:raise ValueError("Candidate branch/version mismatch")
@@ -85,8 +94,9 @@ def build(version,baseline=None):
     ensure_private_packages()
     output=ROOT/"target/release";output.mkdir(parents=True,exist_ok=True)
     images={};changed=[]
+    recipes={'app':compiled['buildRecipeDigest'],'frontend':frontend_recipe_digest()}
     for component in ("app","frontend"):
-        if baseline and baseline["source"]["inputs"][component]==source["inputs"][component]:
+        if baseline and baseline["source"]["inputs"][component]==source["inputs"][component] and baseline["images"][component].get("buildRecipeDigest")==recipes[component] and not (component=="app" and os.environ.get("HEYI_RUNTIME_BOOTSTRAP")=="true"):
             images[component]=baseline["images"][component];continue
         repository=f"ghcr.io/{release.REPOSITORY.lower()}/{component}"
         tag=repository+":git-"+source["commit"]
@@ -100,9 +110,25 @@ def build(version,baseline=None):
               "--label","org.opencontainers.image.version="+version,
               "--file","Dockerfile" if component=="app" else "frontend/Dockerfile",
               "." if component=="app" else "frontend"]
+        extra=['--cache-from','type=registry,ref='+repository+':buildcache',
+               '--cache-to','type=registry,ref='+repository+':buildcache,mode=max,image-manifest=true,oci-mediatypes=true']
+        runtime=None
+        if component=='app':
+            extra+=['--build-arg','JAR_SOURCE=compiled']
+            if os.environ.get('HEYI_RUNTIME_BOOTSTRAP')=='true':
+                if validation.get('profile')!='full':raise ValueError('Runtime qualification requires full CI')
+                runtime,recipe_digest=runtime_recipe.bootstrap_runtime(source)
+                extra+=['--build-arg','RUNTIME_BASE='+runtime]
+            elif os.environ.get('HEYI_RUNTIME_CACHE_ENABLED')=='true':
+                runtime,recipe_digest=runtime_recipe.qualified_runtime(baseline)
+                extra+=['--build-arg','RUNTIME_BASE='+runtime]
+        args[-1:-1]=extra
         subprocess.run(args,cwd=ROOT,check=True)
         digest=json.loads(metadata.read_text())["containerimage.digest"]
-        info=image_metadata(repository,digest);info.update(sourceCommit=source["commit"],sourceRef=ref)
+        info=image_metadata(repository,digest);info.update(sourceCommit=source["commit"],sourceRef=ref,buildRecipeDigest=recipes[component])
+        if component=='app':
+            info.update(compiledArtifactSha256=compiled['compiledArtifactSha256'],buildRecipeDigest=compiled['buildRecipeDigest'])
+            if runtime:info.update(runtimeBaseDigest=runtime.rsplit('@',1)[1],runtimeRecipeDigest=recipe_digest)
         visibility=package_info(component) or {}
         if visibility.get('visibility')!='private' or (visibility.get('repository') or {}).get('full_name','').lower()!=release.REPOSITORY.lower():
             raise RuntimeError('Release images must be private and linked to this repository')
@@ -120,12 +146,17 @@ def build(version,baseline=None):
     (output/"source.tar.gz").write_bytes(source_archive)
     manifest={"schemaVersion":1,"repository":release.REPOSITORY,"version":version,"source":source,
               "images":images,"sourceArchiveSha256":release.sha(source_archive),"sourceArchiveBytes":len(source_archive),"sourceUnpackedBytes":len(source_tar),
-              "validation":{"result":"passed","unexpectedSkips":0,"ciRunId":os.environ["GITHUB_RUN_ID"],
-                            "workflow":".github/workflows/ci.yml","containerSmoke":"pending" if changed else "passed",
+              "validation":{"result":"passed","unexpectedSkips":0,"ciRunId":validation["runId"],
+                            "workflow":".github/workflows/ci.yml","containerSmoke":"pending",
                             **({"reusedValidationFrom":baseline['version']} if not changed and baseline else {})}}
+    if os.environ.get('HEYI_MANIFEST_V2_ENABLED')=='true':
+        manifest['schemaVersion']=2
+        manifest['validation'].update({k:validation[k] for k in ['profile','policyDigest','toolchainDigest','suiteInputDigests','requiredSuites']})
+        manifest['validation']['evidence']=[{k:validation[k] for k in ['runId','runAttempt','artifactId','artifactDigest','workflow','head','tree']}]
     release.validate_manifest(manifest, require_smoke=False)
     (output/"release.json").write_text(json.dumps(manifest,sort_keys=True,indent=2)+"\n")
     with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+        f.write('runtime_digest='+images['app'].get('runtimeBaseDigest','')+'\n')
         for name,image in images.items():
             f.write(f'{name}_digest={image["manifestDigest"]}\n{name}_changed={str(name in changed).lower()}\n')
     return manifest

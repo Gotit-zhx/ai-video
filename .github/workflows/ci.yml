@@ -1,30 +1,58 @@
 name: CI
 on:
   pull_request:
-    branches: [develop, main-tree]
+    branches: [develop, main-tree, 'release/**']
   push:
     branches: [develop]
+  schedule:
+    - cron: '0 18 * * *'
   workflow_dispatch:
+    inputs:
+      force_full:
+        description: Run all validation suites
+        type: boolean
+        default: false
   workflow_call:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  nightly:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Dispatch full CI on the real develop head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST repos/Gotit-zhx/ai-video/actions/workflows/ci.yml/dispatches -f ref=develop -f 'inputs[force_full]=true'
   policy:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      runtime: ${{ steps.scope.outputs.runtime }}
+      plan: ${{ steps.scope.outputs.plan }}
+      reused: ${{ steps.scope.outputs.reused }}
+      unit: ${{ steps.scope.outputs.unit }}
+      database: ${{ steps.scope.outputs.database }}
+      frontend: ${{ steps.scope.outputs.frontend }}
+      container: ${{ steps.scope.outputs.container }}
+      systemd: ${{ steps.scope.outputs.systemd }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.sha }}
       - name: Gitflow and source policy
         env:
           BASE: ${{ github.base_ref }}
@@ -37,31 +65,97 @@ jobs:
       - id: scope
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          python3 - <<'PY'
-          import os, subprocess, sys
-          sys.path.insert(0,'scripts/ci')
-          from release import documentation_only
-          base=os.environ.get('BASE_SHA','')
-          runtime=True
-          if (not base or base=='0'*40) and os.environ['GITHUB_REF'].startswith(('refs/heads/release/','refs/heads/hotfix/')):
-              base='origin/main-tree'
-          if base and base!='0'*40:
-              files=subprocess.check_output(['git','diff','--name-only',base,'HEAD'],text=True).splitlines()
-              runtime=not documentation_only(files)
-          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('runtime='+str(runtime).lower()+'\n')
-          PY
-  unit:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          HEYI_FAST_CI_ENABLED: ${{ vars.HEYI_FAST_CI_ENABLED || 'false' }}
+          HEYI_V2_BOOTSTRAPPED: ${{ vars.HEYI_V2_BOOTSTRAPPED || 'false' }}
+          FORCE_FULL: ${{ inputs.force_full || false }}
+        run: python3 scripts/ci/scope.py --base "$BASE_SHA"
+  compile:
     needs: policy
-    if: needs.policy.outputs.runtime == 'true'
+    if: needs.policy.outputs.container == 'true' || needs.policy.outputs.unit == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: ./.github/actions/toolchain
+        with:
+          node: 'false'
+          media: 'false'
+      - run: python3 scripts/ci/java.py compile
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: compiled-${{ github.run_attempt }}
+          path: target/compiled/*
+          if-no-files-found: error
+          retention-days: 7
+  prepare-runtime:
+    needs: policy
+    if: needs.policy.outputs.container == 'true' && vars.HEYI_RUNTIME_CACHE_ENABLED == 'true' && github.repository == 'Gotit-zhx/ai-video' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/heads/hotfix/'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    outputs:
+      available: ${{ steps.prepare.outputs.available }}
+      proof: ${{ steps.prepare.outputs.proof }}
+      artifact_id: ${{ steps.archive.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - id: registry
+        continue-on-error: true
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: prepare
+        if: steps.registry.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci/runtime_recipe.py prepare-ci
+      - id: archive
+        if: steps.prepare.outputs.available == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: qualified-runtime-${{ github.run_attempt }}-cache
+          path: target/ci-runtime/runtime.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  unit:
+    needs: [policy, compile]
+    if: needs.policy.outputs.unit == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: compiled-${{ github.run_attempt }}
+          path: target/compiled
+      - run: python3 scripts/ci/java.py restore
       - uses: ./.github/actions/toolchain
-      - run: python3 scripts/ci/java.py unit
+        with:
+          node: 'false'
+          media: 'true'
+      - env:
+          HEYI_COMPILED_INPUT: 'true'
+          CI_PLAN: ${{ needs.policy.outputs.plan }}
+        run: python3 scripts/ci/java.py unit
       - name: Upload sanitized synthetic test summaries
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -70,8 +164,8 @@ jobs:
           path: target/ci-reports/**/summary.json
           retention-days: 7
   database:
-    needs: policy
-    if: needs.policy.outputs.runtime == 'true'
+    needs: [policy, compile]
+    if: needs.policy.outputs.database == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -82,8 +176,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: compiled-${{ github.run_attempt }}
+          path: target/compiled
+      - run: python3 scripts/ci/java.py restore
       - uses: ./.github/actions/toolchain
-      - run: python3 scripts/ci/java.py integration --shards 3 --shard "${{ matrix.shard }}"
+        with:
+          node: 'false'
+          media: 'false'
+      - env:
+          HEYI_COMPILED_INPUT: 'true'
+          CI_PLAN: ${{ needs.policy.outputs.plan }}
+        run: python3 scripts/ci/java.py integration --shards 3 --shard "${{ matrix.shard }}"
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -92,15 +198,22 @@ jobs:
           retention-days: 7
   frontend:
     needs: policy
-    if: needs.policy.outputs.runtime == 'true'
+    if: needs.policy.outputs.frontend == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
       - uses: ./.github/actions/toolchain
-      - run: python3 scripts/ci/run.py frontend
+        with:
+          java: 'false'
+          maven: 'false'
+          media: 'false'
+      - env:
+          CI_PLAN: ${{ needs.policy.outputs.plan }}
+        run: python3 scripts/ci/run.py frontend
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -108,16 +221,30 @@ jobs:
           path: target/ci-reports/frontend/summary.json
           retention-days: 7
   container:
-    needs: policy
-    if: needs.policy.outputs.runtime == 'true'
+    needs: [policy, compile, prepare-runtime]
+    if: always() && !cancelled() && needs.policy.result == 'success' && needs.compile.result == 'success' && needs.policy.outputs.container == 'true' && (needs.prepare-runtime.result == 'success' || needs.prepare-runtime.result == 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: compiled-${{ github.run_attempt }}
+          path: target/compiled
+      - run: python3 scripts/ci/java.py restore
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
-      - run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 scripts/ci/container.py --legacy-gate
+      - if: needs.prepare-runtime.outputs.available == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          artifact-ids: ${{ needs.prepare-runtime.outputs.artifact_id }}
+          path: target/ci-runtime
+          merge-multiple: true
+      - env:
+          CI_RUNTIME_PROOF: ${{ needs.prepare-runtime.outputs.proof }}
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,GITHUB_RUN_ID,GITHUB_RUN_ATTEMPT,GITHUB_SHA,CI_RUNTIME_PROOF python3 scripts/ci/container.py --legacy-gate --compiled
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -126,13 +253,14 @@ jobs:
           retention-days: 7
   systemd:
     needs: policy
-    if: needs.policy.outputs.runtime == 'true'
+    if: needs.policy.outputs.systemd == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
       - run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 scripts/ci/systemd_test.py
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -142,19 +270,43 @@ jobs:
           retention-days: 7
   required:
     name: CI required
-    if: always()
-    needs: [policy, unit, database, frontend, container, systemd]
+    if: always() && github.event_name != 'schedule'
+    needs: [policy, compile, unit, database, frontend, container, systemd]
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 5
     steps:
-      - env:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Enforce selected jobs and planned skips
+        env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
-          python3 - <<'PY'
-          import json, os
+          python3 - <<'PYCODE'
+          import json, os, pathlib
           n=json.loads(os.environ['NEEDS'])
           assert n['policy']['result']=='success', 'Policy checks failed'
-          assert n['policy']['outputs'].get('runtime') in ['true','false'], 'Missing component decision'
-          expected='success' if n['policy']['outputs']['runtime']=='true' else 'skipped'
-          assert all(n[k]['result']==expected for k in ['unit','database','frontend','container','systemd']), 'Mandatory checks failed or unexpectedly skipped'
-          PY
+          plan=json.loads(n['policy']['outputs']['plan'])
+          for job,selected in plan['jobs'].items():
+              assert n[job]['result']==('success' if selected else 'skipped'), 'Required suite failed or unexpected skip: '+job
+          compile_expected=plan['jobs']['container'] or plan['jobs']['unit']
+          assert n['compile']['result']==('success' if compile_expected else 'skipped'), 'Compilation failed or unexpected skip'
+          pathlib.Path('target').mkdir(exist_ok=True)
+          pathlib.Path('target/ci-plan.json').write_text(json.dumps(plan))
+          PYCODE
+      - if: needs.policy.outputs.reused != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: '*-${{ github.run_attempt }}'
+          path: target/downloaded
+      - name: Audit actual reports or revalidate the original execution reference
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci/evidence.py emit
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: validation-evidence-${{ github.run_attempt }}
+          path: target/evidence/evidence.json
+          if-no-files-found: error
+          retention-days: 7

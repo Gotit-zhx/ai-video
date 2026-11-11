@@ -1,0 +1,10 @@
+{
+  "platform": "linux/amd64",
+  "jre": "sha256:d3eb69add1874bc785382d6282db53a67841f602a1139dee6c4a1221d8c56568",
+  "bomSha256": "9a5b55239975fefc0ac9417610b8d7f24798c08f43fe470127ee53dc0825147c",
+  "qualification": "captured accepted image; cold build and smoke required before reuse",
+  "sourceVersion": "v2026.11.10.5",
+  "sourceCommit": "165b323b0fabb71c5466b1bef7e230cbc39bcda4",
+  "sourceManifestDigest": "sha256:acf513b0cf4b526b153e37bf196e6031dc9a754c2cb2e25c5959a60faff63f3e",
+  "packageBomSha256": "333e1ba858e6bc677d311584912adcc73e390d446d745370b71032eaecf5d563"
+}

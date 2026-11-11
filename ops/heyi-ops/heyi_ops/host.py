@@ -6,12 +6,14 @@ import re
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from .state import atomic, read, Busy
 from .storage import require_space
+from .timing import TimingRecorder
 
 GIB = 1024 ** 3
 SERVICES = {"app": "ai-commerce-app", "frontend": "ai-commerce-frontend"}
@@ -51,19 +53,48 @@ def inspect(name): return json.loads(command("docker", "inspect", name))[0]
 
 
 def image_config_digest(info):
-    """Classic Docker reports config IDs; containerd may report manifest IDs."""
+    """Use the verified Docker store, or bounded Docker image-save metadata."""
+    from . import oci
+    from .transfer import content_command,ContainerdCache,CacheUnavailable,CacheIntegrityError,verified
     descriptor=info.get('Descriptor')
     if not descriptor:return info['Id']
+    saved=None
+    def save_graph():
+        size=info.get('Size')
+        if type(size) is not int or size<0:raise ValueError('Missing inspected image size for safe export')
+        return oci.saved_metadata(info['Id'],2*size+32*1024**2)
+    try:content_command()
+    except CacheUnavailable:saved=save_graph()
     for depth in range(2):
-        value=descriptor['digest']
-        if not re.fullmatch(r'sha256:[a-f0-9]{64}',value) or descriptor.get('size',0)>1024**2:
+        value=descriptor['digest'];size=descriptor.get('size')
+        if not re.fullmatch(r'sha256:[a-f0-9]{64}',value) or type(size) is not int or not 0<size<=1024**2:
             raise ValueError('Invalid local image descriptor')
-        raw=command('ctr','-n','moby','content','get',value,timeout=15)
-        if len(raw)>1024**2 or 'sha256:'+sha(raw)!=value:raise ValueError('Local image manifest checksum differs')
+        if saved is not None:
+            raw=saved.get(value)
+            if raw is None:raise ValueError('Docker save omitted original image manifest')
+        else:
+            try:
+                with tempfile.TemporaryDirectory(prefix='heyi-image-metadata-') as directory:
+                    with ContainerdCache(directory,[{'digest':value,'size':size}]) as cache:
+                        stream=cache.open(value)
+                        if stream is None:raise CacheIntegrityError('Verified Docker store omitted image manifest')
+                        with stream:
+                            verified(stream,{'digest':value,'size':size});stream.seek(0);raw=stream.read(1024**2+1)
+            except CacheUnavailable:
+                saved=save_graph();raw=saved.get(value)
+                if raw is None:raise ValueError('Docker save omitted original image manifest')
+        if len(raw)!=size or 'sha256:'+sha(raw)!=value:raise ValueError('Local image manifest checksum differs')
         manifest=json.loads(raw)
         if 'config' in manifest:
             result=manifest['config']['digest']
             if not re.fullmatch(r'sha256:[a-f0-9]{64}',result):raise ValueError('Invalid local config digest')
+            if saved is not None:
+                config=saved.get(result)
+                if config is None or len(config)!=manifest['config']['size'] or oci.digest(config)!=result:
+                    raise ValueError('Docker save config differs from original manifest')
+                configuration=json.loads(config)
+                if configuration.get('architecture')!=info['Architecture'] or configuration.get('os')!=info['Os']:
+                    raise ValueError('Docker save platform differs')
             return result
         matches=[d for d in manifest.get('manifests',[]) if d.get('platform',{}).get('architecture')==info['Architecture'] and d.get('platform',{}).get('os')==info['Os']]
         if len(matches)!=1:raise ValueError('Ambiguous local platform')
@@ -94,7 +125,7 @@ def config_hash(info, env_keys=None): return sha(json.dumps(configuration(info,e
 
 class Host:
     def __init__(self, config):
-        self.config = config; self.root = Path(config["root"])
+        self.config = config; self.root = Path(config["root"]); self.timings = TimingRecorder()
         self.control = self.root / "control"; self.marker = self.control / "maintenance.json"
 
     def sql(self, query):
@@ -204,6 +235,10 @@ class Host:
         return dict(zip(ACTIVE, map(int, rows)))
 
     def drain(self, owner):
+        with self.timings.measure('businessDrain'):
+            return self._drain(owner)
+
+    def _drain(self, owner):
         deadline = time.monotonic()+self.config.get("drainTimeoutSeconds",180)
         quiet = 0
         while time.monotonic()<deadline:
@@ -234,6 +269,10 @@ class Host:
                        "-f",str(self.root/"compose/production.json"),"-f",str(images_file),*args,timeout=240)
 
     def activate(self, target, changed):
+        with self.timings.measure('containerStart'):
+            return self._activate(target, changed)
+
+    def _activate(self, target, changed):
         images = self.root/"releases"/target["version"]/"images.json"
         desired = {"services":{name:{"image":info["repository"]+"@"+info["manifestDigest"]} for name,info in target["images"].items()}}
         atomic(images,desired)
@@ -242,6 +281,10 @@ class Host:
         self.compose(images,"up","-d","--force-recreate","--no-deps","--no-build","--pull","never","--timeout","120",*changed)
 
     def verify(self, target, maintenance=False):
+        with self.timings.measure('postVerify'):
+            return self._verify(target, maintenance)
+
+    def _verify(self, target, maintenance=False):
         deadline = time.monotonic()+180
         while True:
             try:

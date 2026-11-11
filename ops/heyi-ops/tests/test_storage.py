@@ -41,6 +41,8 @@ class StorageBudgetTest(unittest.TestCase):
                   'sourceUnpackedBytes': mib,
                   'images': {'app': {'compressedBytes': 2*mib, 'unpackedBytes': 4*mib},
                              'frontend': {'compressedBytes': mib, 'unpackedBytes': 2*mib}}}
+        for name,image in target['images'].items():
+            image.update(repository='ghcr.io/gotit-zhx/ai-video/'+name,manifestDigest='sha256:'+'a'*64,sourceCommit='a'*40,sourceRef='refs/heads/release/1.0.0')
         manifest = json.dumps(target).encode()
         sizes = {'release.json': len(manifest), 'source.tar.gz': len(source)}
         api = {'git/ref/heads/main-tree': {'object': {'sha': 'production'}},
@@ -51,13 +53,11 @@ class StorageBudgetTest(unittest.TestCase):
         def command(*args, **kwargs):
             if args[:2] == ('gh', 'api'):
                 return json.dumps(api[args[2].split('Gotit-zhx/ai-video/', 1)[1]]).encode()
-            if args[:2] == ('docker', 'login'):
-                raise ReadyToImport()
             return b''
 
         for cached, archives in [(set(), {'app': 2*mib, 'frontend': mib}), ({'app'}, {}), ({'app', 'frontend'}, {})]:
             budget = sum(image['compressedBytes'] + image['unpackedBytes'] for name, image in target['images'].items() if name not in cached)
-            budget += sum(archives.values()) + 2*len(source) + mib
+            budget += 2*sum(archives.values()) + 2*len(source) + mib
             for missing_byte in (0, 1):
                 with self.subTest(cached=cached, missing_byte=missing_byte), tempfile.TemporaryDirectory() as directory:
                     upload = io.BytesIO(manifest + source + bytes(sum(archives.values())))
@@ -65,6 +65,7 @@ class StorageBudgetTest(unittest.TestCase):
                          patch('heyi_ops.artifacts.validate_manifest', side_effect=lambda value: value), \
                          patch.object(Artifacts, 'cached', side_effect=lambda image: any(image == target['images'][name] for name in cached)), \
                          patch('heyi_ops.oci.validate_archive'), \
+                         patch.object(Artifacts, 'verify_import', side_effect=ReadyToImport), \
                          patch('heyi_ops.storage.shutil.disk_usage', return_value=SimpleNamespace(free=10*GIB + budget - missing_byte)):
                         error = RuntimeError if missing_byte else ReadyToImport
                         with self.assertRaises(error):
@@ -87,3 +88,31 @@ class StorageBudgetTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class RetainedContentPeakTest(unittest.TestCase):
+    def test_delta_empty_store_reserves_staged_tar_daemon_and_verification_copies(self):
+        from heyi_ops.transfer import temporary_peak
+        mib=1024**2
+        target={'images':{'app':{'compressedBytes':64*mib,'unpackedBytes':128*mib},
+                          'frontend':{'compressedBytes':mib,'unpackedBytes':2*mib}},
+                'sourceArchiveBytes':1,'sourceUnpackedBytes':1}
+        descriptors=[{'digest':'sha256:'+'a'*64,'size':64*mib},{'digest':'sha256:'+'b'*64,'size':mib}]
+        # During app import: 65MiB staged/cache input + 64MiB current tar +
+        # 64MiB newly retained daemon compressed content + 128MiB unpacked app.
+        actual_peak=(65+64+64+128)*mib+3
+        self.assertGreaterEqual(temporary_peak(target,descriptors),actual_peak)
+        # Post-import reads retain originals, new daemon content and verification copies.
+        post_import=(65*3+130)*mib+3
+        self.assertGreaterEqual(temporary_peak(target,descriptors),post_import)
+
+    def test_full_empty_store_rejects_space_without_the_retained_verification_copy(self):
+        mib=1024**2
+        target={'version':'v1.0.0','sourceArchiveBytes':1,'sourceUnpackedBytes':1,
+                'images':{'app':{'compressedBytes':64*mib,'unpackedBytes':128*mib},
+                          'frontend':{'compressedBytes':mib,'unpackedBytes':2*mib}}}
+        # Uploaded archives 65 + daemon compressed 65 + unpacked 130 +
+        # post-import verification copies 65 = 325 MiB, plus three source bytes.
+        actual_peak=325*mib+3
+        with tempfile.TemporaryDirectory() as temporary,patch.object(Artifacts,'trusted_inputs',return_value=(target,{},{})),patch.object(Artifacts,'cached',return_value=False),patch('heyi_ops.storage.shutil.disk_usage',return_value=SimpleNamespace(free=10*GIB+actual_peak-1)):
+            with self.assertRaisesRegex(RuntimeError,'10 GiB reserve'):
+                Artifacts(temporary).prepare('v1.0.0','synthetic',(io.BytesIO(),{}, {'app':64*mib,'frontend':mib}))
