@@ -697,7 +697,7 @@ class GitHubAPI:
                     observed.update(self.backmerge_observation(context))
             return observed
         observed['ciReady'] = self.pr_validation(pr)
-        observed['releaseReady'] = self.check(journal['head'], 'Release ready')
+        observed['releaseReady'] = self.pr_release_ready(pr)
         if not self.candidate:
             runs = [r for r in self.runs('ci.yml', journal['head']) if trusted_run(r, 'ci.yml', journal['head'], completed=False)]
             observed['validationObservedRun'] = max((r['id'] for r in runs), default=0)
@@ -749,6 +749,56 @@ class GitHubAPI:
                                        '--verify-tag', '--latest=true', '--title', journal['version'],
                                        '--notes', 'Accepted by the existing host executor. Operation: ' + receipt['id'],
                                        str(manifest), str(path))
+
+    def pr_release_ready(self, pr):
+        """Bind readiness to the eligible PR run and its exact native job check.
+
+        Dispatch-origin Candidate checks are not eligible required PR checks,
+        even when their name, app, SHA and pull_requests metadata match.
+        """
+        try:
+            runs = self.runs('release-ready.yml', pr['head']['sha'])
+        except GitHubError as error:
+            if error.status == 404:
+                return False  # New workflow not registered yet; Candidate may proceed.
+            raise
+        matches = [run for run in runs if
+                   run.get('event') == 'pull_request' and
+                   run.get('path') == '.github/workflows/release-ready.yml' and
+                   run.get('head_sha') == pr['head']['sha'] and
+                   run.get('repository', {}).get('full_name') == REPOSITORY and
+                   run.get('head_repository', {}).get('full_name') == REPOSITORY and
+                   any(item.get('number') == pr['number'] and
+                       item.get('head', {}).get('sha') == pr['head']['sha'] and
+                       item.get('base', {}).get('sha') == pr['base']['sha']
+                       for item in run.get('pull_requests', []))]
+        if not matches:
+            return False
+        current = max(matches, key=lambda run: (run['id'], run['run_attempt']))
+        if current.get('status') != 'completed' or current.get('conclusion') != 'success':
+            return False
+        jobs = self.pages('/actions/runs/' + str(current['id']) + '/attempts/' +
+                          str(current['run_attempt']) + '/jobs', 'jobs')
+        jobs = [job for job in jobs if job.get('name') == 'Release ready']
+        if len(jobs) != 1:
+            return False
+        job = jobs[0]
+        if (job.get('run_id') != current['id'] or job.get('head_sha') != pr['head']['sha'] or
+                job.get('status') != 'completed' or job.get('conclusion') != 'success'):
+            return False
+        url = re.fullmatch(r'https://api\.github\.com/repos/' + re.escape(REPOSITORY) +
+                           r'/check-runs/([1-9][0-9]*)', job.get('check_run_url', ''), re.IGNORECASE)
+        if not url:
+            return False
+        check_id = int(url[1])
+        check = self.api('/check-runs/' + str(check_id))
+        return (check.get('id') == check_id and check.get('name') == 'Release ready' and
+                check.get('head_sha') == pr['head']['sha'] and
+                type(current.get('check_suite_id')) is int and
+                check.get('check_suite', {}).get('id') == current['check_suite_id'] and
+                check.get('app', {}).get('id') == 15368 and
+                check.get('app', {}).get('slug') == 'github-actions' and
+                check.get('status') == 'completed' and check.get('conclusion') == 'success')
 
     def pr_validation(self, pr):
         """Require CI for this exact PR head/base combination, including backmerges."""

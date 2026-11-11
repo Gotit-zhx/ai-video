@@ -22,12 +22,13 @@ MySQL 就绪检查使用认证 TCP `SELECT 1`，避免误认初始化时的临�
 
 `frontend/package.py` 是生产静态资源打包入口，校验 HTML、CSS 及 JavaScript 字面量资源引用，生成 SHA-256 资源清单与固定时间戳 gzip。生产镜像不再手工列举每个脚本。无法静态求值的业务 API/用户内容路径仍需相应页面测试。
 
-## 四条流水线
+## 流水线
 
 | 入口 | 触发 | 验证与产物 |
 | --- | --- | --- |
 | `CI` | PR、develop、手动、候选复用 | Gitflow、策略测试、Java 单元及隔离数据库、前端回归；稳定汇总检查 `CI required` |
-| `Candidate artifacts` | 发布命令显式 dispatch、兼容手动 dispatch | 受信任版本分支及指定 CI run/attempt；复用编译产物、隔离容器冒烟、私有 GHCR、来源证明、`Release ready` |
+| `Candidate artifacts` | 发布命令显式 dispatch、兼容手动 dispatch | 受信任版本分支及指定 CI run/attempt；复用编译产物、隔离容器冒烟、私有 GHCR、来源证明、`Candidate published` |
+| `Release ready`（PR 检查） | 面向 `main-tree` 的 PR | 只读核验同一候选、来源证明及实际完成的候选执行，满足 PR 必需门禁；不重复构建 |
 | `Production deployment` | `v*` 标签、手动重试 | 当前生产 HEAD、no-ff 第二父提交、候选树、来源证明、不可变镜像、主机执行及回执 |
 | `Operations` | 每五分钟、手动 | 外部 HTTPS、只读主机诊断、去重 Issue；已验收版本回滚 |
 
