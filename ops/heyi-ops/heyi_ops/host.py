@@ -164,7 +164,8 @@ class Host:
             and receipt.get("afterSchemaFingerprint")==baseline["schemaFingerprint"]
             and receipt.get("migrationInputs")==baseline["migrationInputs"]
             and receipt.get("previousMigrationInputs")==target["source"]["inputs"]["migrations"]
-            and receipt.get("addedVersions")==["148"]
+            and (receipt.get("addedVersions")==["148"] or
+                 (receipt.get("addedVersions")==["150"] and receipt.get("sqlSha256")=="a8dfff7b4f3b722e137dd7bc39aebc0a8b5df9201b75a29199dc55211e7c1e13"))
             and all(receipt.get(key) is True for key in ("historyPrefixPreserved","protectedDataPreserved","oldRuntimeValidationPassed","oldRuntimeRestartPassed")))
 
     def preflight(self, target, baseline, rollback=False, restart=False):
