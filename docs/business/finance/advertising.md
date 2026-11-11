@@ -71,6 +71,8 @@ Shopee 独立投放自动采集尚未接入。官方提供 CPC 日报/小时报�
 | Shopee CPC / GMS 投放报表 | `expense` | 店铺或推广计划广告消耗；所核对报表未提供现金、授信、赠款和排除优惠后的净消耗分项。接口权限不足与分项未开放是不同问题。 |
 | 财务资金报表 | 现金、信用额度、广告费用赠款、合计 | 保留原分项；现金和授信均明确时，它们的和可作为该资金事实的不含赠款净消耗。退款及冲减保留方向。 |
 
+当前采集使用 v1.3。补查 v2.0 的正式「Supported metrics for Ad Reports」页面，`cash_spend`、`voucher_spend` 仍明确仅支持账户级；同步接口的系列级示例与此限制不一致，不据该示例扩大可用粒度。v2.0 同步报表另将旧 GMV Max 报表类型列为弃用，不能凭普通 Ad Report 示例宣称已替代当前 GMV Max 专属报表。
+
 `ad credit` 在净消耗定义中指赠款/优惠，不能译成授信消耗；`spend_credits` 是应用内花费积分转化次数，亦不能映射到财务信用额度金额。没有可靠接口分项就保留未知，不用 `cost - net_cost` 倒算现金、授信或实际赠款。
 
 「账户级资金核对」默认为折叠区，不增加第四张经营主表。即使账户总额因与系列重叠被主表排除，账户日报已取得的资金指标仍可核对；独立汇总不叠加到三张主表。店铺/分组筛选只显示当前已可见来源相关的账户，其完整账户金额未被假拆成该店金额；明细搜索和分页不改变此期间核对范围。导出增加对应核对工作表、净消耗与金额口径，长 ID 仍为文本。
@@ -79,6 +81,7 @@ Shopee 独立投放自动采集尚未接入。官方提供 CPC 日报/小时报�
 
 官方依据：
 
+- [TikTok v2.0 Ad Report 正式指标](https://business-api.tiktok.com/portal/docs/supported-metrics-for-ad-reports/v2.0)。
 - [TikTok BASIC 指标](https://business-api.tiktok.com/portal/docs/basic-reports-supported-metrics/v1.3)。
 - [TikTok GMV Max 指标](https://business-api.tiktok.com/portal/docs/metrics-in-gmv-max-campaign-reports/v1.3)。
 - [TikTok BC 费用记录](https://business-api.tiktok.com/portal/docs?id=1829079287639041)。
