@@ -154,12 +154,13 @@ public class FinanceCostExport {
             if(total>limits.totalOrders())throw bad("成本导出超过 1,000,000 笔订单，请联系管理员安排批量导出");
             progress.accept(0L,total);
             long processed=0,lines=0,outputBytes=0;
-            Map<String,Object> cursor=null;
+            Path keyFile=Files.createTempFile(directory,"cost-keys-",".bin");created.add(keyFile);
+            spoolKeys(q,from,selectedKind,selectedStatus,keyFile,total,deadline);
             current=new Part(directory);
+            try(var keyInput=new DataInputStream(new BufferedInputStream(Files.newInputStream(keyFile)))){
             while(processed<total){
                 checkTime(deadline);
-                var keys=keys(q,from,selectedKind,selectedStatus,cursor);
-                if(keys.isEmpty())throw bad("导出数据读取不完整，请重试");
+                var keys=readKeys(keyInput,(int)Math.min(500,total-processed));
                 var page=details(company,keys);
                 if(page.size()!=keys.size())throw bad("导出订单关联数据数量不一致，请重试");
                 new FinanceCostReport(repo).attachSettlementAmounts(company,page);
@@ -178,9 +179,11 @@ public class FinanceCostExport {
                     for(var values:detailRows)current.details.row(values);
                     merge(current.totals,stats);processed++;lines+=stats.lines;
                 }
-                cursor=keys.getLast();
                 progress.accept(processed,total);
             }
+            if(keyInput.read()!=-1)throw bad("导出订单索引数量不一致，请重试");
+            }
+            Files.delete(keyFile);
             if(processed!=total)throw bad("导出订单数量不一致，请重试");
             FilePart part=finishPart(current,company,filter,selectedKind,recordId,selectedStatus,numbers,directory,parts.size()+1,!parts.isEmpty(),limits.bytes()-outputBytes,created,deadline);
             parts.add(part);current.close();current=null;
@@ -212,20 +215,48 @@ public class FinanceCostExport {
             slots.release();
         }
     }
-    private List<Map<String,Object>> keys(FinanceRepository.Query q,String from,String kind,String status,Map<String,Object> cursor){
+    /** Read the expensive selection once. Close its streaming result before reading JSON pages on the same snapshot connection. */
+    private void spoolKeys(FinanceRepository.Query q,String from,String kind,String status,Path file,long total,long deadline)throws IOException{
         boolean settled=Set.of("SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED").contains(kind);
         String date=settled?"x.settlement_date":"sort_order.record_date";
         String dateKey="COALESCE("+date+",'1000-01-01')",idKey="COALESCE(x.order_record_id,'')";
-        String statusWhere=FinanceCostReport.costStatusWhere(status);
-        var args=new ArrayList<>(q.args());String after="";
-        if(cursor!=null){
-            Object day=cursor.get("export_sort_date");String id=text(cursor.get("order_record_id")),shop=text(cursor.get("shop_id")),reference=text(cursor.get("reference"));
-            after=(statusWhere.isBlank()?" WHERE ":" AND ")+"("+dateKey+"<? OR ("+dateKey+"=? AND ("+idKey+">? OR ("+idKey+"=? AND (x.shop_id>? OR (x.shop_id=? AND x.reference>?))))))";
-            args.addAll(Arrays.asList(day,day,id,id,shop,shop,reference));
+        String sql="SELECT x.order_record_id,x.shop_id,x.reference,"+dateKey+" export_sort_date,"+(settled?"x.settlement_date":"NULL")+" first_settlement_date"+from
+            +(settled?"":" LEFT JOIN finance_records sort_order ON sort_order.id=x.order_record_id AND sort_order.organization_id=x.organization_id")+FinanceCostReport.costStatusWhere(status)
+            +" ORDER BY "+dateKey+" DESC,"+idKey+",x.shop_id,x.reference";
+        long[] selected={0};
+        try(var output=new DataOutputStream(new BufferedOutputStream(bounded(Files.newOutputStream(file),256L*1024*1024,deadline,
+                "成本报表索引超过临时空间上限，未生成部分报表，请联系管理员安排导出")))){
+            if(total>0)repo.jdbc().query(connection->{
+                var statement=connection.prepareStatement(sql,java.sql.ResultSet.TYPE_FORWARD_ONLY,java.sql.ResultSet.CONCUR_READ_ONLY);
+                try{
+                    statement.setFetchSize(Integer.MIN_VALUE); // MySQL Connector/J streams instead of buffering every key in heap.
+                    for(int i=0;i<q.args().size();i++)statement.setObject(i+1,q.args().get(i));
+                    return statement;
+                }catch(java.sql.SQLException|RuntimeException failure){statement.close();throw failure;}
+            },(org.springframework.jdbc.core.RowCallbackHandler)row->{
+                checkTime(deadline);
+                if(selected[0]>=total)throw bad("导出订单索引数量不一致，请重试");
+                try{
+                    for(String column:List.of("order_record_id","shop_id","reference","first_settlement_date")){
+                        String value=row.getString(column);output.writeBoolean(value!=null);if(value!=null)output.writeUTF(value);
+                    }
+                    selected[0]++;
+                }catch(IOException failure){throw new UncheckedIOException(failure);}
+            });
         }
-        return repo.jdbc().queryForList("SELECT x.order_record_id,x.organization_id,x.shop_id,x.reference,"+dateKey+" export_sort_date,"+(settled?"x.settlement_date":"NULL")+" first_settlement_date"+from
-            +(settled?"":" LEFT JOIN finance_records sort_order ON sort_order.id=x.order_record_id AND sort_order.organization_id=x.organization_id")+statusWhere+after
-            +" ORDER BY "+dateKey+" DESC,"+idKey+",x.shop_id,x.reference LIMIT 500",args.toArray());
+        if(selected[0]!=total)throw bad("导出数据读取不完整，请重试");
+    }
+    private List<Map<String,Object>> readKeys(DataInputStream input,int count)throws IOException{
+        var result=new ArrayList<Map<String,Object>>(count);
+        for(int i=0;i<count;i++){
+            var key=new LinkedHashMap<String,Object>();
+            for(String column:List.of("order_record_id","shop_id","reference","first_settlement_date")){
+                String value=input.readBoolean()?input.readUTF():null;
+                key.put(column,value!=null&&column.equals("first_settlement_date")?java.sql.Date.valueOf(value):value);
+            }
+            result.add(key);
+        }
+        return result;
     }
     private List<Map<String,Object>> details(Scope company,List<Map<String,Object>> keys){
         var selects=new ArrayList<String>();var args=new ArrayList<Object>();int position=0;
@@ -291,9 +322,12 @@ public class FinanceCostExport {
         if(Thread.currentThread().isInterrupted()||System.nanoTime()>deadline)throw bad("成本报表生成超时或已停止，请稍后重试");
     }
     private static OutputStream bounded(OutputStream output,long maximum,long deadline){
+        return bounded(output,maximum,deadline,"成本报表文件总大小超过 128 MiB，未生成部分报表，请联系管理员安排导出");
+    }
+    private static OutputStream bounded(OutputStream output,long maximum,long deadline,String message){
         return new FilterOutputStream(output){
             long count;
-            private void count(int length){checkTime(deadline);if(count>maximum-length)throw bad("成本报表文件总大小超过 128 MiB，未生成部分报表，请联系管理员安排导出");count+=length;}
+            private void count(int length){checkTime(deadline);if(count>maximum-length)throw bad(message);count+=length;}
             @Override public void write(int b)throws IOException{count(1);out.write(b);}
             @Override public void write(byte[] b,int offset,int length)throws IOException{count(length);out.write(b,offset,length);}
         };
