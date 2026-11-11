@@ -720,7 +720,20 @@ class GitHubAPI:
                 newest = max(candidate_runs, key=lambda r: (r['id'], r['run_attempt']))
                 observed.update(candidateRun=newest['id'], candidateAttempt=newest['run_attempt'])
                 if newest['status'] == 'completed':
-                    observed['validationFailed'] = True
+                    # The earlier release lookup can precede publication even
+                    # though this later run lookup already sees success. Wait
+                    # briefly, then re-read and attest the immutable manifest;
+                    # run success alone never makes a candidate ready.
+                    visibility_pending = False
+                    if newest.get('conclusion') == 'success':
+                        try:
+                            completed_at = datetime.fromisoformat(newest['updated_at'].replace('Z', '+00:00'))
+                            age = self.clock() - completed_at.timestamp()
+                            visibility_pending = completed_at.tzinfo is not None and 0 <= age < 60
+                        except (KeyError, TypeError, ValueError, AttributeError):
+                            pass
+                    if not visibility_pending:
+                        observed['validationFailed'] = True
         else:
             observed.update(self.host_observation(journal))
         return observed
