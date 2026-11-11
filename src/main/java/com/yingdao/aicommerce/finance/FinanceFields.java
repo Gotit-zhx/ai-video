@@ -63,7 +63,8 @@ public final class FinanceFields {
         new Field("difference","差异","money","对账字段",false,"RECONCILIATION",""),
         new Field("result","核对结果","text","对账字段",false,"RECONCILIATION",""),
         fx("cny_amount","折算人民币","money"),fx("cny_revenue","人民币归因收入","money"),
-        fx("cny_rate","参考汇率","number"),fx("fx_time","汇率时间","datetime"),fx("fx_provider","汇率来源","text"),
+        fx("cny_rate","历史参考汇率","number"),fx("fx_time","汇率快照创建时间","datetime"),fx("fx_provider","汇率来源","text"),
+        fx("fx_business_date","换算业务日期","date"),fx("fx_rate_date","汇率公布日期","date"),
         new Field("cny_detail_amount","人民币明细金额","money","人民币折算",true,"RECONCILIATION",""),
         new Field("cny_difference","人民币差异","money","人民币折算",true,"RECONCILIATION",""),
         extra("payment_method","支付方式","text","ORDER","payment_method|payment.payment_method_name"),
@@ -112,7 +113,7 @@ public final class FinanceFields {
         extra("conversions","转化 / SKU 订单数","number","AD AD_GMV",""),
         extra("net_cost","GMV Max 净消耗（原币）","money","AD_GMV","metrics.net_cost")
     );
-    static final List<String> DEFAULT_EXPORT=List.of("record_date","platform","shop_id","kind","external_id","order_id","marketing_label","summary_inclusion","product_skus","statement_id","category","status","currency","amount","revenue","source","cny_amount","cny_revenue","cny_rate","fx_time","fx_provider");
+    static final List<String> DEFAULT_EXPORT=List.of("record_date","platform","shop_id","kind","external_id","order_id","marketing_label","summary_inclusion","product_skus","statement_id","category","status","currency","amount","revenue","source","cny_amount","cny_revenue","cny_rate","fx_time","fx_provider","fx_business_date","fx_rate_date");
     static final List<String> DEFAULT_VISIBLE=List.of("record_date","shop_id","external_id","order_id","product_skus","category","status","currency","amount","cny_amount");
     static final List<String> RECON_VISIBLE=List.of("record_date","shop_id","external_id","product_skus","source","currency","amount","detail_amount","difference","cny_difference","result");
     static final List<String> RECON_EXPORT=List.of("record_date","shop_id","external_id","product_skus","source","currency","amount","detail_amount","detail_count","difference","result","cny_amount","cny_detail_amount","cny_difference","cny_rate");
@@ -231,7 +232,7 @@ public final class FinanceFields {
         return ids.stream().map(id->catalog.stream().filter(f->f.id.equals(id)).findFirst().orElseThrow()).filter(f->cny||!f.cny).toList();
     }
     static Set<String> numericLabels(){
-        var labels=new HashSet<>(List.of("金额","账单金额","人民币账单金额","确认退款金额（原币）","确认退款金额（人民币）"));
+        var labels=new HashSet<>(List.of("金额","账单金额","人民币账单金额","确认退款金额（原币）","确认退款金额（人民币）","参考汇率"));
         CATALOG.stream().filter(f->Set.of("money","number").contains(f.type)).map(Field::label).forEach(labels::add);return labels;
     }
     static String orderType(String type,String sample){
@@ -242,6 +243,10 @@ public final class FinanceFields {
     static void enrich(Map<String,Object> row,Map<String,Object> raw){
         if(!"API".equals(row.get("source")))return;
         FinanceReportingMonths.enrich(row,raw);
+        if(Set.of("SETTLEMENT","FEE","BILL").contains(text(row.get("kind")))){
+            if(FinanceSettlementDates.exportBasis(raw))row.put("fx_date",raw.get("_finance_export_statement_date"));
+            else if(!text(raw.get("_finance_reporting_month")).isBlank())row.put("fx_date",null);
+        }
         String kind=text(row.get("kind")),platform=text(row.get("platform"));
         if(Set.of("SETTLEMENT","PENDING").contains(kind)){
             String time=orderTime(raw.get("order_create_time"));
@@ -307,7 +312,8 @@ public final class FinanceFields {
     static String cell(Map<String,Object> row,Field field){
         if(Set.of("record_date","first_settlement_date").contains(field.id)&&!text(row.get("reporting_month")).isBlank())
             return FinanceReportingMonths.dateLabel(row,field.id);
-        Object value=switch(field.id){case "fx_time"->at(row,"fx.time");case "fx_provider"->at(row,"fx.provider");default->row.get(field.id);};
+        Object value=switch(field.id){case "fx_time"->at(row,"fx.time");case "fx_provider"->at(row,"fx.provider");
+            case "fx_business_date"->at(row,"fx.businessDate");case "fx_rate_date"->at(row,"fx.rateDate");default->row.get(field.id);};
         if(field.type.equals("datetime")&&value!=null){
             try{
                 var zone=field.label.contains("北京时间")?FinanceCalendar.DISPLAY_ZONE

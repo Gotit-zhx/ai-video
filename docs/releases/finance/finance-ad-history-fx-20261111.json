@@ -1,0 +1,90 @@
+{
+  "date": "2026-11-11",
+  "unit": {
+    "classes": 43,
+    "tests": 338,
+    "durationSeconds": 6.6830000000000025,
+    "allowedSkips": [
+      "FinanceOrderChargesTest#suppliedWorkbookPreservesAllTwentyFiveRecords",
+      "FinanceLabelInvoiceTest#suppliedInvoiceReconcilesWithoutLoadingFullWorkbook"
+    ],
+    "unexpectedSkips": 0,
+    "result": "passed",
+    "failures": []
+  },
+  "integration": {
+    "classes": 28,
+    "tests": 1447,
+    "failures": 0,
+    "skipped": 0
+  },
+  "frontend": {
+    "tests": 740,
+    "uiSuites": 36,
+    "result": "passed",
+    "assetReferences": "passed"
+  },
+  "finalFxDatabase": [
+    {
+      "class": "FinanceHistoricalFxIntegrationTest",
+      "result": "passed",
+      "tests": 1
+    },
+    {
+      "class": "FinanceHistoricalFxBusinessDateIntegrationTest",
+      "result": "passed",
+      "tests": 1
+    }
+  ],
+  "bcCapability": {
+    "enabledAccounts": 28,
+    "distinctGrants": 1,
+    "discoveryCode": 40001,
+    "financialRowsObtained": false
+  },
+  "runtimeStatus": "VERIFIED",
+  "runtime": {
+    "phase": "runtime-verified",
+    "mode": "source-development",
+    "schemaFingerprint": "cf7861960c8064b94b0358489586dc1c75b8d668cf19d59132cdfa382646923d",
+    "latestMigration": "152",
+    "contextId": "6cab3bad-8333-47cf-804b-7c2d57a5cb4e",
+    "appContainerId": "2101794bcc7523b3df558c123927c478a6d2efd44a4f7250919018831022bd28",
+    "composeFileCount": 5,
+    "sourceFileCount": 29,
+    "sourceFilesMatchLocal": true,
+    "otherWipPreserved": 8,
+    "maintenance": false,
+    "schemaHistoryPrefixPreserved": true,
+    "protectedDataPreserved": true,
+    "oldRuntimeValidationPassed": true,
+    "legacyReleaseMetadataUnchanged": true,
+    "watcherReady": true,
+    "automaticFlyway": false
+  },
+  "browser": {
+    "sheets": [
+      "分组广告消耗",
+      "店铺广告消耗",
+      "店铺消耗明细",
+      "账户级资金核对",
+      "历史汇率",
+      "口径与汇率"
+    ],
+    "detailRecords": 21855,
+    "historyEvidenceRecords": 425,
+    "everyDailyConversionVerified": 21855,
+    "threeTableSumsMatch": true,
+    "businessDatesAndPublishedDatesVerified": true,
+    "amountCellsNumericAndLongIdsText": true,
+    "businessOriginalKeptOutsideGit": true,
+    "browserCurrency": "CNY",
+    "workspaceInstances": 1,
+    "nativeCurrencyGroups": [
+      "THB",
+      "USD"
+    ],
+    "fundingPermissionNotices": 28
+  },
+  "finalNativeNetZeroRegression": "PASSED"
+}

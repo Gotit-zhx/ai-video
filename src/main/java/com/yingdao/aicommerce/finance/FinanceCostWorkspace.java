@@ -30,6 +30,12 @@ public class FinanceCostWorkspace {
         if(!Set.of("SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED").contains(kind))throw bad("成本分类不正确");
         return new FinanceCostReport(repo).summary(scope,filter,kind);
     }
+    public Map<String,Object> costSummary(Scope scope,Filter filter,String kind,String displayCurrency,String snapshot){
+        if(!Set.of("SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED").contains(kind))throw bad("成本分类不正确");
+        String currency="CNY".equals(displayCurrency)||filter.currency().isBlank()?"CNY":filter.currency();
+        var quote="CNY".equals(currency)?null:service.exchangeRates().historical(snapshot,filter.start(),filter.end());
+        return new FinanceCostReport(repo).displaySummary(scope,filter,kind,currency,quote);
+    }
     static String required(Map<String,Object> body,String key,int max){
         String value=text(body.get(key)).trim();if(value.isBlank()||value.length()>max)throw bad("请填写有效的 "+key);return value;
     }

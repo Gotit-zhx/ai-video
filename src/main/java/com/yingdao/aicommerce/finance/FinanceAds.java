@@ -16,10 +16,13 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 public class FinanceAds {
     static final List<String> ADVERTISER_FIELDS=List.of("advertiser_id","name","currency","timezone");
     final FinanceRepository repo;final FinanceService finance;final MarketplaceHttp http;final ShopCredentialCipher cipher;
+    final FinanceAdBcFunding funding;
     private final java.util.concurrent.atomic.AtomicBoolean verified=new java.util.concurrent.atomic.AtomicBoolean();
+    private final java.util.concurrent.atomic.AtomicBoolean fundingFailureReported=new java.util.concurrent.atomic.AtomicBoolean();
     private final java.util.concurrent.ScheduledExecutorService worker=java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"finance-ad-sync");t.setDaemon(true);return t;});
+    private final java.util.concurrent.ScheduledExecutorService fundingWorker=java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"finance-ad-bc-funding");t.setDaemon(true);return t;});
     public FinanceAds(FinanceRepository repo,FinanceService finance,MarketplaceHttp http,ShopCredentialCipher cipher){
-        this.repo=repo;this.finance=finance;this.http=http;this.cipher=cipher;
+        this.repo=repo;this.finance=finance;this.http=http;this.cipher=cipher;this.funding=new FinanceAdBcFunding(this);
     }
     @Autowired
     public FinanceAds(FinanceRepository repo,FinanceService finance,FinanceAdHttp transport,ShopCredentialCipher cipher){
@@ -48,7 +51,7 @@ public class FinanceAds {
             for(var account:accounts){account.put("coverage",coverage.stream().filter(r->text(account.get("advertiser_id")).equals(r.get("advertiser_id"))).toList());
                 account.put("requestedDays",java.time.temporal.ChronoUnit.DAYS.between(from,to)+1);}
         }
-        return accounts;
+        funding.decorate(s,accounts,from,to);return accounts;
     }
     static String visibleAccount(){return "(COALESCE(a.shop_id,'')='' OR EXISTS (SELECT 1 FROM finance_connections c WHERE c.id=a.shop_id AND c.organization_id=a.organization_id AND c.status<>'REMOVED'))";}
     public void connect(Scope s,String id,String shopId,String token,String gmvStoreId){
@@ -100,6 +103,7 @@ public class FinanceAds {
             next_at=IF(enabled,UTC_TIMESTAMP(6),next_at)
             """,storage.organizationId(),storage.userId(),id,first(advertiser,"name"),shopId,currency,encrypted,gmvStoreId,gmvStoreId.isBlank()?"DISABLED":"READY",first(advertiser,"timezone"));
         repo.jdbc().update("UPDATE finance_ad_streams SET next_at=UTC_TIMESTAMP(6),failures=0 WHERE organization_id=? AND advertiser_id=?",s.organizationId(),id);
+        funding.reauthorized(s,id,token);
     }
     public void pause(Scope s,String id,boolean enabled){
         if(enabled){
@@ -107,10 +111,11 @@ public class FinanceAds {
                     .orElseThrow(()->bad("广告账户不存在或绑定的财务店铺已移除"));
             validateDestination(s,text(account.get("shop_id")),text(account.get("gmv_store_id")));
         }
-        if(repo.jdbc().update("""
+        repo.transaction(()->{if(repo.jdbc().update("""
             UPDATE finance_ad_accounts SET enabled=?,status=?,lease_token=NULL,lease_until=NULL,
               next_at=GREATEST(next_at,UTC_TIMESTAMP(6)) WHERE organization_id=? AND advertiser_id=?
             """,enabled,enabled?"READY":"PAUSED",s.organizationId(),id)!=1)throw bad("广告账户不存在");
+            funding.revoke(s,id);return null;});
     }
     static Long metricCount(Map<String,Object> metrics,String key){
         BigDecimal value=decimal(metrics.get(key));
@@ -121,12 +126,24 @@ public class FinanceAds {
     }
     Map<String,Object> get(String path,String token,Map<String,?> query){
         var response=http.get(MarketplaceHttp.uri("https://business-api.tiktok.com","/open_api/v1.3"+path,query),Map.of("Access-Token",token));
+        return providerData(response);
+    }
+    Map<String,Object> getFunding(String path,String token,Map<String,?> query){
+        var response=http.getExact(MarketplaceHttp.uri("https://business-api.tiktok.com","/open_api/v1.3"+path,query),Map.of("Access-Token",token));
+        return providerData(response);
+    }
+    private Map<String,Object> providerData(Map<String,Object> response){
         if(!response.containsKey("code")||number(response.get("code"))!=0)
             throw new FinanceAdFailures.ProviderFailure(response.get("code"));
         return map(response.get("data"));
     }
-    @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->{try{com.yingdao.aicommerce.ops.MaintenanceGate.runIfOpen(this::tick);if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance ad sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance ad dispatcher temporarily unavailable",e);}},60,30,java.util.concurrent.TimeUnit.SECONDS);}
-    @PreDestroy public void stop(){worker.shutdownNow();}
+    @PostConstruct public void start(){
+        worker.scheduleWithFixedDelay(()->{try{com.yingdao.aicommerce.ops.MaintenanceGate.runIfOpen(this::tick);if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance ad sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance ad dispatcher temporarily unavailable",e);}},60,30,java.util.concurrent.TimeUnit.SECONDS);
+        fundingWorker.scheduleWithFixedDelay(()->{try{
+            com.yingdao.aicommerce.ops.MaintenanceGate.runIfOpen(funding::tick);fundingFailureReported.set(false);
+        }catch(Exception failure){if(fundingFailureReported.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance BC funding dispatcher temporarily unavailable");}},75,30,java.util.concurrent.TimeUnit.SECONDS);
+    }
+    @PreDestroy public void stop(){worker.shutdownNow();fundingWorker.shutdownNow();}
     public void tick(){
         var accounts=repo.jdbc().queryForList("SELECT * FROM finance_ad_accounts a WHERE enabled=TRUE AND "+visibleAccount()+" AND next_at<=UTC_TIMESTAMP(6)"
                 +" AND (lease_until IS NULL OR lease_until<UTC_TIMESTAMP(6)) ORDER BY next_at LIMIT 1");

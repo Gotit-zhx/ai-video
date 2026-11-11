@@ -52,8 +52,8 @@ try{
   w.FinanceWorkspace.enter('ads');await ready();await select('店铺分组','');
   await select('开始日期','2026-10-01');await select('结束日期','2026-10-31');
   assert.equal(requests.filter(r=>r.endpoint==='/ads').at(-1).q.start,'2026-10-01');
-  assert(card('店铺广告消耗').textContent.includes('GMV Max 报表消耗（待核对）'));
-  assert(card('店铺广告消耗').textContent.includes('99.9'),'GMV source cost is visible without adding it to posted fees');
+  assert(card('店铺广告费用（已入账）').textContent.includes('GMV Max 报表消耗（待核对）'));
+  assert(card('店铺广告费用（已入账）').textContent.includes('99.9'),'GMV source cost is visible without adding it to posted fees');
   const health=card('广告数据同步');assert(health.textContent.includes('31 / 31 天'));assert(health.textContent.includes('7 / 31 天'));
   const coverageTable=[...health.querySelectorAll('table')].find(t=>t.textContent.includes('日期覆盖'));
   check('coverage exposes returned-row provenance',()=>{assert(coverageTable.querySelector('thead').textContent.includes('返回记录数'),'coverage exposes the returned-row count separately from covered dates');assert(health.textContent.includes('来源于接口返回的报表行'),'row-count provenance is explained');});
@@ -71,11 +71,11 @@ try{
   const partial=coverageRows.find(r=>r.textContent.includes('7 / 31 天'));check('partial dates never claim complete coverage',()=>{assert(partial.textContent.includes('已采集部分'));assert(!partial.textContent.includes('已采集范围内报表'));assert(!partial.textContent.includes('接口返回零消耗'));});
   check('store discovery counts unique matched stores within the filter',()=>{const scopeNote=root.querySelector('[data-finance-ad-store-scope]');assert(scopeNote,'current-filter store coverage is explained separately from financial facts');
   assert(scopeNote.textContent.includes('3 家 TikTok 财务店铺'));assert(scopeNote.textContent.includes('已关联 2 家'));assert(scopeNote.textContent.includes('1 家未在当前发现关系范围'),'duplicate account-store relationships count once');});
-  const storeRows=[...card('店铺广告消耗').querySelectorAll('tbody tr')];
+  const storeRows=[...card('店铺广告费用（已入账）').querySelectorAll('tbody tr')];
   const returned=storeRows.find(r=>r.cells[0].textContent==='演示菲律宾店');assert(returned.cells[5].textContent.includes('99.9'),'historical spend remains visible when gmv_available is false');
   check('GMV missing facts distinguish a matched store from an absent relationship',()=>{const pending=storeRows.find(r=>r.cells[0].textContent==='演示泰国店');assert(pending.cells[5].textContent.includes('已关联广告店铺'),'a linked store with no GMV facts is distinguishable');assert(pending.cells[5].textContent.includes('待返回或补齐'),'one empty account does not assert all associated accounts returned no records');
   const absent=storeRows.find(r=>r.cells[0].textContent==='未关联菲律宾店');assert(absent,'TikTok stores outside discovered relationships remain visible for coverage review');assert(absent.cells[5].textContent.includes('未关联广告店铺'));assert(absent.cells[5].textContent.includes('未在当前发现关系范围'),'complete discovery describes observed relationships, not missing permissions');assert(!absent.cells[5].textContent.includes('无权限'));});
-  assert.deepEqual([...root.querySelectorAll('.fi-ad-metrics .fi-metric-value')].map(n=>n.textContent.replace(/\s/g,'')),['17.5CNY','7CNY','10.5CNY','5CNY'],'coverage display preserves financial totals and keeps GMV separate');
+  assert.deepEqual([...root.querySelectorAll('[data-ad-metric]')].map(n=>(n.cells[1].textContent+n.cells[2].textContent).replace(/\s/g,'')),['17.5CNY','7CNY','10.5CNY','5CNY'],'compact ledger checks preserve financial totals and keep GMV separate');
   check('paused accounts retain coverage and historical state',()=>{
     const accountRow=[...health.querySelector('table').querySelectorAll('tbody tr')].find(r=>r.cells[0].textContent==='返回数未知账户');
     assert(accountRow.cells[3].textContent.includes('已暂停'),'enabled=false overrides the old success status in the account display');
@@ -93,7 +93,7 @@ try{
     button('刷新').click();await ready();
     check('discovery '+(discoveryStatus||'missing')+' does not infer permissions from missing relationships',()=>{
       const scope=root.querySelector('[data-finance-ad-store-scope]').textContent;
-      const rows=[...card('店铺广告消耗').querySelectorAll('tbody tr')];
+      const rows=[...card('店铺广告费用（已入账）').querySelectorAll('tbody tr')];
       const absent=rows.find(row=>row.cells[0].textContent==='未关联菲律宾店').cells[5].textContent;
       assert(scope.includes(message),'scope explanation reflects discovery state');assert(absent.includes(message),'missing GMV explanation reflects discovery state');
       assert(!scope.includes('授权账户范围未覆盖'));assert(!absent.includes('授权账户范围未覆盖'));

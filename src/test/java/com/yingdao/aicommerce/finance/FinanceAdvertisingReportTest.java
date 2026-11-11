@@ -59,8 +59,10 @@ class FinanceAdvertisingReportTest {
         var cny=FinanceAdvertisingReport.build(List.of(php,thb),shops,all,true,quote,"day");
         money("16",map(cny.get("total")).get("amount"));money("10",find(cny.get("shops"),"shop_id","a").get("amount"));
         money("100",map(report(List.of(php,thb)).get("total")).get("amount"));
-        assertThrows(RuntimeException.class,()->FinanceAdvertisingReport.build(List.of(php,thb),shops,all,true,
-                new FinanceFx.Quote("missing",Instant.EPOCH,Map.of("PHP",BigDecimal.ONE)),"day"));
+        var missing=FinanceAdvertisingReport.build(List.of(php,thb),shops,all,true,
+                new FinanceFx.Quote("missing",Instant.EPOCH,Map.of("PHP",BigDecimal.ONE)),"day");
+        assertNull(map(missing.get("total")).get("amount"));money("100",map(missing.get("total")).get("knownAmount"));
+        assertEquals(false,map(missing.get("total")).get("complete"));
         assertThrows(RuntimeException.class,()->FinanceAdvertisingReport.build(List.of(php,thb),shops,all,false,null,"day"));
     }
     @Test void missingMoneyDoesNotBecomeACompleteTotal(){
@@ -70,6 +72,30 @@ class FinanceAdvertisingReportTest {
         money("0",map(report(List.of(row("AD","a","","0"))).get("total")).get("amount"));
         assertEquals(true,map(report(List.of(row("AD","a","","0"))).get("total")).get("hasRecords"));
         assertEquals(false,map(report(List.of()).get("total")).get("hasRecords"));
+    }
+    @Test void unknownMonthlyFeeDateDoesNotBorrowItsReportingAnchorRate(){
+        var fee=row("FEE","a","gmv_max_ad_fee_amount","100");fee.put("record_date","2026-10-01");fee.put("fx_date",null);
+        var day=LocalDate.of(2026,10,1);
+        var quote=new FinanceFx.Quote("h",Instant.EPOCH,Map.of(),Map.of(day,new FinanceFx.Day(day,Map.of("PHP",decimal("0.1")))));
+        var report=FinanceAdvertisingReport.build(List.of(fee),shops,filter,true,quote,"day");
+        assertNull(map(report.get("total")).get("amount"));assertEquals(false,map(report.get("total")).get("complete"));
+        assertNull(find(report.get("trend"),"period","2026-10-01").get("AD_TOTAL"));
+        money("100",fee.get("amount"));assertEquals("PHP",fee.get("currency"));
+    }
+    @Test void verifiedFeeDayControlsConversionWhileReportingDayControlsSelectionAndTrend(){
+        var fee=row("FEE","a","gmv_max_ad_fee_amount","100");fee.put("record_date","2026-10-01");fee.put("fx_date","2026-09-20");
+        var business=LocalDate.of(2026,9,20);var reportDay=LocalDate.of(2026,10,1);
+        var quote=new FinanceFx.Quote("h",Instant.EPOCH,Map.of(),Map.of(business,new FinanceFx.Day(business,Map.of("PHP",decimal("0.2"))),
+            reportDay,new FinanceFx.Day(reportDay,Map.of("PHP",decimal("0.1")))));
+        var report=FinanceAdvertisingReport.build(List.of(fee),shops,filter,true,quote,"day");
+        money("20",map(report.get("total")).get("amount"));money("20",find(report.get("trend"),"period","2026-10-01").get("AD_TOTAL"));
+        assertTrue(rows(report.get("trend")).stream().noneMatch(point->"2026-09-20".equals(point.get("period"))));
+    }
+    @Test void knownZeroAdvertisingRemainsCompleteEvenWhenRateEvidenceIsUnavailable(){
+        var zero=row("AD","a","","0");var quote=new FinanceFx.Quote("h",Instant.EPOCH,Map.of(),Map.of());
+        var report=FinanceAdvertisingReport.build(List.of(zero),shops,filter,true,quote,"day");
+        money("0",map(report.get("total")).get("amount"));assertEquals(true,map(report.get("total")).get("complete"));
+        assertEquals(1,number(map(report.get("total")).get("known_amounts")));
     }
     @Test void performanceUsesWeightedTotalsAndNeverAppliesLedgerSpendToCpc(){
         var one=row("AD","a","","20");var two=row("AD","b","","80");

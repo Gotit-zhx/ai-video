@@ -22,6 +22,7 @@ public class FinanceAdSpendService {
         for(var record:repo.jdbc().queryForList("SELECT * FROM finance_ad_spend_imports WHERE "+where+" LIMIT 50001",args.toArray())){
             var row=new LinkedHashMap<>(record);row.put("record_date",text(record.get("record_date")));row.put("source","IMPORT_FUNDING");row.put("shop_id","UNASSIGNED");result.add(row);
         }
+        result.addAll(FinanceAdBcFunding.sources(repo,s,f));
         if(result.size()>MAX_RECORDS)throw bad("广告消耗超过 50,000 条，请缩小日期范围；没有发布截断汇总");return result;
     }
     static Object[] append(List<Object> values,Object extra){var all=new ArrayList<>(values);all.add(extra);return all.toArray();}
@@ -37,13 +38,18 @@ public class FinanceAdSpendService {
         return result;
     }
     Map<String,Object> report(Scope s,Filter f,boolean cny,String fxSnapshot,String search,String status){
-        var quote=cny?finance.exchangeRates().quote(fxSnapshot):null;
-        return repo.readSnapshot(30,()->{
-            var shops=finance.shops(s);var sources=sources(s,f);var result=FinanceAdSpendReport.build(sources,assignments(s,sources.stream().map(r->text(r.get("source_key"))).toList()),shops,f,quote,search,status);
-            result.put("currencies",repo.jdbc().queryForList("SELECT DISTINCT currency FROM finance_ad_spend_imports WHERE organization_id=? AND record_date BETWEEN ? AND ? ORDER BY currency",String.class,s.organizationId(),f.start(),f.end()));
-            result.put("fx",quote==null?null:quote.metadata());result.put("filters",Map.of("currency",f.currency(),"displayCurrency",cny?"CNY":f.currency()));return result;
+        // Financial rows/assignments share a DB snapshot; public rate fetching happens after it closes.
+        var snapshot=repo.readSnapshot(30,()->{
+            var shops=finance.shops(s);var sources=sources(s,f);var nativeData=new LinkedHashMap<String,Object>();
+            nativeData.put("shops",shops);nativeData.put("sources",sources);nativeData.put("assignments",assignments(s,sources.stream().filter(r->!"API_BC_COST".equals(r.get("source"))).map(r->text(r.get("source_key"))).toList()));return nativeData;
         });
+        var sources=rows(snapshot.get("sources"));
+        var quote=cny?finance.exchangeRates().historical(fxSnapshot,sources.stream().map(FinanceFx::businessDate).filter(Objects::nonNull).toList()):null;
+        var result=FinanceAdSpendReport.build(sources,rows(snapshot.get("assignments")),rows(snapshot.get("shops")),f,quote,search,status);
+        result.put("currencies",sources.stream().map(r->text(r.get("currency"))).filter(v->!v.isBlank()).distinct().sorted().toList());
+        result.put("fx",quote==null?null:quote.metadata());result.put("fxEvidence",quote==null?List.of():quote.evidence());result.put("filters",Map.of("currency",f.currency(),"displayCurrency",cny?"CNY":f.currency()));return result;
     }
+
     Map<String,Object> saveImport(Scope s,String actor,List<Map<String,Object>> entries,String filename){
         if(entries.size()>20000||filename==null||filename.length()>250)throw bad("报表大小或文件名不正确");
         return repo.transaction(()->{

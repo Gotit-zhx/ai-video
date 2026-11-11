@@ -41,7 +41,7 @@ final class FinanceAdFunding {
         String source=text(row.get("source"));boolean api=source.startsWith("API_"),account="API_BASIC".equals(source)&&"TIKTOK_SHOP".equals(row.get("platform"));
         for(String key:AMOUNTS.subList(1,5))if(row.get(key)==null){
             String reason=!api?"报表未提供":"net_amount".equals(key)?"接口未返回净消耗":account&&!"credit_amount".equals(key)?"接口未返回":"接口未拆分";
-            row.put("reason_"+key,reason);
+            row.putIfAbsent("reason_"+key,reason);
         }
     }
 }

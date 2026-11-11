@@ -10,23 +10,27 @@ w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEven
 w.echarts={init:()=>({setOption(){},resize(){},dispose(){},getWidth(){return 1;},getHeight(){return 1;}})};
 w.FinanceCosts={openOrders(){},reset(){}};
 const returns=[];w.FinanceQianyi={openReturns(context){returns.push(context);}};
-let rate=.1,partial=false,sample=12,refund=18,hold=false,pending=[];
+const costReads=[],historicalFx={id:'0123456789abcdef0123456789abcdef',mode:'HISTORICAL',provider:'Historical QA',status:'READY',basis:'按每笔业务日期历史汇率'};
+let rate=.1,partial=false,fxPartial=false,sample=12,refund=18,hold=false,pending=[];
 const response=(cny,start,end)=>({
-  filters:{start,end,currency:cny?'':'PHP',displayCurrency:cny?'CNY':'PHP'},groups:[],shops:[],sync:[],currencies:['PHP'],
+  filters:{start,end,currency:cny?'':'PHP',displayCurrency:cny?'CNY':'PHP'},fx:historicalFx,groups:[],shops:[],sync:[],currencies:['PHP'],
   totals:[{kind:'SETTLEMENT',records:1,known_revenues:1,revenue:100,amount:80}],ranking:[],fees:[],statuses:[],trend:[],
   productCosts:{scope:'SETTLED_ORDER',total:{amount_cny:50,known_amount_cny:50,pending_count:0,ready_count:1},shops:[]},
   profit:{currency:cny?'CNY':'PHP',costCnyRate:cny?1:rate,productCost:cny?50:500,productCostCny:50,
     logisticsLabelCost:cny?2:20,returnedProductCost:cny?3:30,returnedProductCostCny:3,
-    operatingCost:cny?52:520,amount:cny?31:310,status:'READY',fx:{id:'fixed',time:'2026-10-29T00:00:00Z',provider:'test'},notes:[]}
+    operatingCost:cny?52:520,amount:cny?31:310,status:'READY',fx:historicalFx,notes:[]}
 });
 w.api=async path=>{
   const url=new URL(path,'https://example.test'),q=url.searchParams;
   if(url.pathname.endsWith('/qianyi/returns')){assert.equal(q.get('returnStatus'),'FINISH');assert.equal(q.get('refundStatus'),'');assert.equal(q.get('dateField'),'RECEIPT');assert.equal(q.get('receiptScope'),'RECEIVED');assert.equal(q.get('receiptStatus'),'SIGNED');return {data:{summary:{refundTotals:[{currency:'PHP',amount:44,records:1,known_count:1}]}}};}
   if(url.pathname.endsWith('/overview'))return {data:response(q.get('displayCurrency')==='CNY',q.get('start'),q.get('end'))};
   if(url.pathname.endsWith('/costs/summary')){
-    if(hold)await new Promise(resolve=>pending.push(resolve));
+    costReads.push(Object.fromEntries(q));
     const amount=q.get('kind')==='SAMPLE_SETTLED'?sample:refund;
-    return {data:{total:{amount_cny:partial?null:amount,known_amount_cny:amount,pending_count:partial?1:0,order_count:2}}};
+    const currency=q.get('displayCurrency')==='CNY'?'CNY':'PHP',display=amount===0?0:currency==='CNY'?amount:rate==null?null:125;
+    const result={total:{currency,amount_cny:partial?null:amount,known_amount_cny:amount,display_amount:partial||fxPartial?null:display,known_display_amount:display==null?0:display,fx_complete:amount===0||currency==='CNY'||rate!=null&&!fxPartial,pending_count:partial?1:0,order_count:2}};
+    if(hold)await new Promise(resolve=>pending.push(resolve));
+    return {data:result};
   }
   if(url.pathname.endsWith('/costs/returns'))return {data:[{shop_name:'测试店',order_id:'return-1',receipt_date:'2026-09-28',amount_cny:3,evidence:{sku:'ACTUAL-M',quantity:1}}]};
   throw Error(path);
@@ -47,15 +51,17 @@ assert(dialog.textContent.includes('商品成本（CNY）'));await closeAll();
 button(d.querySelector('.fi-pills'),'原币').click();await ready();
 dialog=await open();
 assert(dialog.querySelector('.fi-operating-total').textContent.includes('520 PHP'));
-assert.equal(row(dialog,'其中：商品成本—样品').children[1].textContent,'120');
+assert.equal(row(dialog,'其中：商品成本—样品').children[1].textContent,'125','sample costs use the supplied business-date conversion, not aggregate divided by one rate');
+assert.equal(costReads.at(-1).fxSnapshot,'0123456789abcdef0123456789abcdef','native-currency sample drilldown keeps the overview historical cost snapshot');assert.equal(costReads.at(-1).currency,'PHP');
 await wait(()=>row(dialog,'已收货退货单（千易）'));assert.equal(row(dialog,'已收货退货单（千易）').children[1].textContent,'44 PHP');
 assert(dialog.textContent.includes('商品成本（PHP）'));
 button(dialog,'已收货退货单（千易）').click();assert.equal(returns.at(-1).selection.dateField,'RECEIPT');assert.equal(returns.at(-1).selection.currency,'');await closeAll();
-// Keep the open dialog's rate when background refresh obtains a different quote.
+// Keep the open dialog's returned business-date amount during a background refresh.
 hold=true;dialog=await open();await wait(()=>pending.length===1);
 rate=.2;button(d,'刷新').click();await ready();hold=false;pending.splice(0).forEach(resolve=>resolve());
 await wait(()=>row(dialog,'其中：商品成本—样品'));
-assert.equal(row(dialog,'其中：商品成本—样品').children[1].textContent,'120');await closeAll();
+assert.equal(row(dialog,'其中：商品成本—样品').children[1].textContent,'125');await closeAll();
+fxPartial=true;button(d,'刷新').click();await ready();dialog=await open();assert.equal(row(dialog,'其中：商品成本—样品').children[1].textContent,'125 · 已算部分','known historical conversion stays visible when other dates have missing rates');await closeAll();fxPartial=false;
 rate=null;partial=true;button(d,'刷新').click();await ready();dialog=await open();
 assert.equal(row(dialog,'其中：商品成本—样品').children[1].textContent,'汇率待补齐 · 已算部分');await closeAll();
 sample=0;refund=null;dialog=await open();
@@ -66,4 +72,4 @@ button(d.querySelector('.fi-pills'),'人民币 ¥').click();await ready();dialog
 assert.equal(row(dialog,'其中：商品成本—样品').children[1].textContent,'¥ 12');
 await wait(()=>row(dialog,'已收货退货单（千易）'));button(dialog,'已收货退货单（千易）').click();assert.equal(returns.at(-1).selection.displayCurrency,'CNY');assert.equal(returns.at(-1).selection.refundStatus,'');
 w.FinanceWorkspace.leave();dom.window.close();
-console.log('Operating cost currency passed: CNY/PHP toggles, sample conversion and Qianyi refund source, frozen quote, missing FX, partial and zero amounts.');
+console.log('Operating cost currency passed: CNY/PHP toggles, supplied historical sample amounts and Qianyi refund source, frozen response, missing FX, partial and zero amounts.');

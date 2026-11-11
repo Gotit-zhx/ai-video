@@ -11,15 +11,17 @@ public final class FinanceProfitReport {
                                                String currency,FinanceFx.Quote quote){
         var result=new LinkedHashMap<String,Object>();
         var notes=new ArrayList<String>();
-        BigDecimal costRate="CNY".equals(currency)?BigDecimal.ONE:quote==null?null:quote.rates().get(currency);
+        boolean daily=currency.equals(text(costs.containsKey("total")?map(costs.get("total")).get("currency"):null))&&map(costs.get("total")).containsKey("display_amount");
+        BigDecimal costRate="CNY".equals(currency)?BigDecimal.ONE:quote==null||quote.historical()?null:quote.rates().get(currency);
         if(costRate!=null&&costRate.signum()<=0)costRate=null;
-        // Expose the exact same CNY-per-display-unit rate for lazy cost category/receipt drilldowns.
+        // Historical periods have multiple rates; clients consume projected display amounts instead.
         result.put("costCnyRate",costRate);
         if(costRate!=null&&quote!=null&&!"CNY".equals(currency))result.put("fx",quote.metadata());
+        if(daily&&quote!=null&&!"CNY".equals(currency))result.put("fx",quote.metadata());
         Map<String,Object> settled=find(totals,"SETTLEMENT"),fees=find(totals,"FEE"),ads=find(totals,"AD"),logistics=find(totals,"COST");
         var cost=map(costs.get("total"));
         BigDecimal net=value(settled),fee=value(fees),ad=value(ads),shipping=value(logistics);
-        BigDecimal product=decimal(cost.get("amount_cny")),converted=product;
+        BigDecimal product=decimal(cost.get("amount_cny")),converted=daily?decimal(cost.get("display_amount")):product;
         String state="READY";
         if(settled==null||number(settled.get("records"))==0){net=null;state="NO_SETTLEMENT";notes.add("当前范围暂无已结算记录");}
         else if(!complete(settled)||!complete(fees)||!complete(ads)||!complete(logistics)){
@@ -31,8 +33,11 @@ public final class FinanceProfitReport {
             converted=null;if(state.equals("READY"))state="INCOMPLETE_COST";
             notes.add("已结算订单成本待补齐或计算中，暂不计算完整利润");
         }else if(!"CNY".equals(currency)&&product.signum()!=0){
-            BigDecimal rate=quote==null?null:quote.rates().get(currency);
-            if(rate==null||rate.signum()<=0){
+            BigDecimal rate=quote==null||quote.historical()?null:quote.rates().get(currency);
+            if(daily){
+                if(converted==null){if(state.equals("READY"))state="MISSING_FX";notes.add("部分首次结算日期缺少历史汇率，成本展示合计留空");}
+                else notes.add("人民币商品成本按各订单首次结算日历史参考率换算为 "+currency);
+            }else if(rate==null||rate.signum()<=0){
                 converted=null;if(state.equals("READY"))state="MISSING_FX";
                 notes.add("缺少人民币成本到当前币种的汇率，暂不跨币种计算利润");
             }else{
@@ -41,13 +46,17 @@ public final class FinanceProfitReport {
                 notes.add("人民币商品成本按同一参考汇率折算为 "+currency);
             }
         }
+        if(daily&&converted==null&&state.equals("READY")){
+            state="MISSING_FX";notes.add("历史日成本展示金额不完整，暂不计算完整利润");
+        }
         BigDecimal label=decimal(cost.get("label_cost_cny"));if(label==null)label=BigDecimal.ZERO;
         // Return inventory credits are disabled. Historical cached inputs must not
         // change profit or block it while Qianyi aftersale documents synchronize.
         result.put("returnCostsPending",false);
         result.put("returnPendingCount",0);
         result.put("returnedProductCostCny",BigDecimal.ZERO);
-        if(!"CNY".equals(currency)&&label.signum()!=0){BigDecimal rate=quote==null?null:quote.rates().get(currency);label=rate==null||rate.signum()<=0?null:label.divide(rate,6,RoundingMode.HALF_UP);}
+        if(daily)label=decimal(cost.get("label_display_amount"));
+        else if(!"CNY".equals(currency)&&label.signum()!=0){BigDecimal rate=quote==null||quote.historical()?null:quote.rates().get(currency);label=rate==null||rate.signum()<=0?null:label.divide(rate,6,RoundingMode.HALF_UP);}
         if(label==null){if(state.equals("READY"))state="MISSING_FX";notes.add("缺少人民币贴单费用展示汇率");}
         if(number(cost.get("charges_pending"))>0){if(state.equals("READY"))state="INCOMPLETE_CHARGES";notes.add("贴单账单存在仓库计费失败或费用来源冲突，未确认部分未计入");}
         if(labelProcessing){if(state.equals("READY"))state="INCOMPLETE_CHARGES";notes.add("贴单费用更新中，已计算的商品成本保留，完成后更新完整利润");}
@@ -73,8 +82,9 @@ public final class FinanceProfitReport {
         result.put("returnedProductCost",BigDecimal.ZERO);result.put("returnReceiptCount",0);
         BigDecimal known=decimal(cost.get("known_amount_cny"));
         if(known==null)known=product;
-        if(known!=null&&!"CNY".equals(currency)&&known.signum()!=0){
-            BigDecimal rate=quote==null?null:quote.rates().get(currency);
+        if(daily)known=decimal(cost.get("known_display_amount"));
+        else if(known!=null&&!"CNY".equals(currency)&&known.signum()!=0){
+            BigDecimal rate=quote==null||quote.historical()?null:quote.rates().get(currency);
             known=rate==null||rate.signum()<=0?null:known.divide(rate,6,RoundingMode.HALF_UP);
         }
         result.put("operatingCost",converted!=null&&shipping!=null&&complete(logistics)&&number(cost.get("charges_pending"))==0&&!labelProcessing

@@ -60,7 +60,7 @@ try{
   fixture.facts.push({id:'gmv-only',kind:'AD_GMV',shop_id:'c',group_id:'gmv-only',platform:'TIKTOK_SHOP',currency:'PHP',amount:100,record_date:'2026-10-10',source:'API'});
   await click('刷新');
   assert.equal(tableCell(card('店铺经营明细'),'仅专项店','GMV Max 报表消耗（待核对）'),'10');
-  assert.equal(tableCell(card('店铺经营明细'),'仅专项店','广告费用'),'暂无记录');
+  assert.equal(tableCell(card('店铺经营明细'),'仅专项店','广告费用（已入账）'),'暂无记录');
   assert.equal(tableCell(card('分组经营明细'),'仅专项组','GMV Max 报表消耗（待核对）'),'10');
   assert.equal(root.querySelector('[data-metric="AD"] strong').textContent,'17.5','GMV is visible without being added to posted advertising');
   assert.equal(root.querySelector('[data-metric="PROFIT"] strong').textContent,'369.5');
@@ -107,7 +107,7 @@ try{
   assert.equal(metric('total'),'24');assert.equal(metric('settlement'),'13.5');assert.equal(metric('independent'),'10.5');
   assert(root.querySelector('[data-ad-metric="settlement"]').textContent.includes('其中广告佣金：6.5'));
   assert(card('广告费用构成').textContent.includes('达人广告佣金'));assert(card('广告费用构成').textContent.includes('合作伙伴店铺广告佣金'));
-  assert(card('店铺广告消耗').textContent.includes('其中广告佣金'));assert(card('分组广告消耗').textContent.includes('其中广告佣金'));
+  assert(card('店铺广告费用（已入账）').textContent.includes('其中广告佣金'));assert(card('分组广告费用（已入账）').textContent.includes('其中广告佣金'));
   w.FinanceWorkspace.enter('overview');await ready();
   assert.equal(root.querySelector('[data-metric="AD"] strong').textContent,'24');
   assert(root.querySelector('[data-metric="AD"]').textContent.includes('其中广告佣金：6.5'));

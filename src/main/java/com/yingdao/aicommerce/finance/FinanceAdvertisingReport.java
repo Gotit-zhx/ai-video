@@ -32,10 +32,12 @@ final class FinanceAdvertisingReport {
         var groups=new HashMap<String,String>();
         shops.forEach(shop->groups.put(text(shop.get("id")),text(shop.get("group_id"))));
         var prepared=new ArrayList<Map<String,Object>>();
+        if(cny)quote.preload(facts.stream().map(FinanceFx::businessDate).filter(Objects::nonNull).toList());
         for(var fact:facts){
             if(!includes(fact)||!filter.currency().isBlank()&&!filter.currency().equals(fact.get("currency")))continue;
             LocalDate day=LocalDate.parse(text(fact.get("record_date")));
             if(day.isBefore(filter.start())||day.isAfter(filter.end()))continue;
+            LocalDate fxDay=FinanceFx.businessDate(fact);
             var row=new LinkedHashMap<>(fact);
             String kind=text(row.get("kind"));
             row.put("sourceType",kind.equals("FEE")?"SETTLEMENT":kind.equals("AD")?"INDEPENDENT":"GMV");
@@ -45,8 +47,12 @@ final class FinanceAdvertisingReport {
             String field=categoryField(text(fact.get("category")));
             row.put("advertisingCommission",kind.equals("FEE")&&COMMISSION_FIELDS.contains(field.substring(field.lastIndexOf('.')+1)));
             if(cny){
-                row.put("amount",quote.convert(row.get("amount"),text(row.get("currency"))));
-                row.put("revenue",quote.convert(row.get("revenue"),text(row.get("currency"))));
+                if(quote.rate(text(row.get("currency")),fxDay)==null){
+                    if(decimal(row.get("amount"))!=null&&decimal(row.get("amount")).signum()!=0)row.put("known_amounts",0);
+                    if(decimal(row.get("revenue"))!=null&&decimal(row.get("revenue")).signum()!=0)row.put("known_revenues",0);
+                }
+                row.put("amount",quote.convert(row.get("amount"),text(row.get("currency")),fxDay));
+                row.put("revenue",quote.convert(row.get("revenue"),text(row.get("currency")),fxDay));
                 row.put("currency","CNY");
             }
             prepared.add(row);

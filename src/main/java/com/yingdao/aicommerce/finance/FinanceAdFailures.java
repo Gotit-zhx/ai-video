@@ -21,6 +21,7 @@ final class FinanceAdFailures {
             super(org.springframework.http.HttpStatus.BAD_REQUEST,"TikTok 广告接口拒绝请求（错误码 "+safeCode(code)+"），请核对授权权限。");
             this.code=safeCode(code);
         }
+        String code(){return code;}
         private static String safeCode(Object code){String value=String.valueOf(code);return value.matches("-?\\d{1,10}")?value:"未知";}
     }
 
