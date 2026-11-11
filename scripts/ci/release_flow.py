@@ -256,6 +256,29 @@ def advance(journal, api, store, *, enabled, clock=time.time):
     return action
 
 
+def deploy_operation_id(run_id, attempt, version):
+    return hashlib.sha256((str(run_id) + ':' + str(attempt) + ':' + version).encode()).hexdigest()[:32]
+
+
+def adopt_deploy_attempt(journal, api, store, attempt, *, dry_run):
+    """Verify one externally rerun deploy attempt, then explicitly retarget local recovery pins."""
+    facts = api.verify_deploy_attempt_adoption(journal, attempt)
+    if dry_run:
+        return facts
+    previous = {'deployRun': journal['deployRun'], 'deployAttempt': journal['deployAttempt'],
+                'expectedOperationId': journal['expectedOperationId'], 'phase': journal.get('phase'),
+                'status': facts['previousStatus'], 'conclusion': facts['previousConclusion']}
+    if 'operationId' in journal:
+        previous['operationId'] = journal['operationId']
+    journal.setdefault('deployAttemptHistory', []).append(previous)
+    journal.update(deployRun=facts['deployRun'], deployAttempt=facts['deployAttempt'],
+                   expectedOperationId=facts['operationId'], operationId=facts['operationId'],
+                   phase='deploying')
+    journal.pop('pendingAction', None)
+    store.write(journal)
+    return facts
+
+
 def verify_merge(commit, journal):
     parents = [p['sha'] for p in commit.get('parents', [])]
     if parents != [journal['base'], journal['head']] or commit['commit']['tree']['sha'] != journal['tree']:
@@ -593,7 +616,7 @@ class GitHubAPI:
         if (not trusted_run(run, 'deploy.yml', journal['mergeCommit'], completed=False) or
                 run.get('event') != 'push' or run.get('head_branch') != journal['version']):
             return {'operationMismatch': True}
-        operation = hashlib.sha256((str(run['id']) + ':' + str(run['run_attempt']) + ':' + journal['version']).encode()).hexdigest()[:32]
+        operation = deploy_operation_id(run['id'], run['run_attempt'], journal['version'])
         observed = {'deployRun': run['id'], 'deployAttempt': run['run_attempt'], 'expectedOperationId': operation}
         if journal.get('operationId') and journal['operationId'] != operation:
             return {**observed, 'operationMismatch': True}
@@ -615,6 +638,99 @@ class GitHubAPI:
         observed.update(deploymentPhase=receipt['phase'], version=receipt['version'], operationId=operation, receiptVerified=True)
         observed['receiptPublished'] = self.receipt_published(journal, files)
         return observed
+
+    def verify_deploy_adoption_identity(self, journal):
+        """Reverify immutable release identity without parsing the failed deploy attempt receipt."""
+        production = self.ref(PRODUCTION)
+        branch = self.ref(journal['branch'])
+        if branch != journal['head']:
+            raise FlowError('Release support branch no longer identifies the qualified source')
+        pr = self.exact_pr(journal['branch'], PRODUCTION)
+        if not pr or not pr.get('merged') or pr.get('head', {}).get('sha') != journal['head']:
+            raise FlowError('Production merge identity is unavailable for deploy attempt adoption')
+        merge = verify_merge(self.api('/commits/' + pr['merge_commit_sha']), journal)
+        if merge != journal.get('mergeCommit') or production != merge:
+            raise FlowError('Production or journal merge identity changed')
+        self.protection(PRODUCTION, production=True)
+        self.protection(INTEGRATION)
+        candidate = self.candidate_manifest(journal)
+        if candidate is None:
+            raise FlowError('Trusted immutable candidate is unavailable')
+        tag = self.ref(journal['version'], 'tags')
+        if tag != merge:
+            raise FlowError('Formal release tag no longer identifies the production merge')
+        return {'productionMerged': True, 'tagged': True, 'candidateReady': True, 'mergeCommit': merge}
+
+    def failed_deploy_attempt_has_operation(self, journal, run, operation):
+        """Reject any verified old operation; tolerate only valid receipt-less failure residue."""
+        files = self.artifact_files(run, 'deployment-receipt')
+        if files is None:
+            return False
+        if not files or set(files) - {'receipt.json', 'release.json', 'timings.json'}:
+            raise FlowError('Invalid partial deployment artifact for the failed attempt')
+        if 'release.json' in files:
+            manifest = release.validate_manifest(json.loads(files['release.json']))
+            if manifest != self.candidate or manifest['source']['commit'] != journal['head']:
+                raise FlowError('Failed deploy attempt manifest differs from the trusted candidate')
+        if 'timings.json' in files:
+            deployment_measurements(files['timings.json'], {})
+        if 'receipt.json' not in files:
+            return False
+        if 'release.json' not in files:
+            raise FlowError('Deployment receipt exists without its immutable manifest')
+        receipt = json.loads(files['receipt.json'])
+        if receipt.get('id') != operation or receipt.get('version') != journal['version']:
+            raise FlowError('Failed deploy attempt receipt has a different operation identity')
+        return True
+
+    def verify_deploy_attempt_adoption(self, journal, attempt):
+        if (type(attempt) is not int or attempt <= 0 or type(journal.get('deployRun')) is not int or
+                type(journal.get('deployAttempt')) is not int):
+            raise FlowError('Deploy attempt adoption requires existing positive run and attempt pins')
+        if attempt <= journal['deployAttempt']:
+            raise FlowError('Adopted deploy attempt must be newer than the pinned attempt')
+        if journal.get('operationId'):
+            raise FlowError('A deployment operation is already pinned; preserve its original evidence')
+
+        context = self.verify_deploy_adoption_identity(journal)
+        if (not context.get('productionMerged') or not context.get('tagged') or
+                not context.get('candidateReady') or context.get('mergeCommit') != journal.get('mergeCommit') or
+                self.candidate is None):
+            raise FlowError('Release identity changed; the deploy attempt cannot be adopted')
+
+        run_id = journal['deployRun']
+        previous_attempt = journal['deployAttempt']
+        previous = self.api('/actions/runs/' + str(run_id) + '/attempts/' + str(previous_attempt))
+        previous_expected = deploy_operation_id(run_id, previous_attempt, journal['version'])
+        if (previous.get('id') != run_id or previous.get('run_attempt') != previous_attempt or
+                not trusted_run(previous, 'deploy.yml', journal['mergeCommit'], completed=False) or
+                previous.get('event') != 'push' or previous.get('head_branch') != journal['version'] or
+                previous.get('status') != 'completed' or not previous.get('conclusion') or
+                previous.get('conclusion') == 'success'):
+            raise FlowError('Pinned deploy attempt is not a terminal non-successful execution')
+        if journal.get('expectedOperationId') != previous_expected:
+            raise FlowError('Pinned deploy attempt has a different expected operation identity')
+        if self.failed_deploy_attempt_has_operation(journal, previous, previous_expected):
+            raise FlowError('Pinned failed attempt already has a verified deployment operation')
+
+        candidate = self.api('/actions/runs/' + str(run_id) + '/attempts/' + str(attempt))
+        if (candidate.get('id') != run_id or candidate.get('run_attempt') != attempt or
+                not trusted_run(candidate, 'deploy.yml', journal['mergeCommit']) or
+                candidate.get('event') != 'push' or candidate.get('head_branch') != journal['version']):
+            raise FlowError('New deploy attempt is not the completed successful execution of the pinned run')
+        operation = deploy_operation_id(run_id, attempt, journal['version'])
+        probe = dict(journal)
+        probe.update(deployAttempt=attempt, expectedOperationId=operation)
+        probe.pop('operationId', None)
+        observed = self.deploy_observation(probe)
+        if (observed.get('operationMismatch') or observed.get('deploymentEvidenceUnavailable') or
+                observed.get('deploymentPhase') != 'succeeded' or not observed.get('receiptVerified') or
+                observed.get('operationId') != operation or observed.get('version') != journal['version']):
+            raise FlowError('New deploy attempt lacks a matching successful deployment manifest and receipt')
+        return {'action': 'adopt_deploy_attempt', 'deployRun': run_id,
+                'previousDeployAttempt': previous_attempt, 'deployAttempt': attempt,
+                'operationId': operation, 'receiptPublished': observed.get('receiptPublished', False),
+                'previousStatus': previous['status'], 'previousConclusion': previous['conclusion']}
 
     def receipt_published(self, journal, files):
         existing = self.api('/releases/tags/' + journal['version'], missing=True)
@@ -1056,8 +1172,18 @@ def validate_journal(journal):
                  re.fullmatch(r'(?:release|hotfix)/[A-Za-z0-9._-]+', journal['branch']))
         if not valid:
             raise ValueError('Invalid identity')
-        if journal.get('operationId') and not IDENTITY.fullmatch(journal['operationId']):
-            raise ValueError('Invalid operation')
+        for key in ('operationId', 'expectedOperationId'):
+            if journal.get(key) and not IDENTITY.fullmatch(journal[key]):
+                raise ValueError('Invalid operation')
+        for previous in journal.get('deployAttemptHistory', []):
+            if (set(previous) - {'deployRun', 'deployAttempt', 'expectedOperationId', 'operationId',
+                                 'phase', 'status', 'conclusion'} or
+                    type(previous.get('deployRun')) is not int or previous['deployRun'] <= 0 or
+                    type(previous.get('deployAttempt')) is not int or previous['deployAttempt'] <= 0 or
+                    not IDENTITY.fullmatch(previous.get('expectedOperationId', '')) or
+                    ('operationId' in previous and not IDENTITY.fullmatch(previous['operationId'])) or
+                    not all(isinstance(previous.get(key), str) for key in ('phase', 'status', 'conclusion'))):
+                raise ValueError('Invalid deploy attempt history')
         for target in journal.get('activeReleases', []):
             if not re.fullmatch(r'release/[A-Za-z0-9._-]+', target):
                 raise ValueError('Invalid active release identity')
@@ -1104,8 +1230,12 @@ def main(argv=None):
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--source', help='develop or an existing hotfix/<theme>')
     mode.add_argument('--resume', metavar='32HEX', help='resume or inspect the original release operation')
+    parser.add_argument('--adopt-deploy-attempt', metavar='N', type=int,
+                        help='verify and adopt a successful rerun attempt of the pinned deploy run')
     parser.add_argument('--dry-run', action='store_true', help='read-only remote/local inspection; never dispatch or mutate GitHub')
     args = parser.parse_args(argv)
+    if args.adopt_deploy_attempt is not None and not args.resume:
+        parser.error('--adopt-deploy-attempt requires --resume')
     local_switch = os.environ.get('HEYI_RELEASE_FLOW_ENABLED')
     if local_switch is not None and local_switch.lower() != 'true' and not args.dry_run and not args.resume:
         print(json.dumps({'phase': 'disabled', 'message': 'Local release-flow kill switch is off; use --dry-run or --resume for read-only inspection'}))
@@ -1125,6 +1255,20 @@ def main(argv=None):
         else:
             journal = adapter.plan(args.source, datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat())
         validate_journal(journal)
+        if args.adopt_deploy_attempt is not None:
+            if not args.dry_run and not enabled:
+                raise FlowError('Release flow is disabled; deploy attempt adoption is available only with --dry-run')
+            if args.dry_run:
+                result = adopt_deploy_attempt(journal, adapter, store, args.adopt_deploy_attempt, dry_run=True)
+            else:
+                with store.lock():
+                    journal = store.read(args.resume)
+                    validate_journal(journal)
+                    result = adopt_deploy_attempt(journal, adapter, store, args.adopt_deploy_attempt, dry_run=False)
+            print(json.dumps({**result,
+                              'phase': 'deploy_attempt_adoption_ready' if args.dry_run else 'deploy_attempt_adopted',
+                              'readOnly': args.dry_run, 'resume': '--resume ' + journal['id']}), flush=True)
+            return 0
         if args.dry_run or not enabled:
             observed = adapter.observe(journal)
             print(json.dumps({'id': journal['id'], 'readOnly': True, 'enabled': enabled,

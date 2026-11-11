@@ -540,6 +540,252 @@ class RecoveryPinTest(unittest.TestCase):
         self.assertTrue(api.deploy_observation(journal).get('operationMismatch'))
 
 
+class DeployAttemptAdoptionTest(unittest.TestCase):
+    def fixture(self):
+        import hashlib
+        import test_release
+        manifest = test_release.ReleaseTest().manifest()
+        manifest.update(version='v2026.11.10')
+        manifest['source'].update(commit='a'*40, tree='c'*40,
+                                  ref='refs/heads/release/2026.11.10-flow')
+        old_operation = flow.hashlib.sha256(('400:1:' + manifest['version']).encode()).hexdigest()[:32]
+        new_operation = flow.hashlib.sha256(('400:2:' + manifest['version']).encode()).hexdigest()[:32]
+        old_run = {'id': 400, 'run_attempt': 1, 'head_sha': 'd'*40,
+                   'head_branch': manifest['version'], 'event': 'push',
+                   'path': '.github/workflows/deploy.yml', 'status': 'completed',
+                   'conclusion': 'failure', 'repository': {'full_name': flow.REPOSITORY},
+                   'head_repository': {'full_name': flow.REPOSITORY},
+                   'run_started_at': '2026-11-10T10:00:00Z', 'updated_at': '2026-11-10T10:01:00Z'}
+        new_run = {**old_run, 'run_attempt': 2, 'conclusion': 'success',
+                   'run_started_at': '2026-11-10T11:00:00Z', 'updated_at': '2026-11-10T11:01:00Z'}
+        raw = ArtifactTest().bundle({'release.json': manifest, 'receipt.json': {
+            'id': new_operation, 'version': manifest['version'], 'phase': 'succeeded'}})
+        artifact = {'id': 91, 'name': 'deployment-receipt', 'expired': False,
+                    'created_at': '2026-11-10T11:00:30Z',
+                    'digest': 'sha256:' + hashlib.sha256(raw).hexdigest()}
+        transport = FakeTransport({
+            ('GET', '/actions/runs/400/attempts/1'): old_run,
+            ('GET', '/actions/runs/400/attempts/2'): new_run,
+            ('GET', '/actions/runs/400/artifacts?per_page=100&page=1'): {'artifacts': [artifact]},
+        })
+        transport.archives = {91: raw}
+        transport.archive = lambda identity: transport.archives[identity]
+
+        class TrustedContextAPI(flow.GitHubAPI):
+            def verify_deploy_adoption_identity(self, journal):
+                self.candidate = copy.deepcopy(manifest)
+                return copy.deepcopy(self.context)
+
+        api = TrustedContextAPI(transport)
+        api.context = {'productionMerged': True, 'tagged': True, 'candidateReady': True,
+                       'mergeCommit': 'd'*40}
+        journal = {'id': 'a'*32, 'source': 'develop', 'head': 'a'*40, 'base': 'b'*40,
+                   'tree': 'c'*40, 'version': manifest['version'], 'baselineVersion': 'v2026.11.9',
+                   'branch': 'release/2026.11.10-flow', 'mergeCommit': 'd'*40,
+                   'phase': 'deployment_failed', 'deployRun': 400, 'deployAttempt': 1,
+                   'expectedOperationId': old_operation}
+        return api, transport, journal, old_operation, new_operation, manifest
+
+    def replace_bundle(self, transport, files):
+        import hashlib
+        raw = ArtifactTest().bundle(files)
+        transport.responses[('GET', '/actions/runs/400/artifacts?per_page=100&page=1')]['artifacts'][0]['digest'] = \
+            'sha256:' + hashlib.sha256(raw).hexdigest()
+        transport.archives[91] = raw
+
+    def add_old_bundle(self, transport, files, identity=90):
+        import hashlib
+        raw = ArtifactTest().bundle(files)
+        transport.responses[('GET', '/actions/runs/400/artifacts?per_page=100&page=1')]['artifacts'].append({
+            'id': identity, 'name': 'deployment-receipt', 'expired': False,
+            'created_at': '2026-11-10T10:00:30Z',
+            'digest': 'sha256:' + hashlib.sha256(raw).hexdigest()})
+        transport.archives[identity] = raw
+
+    def test_explicit_adoption_preserves_old_pins_and_durably_retargets_successful_attempt(self):
+        self.assertTrue(hasattr(flow, 'adopt_deploy_attempt'),
+                        'The recovery CLI needs an explicit deploy-attempt adoption action')
+        api, _, journal, old_operation, new_operation, _ = self.fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            store = flow.JournalStore(Path(directory))
+            store.write(journal)
+            result = flow.adopt_deploy_attempt(journal, api, store, 2, dry_run=False)
+            saved = store.read(journal['id'])
+        self.assertEqual((400, 2, new_operation, new_operation, 'deploying'),
+                         (saved['deployRun'], saved['deployAttempt'], saved['expectedOperationId'],
+                          saved['operationId'], saved['phase']))
+        self.assertEqual([{'deployRun': 400, 'deployAttempt': 1,
+                           'expectedOperationId': old_operation, 'phase': 'deployment_failed',
+                           'status': 'completed', 'conclusion': 'failure'}],
+                         saved['deployAttemptHistory'])
+        self.assertEqual((1, 2, new_operation),
+                         (result['previousDeployAttempt'], result['deployAttempt'], result['operationId']))
+        self.assertEqual([], api.transport.writes)
+
+    def test_dry_run_verifies_but_does_not_mutate_memory_or_journal(self):
+        self.assertTrue(hasattr(flow, 'adopt_deploy_attempt'),
+                        'The recovery CLI needs an explicit deploy-attempt adoption action')
+        api, _, journal, _, new_operation, _ = self.fixture()
+        original = copy.deepcopy(journal)
+        with tempfile.TemporaryDirectory() as directory:
+            store = flow.JournalStore(Path(directory))
+            store.write(journal)
+            before = store.path(journal['id']).read_bytes()
+            result = flow.adopt_deploy_attempt(journal, api, store, 2, dry_run=True)
+            after = store.path(journal['id']).read_bytes()
+        self.assertEqual(original, journal)
+        self.assertEqual(before, after)
+        self.assertEqual(new_operation, result['operationId'])
+        self.assertEqual([], api.transport.writes)
+
+    def test_real_identity_observation_tolerates_old_partial_artifact_before_new_receipt(self):
+        import hashlib
+
+        class AttemptServer(RepositoryServer):
+            def __init__(self):
+                super().__init__()
+                self.attempts = {}
+                self.attestation_verifications = 0
+
+            def command(self, *args, **kwargs):
+                if args[:2] == ('attestation', 'verify'):
+                    self.attestation_verifications += 1
+                return super().command(*args, **kwargs)
+
+            def api(self, path, method='GET', payload=None, missing=False):
+                route = path.split('?')[0]
+                prefix = '/actions/runs/400/attempts/'
+                if method == 'GET' and route.startswith(prefix):
+                    return copy.deepcopy(self.attempts[int(route.removeprefix(prefix))])
+                return super().api(path, method, payload, missing)
+
+        server = AttemptServer()
+        api = flow.GitHubAPI(server, clock=lambda: 1794304860)
+        journal = api.plan('develop', '2026-11-10')
+        with tempfile.TemporaryDirectory() as directory:
+            store = flow.JournalStore(Path(directory))
+            for _ in range(20):
+                if flow.advance(journal, api, store, enabled=True) == 'tag':
+                    break
+            self.assertEqual('tagged', journal['phase'])
+            old_run = copy.deepcopy(server.workflow_runs['deploy.yml'][0])
+            old_run.update(status='completed', conclusion='failure', run_attempt=1,
+                           run_started_at='2026-11-10T10:00:00Z', updated_at='2026-11-10T10:01:00Z')
+            new_run = {**old_run, 'run_attempt': 2, 'conclusion': 'success',
+                       'run_started_at': '2026-11-10T11:00:00Z', 'updated_at': '2026-11-10T11:01:00Z'}
+            server.attempts = {1: old_run, 2: new_run}
+            old_operation = flow.deploy_operation_id(400, 1, journal['version'])
+            new_operation = flow.deploy_operation_id(400, 2, journal['version'])
+            old_raw = ArtifactTest().bundle({'release.json': server.manifest,
+                                             'timings.json': {'schemaVersion': 1, 'uploadedBytes': 42,
+                                                              'client': {'schemaVersion': 1, 'phases': [{
+                                                                  'phase': 'sshUpload', 'durationMs': 100,
+                                                                  'bytes': 42, 'status': 'passed'}]}}})
+            new_raw = ArtifactTest().bundle({'release.json': server.manifest, 'receipt.json': {
+                'id': new_operation, 'version': journal['version'], 'phase': 'succeeded'}})
+            server.artifacts[400] = [
+                {'id': 401, 'name': 'deployment-receipt', 'expired': False,
+                 'created_at': '2026-11-10T10:00:30Z', 'digest': 'sha256:' + hashlib.sha256(old_raw).hexdigest()},
+                {'id': 402, 'name': 'deployment-receipt', 'expired': False,
+                 'created_at': '2026-11-10T11:00:30Z', 'digest': 'sha256:' + hashlib.sha256(new_raw).hexdigest()},
+            ]
+            server.archives.update({401: old_raw, 402: new_raw})
+            journal.update(phase='deployment_failed', deployRun=400, deployAttempt=1,
+                           expectedOperationId=old_operation)
+            store.write(journal)
+            before = store.path(journal['id']).read_bytes()
+            attestations_before_adoption = server.attestation_verifications
+            effects_before_adoption = copy.deepcopy(server.effects)
+            result = flow.adopt_deploy_attempt(journal, api, store, 2, dry_run=True)
+            after = store.path(journal['id']).read_bytes()
+        self.assertEqual(new_operation, result['operationId'])
+        self.assertEqual(before, after)
+        self.assertNotIn('operationId', journal)
+        self.assertEqual(attestations_before_adoption + 1, server.attestation_verifications)
+        self.assertEqual(effects_before_adoption, server.effects)
+
+    def test_resume_cli_exposes_the_explicit_adoption_action(self):
+        from contextlib import redirect_stderr
+        from unittest.mock import patch
+        api, _, journal, _, new_operation, _ = self.fixture()
+        api.release_enabled = lambda: True
+        with tempfile.TemporaryDirectory() as directory:
+            store = flow.JournalStore(Path(directory))
+            store.write(journal)
+            local = type('Local', (), {'common_dir': Path(directory), 'dirty_paths': lambda self: []})()
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with patch.object(flow, 'GitContext', return_value=local), \
+                    patch.object(flow, 'GitHubAPI', return_value=api), \
+                    redirect_stdout(stdout), redirect_stderr(stderr):
+                try:
+                    code = flow.main(['--resume', journal['id'], '--adopt-deploy-attempt', '2'])
+                except SystemExit as error:
+                    code = error.code
+            saved = store.read(journal['id'])
+        self.assertEqual(0, code, stderr.getvalue())
+        output = json.loads(stdout.getvalue())
+        self.assertEqual(('deploy_attempt_adopted', 2, new_operation),
+                         (output['phase'], output['deployAttempt'], output['operationId']))
+        self.assertEqual((2, new_operation), (saved['deployAttempt'], saved['operationId']))
+
+    def test_adoption_rejects_untrusted_or_incomplete_attempts_without_retargeting(self):
+        self.assertTrue(hasattr(flow, 'adopt_deploy_attempt'),
+                        'The recovery CLI needs an explicit deploy-attempt adoption action')
+        cases = ('older', 'old_success', 'old_in_progress', 'new_failed', 'new_in_progress',
+                 'cross_run', 'wrong_tag', 'wrong_source', 'wrong_workflow', 'no_artifact',
+                 'wrong_receipt_operation', 'wrong_receipt_version', 'wrong_manifest',
+                 'existing_operation', 'existing_observed_operation', 'old_partial_wrong_manifest',
+                 'old_partial_bad_timing', 'old_partial_ambiguous', 'wrong_old_expected_operation')
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                api, transport, journal, old_operation, new_operation, manifest = self.fixture()
+                attempt = 2
+                old = transport.responses[('GET', '/actions/runs/400/attempts/1')]
+                new = transport.responses[('GET', '/actions/runs/400/attempts/2')]
+                if case == 'older': attempt = 1
+                elif case == 'old_success': old['conclusion'] = 'success'
+                elif case == 'old_in_progress': old.update(status='in_progress', conclusion=None)
+                elif case == 'new_failed': new['conclusion'] = 'failure'
+                elif case == 'new_in_progress': new.update(status='in_progress', conclusion=None)
+                elif case == 'cross_run': new['id'] = 401
+                elif case == 'wrong_tag': new['head_branch'] = 'v2026.11.10.1'
+                elif case == 'wrong_source': new['head_sha'] = 'e'*40
+                elif case == 'wrong_workflow': new['path'] = '.github/workflows/ci.yml'
+                elif case == 'no_artifact': transport.responses[('GET', '/actions/runs/400/artifacts?per_page=100&page=1')] = {'artifacts': []}
+                elif case == 'wrong_receipt_operation':
+                    self.replace_bundle(transport, {'release.json': manifest, 'receipt.json': {
+                        'id': 'f'*32, 'version': journal['version'], 'phase': 'succeeded'}})
+                elif case == 'wrong_receipt_version':
+                    self.replace_bundle(transport, {'release.json': manifest, 'receipt.json': {
+                        'id': new_operation, 'version': 'v2026.11.10.1', 'phase': 'succeeded'}})
+                elif case == 'wrong_manifest':
+                    changed = copy.deepcopy(manifest); changed['source']['commit'] = 'e'*40
+                    self.replace_bundle(transport, {'release.json': changed, 'receipt.json': {
+                        'id': new_operation, 'version': journal['version'], 'phase': 'succeeded'}})
+                elif case == 'existing_operation': journal['operationId'] = old_operation
+                elif case == 'existing_observed_operation':
+                    self.add_old_bundle(transport, {'release.json': manifest, 'receipt.json': {
+                        'id': old_operation, 'version': journal['version'], 'phase': 'failed'}})
+                elif case == 'old_partial_wrong_manifest':
+                    changed = copy.deepcopy(manifest); changed['source']['commit'] = 'e'*40
+                    self.add_old_bundle(transport, {'release.json': changed, 'timings.json': {'schemaVersion': 1}})
+                elif case == 'old_partial_bad_timing':
+                    self.add_old_bundle(transport, {'release.json': manifest,
+                                                    'timings.json': {'schemaVersion': 1, 'uploadedBytes': -1}})
+                elif case == 'old_partial_ambiguous':
+                    self.add_old_bundle(transport, {'release.json': manifest}, 89)
+                    self.add_old_bundle(transport, {'release.json': manifest}, 90)
+                elif case == 'wrong_old_expected_operation': journal['expectedOperationId'] = 'f'*32
+                store = flow.JournalStore(Path(directory))
+                store.write(journal)
+                before = store.path(journal['id']).read_bytes()
+                with self.assertRaises(flow.FlowError):
+                    flow.adopt_deploy_attempt(journal, api, store, attempt, dry_run=False)
+                self.assertEqual(before, store.path(journal['id']).read_bytes())
+                self.assertEqual((400, 1), (journal['deployRun'], journal['deployAttempt']))
+                self.assertEqual([], transport.writes)
+
+
 class BackmergeProofTest(unittest.TestCase):
     def test_fast_forward_cannot_masquerade_as_completed_gitflow_backmerge(self):
         journal = {'branch': 'release/2026.11.10-flow', 'version': 'v2026.11.10', 'mergeCommit': 'a'*40}
