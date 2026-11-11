@@ -1,6 +1,6 @@
 # 项目文档中心
 
-更新日期：2026-11-10。文档按用途和业务归类，当前说明、历史验收、设计和实验分别阅读。代码与配置是实现依据，历史测试或旧镜像名称不能直接解释为今天的部署状态。
+更新日期：2026-11-11。文档按用途和业务归类，当前说明、历史验收、设计和实验分别阅读。主应用当前采用源码开发运行方式；历史测试、旧镜像、Candidate 或标签不能直接解释为今天的运行状态。
 
 ## 开发接手
 
@@ -13,9 +13,9 @@
 | 服务与数据流、代码位置 | [架构说明](guides/architecture.md) |
 | 本地环境、配置、调试与测试 | [开发指南](guides/development.md) |
 | 登录、权限及接口查找 | [接口导航](guides/api.md) |
-| 发布、回滚、备份和排障 | [运维指南](guides/operations.md) |
-| GitHub Actions、统一发布入口和巡检 | [CI/CD 与统一运维](guides/cicd.md)、[快速迭代发布](guides/cicd-acceleration.md)（启用状态见各期验收） |
-| 服务器现状、目录、证书、备份、维护任务及接管待办 | [服务器运维交接](guides/server-handoff.md)（含 v7 调度修复与回滚限制） |
+| 共享服务器源码运行、恢复、备份和排障 | [运维指南](guides/operations.md) |
+| 源码模式下的 CI、旧自动发布和网络传输边界 | [CI/CD 与统一运维](guides/cicd.md)、[CI/CD 加速历史边界](guides/cicd-acceleration.md) |
+| 服务器现状、源码目录、证书、备份、维护任务及接管待办 | [服务器运维交接](guides/server-handoff.md)、[源码运行现场状态](guides/source-runtime-status.md) |
 | 一期最终交接、调度故障与回滚资格隔离 | [自动化运维一期收尾](releases/infrastructure/devops-phase1-closure-20261107.md) |
 | 桌面构建与备份约定 | [桌面构建说明](guides/desktop-build-backup.md) |
 
@@ -26,13 +26,13 @@
 | [业务说明](business/README.md) | 财务、电商、视频、招聘、知识库、文件存储 |
 | [发布与验收](releases/README.md) | 按财务、电商、视频、招聘、基础设施分类的历史记录 |
 | [研究与实验](research/README.md) | 服装重建、水印、财务时间来源、招聘风险与视频实验 |
-| [设计参考](design/README.md) | 视觉参考及工作流设计依据 |
+| [设计参考](design/README.md) | 当前源码运行设计、视觉参考及工作流设计依据 |
 | [来源与整合历史](history/README.md) | 源码快照、SHA-256 清单、分支与迁移来源 |
 | [文档清理记录](guides/documentation-maintenance.md) | 目录约定、删除依据、替代资料和维护规则 |
 
-## 当前生产规则与验收
+## 当前业务规则与历史验收
 
-以下十一份业务规则/验收文件保留根目录原路径，由本索引统一导航；它们描述各自日期的业务和验收，不固定当前部署。**自动发布、巡检、通知和有限自愈已启用；v2026.11.7.7 已修复首次接管引入的定时调度缺陷，v3/v4/v5 禁止回滚。** 当前应用摘要、配置和回滚见[运维指南](guides/operations.md)，分类交接见[服务器运维交接](guides/server-handoff.md)，证据见[一期收尾](releases/infrastructure/devops-phase1-closure-20261107.md)。纯文档 v8 复用 v7 应用，最新版本看 `heyi-ops status` 和正式 Release。广告业务接入仍按其独立发布处理，不能从运行验收推断账户/数据已完成。生产操作先读 [AGENTS.md](../AGENTS.md)。
+以下十一份业务规则/验收文件保留根目录原路径，由本索引统一导航；它们描述各自日期的业务和验收，不固定当前运行状态。历史自动发布、版本和回滚资格见对应回执；当前源码模式及共享服务器状态见[运维指南](guides/operations.md)和[服务器运维交接](guides/server-handoff.md)。主应用与前端切换已实测完成，耗时和未完成项目见[现场状态](guides/source-runtime-status.md)。广告业务接入仍按其独立授权与数据验收处理，不能从应用健康推断账户/数据已完成。共享服务器操作先读 [AGENTS.md](../AGENTS.md)。
 
 | 主题 | 固定入口 |
 | --- | --- |
