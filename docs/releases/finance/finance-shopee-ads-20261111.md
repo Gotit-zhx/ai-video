@@ -2,6 +2,8 @@
 
 本轮在 `feature/finance-shopee-ad-spend` 从 `develop` 的 `fe7b5975d627f4407adeda5915bbd6e61e9dadd1` 开发。接入代码、独立配置、自动采集、三表来源与页面状态已完成本地验证；**未在共享服务器应用 V153，未上线本候选，未补入真实 Shopee 费用**。不能把本地验证当作正式数据完整性验收。
 
+后续状态：2026-11-12 正式应用已可用，未应用的 Shopee V153 候选已改为 V154 并完成源码激活。下文保留 11 月 11 日的历史事实；当前配置、迁移与待授权边界见[正式接入激活回执](finance-shopee-ads-activation-20261112.md)。
+
 ## 现场原因
 
 官方 `get_all_cpc_ads_daily_performance` 提供店铺每日 `date`、`expense`，但文档允许的应用类型不包含现用 ERP System。此前 ERP 真实读取为 403 / `error_api_permission`，本轮未更改原应用配置或店铺令牌。

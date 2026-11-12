@@ -3,3 +3,7 @@
 live-enabled=false
 partner-id=
 partner-key=
+
+# Optional official HTTPS endpoints.
+auth-base-url=https://open.shopee.com
+api-base-url=https://partner.shopeemobile.com

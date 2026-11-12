@@ -36,5 +36,17 @@ final class FinanceShopeeAdsApi {
         }
         return result;
     }
+    static Map<String,Object> plan(LocalDate today,LocalDate lastSuccess){
+        var plan=new LinkedHashMap<String,Object>();LocalDate oldest=start(today,lastSuccess);
+        if(lastSuccess==null){
+            LocalDate month=today.withDayOfMonth(1),previous=month.minusMonths(1);
+            plan.put("from",previous.toString());plan.put("until",month.minusDays(1).toString());
+            var remaining=new ArrayList<Map<String,Object>>();remaining.add(Map.of("from",month.toString(),"until",today.toString()));
+            if(oldest.isBefore(previous))remaining.add(Map.of("from",oldest.toString(),"until",previous.minusDays(1).toString()));
+            plan.put("remaining",remaining);
+        }else{plan.put("from",oldest.toString());plan.put("until",today.toString());}
+        return plan;
+    }
+    static LocalDate windowEnd(LocalDate from,LocalDate until){return from.withDayOfMonth(from.lengthOfMonth()).isBefore(until)?from.withDayOfMonth(from.lengthOfMonth()):until;}
     static LocalDate start(LocalDate today,LocalDate lastSuccess){return today.minusDays(lastSuccess==null?89:lastSuccess.isBefore(today)?30:6);}
 }

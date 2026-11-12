@@ -113,8 +113,8 @@ public class FinanceShopeeAds {
         }
         ZoneId zone=ZoneId.of(text(grant.get("timezone")));LocalDate today=LocalDate.now(zone);
         var cp=grant.get("checkpoint_json")==null?new LinkedHashMap<String,Object>():new LinkedHashMap<>(repo.read(text(grant.get("checkpoint_json"))));
-        if(cp.isEmpty()){cp.put("from",FinanceShopeeAdsApi.start(today,grant.get("last_success_at")==null?null:instant(grant.get("last_success_at")).atZone(zone).toLocalDate()).toString());cp.put("until",today.toString());}
-        LocalDate from=LocalDate.parse(text(cp.get("from"))),until=LocalDate.parse(text(cp.get("until"))),to=from.plusDays(6);if(to.isAfter(until))to=until;
+        if(cp.isEmpty())cp.putAll(FinanceShopeeAdsApi.plan(today,grant.get("last_success_at")==null?null:instant(grant.get("last_success_at")).atZone(zone).toLocalDate()));
+        LocalDate from=LocalDate.parse(text(cp.get("from"))),until=LocalDate.parse(text(cp.get("until"))),to=FinanceShopeeAdsApi.windowEnd(from,until);
         if(from.isAfter(to)||until.isAfter(today)||from.isBefore(today.minusMonths(6)))throw bad("广告历史窗口超出官方可读取范围");
         LocalDate requestFrom=from.equals(to)?from.minusDays(1):from;final LocalDate end=to;
         int saved=repo.jdbc().update("UPDATE finance_shopee_ad_grants SET checkpoint_json=? WHERE organization_id=? AND external_shop_id=? AND lease_token=?",repo.write(cp),org,external,lease);if(saved!=1)return;
@@ -133,7 +133,10 @@ public class FinanceShopeeAds {
                     VALUES(?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE amount=VALUES(amount),source_json=VALUES(source_json),observed_at=UTC_TIMESTAMP(6)
                     """,org,external,identity,day,currency,row.get("amount"),repo.write(row.get("raw")));
             }
-            boolean done=!end.isBefore(until);if(done)cp.clear();else cp.put("from",end.plusDays(1).toString());release(org,external,lease,done?"SUCCESS":"SYNCING",cp,done);return null;
+            boolean done=!end.isBefore(until);
+            if(done){var remaining=new ArrayList<>(rows(cp.get("remaining")));cp.clear();if(!remaining.isEmpty()){cp.putAll(remaining.removeFirst());if(!remaining.isEmpty())cp.put("remaining",remaining);done=false;}}
+            else cp.put("from",end.plusDays(1).toString());
+            release(org,external,lease,done?"SUCCESS":"SYNCING",cp,done);return null;
         });
     }
     private boolean saveRefreshed(FinanceShopeeAdsSettings.Application app,Map<String,Object> grant,String lease,MarketplaceAccess.TokenSet refreshed){

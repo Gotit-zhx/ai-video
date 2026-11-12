@@ -8,6 +8,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [finance-shopee-ads-activation-20261112.md](finance/finance-shopee-ads-activation-20261112.md) | Shopee Ads 正式配置、V154 和源码激活；店铺授权及真实回补待验证 |
 | [finance-ad-automation-20261109.md](finance/finance-ad-automation-20261109.md) | v2026.11.9 广告自动化发布准备、V148 独立维护及验收顺序 |
 | [finance-ad-connection-acceptance-20261107.md](finance/finance-ad-connection-acceptance-20261107.md) | v9 正式接入、原生进程资源、实际 Java 验证、探针误判纠正及真实授权边界 |
 | [finance-ad-vmess-validation-20261107.md](finance/finance-ad-vmess-validation-20261107.md) | 单进程代理验证历史；第二条节点已正式接入，链接最终验收 |
