@@ -45,6 +45,18 @@ jobs:
           node-version: '22'
       - name: Check application JavaScript syntax
         run: find frontend -maxdepth 2 -type f -name '*.js' ! -path 'frontend/vendor/*' -print0 | xargs -0 -n 1 node --check
+      - name: Install frontend verification dependencies
+        run: |
+          npm --prefix scripts/ci/qa ci --ignore-scripts
+          npm --prefix frontend/modern ci --ignore-scripts
+      - name: Verify modern financial application
+        run: |
+          npm --prefix frontend/modern run typecheck
+          npm --prefix frontend/modern test
+          npm --prefix frontend/modern run build
+          node frontend/modern/tests/build-smoke.mjs
+      - name: Verify finance entry, isolation and immutable asset publication
+        run: node --test frontend/test/finance-modern-entry.test.cjs frontend/test/finance-modern-host.test.cjs frontend/test/finance-modern-publish.test.mjs frontend/test/nginx-html-cache.test.cjs
       - name: Verify frontend source references
         run: node --test frontend/test/public-assets.cjs
       - name: Verify development live reload contract

@@ -54,6 +54,20 @@ class SourceWatcherTest(unittest.TestCase):
         self.settle()
         self.assertEqual(original, (self.root / '.dev/source-state.json').read_bytes())
 
+    def test_modern_builds_never_reload_tabs_with_classic_financial_drafts(self):
+        original = (self.root / '.dev/source-state.json').read_bytes()
+        modern = self.root / 'frontend/modern/src'
+        assets = self.root / 'frontend/assets/finance-modern/assets'
+        modern.mkdir(parents=True)
+        assets.mkdir(parents=True)
+        (modern / 'page.tsx').write_text('export const page = 1')
+        (self.root / 'frontend/modern/package.json').write_text('{}')
+        (assets / 'page-hash.js').write_text('export const page = 2')
+        (assets.parent / 'manifest.json').write_text('{}')
+        self.settle()
+        self.assertEqual(original, (self.root / '.dev/source-state.json').read_bytes())
+        self.assertEqual([], self.compiles)
+
     def test_java_burst_debounces_and_triggers_once_after_success(self):
         source = self.root / 'src/main/java/example/Main.java'
         source.write_text('class Main { int a; }')
@@ -203,6 +217,50 @@ class SourceWatcherTest(unittest.TestCase):
         self.assertEqual('previous good output', stale.read_text())
         self.assertEqual('previous trigger', trigger.read_text())
         self.assertFalse((self.root / 'target/classes/partial.txt').exists())
+
+
+class ModernFrontendTest(unittest.TestCase):
+    def test_fresh_checkout_compiles_once_then_rebuilds_only_changed_sources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            modern = root / 'frontend/modern'
+            (modern / 'src').mkdir(parents=True)
+            (modern / 'package.json').write_text('{}')
+            (modern / 'package-lock.json').write_text('{"lockfileVersion":3}')
+            source = modern / 'src/page.tsx'
+            source.write_text('export const page=1')
+            calls = []
+            def run(command, **options):
+                calls.append(command)
+                (modern / 'node_modules/vite').mkdir(parents=True, exist_ok=True)
+                (modern / 'node_modules/vite/package.json').write_text('{}')
+                assets = root / 'frontend/assets/finance-modern'
+                assets.mkdir(parents=True, exist_ok=True)
+                (assets / 'manifest.json').write_text('{}')
+                return subprocess.CompletedProcess(command, 0)
+            with patch.object(dev.subprocess, 'run', side_effect=run):
+                self.assertTrue(dev.ensure_modern_frontend(root, {}))
+                self.assertEqual(2, len(calls))
+                self.assertIn('ci', calls[0])
+                self.assertIn('build', calls[1])
+                self.assertFalse(dev.ensure_modern_frontend(root, {}))
+                self.assertEqual(2, len(calls))
+                source.write_text('export const page=2')
+                self.assertTrue(dev.ensure_modern_frontend(root, {}))
+                self.assertEqual(3, len(calls))
+                self.assertIn('build', calls[-1])
+
+    def test_failed_frontend_build_keeps_previous_success_marker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            modern = root / 'frontend/modern'
+            modern.mkdir(parents=True)
+            (modern / 'package.json').write_text('{}')
+            (modern / 'package-lock.json').write_text('{}')
+            with patch.object(dev.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'npm')):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    dev.ensure_modern_frontend(root, {})
+            self.assertFalse((root / '.dev/finance-modern-source.sha256').exists())
 
 
 class LauncherTest(unittest.TestCase):

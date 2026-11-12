@@ -136,7 +136,7 @@ export function AdvertisingPage({
     </Panel>
   );
   return (
-    <Space orientation="vertical" size="middle" className="finance-page-stack">
+    <Space orientation="vertical" size="medium" className="finance-page-stack">
       <Alert
         type="info"
         title={t("投放报表与已入账广告范围不同，不可直接相加。")}

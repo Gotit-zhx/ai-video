@@ -1,4 +1,5 @@
 import catalogJson from '../../../i18n/catalog.json';
+import messages from './messages.json';
 
 export type FinanceLocale = 'zh' | 'en' | 'id' | 'th' | 'vi' | 'ms' | 'fil';
 export type FinanceTranslator = (sourceLabel: string) => string;
@@ -12,7 +13,7 @@ const localeIndexes: Record<Exclude<FinanceLocale, 'zh'>, number> = {
   fil: 5
 };
 
-const catalog = catalogJson as Record<string, readonly string[]>;
+const catalog: Record<string, readonly string[]> = { ...catalogJson, ...messages };
 
 export function normalizeFinanceLocale(locale: string): FinanceLocale {
   const normalized = locale.toLowerCase().replace('_', '-');

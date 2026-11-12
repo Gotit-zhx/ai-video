@@ -237,7 +237,7 @@ function OverviewReport({ live }: { live: boolean }) {
   const sync = rows(data?.sync),
     orderSync = sync.filter((row) => row.channel === "ORDER_LIVE");
   return (
-    <Space orientation="vertical" className="finance-page-stack" size="middle">
+    <Space orientation="vertical" className="finance-page-stack" size="medium">
       <Failure error={query.error} />
       {query.isPending && (
         <Alert type="info" title={t("正在读取财务数据")} />

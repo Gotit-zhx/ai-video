@@ -18,14 +18,22 @@ public class DevWebConfiguration implements WebMvcConfigurer {
     @Bean
     @Order(0)
     SecurityFilterChain devSecurityFilterChain(HttpSecurity http) throws Exception {
-        http.securityMatcher(DevWebConfiguration::publicRequest)
-                .authorizeHttpRequests(authorize -> authorize.anyRequest().permitAll());
+        http.securityMatcher(request -> publicRequest(request) || privateFinanceSource(request))
+                .authorizeHttpRequests(authorize -> authorize
+                        .requestMatchers(DevWebConfiguration::privateFinanceSource).denyAll()
+                        .anyRequest().permitAll());
         return http.build();
+    }
+
+    static boolean privateFinanceSource(HttpServletRequest request) {
+        String path = request.getRequestURI();
+        return path.equals("/modern") || path.startsWith("/modern/") || path.equals("/modern-build.mjs");
     }
 
     static boolean publicRequest(HttpServletRequest request) {
         if (!request.getMethod().equals("GET") && !request.getMethod().equals("HEAD")) return false;
         String path = request.getRequestURI();
+        if (privateFinanceSource(request)) return false;
         if (path.equals("/_dev/revision")) return request.getMethod().equals("GET");
         if (path.equals("/") || path.equals("/index.html")) return true;
         if (path.contains("..") || path.contains("%") || path.contains("\\") || path.contains("/.")

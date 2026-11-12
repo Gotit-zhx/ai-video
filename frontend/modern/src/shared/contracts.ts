@@ -41,6 +41,8 @@ export interface FinanceHost {
   getSnapshot(): FinanceHostSnapshot;
   subscribe(listener: FinanceHostListener): () => void;
   navigate(route: string): void;
+  getLegacyUrl?(filters: Partial<FinanceFilters>): string;
+  consumeAuthorizationNotice?(): {status: "success" | "error"; message: string} | null;
   onSessionExpired(): void;
 }
 

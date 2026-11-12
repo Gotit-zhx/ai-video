@@ -87,6 +87,7 @@
 }
 
 .finance-workspace {
+  min-width: 0;
   padding: 24px;
   max-width: 1920px;
   margin: auto;
@@ -101,6 +102,12 @@
 }
 .finance-workspace-heading h2 {
   margin: 0 0 8px;
+}
+.finance-return-link {
+  align-items: center;
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 6px;
 }
 .finance-navigation {
   display: flex;
@@ -146,6 +153,9 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }
+.finance-report-grid > * {
+  min-width: 0;
+}
 .finance-filter-bar label {
   display: flex;
   flex-direction: column;
@@ -166,7 +176,7 @@
     padding: 12px;
   }
   .finance-report-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .finance-metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

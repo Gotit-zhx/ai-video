@@ -34,7 +34,7 @@ export interface FinanceRootProvidersProps {
 function FinanceUiBridge({ children, surface }: { children: ReactNode; surface: ShadowSurface }) {
   const { session } = useFinance();
   return (
-    <FinanceUiProvider surface={surface} themeName={session.theme}>
+    <FinanceUiProvider surface={surface} themeName={session.theme} localeName={session.locale}>
       {children}
     </FinanceUiProvider>
   );

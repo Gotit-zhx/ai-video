@@ -1,8 +1,9 @@
-import { lazy, Suspense, type ComponentType } from "react";
+import { lazy, Suspense, useState, type ComponentType } from "react";
 import { Alert, Button, Input, Select, Space, Typography } from "antd";
 import type { FinanceFilters, Row } from "../../shared/contracts";
 import { rows, text } from "../../shared/rows";
-import { Panel, StatusTag } from "../../shared/components";
+import { InfoTip, Panel, StatusTag } from "../../shared/components";
+import { Activity, ArrowLeft, ChartNoAxesCombined, CircleDollarSign, ClipboardCheck, FileSpreadsheet, Megaphone, PackageSearch, RefreshCw, ShoppingBag, Store } from "lucide-react";
 import { useFinance } from "./context";
 import {
   businessToday,
@@ -41,6 +42,7 @@ export const financePageRegistry = [
   ["ads", "广告分析"],
   ["shops", "财务店铺管理"],
 ] as const;
+const navigationIcons = {overview:ChartNoAxesCombined,live:Activity,settlements:CircleDollarSign,reconciliation:ClipboardCheck,orders:ShoppingBag,"fee-records":FileSpreadsheet,costs:PackageSearch,ads:Megaphone,shops:Store};
 export function normalizeFinanceRoute(route: string): string {
   const value =
     route
@@ -69,6 +71,7 @@ export function FinanceApplication({
 }
 function Workspace({ pages }: { pages: FinancePageExtensions }) {
   const {
+    host,
     route: hostRoute,
     t,
     navigate,
@@ -76,6 +79,7 @@ function Workspace({ pages }: { pages: FinancePageExtensions }) {
     setFilters,
     refresh,
   } = useFinance();
+  const [authorizationNotice, setAuthorizationNotice] = useState(() => host.consumeAuthorizationNotice?.() || null);
   const route = normalizeFinanceRoute(hostRoute),
     live = route === "live";
   const metadata = useReport("/shops", {});
@@ -114,12 +118,14 @@ function Workspace({ pages }: { pages: FinancePageExtensions }) {
           <Typography.Title level={2}>{t("新版财务 BI")}</Typography.Title>
           <StatusTag status="processing">{t("正式数据")}</StatusTag>
         </div>
-        <a href="?financeUi=legacy#finance-overview">{t("返回旧版")}</a>
+        <a className="finance-return-link" href={host.getLegacyUrl?.(filters) || "?financeUi=legacy#finance-overview"}><ArrowLeft size={16} aria-hidden="true" />{t("返回旧版")}</a>
       </header>
+      {authorizationNotice && <Alert type={authorizationNotice.status === "success" ? "success" : "error"} showIcon title={authorizationNotice.message} closable={{onClose:() => setAuthorizationNotice(null)}} />}
       <nav aria-label={t("财务导航")} className="finance-navigation">
-        {financePageRegistry.map(([id, label]) => (
+        {financePageRegistry.map(([id, label]) => { const Icon = navigationIcons[id]; return (
           <Button
             key={id}
+            icon={<Icon size={16} aria-hidden="true" />}
             type={
               route === id ||
               (route === "expense-ledger" && id === "fee-records")
@@ -130,9 +136,9 @@ function Workspace({ pages }: { pages: FinancePageExtensions }) {
           >
             {t(label)}
           </Button>
-        ))}
+        );})}
       </nav>
-      <Panel title={t("查询范围")}>
+      <Panel title={<Space>{t("查询范围")}<InfoTip title={t(live ? "实时视图临时使用今日与人民币，离开后恢复报表日期和币种。" : "人民币按各业务日期的历史汇率快照展示，缺失、待补齐与真实零值分别保留。")} /></Space>}>
         <Space wrap className="finance-filter-bar">
           <label>
             {t("开始日期")}
@@ -183,8 +189,7 @@ function Workspace({ pages }: { pages: FinancePageExtensions }) {
           <label>
             {t("店铺")}
             <Select
-              showSearch
-              optionFilterProp="label"
+              showSearch={{ optionFilterProp: "label" }}
               value={filters.shopId}
               onChange={(value) => change({ shopId: value })}
               options={[
@@ -279,18 +284,11 @@ function Workspace({ pages }: { pages: FinancePageExtensions }) {
               ]}
             />
           </label>
-          <Button onClick={() => void refresh()}>{t("刷新")}</Button>
+          <Button icon={<RefreshCw size={16} aria-hidden="true" />} onClick={() => void refresh()}>{t("刷新")}</Button>
           <Button onClick={() => setFilters(defaultFinanceFilters())}>
             {t("重置范围")}
           </Button>
         </Space>
-        <Typography.Paragraph type="secondary">
-          {t(
-            live
-              ? "实时视图临时使用今日与人民币，离开后恢复报表日期和币种。"
-              : "人民币按各业务日期的历史汇率快照展示，缺失、待补齐与真实零值分别保留。",
-          )}
-        </Typography.Paragraph>
         <Failure error={metadata.error} />
       </Panel>
       {["fee-records", "expense-ledger"].includes(route) && (

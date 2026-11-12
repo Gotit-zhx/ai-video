@@ -122,7 +122,7 @@ function RecordSession({
     }
   };
   return (
-    <Space orientation="vertical" className="finance-page-stack" size="middle">
+    <Space orientation="vertical" className="finance-page-stack" size="medium">
       {view === "ORDER" && (
         <Tabs
           activeKey={tab}

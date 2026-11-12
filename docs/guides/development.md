@@ -1,6 +1,6 @@
 # 开发与验证指南
 
-核对日期：2026-11-11。首次源码启动见[项目首页](../../README.md)；本文说明配置边界、日常开发和验证条件。
+核对日期：2026-11-12。首次源码启动见[项目首页](../../README.md)；本文说明配置边界、日常开发和验证条件。
 
 ## 环境与构建
 
@@ -9,12 +9,13 @@
 | 主应用源码运行 | JDK 21、Maven 3.9.11、Python 3；仓库没有 `mvnw` |
 | 本地依赖容器 | Docker Desktop / Engine；Compose 2.24.4+，仅启动 MySQL/Redis |
 | Runtime / Node 测试 | Node.js 22；Pi 使用 `package-lock.json` 和 `npm ci` |
+| 新版财务 BI | Node.js 22.12+；CI 使用 Node 22；React/TypeScript 依赖以 `frontend/modern/package-lock.json` 为准 |
 | 招聘桌面 | 依平台构建，Node 22、Python 3.12、pnpm 11.25.0；完整流程见 HR README 与工作流 |
 | 视频抽帧及 watch | FFmpeg、Python，以及 Runtime 镜像内的 watch 工具目录 |
 
 日常主应用不使用 Dockerfile、`app-local.jar` 或 Maven `package`。`python3 scripts/dev.py run` 以 dev profile 执行 `spring-boot:run`；watcher 只把必要 Java/资源编译到 `target/classes`，编译成功后更新 DevTools trigger。Java 保存到可用新上下文仍需要编译和重启时间。Dockerfile、JAR 和镜像入口保留为历史恢复或明确的独立分发资料，不是当前开发命令。
 
-普通前端不需要 `npm install` 或 `npm run build`。本地 Spring 直接从 `frontend/` 读取 HTML/JS/CSS；服务器由 Nginx bind 同一源码目录。保存后刷新即可，开发专用浏览器轮询可自动刷新。新增资源仍须检查 `index.html` 引用和相关页面测试，但日常运行不生成 gzip、静态发布目录或前端镜像。
+旧版前端仍直接使用 HTML/JS/CSS，无需 npm 构建。本地 Spring 直接从 `frontend/` 读取公开资源；服务器由 Nginx bind 同一目录。新版财务 BI 的 TypeScript 先编译为该目录下的带哈希资源，运行时不需要 Node 服务。源码启动器会在首次启动及来源变化后安装锁定依赖、编译新版资源；失败不会启动新应用上下文。连续编辑新版时另开终端执行 `npm --prefix frontend/modern run dev`，保存后手动刷新当前新版标签页。新版重建不会自动刷新仍在工作的旧版标签页，也不会删除已打开页面所需的旧资源。详见[财务 BI 双界面开发](finance-modern-ui.md)。
 
 ## 配置入口及优先级
 

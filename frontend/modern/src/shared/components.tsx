@@ -6,7 +6,7 @@ import { CircleHelp } from 'lucide-react';
 export type BusinessTableProps<T extends object> = TableProps<T>;
 
 export function BusinessTable<T extends object>(props: BusinessTableProps<T>) {
-  return <Table<T> size="middle" scroll={{ x: 'max-content', ...props.scroll }} {...props} />;
+  return <Table<T> size="medium" {...props} scroll={{ x: 'max-content', ...props.scroll }} />;
 }
 
 export interface PanelProps extends Omit<CardProps, 'title'> {
@@ -48,7 +48,7 @@ export interface InfoTipProps {
 export function InfoTip({ title, size = 16, style }: InfoTipProps) {
   const accessibleTitle = typeof title === 'string' ? title : 'More information';
   return (
-    <Tooltip title={title}>
+    <Tooltip title={title} trigger={['hover', 'focus', 'click']}>
       <button aria-label={accessibleTitle} className="finance-info-tip" style={style} type="button">
         <CircleHelp aria-hidden="true" size={size} />
       </button>

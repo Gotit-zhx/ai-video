@@ -29,4 +29,8 @@ for(const file of ['nginx.local.conf','nginx.conf']){
     const beforeLocations=config.split(/\n\s*location\b/)[0];
     assert.doesNotMatch(beforeLocations,/add_header\s+Cache-Control/i);
   });
+  test(`${file}: finance build sources never reach the static source root`,()=>{
+    assert.match(location(config,'^~ /modern/'),/return 404;/);
+    assert.match(location(config,'= /modern-build.mjs'),/return 404;/);
+  });
 }
