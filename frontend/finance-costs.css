@@ -156,3 +156,12 @@
 .fl-status-filters{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
 .fl-status-filters button[aria-pressed="true"]{background:#e9efff;color:#244dad;border-color:#b9c9f5;font-weight:600}
 .fl-read-progress[hidden]{display:none}
+/* Manual input verification uses the existing cost workspace and dialog styles. */
+.fc-input-evidence{display:grid;gap:12px;margin-top:18px;padding:16px;border:1px solid var(--fi-border,#e2e6ed);border-radius:12px}
+.fc-input-evidence>label:not(.fc-check),.fc-input-dialog .fi-dialog-body>label:not(.fc-check){display:grid;gap:6px}
+.fc-input-evidence input[type=text],.fc-input-evidence select,.fc-input-dialog input[type=text],.fc-input-dialog textarea,.fc-input-dialog select{box-sizing:border-box;width:100%;padding:9px 11px;border:1px solid var(--fi-border,#d9dfeb);border-radius:8px;background:var(--input-bg,transparent);color:inherit}
+.fc-input-dialog{width:min(920px,94vw);max-height:90vh}
+.fc-input-dialog textarea{min-height:70px;resize:vertical}
+.fc-input-dialog .fi-dialog-foot{flex-wrap:wrap}
+.fc-input-scope{white-space:pre-wrap;line-height:1.6}
+.fc-input-changes td small{display:block;margin-top:5px;opacity:.7}
