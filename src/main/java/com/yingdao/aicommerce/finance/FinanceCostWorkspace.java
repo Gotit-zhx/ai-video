@@ -355,7 +355,7 @@ public class FinanceCostWorkspace {
         String code=text(sellerCode).trim();
         if(code.isBlank())return "";
         if(codes.contains(code))return code;
-        var matches=normalized.getOrDefault(normalizedSku(code),Set.of());
+        var matches=normalized.getOrDefault(normalizedSku(code),Set.of()).stream().filter(codes::contains).toList();
         return matches.size()==1?matches.iterator().next():"";
     }
     record CostCodeMatch(String code,String method,Integer bundleQuantity){}
@@ -363,27 +363,35 @@ public class FinanceCostWorkspace {
         String code=matchingCostCode(sellerCode,codes,normalized);
         if(!code.isBlank())return new CostCodeMatch(code,code.equals(text(sellerCode).trim())?"EXACT_CODE":"NORMALIZED_CODE",null);
         String formatted=normalizedSku(sellerCode);
-        if(normalized.containsKey(formatted))return null; // Ambiguous full bundle codes must not fall back to a base price.
+        if(normalized.getOrDefault(formatted,Set.of()).stream().anyMatch(codes::contains))return null; // Ambiguous full bundle codes must not fall back to a base price.
         var bundle=java.util.regex.Pattern.compile("^([^*]+)\\*([1-9][0-9]{0,5})$").matcher(formatted);
         if(!bundle.matches())return null;
         code=matchingCostCode(bundle.group(1),codes,normalized);
         return code.isBlank()?null:new CostCodeMatch(code,"BUNDLE_CODE",Integer.valueOf(bundle.group(2)));
     }
+    static boolean automaticMethod(String method){return Set.of("EXACT_CODE","NORMALIZED_CODE","BUNDLE_CODE","SPU_CODE").contains(method);}
+    static CostCodeMatch matchProduct(String sellerCode,String productId,Set<String> codes,Map<String,Set<String>> normalized){
+        var sku=matchSku(sellerCode,codes,normalized);
+        if(sku!=null)return sku;
+        String spu=matchingCostCode(productId,codes,normalized);
+        return spu.isBlank()?null:new CostCodeMatch(spu,"SPU_CODE",null);
+    }
     @Transactional public Map<String,Object> autoMatch(Scope s,String actor,String shopId,Map<String,Object> body){
         repo.requireShopWrite(s,shopId);
         var data=costs(s,shopId);var catalog=rows(data.get("costs"));
-        var byCode=new LinkedHashMap<String,Set<String>>();
-        for(var cost:catalog)byCode.computeIfAbsent(text(cost.get("sku")),key->new LinkedHashSet<>()).add(text(cost.get("warehouse")));
+        var byWarehouse=new LinkedHashMap<String,Set<String>>();
+        for(var cost:catalog)byWarehouse.computeIfAbsent(text(cost.get("warehouse")),key->new LinkedHashSet<>()).add(text(cost.get("sku")));
         var normalized=new LinkedHashMap<String,Set<String>>();
-        for(String code:byCode.keySet())normalized.computeIfAbsent(normalizedSku(code),key->new LinkedHashSet<>()).add(code);
+        for(var codes:byWarehouse.values())for(String code:codes)normalized.computeIfAbsent(normalizedSku(code),key->new LinkedHashSet<>()).add(code);
         var existing=map(data.get("mappings"));int candidates=0;
         for(var product:rows(data.get("products"))){
             if(FinanceOrderCosts.giftSku(product.get("seller_sku")))continue;
-            var match=matchSku(text(product.get("seller_sku")),byCode.keySet(),normalized);
+            String productId=text(product.get("product_id")),skuId=text(product.get("sku_id"));
+            for(var available:byWarehouse.entrySet()){
+            String warehouse=available.getKey();
+            var match=matchProduct(text(product.get("seller_sku")),productId,available.getValue(),normalized);
             if(match==null)continue;
             String code=match.code();
-            String productId=text(product.get("product_id")),skuId=text(product.get("sku_id"));
-            for(String warehouse:byCode.get(code)){
             if(existing.containsKey(shopId+":"+productId+":"+skuId+":"+warehouse))continue;
             String id=hash(s.organizationId()+"\0"+shopId+"\0"+productId+"\0"+skuId+"\0"+warehouse);
             var saved=new LinkedHashMap<String,Object>();saved.put("code",code);saved.put("warehouse",warehouse);saved.put("groupId",data.get("groupId"));
@@ -397,7 +405,7 @@ public class FinanceCostWorkspace {
             candidates++;
             }
         }
-        if(candidates>0)audit(s,actor,"COST_AUTO_MATCH",shopId,null,Map.of("candidateCount",candidates),"按本店同编码自动关联全部可用成本仓；单位换算待确认，不启用成本计算");
+        if(candidates>0)audit(s,actor,"COST_AUTO_MATCH",shopId,null,Map.of("candidateCount",candidates),"按商品 SKU 优先、平台 SPU 兜底自动关联各成本仓；保留已有人工确认关系");
         return costs(s,shopId);
     }
     public Map<String,Object> expenses(Scope s,Map<String,String> query){
