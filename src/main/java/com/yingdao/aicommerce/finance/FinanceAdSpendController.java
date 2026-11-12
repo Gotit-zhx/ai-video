@@ -38,10 +38,20 @@ public class FinanceAdSpendController {
         sheets.put("店铺广告消耗",sheet(rows(data.get("shops")),List.of("platform","shop_name","group_name","currency","cash_amount","credit_amount","grant_amount","amount","net_amount","records"),List.of("平台","店铺","分组","币种","现金消耗","信用额度消耗","广告费用赠款消耗","广告消耗（投放报表）","净广告消耗","记录数")));
         var detailRows=new ArrayList<Map<String,Object>>();for(var original:rows(data.get("items"))){var row=new LinkedHashMap<>(original);var fx=map(row.get("fx"));row.put("fx_business_date",fx.getOrDefault("businessDate",row.get("record_date")));row.put("fx_rate_date",fx.get("rateDate"));row.put("fx_provider",fx.get("provider"));detailRows.add(row);}
         sheets.put("店铺消耗明细",sheet(detailRows,List.of("record_date","platform","shop_name","group_name","account_name","account_id","campaign_name","campaign_id","source_currency","original_cash_amount","original_credit_amount","original_grant_amount","original_amount","original_net_amount","currency","cash_amount","credit_amount","grant_amount","amount","net_amount","source","assignment_status","funding_basis","fx_business_date","fx_rate_date","cny_rate","fx_provider"),List.of("日期","平台","店铺","分组","广告账户","广告账户ID","推广系列名称","推广系列ID","原币","原币现金消耗","原币信用额度消耗","原币广告赠款消耗","原币消耗合计","原币净消耗","展示币种","现金消耗","信用额度消耗","广告费用赠款消耗","广告消耗（投放报表）","净广告消耗","来源","归属状态","金额口径","换算业务日","汇率公布日","1原币兑人民币","汇率来源")));
+        var metadataFields=List.of("report_type","campaign_objective","campaign_structure","campaign_automation_type","official_store_ids","metadata_endpoint","metadata_observed_at","metadata_status");
+        var metadataLabels=List.of("原始投放类型","推广目标","系列结构","系列自动化方式","官方目标店铺ID（非历史资金归属）","系列资料接口","系列资料查询时间","系列资料状态");
+        var detail=sheets.get("店铺消耗明细");
+        for(int index=0;index<detail.size();index++){
+            var row=new ArrayList<>(detail.get(index));
+            if(index==0)row.addAll(metadataLabels);
+            else for(String field:metadataFields){Object value=detailRows.get(index-1).get(field);row.add(value instanceof List<?> list?String.join(",",list.stream().map(FinanceData::text).toList()):text(value).isBlank()?"未提供":text(value));}
+            detail.set(index,row);
+        }
         sheets.put("账户级资金核对",sheet(rows(data.get("accountFunding")),List.of("source","platform","account_name","account_id","currency","cash_amount","credit_amount","grant_amount","amount","net_amount","tax_amount"),List.of("来源","平台","账户","账户ID","展示币种","现金消耗","信用额度消耗","广告费用赠款消耗","来源费用合计","净广告消耗","预估税额（单列）")));
         sheets.put("历史汇率",sheet(rows(data.get("fxEvidence")),List.of("businessDate","rateDate","currency","rate","provider"),List.of("换算业务日","汇率公布日","原币","1原币兑人民币","汇率来源")));
         var notes=new ArrayList<List<String>>();notes.add(List.of("说明","内容"));notes.add(List.of("金额分项","未提供表示源数据未知，不能当作零；三项全已知时与合计核对。"));notes.add(List.of("范围","三表汇总按完整筛选；搜索和归属状态仅限制明细。API 与资金报表重叠不重复相加；不改利润流水。"));notes.add(List.of("重叠排除记录数",text(data.get("overlapExcluded"))));notes.add(List.of("账户资金","BC账户日费用与普通BASIC投放分来源核对，不相加、不复制到店铺或系列；预估税额单列，不再加进合计。"));notes.add(List.of("换算日期","每行按广告报表业务日的历史率转换后汇总，周末和节假日采用不晚于业务日的最近公布率；缺失率保留未知。"));
         notes.add(List.of("净消耗","TikTok net_cost / billed_cost：不含广告赠款、优惠券的消耗；不等于现金付款。资金报表仅在现金和授信均明确时汇总净额。"));notes.add(List.of("账户分项","cash_spend/voucher_spend 仅支持账户级，可能延迟24–48小时；账户级资金核对与店铺/GMV明细范围可能不同，不可相加或按比例分配。未取得授信消耗明细，不将 ad credit 或 spend_credits 转化事件误作授信金额。"));
+        notes.add(List.of("官方店铺关系","系列/广告组接口的当前推广目标仅作来源核对，不等于历史三项资金已逐店分配；系列元信息不改原始投放类型、金额、店铺归属或利润。"));
         map(data.get("fx")).forEach((k,v)->notes.add(List.of(k,text(v))));sheets.put("口径与汇率",notes);
         var numeric=new HashMap<String,Set<Integer>>();numeric.put("分组广告消耗",Set.of(3,4,5,6,7,8));numeric.put("店铺广告消耗",Set.of(4,5,6,7,8,9));numeric.put("店铺消耗明细",Set.of(9,10,11,12,13,15,16,17,18,19,25));
         numeric.put("账户级资金核对",Set.of(5,6,7,8,9,10));numeric.put("历史汇率",Set.of(3));

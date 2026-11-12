@@ -233,6 +233,7 @@ final class FinanceAdAutomation {
         // Empty means no available rows, not an explicit reversal of previously returned spend.
         // Only this source's completed non-conflicting window is replaced; imports remain intact.
         repo.jdbc().update("DELETE FROM finance_records "+sourceWindow,windowKeys);
+        var metadataReferences=new ArrayList<Map<String,Object>>();
         for(var item:staged){
             var row=repo.read(text(item.get("raw_json")));var metrics=map(row.get("metrics"));
             var raw=new LinkedHashMap<>(row);raw.put("advertiser_id",advertiser);raw.put("_finance_channel",channel);raw.put("_finance_store_id",store);
@@ -244,7 +245,9 @@ final class FinanceAdAutomation {
             validate(entry);
             Object[] args=repo.entryArgs(s,entry,entry.revenue());args[0]=hash(s.organizationId()+"\0advertising\0"+external);
             repo.jdbc().update(FinanceRepository.UPSERT.replace("order_id=VALUES(order_id)","shop_id=VALUES(shop_id),order_id=VALUES(order_id)"),args);
+            if(!basic)metadataReferences.add(Map.of("platform","TIKTOK_SHOP","account_id",advertiser,"campaign_id",text(at(row,"dimensions.campaign_id")),"source","API_GMV"));
         }
+        if(!metadataReferences.isEmpty())FinanceAdMetadataSync.enqueue(repo,s,metadataReferences);
         for(LocalDate date=from;!date.isAfter(to);date=date.plusDays(1)){
             var records=daily.getOrDefault(date,List.of());
             var sum=records.stream().map(r->amount(map(r.get("metrics")),basic?"spend":"cost")).reduce(BigDecimal.ZERO,BigDecimal::add);

@@ -17,7 +17,7 @@ import static org.mockito.Mockito.*;
 class FinanceShopeeAdsIntegrationTest {
     final FinanceConfigurationIntegrationTest fixture=new FinanceConfigurationIntegrationTest();
     FinanceShopeeAds service;ShopeeOfficialClient client;FinanceShopeeAdsSettings config;String shop,lastState;
-    @BeforeAll void migrate()throws Exception{fixture.migrate();fixture.migration("V150__finance_ad_spend_workspace.sql");}
+    @BeforeAll void migrate()throws Exception{fixture.migrate();}
     @AfterAll void close(){fixture.closeDataSource();}
     @BeforeEach void setup(){
         fixture.setup();client=mock(ShopeeOfficialClient.class);config=mock(FinanceShopeeAdsSettings.class);

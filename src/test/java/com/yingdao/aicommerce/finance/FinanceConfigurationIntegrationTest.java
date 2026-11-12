@@ -74,8 +74,12 @@ class FinanceConfigurationIntegrationTest {
         migration("V143__finance_calendar_month_completion.sql");
         migration("V144__qianyi_receipt_qualification.sql");
         migration("V148__finance_ad_automation.sql");
+        migration("V150__finance_ad_spend_workspace.sql");
         migration("V152__finance_ad_bc_funding.sql");
         migration("V154__finance_shopee_ads.sql");
+        // Minimal V155 event contract; full projection/trigger migration has its own suite.
+        db.execute("CREATE TABLE finance_query_events(event_id BIGINT AUTO_INCREMENT PRIMARY KEY,organization_id CHAR(36) NOT NULL,event_scope VARCHAR(8) NOT NULL,record_date DATE NULL,shop_id CHAR(36) NULL,order_id VARCHAR(255) NULL,record_id CHAR(64) NULL,source_table VARCHAR(64) NOT NULL,statement_id VARCHAR(255) NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6))");
+        migration("V156__finance_ad_campaign_metadata.sql");
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_cost_sources",Integer.class));
         assertEquals(1,db.queryForObject("SELECT legacy_merged FROM finance_cost_sources WHERE id='old2'",Integer.class));
         assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_cost_books",Integer.class),"legacy snapshots remain for audit");
@@ -90,6 +94,7 @@ class FinanceConfigurationIntegrationTest {
         for(String statement:sql.split(";"))if(!statement.isBlank())db.execute(statement);
     }
     @BeforeEach void setup(){
+        for(String table:List.of("finance_ad_campaign_metadata","finance_ad_campaign_jobs","finance_query_events"))db.update("DELETE FROM "+table);
         for(String table:List.of("finance_shopee_ad_daily","finance_shopee_ad_grants","finance_shopee_ad_groups"))db.update("DELETE FROM "+table);
         for(String table:List.of("finance_ad_bc_stage","finance_ad_bc_costs","finance_ad_bc_sync"))db.update("DELETE FROM "+table);
         for(String table:List.of("finance_ad_report_stage","finance_ad_coverage","finance_ad_streams","finance_ad_stores"))db.update("DELETE FROM "+table);
