@@ -18,6 +18,21 @@ class FinanceAdSpendReportTest {
     }
     Map<String,Object> report(List<Map<String,Object>> sources,List<Map<String,Object>> splits){return FinanceAdSpendReport.build(sources,splits,shops,filter,null,"","");}
     Map<String,Object> apiRecord(String kind){return new LinkedHashMap<>(Map.of("id","api","shop_id","a","platform","TIKTOK_SHOP","kind",kind,"record_date","2026-10-02","currency","USD","amount",new BigDecimal("10"),"source","API"));}
+    @Test void shopeeShopDailyTotalDoesNotAddImportedCampaignsOrOtherPlatforms(){
+        var official=new LinkedHashMap<String,Object>(Map.of("source_key","cpc","platform","SHOPEE","shop_id","s1","record_date","2026-10-02","currency","USD","amount",new BigDecimal("25"),"account_id","10001","source","API_SHOPEE_CPC"));
+        var imported=new LinkedHashMap<>(official);imported.put("source_key","import");imported.put("source","IMPORT_FUNDING");imported.put("campaign_id","campaign");imported.put("amount",new BigDecimal("10"));
+        var shops=List.<Map<String,Object>>of(Map.of("id","s1","platform","SHOPEE","name","Shop","group_id","g","group_name","Group","external_shop_id","10001"));
+        var f=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,31),"","SHOPEE","USD","day");
+        var report=FinanceAdSpendReport.build(List.of(official,imported),List.of(),shops,f,null,"","");
+        assertEquals(1,rows(report.get("items")).size());assertEquals("API_SHOPEE_CPC",rows(report.get("items")).getFirst().get("source"));
+        assertEquals(new BigDecimal("25"),rows(report.get("groups")).getFirst().get("amount"));assertEquals(1,report.get("overlapExcluded"));
+        imported.put("campaign_id","");
+        var withImportedDailyTotal=FinanceAdSpendReport.build(List.of(official,imported),List.of(),shops,f,null,"","");
+        assertEquals(1,rows(withImportedDailyTotal.get("items")).size(),"official total must survive a same-day summary import");
+        assertEquals(new BigDecimal("25"),rows(withImportedDailyTotal.get("totals")).getFirst().get("amount"));
+
+    }
+
     @Test void gmvNetCostIsNotMislabelledAsCashOrCreditAndExplicitZeroIsRetained(){
         var r=FinanceAdSpendReport.api(apiRecord("AD_GMV"),Map.of("advertiser_id","123","dimensions",Map.of("campaign_id","series"),"metrics",Map.of("cost","10","net_cost","0","cash_spend","99","spend_credits","77")));
         assertEquals(BigDecimal.ZERO,r.get("net_amount"));assertNull(r.get("cash_amount"));assertNull(r.get("credit_amount"));assertNull(r.get("grant_amount"));

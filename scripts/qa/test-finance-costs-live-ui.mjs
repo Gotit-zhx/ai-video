@@ -119,7 +119,7 @@ w.api=async(path,options={})=>{
 await click('刷新订单 SKU');
 assert.equal(mutations.filter(r=>r.path.endsWith('/auto-match')).length,2,'new bracketed SKU triggers one automatic match');
 assert(d.querySelector('.fc-spu-parent').textContent.includes('已关联 2'));
-assert([...d.querySelectorAll('tbody tr')].find(r=>r.textContent.includes('(PACK) *2')).textContent.includes('已自动关联'));
+assert([...d.querySelectorAll('tbody tr')].find(r=>r.textContent.includes('(PACK) *2')).textContent.includes('自动匹配'));
 costs.products.push({shop_id:'shop',product_id:'product',sku_id:'base-bundle',seller_sku:'(PACK) *3',name:'商品',spec:'三包'});
 const normalizedApi=w.api;
 w.api=async(path,options={})=>{

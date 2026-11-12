@@ -1,6 +1,6 @@
 # 源码运行现场状态与验收交接
 
-核对日期：2026-11-11（北京时间）。共享服务器主 Java 应用和 Web 前端已实际切换为源码运行。其余独立服务继续沿用既有入口；本记录不代表 Pi Runtime、招聘、ERP、文档转换、水印、下载或桌面程序完成迁移或业务验收。
+核对日期：2026-11-12（北京时间）。共享服务器主 Java 应用和 Web 前端已实际切换为源码运行。其余独立服务继续沿用既有入口；本记录不代表 Pi Runtime、招聘、ERP、文档转换、水印、下载或桌面程序完成迁移或业务验收。
 
 ## 已生效的运行方式
 
@@ -13,7 +13,7 @@
 | 本地前端 | dev profile 的 Spring 直接读取本地 `frontend/`，API/UI 同源 |
 | Compose | 保留 base → production → `.2images` → `source-development.frontend.json` → `source-development.app.json` 完整叠加链；精确路径以受限 runtime 配置及现场回执为准，不只运行最后一份覆盖文件 |
 | watcher | `heyi-source-watch.service` 已 enabled、active，最终状态 ready、健康且无遗留 gate；配置 `/etc/heyi-dev/runtime.json` |
-| 数据库 | 源码切换时已核对 V150（`06b53a20…`）；随后广告/历史汇率任务显式新增 V151/V152，当前指纹 `cf786196…`，详情及实际范围见[本轮验收](../releases/finance/finance-ad-history-fx-20261111.md) |
+| 数据库 | 源码切换时 V150，随后显式新增 V151/V152；2026-11-12 现场已有成本输入安全 V153，本轮仅追加 Shopee V154，当前指纹 `6eb4cd6e…`。配置、上下文和待授权边界见[激活回执](../releases/finance/finance-shopee-ads-activation-20261112.md) |
 | 自动迁移 | 共享环境 Flyway 自动执行已禁用；migration 源码/hash/history 守卫阻止普通保存执行 DDL |
 
 共享源码状态与中断恢复由 root 在源码根执行：

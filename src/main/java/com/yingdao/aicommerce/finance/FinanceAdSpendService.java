@@ -8,6 +8,7 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 public class FinanceAdSpendService {
     static final int MAX_RECORDS=50000;
     final FinanceRepository repo;final FinanceService finance;
+    @org.springframework.beans.factory.annotation.Autowired(required=false) private FinanceShopeeAds shopeeAds;
     public FinanceAdSpendService(FinanceRepository repo,FinanceService finance){this.repo=repo;this.finance=finance;}
     List<Map<String,Object>> sources(Scope s,Filter f){
         var args=new ArrayList<Object>(List.of(s.organizationId(),f.start(),f.end()));
@@ -23,6 +24,7 @@ public class FinanceAdSpendService {
             var row=new LinkedHashMap<>(record);row.put("record_date",text(record.get("record_date")));row.put("source","IMPORT_FUNDING");row.put("shop_id","UNASSIGNED");result.add(row);
         }
         result.addAll(FinanceAdBcFunding.sources(repo,s,f));
+        result.addAll(FinanceShopeeAds.sources(repo,s,f));
         if(result.size()>MAX_RECORDS)throw bad("广告消耗超过 50,000 条，请缩小日期范围；没有发布截断汇总");return result;
     }
     static Object[] append(List<Object> values,Object extra){var all=new ArrayList<>(values);all.add(extra);return all.toArray();}
@@ -53,6 +55,7 @@ public class FinanceAdSpendService {
         var quote=cny?finance.exchangeRates().historical(fxSnapshot,sources.stream().map(FinanceFx::businessDate).filter(Objects::nonNull).toList()):null;
         var result=FinanceAdSpendReport.build(sources,rows(snapshot.get("assignments")),rows(snapshot.get("shops")),f,quote,search,status);
         result.put("currencies",sources.stream().map(r->text(r.get("currency"))).filter(v->!v.isBlank()).distinct().sorted().toList());
+        if(shopeeAds!=null)result.put("shopeeAds",shopeeAds.status(s));
         result.put("fx",quote==null?null:quote.metadata());result.put("fxEvidence",quote==null?List.of():quote.evidence());result.put("filters",Map.of("currency",f.currency(),"displayCurrency",cny?"CNY":f.currency()));return result;
     }
 
