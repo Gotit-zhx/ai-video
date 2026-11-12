@@ -99,14 +99,25 @@ function CostWorkspace({
     const generation = ++refreshGeneration.current;
     setRefreshBlocked(true);
     setRefreshError(undefined);
-    // Invalidate related scoped results, while the editable workspace performs
-    // one explicit fresh read and stays unavailable until that read succeeds.
+    // Retire every cached workspace for this owner before the required read.
+    // A group change can affect several shop/group keys, and component-local
+    // state cannot protect retained data across filter changes or remounts.
     const related = queryClient.invalidateQueries({
       queryKey: ["finance", session.organizationId, session.userId],
       predicate: (q) => q.queryKey[3] !== costPath,
     });
     try {
-      await query.refetch({ throwOnError: true });
+      await queryClient.resetQueries(
+        {
+          queryKey: [
+            "finance",
+            session.organizationId,
+            session.userId,
+            costPath,
+          ],
+        },
+        { throwOnError: true },
+      );
       if (owner.isCurrent() && generation === refreshGeneration.current)
         setRefreshBlocked(false);
     } catch (error) {
@@ -127,7 +138,7 @@ function CostWorkspace({
   return (
     <>
       <Failure error={refreshError || query.error} />
-      {refreshBlocked && (
+      {(refreshBlocked || (query.isError && !data)) && (
         <Alert
           type="info"
           title={t("正在重新读取有效成本资料")}

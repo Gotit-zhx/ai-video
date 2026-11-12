@@ -3,6 +3,7 @@ import { fireEvent, waitFor, within } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { CostsPage } from "../src/features/finance/costs/CostsPage";
 import { QianyiPage } from "../src/features/finance/qianyi/QianyiPage";
+import { useFinance } from "../src/features/finance/context";
 import {
   createFinanceApiFixture,
   createFinanceHostFixture,
@@ -574,3 +575,100 @@ it("rejecting a review refreshes the server pending count without claiming appli
   ).toBeVisible();
   expect(r.queryByText(/操作已应用/)).toBeNull();
 });
+
+it.each(["date", "currency", "remount"])(
+  "post-application freshness survives %s without exposing retained prices or versions",
+  async (mode) => {
+    let applied = false,
+      canRead = false;
+    const api = apiFor(base, {
+      get: vi.fn(async (path: string) => {
+        if (path === "/workspace/costs") {
+          if (applied && !canRead) throw Error("required fresh read failed");
+          return {
+            ...base,
+            settingsVersion: applied ? 9 : 2,
+            costs: [
+              {
+                sku: "SKU",
+                warehouse: "菲律宾",
+                prices: { "2026-10": applied ? "9.000001" : "1.01" },
+              },
+            ],
+            inputSafety: { enabled: true, pendingCount: applied ? 0 : 1 },
+          };
+        }
+        return path.endsWith("/input-changes")
+          ? { items: [review], total: 1 }
+          : path.endsWith("/c1")
+            ? review
+            : {};
+      }) as never,
+      send: vi.fn(async () => {
+        applied = true;
+        return { status: "APPLIED" };
+      }) as never,
+    });
+    function Harness() {
+      const { setFilters } = useFinance();
+      const [show, setShow] = useState(true);
+      return (
+        <>
+          <button
+            onClick={() => {
+              if (mode === "remount") setShow((s) => !s);
+              else
+                setFilters((f) =>
+                  mode === "date"
+                    ? { ...f, start: "2026-09-01", end: "2026-09-30" }
+                    : { ...f, currency: "USD" },
+                );
+            }}
+          >
+            change workspace
+          </button>
+          {show && <CostsPage initialTab="input-review" />}
+        </>
+      );
+    }
+    const r = renderFinance(<Harness />, { api, filters });
+    fireEvent.click(await r.findByRole("button", { name: "查看核对单" }));
+    const d = overlay(r);
+    fireEvent.click(await d.findByLabelText("我已核对实际影响范围"));
+    fireEvent.click(d.getByRole("button", { name: "确认应用" }));
+    await r.findByText("required fresh read failed");
+    fireEvent.click(r.getByRole("tab", { name: "成本表设置" }));
+    expect(r.queryByRole("button", { name: "保存成本设置" })).toBeNull();
+    fireEvent.click(r.getByRole("button", { name: "change workspace" }));
+    if (mode === "remount")
+      fireEvent.click(r.getByRole("button", { name: "change workspace" }));
+    fireEvent.click(await r.findByRole("tab", { name: "成本表设置" }));
+    expect(r.queryByRole("button", { name: "保存成本设置" })).toBeNull();
+    fireEvent.click(r.getByRole("tab", { name: "SKU 关联" }));
+    expect(r.queryByRole("button", { name: "核对成本关联" })).toBeNull();
+    fireEvent.click(r.getByRole("tab", { name: "商品成本表" }));
+    expect(r.queryByText("1.01")).toBeNull();
+    expect(api.send).toHaveBeenCalledTimes(1);
+    await r.findByText("required fresh read failed");
+    canRead = true;
+    fireEvent.click(r.getByRole("button", { name: "重试读取有效成本" }));
+    expect(await r.findByText("9.000001")).toBeVisible();
+    fireEvent.click(r.getByRole("tab", { name: "成本表设置" }));
+    await r.findByRole("button", { name: "保存成本设置" });
+    fireEvent.change(r.getByLabelText("操作原因"), {
+      target: { value: "new settings" },
+    });
+    fireEvent.change(r.getByLabelText("依据编号或说明"), {
+      target: { value: "new evidence" },
+    });
+    fireEvent.click(r.getByRole("button", { name: "保存成本设置" }));
+    await waitFor(() =>
+      expect(api.send).toHaveBeenCalledWith(
+        "/workspace/costs/s1/settings",
+        "PUT",
+        expect.objectContaining({ version: 9 }),
+        undefined,
+      ),
+    );
+  },
+);
