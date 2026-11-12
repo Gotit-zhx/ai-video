@@ -1054,6 +1054,10 @@ function hasAnyPermission(...codes) {
   return isAdmin || codes.some(code => granted.has(code));
 }
 
+function canAccessFinance() {
+  return currentUser?.platformAdmin === true || hasAnyPermission("finance:view", "finance:manage");
+}
+
 function canAccessKnowledge() {
   return !!currentUser;
 }
@@ -1108,7 +1112,7 @@ function applyFeatureAccess() {
   document.querySelector("#nav-general-video").hidden = !canViewVideoTasks;
   document.querySelector("#nav-ai-video-monitor").hidden = !canViewVideoMonitor;
   document.querySelector("#nav-publish").hidden = !canAccessProductCenter();
-  document.querySelectorAll('[data-finance-route]').forEach(link => { link.hidden = !window.FinanceWorkspace?.allowed(); });
+  document.querySelectorAll('[data-finance-route]').forEach(link => { link.hidden = !canAccessFinance(); });
   document.querySelector("#nav-shops").hidden = !hasAnyPermission("product:view", "product:publish");
   document.querySelector("#nav-automations").hidden = !canUseAutomation;
   document.querySelector("#nav-automation-admin").hidden = !canViewAutomationAdmin;
