@@ -62,6 +62,55 @@ class FinanceShopeeAdsIntegrationTest {
         window();when(client.shopGetExact(anyString(),any(),anyMap())).thenReturn(Map.of("response",List.of(daily("01-10-2026",0))));service.tick();
         assertEquals(0,fixture.db.queryForObject("SELECT amount FROM finance_shopee_ad_daily",BigDecimal.class).signum());
     }
+    @Test void resumedExpiredCheckpointCollectsReadableWindowsAndKeepsUnknownHistoryVisible(){
+        expiredCheckpoint(false);
+    }
+    @Test void reauthorizedExpiredCheckpointCollectsReadableWindowsAndKeepsUnknownHistoryVisible(){
+        expiredCheckpoint(true);
+    }
+    @Test void expiredMonthEndSingletonOverlapsForwardInsideReadableHistory(){
+        authorize();LocalDate today=LocalDate.of(2027,5,31);ZoneId zone=ZoneId.of("Asia/Manila");
+        fixture.db.update("UPDATE finance_shopee_ad_grants SET checkpoint_json=?,next_at=UTC_TIMESTAMP(6)",fixture.repo.write(Map.of("from","2026-10-01","until",today.toString())));
+        fixture.db.update("UPDATE finance_api_pacing SET next_allowed_at=UTC_TIMESTAMP(6) WHERE platform='SHOPEE_ADS'");
+        when(client.shopGetExact(anyString(),any(),anyMap())).thenReturn(Map.of("response",List.of()));
+        try(var dates=mockStatic(LocalDate.class,CALLS_REAL_METHODS)){
+            dates.when(()->LocalDate.now(zone)).thenReturn(today);service.tick();
+        }
+        var query=org.mockito.ArgumentCaptor.forClass(Map.class);verify(client).shopGetExact(eq(FinanceShopeeAdsApi.PATH),any(),query.capture());
+        assertEquals("30-11-2026",query.getValue().get("start_date"),"singleton overlap must not request an expired previous day");
+        assertEquals("01-12-2026",query.getValue().get("end_date"));
+        assertEquals("SYNCING",fixture.db.queryForObject("SELECT status FROM finance_shopee_ad_grants",String.class));
+    }
+    void expiredCheckpoint(boolean reauthorize){
+        authorize();window();when(client.shopGetExact(anyString(),any(),anyMap())).thenReturn(Map.of("response",List.of(daily("01-10-2026",5))));service.tick();
+        LocalDate today=LocalDate.now(ZoneId.of("Asia/Manila")),old=today.minusMonths(7);
+        fixture.db.update("UPDATE finance_shopee_ad_grants SET checkpoint_json=?,next_at=UTC_TIMESTAMP(6)",fixture.repo.write(Map.of("from",old.toString(),"until",today.minusMonths(4).toString())));
+        if(reauthorize)authorize();else{service.pause(fixture.owner,"10001",false);service.pause(fixture.owner,"10001",true);}
+        fixture.db.update("UPDATE finance_api_pacing SET next_allowed_at=UTC_TIMESTAMP(6) WHERE platform='SHOPEE_ADS'");
+        var requested=new ArrayList<Map<String,Object>>();var format=java.time.format.DateTimeFormatter.ofPattern("dd-MM-yyyy");
+        when(client.shopGetExact(anyString(),any(),anyMap())).thenAnswer(call->{
+            Map<String,Object> query=call.getArgument(2);requested.add(query);
+            LocalDate start=LocalDate.parse(text(query.get("start_date")),format),end=LocalDate.parse(text(query.get("end_date")),format),known=LocalDate.of(2026,10,1);
+            return Map.of("response",!known.isBefore(start)&&!known.isAfter(end)?List.of(daily("01-10-2026",5)):List.of());
+        });
+        service.tick();
+        assertEquals("SYNCING",fixture.db.queryForObject("SELECT status FROM finance_shopee_ad_grants",String.class));
+        assertEquals(format.format(today.minusMonths(6)),requested.getFirst().get("start_date"),"recovery must retain readable unfinished dates older than ninety days");
+        assertEquals(new BigDecimal("5.000000"),fixture.db.queryForObject("SELECT amount FROM finance_shopee_ad_daily",BigDecimal.class));
+        var checkpoint=fixture.repo.read(fixture.db.queryForObject("SELECT checkpoint_json FROM finance_shopee_ad_grants",String.class));
+        assertEquals(today.minusMonths(6).toString(),checkpoint.get("unavailableBefore"));
+        for(int i=0;i<8&&!"PARTIAL".equals(fixture.db.queryForObject("SELECT status FROM finance_shopee_ad_grants",String.class));i++){
+            fixture.db.update("UPDATE finance_api_pacing SET next_allowed_at=UTC_TIMESTAMP(6) WHERE platform='SHOPEE_ADS'");
+            fixture.db.update("UPDATE finance_shopee_ad_grants SET next_at=UTC_TIMESTAMP(6)");service.tick();
+        }
+        var result=fixture.db.queryForMap("SELECT status,error_message,checkpoint_json,last_success_at FROM finance_shopee_ad_grants");
+        assertEquals("PARTIAL",result.get("status"));assertTrue(text(result.get("error_message")).contains("未知"));assertNotNull(result.get("last_success_at"));
+        assertEquals(today.minusMonths(6).toString(),fixture.repo.read(text(result.get("checkpoint_json"))).get("unavailableBefore"));
+        fixture.db.update("UPDATE finance_api_pacing SET next_allowed_at=UTC_TIMESTAMP(6) WHERE platform='SHOPEE_ADS'");
+        fixture.db.update("UPDATE finance_shopee_ad_grants SET next_at=UTC_TIMESTAMP(6)");service.tick();
+        assertEquals("PARTIAL",fixture.db.queryForObject("SELECT status FROM finance_shopee_ad_grants",String.class));
+        assertEquals(1,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_shopee_ad_daily",Integer.class));
+    }
     @Test void pausedOrRemovedShopCannotPublishLateProviderReply(){
         authorize();window();when(client.shopGetExact(anyString(),any(),anyMap())).thenAnswer(c->{service.pause(fixture.owner,"10001",false);return Map.of("response",List.of(daily("01-10-2026",7)));});service.tick();
         assertEquals(0,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_shopee_ad_daily",Integer.class));

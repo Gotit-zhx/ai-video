@@ -1,6 +1,6 @@
 (function(){
   'use strict';
-  const states={READY:'等待采集',SYNCING:'正在采集',SUCCESS:'CPC 窗口已采集',NEEDS_PERMISSION:'Ads 报表权限待开通',NEEDS_AUTHORIZATION:'广告授权待更新',RATE_LIMITED:'限流等待',ERROR:'采集异常',PAUSED:'已暂停',WAITING_SHOP:'等待连接财务店铺',REMOVED:'已移除'};
+  const states={READY:'等待采集',SYNCING:'正在采集',SUCCESS:'CPC 窗口已采集',PARTIAL:'历史覆盖待核对',NEEDS_PERMISSION:'Ads 报表权限待开通',NEEDS_AUTHORIZATION:'广告授权待更新',RATE_LIMITED:'限流等待',ERROR:'采集异常',PAUSED:'已暂停',WAITING_SHOP:'等待连接财务店铺',REMOVED:'已移除'};
   function valid(ctx,owner){if(!ctx.allowed()||ctx.company()!==owner||!ctx.canManage()||ctx.isActive&&!ctx.isActive())throw Error('当前公司或管理权限已变化，请重新打开');}
   function render(parent,ctx,compact=false){
     if(compact&&ctx.filters?.platform==='TIKTOK_SHOP')return;
@@ -10,7 +10,7 @@
     if(!status.configured){el('p','Shopee 广告尚未接入：需先通过 Ads Service 正式审核并由管理员配置独立应用；现有 ERP 授权不能代替广告权限。'+(status.configurationError?' '+status.configurationError:''),box.n,'fi-feedback');}
     else if(!(status.items||[]).length)el('p','Shopee Ads 正式应用已配置，尚无独立广告授权。请在财务店铺管理由店铺管理员完成一次官方授权，之后自动采集。',box.n,'fi-muted');
     else el('p','Shopee 已连接 '+status.items.length+' 家广告店铺；当前只核对官方店铺 CPC 日报，未取得或异常日期不填零。',box.n,'fi-muted');
-    const failures=(status.items||[]).filter(item=>['NEEDS_PERMISSION','NEEDS_AUTHORIZATION','RATE_LIMITED','ERROR','WAITING_SHOP','PAUSED'].includes(item.status));
+    const failures=(status.items||[]).filter(item=>['PARTIAL','NEEDS_PERMISSION','NEEDS_AUTHORIZATION','RATE_LIMITED','ERROR','WAITING_SHOP','PAUSED'].includes(item.status));
     for(const item of failures)el('p',(states[item.status]||'状态待核对')+'：'+(item.error_message||'未取得的数据继续保留未知'),box.n,'fi-feedback');
     el('p',status.coverageBasis||'官方 expense 为 CPC 消耗；现金、授信、赠款及净额不倒算。',box.n,'fi-muted');
     if(compact){const link=el('a','查看 Shopee 授权与采集状态',box.n);link.href='#finance-shops';return;}

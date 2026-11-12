@@ -113,19 +113,24 @@ public class FinanceShopeeAds {
         }
         ZoneId zone=ZoneId.of(text(grant.get("timezone")));LocalDate today=LocalDate.now(zone);
         var cp=grant.get("checkpoint_json")==null?new LinkedHashMap<String,Object>():new LinkedHashMap<>(repo.read(text(grant.get("checkpoint_json"))));
-        if(cp.isEmpty())cp.putAll(FinanceShopeeAdsApi.plan(today,grant.get("last_success_at")==null?null:instant(grant.get("last_success_at")).atZone(zone).toLocalDate()));
+        if(!cp.containsKey("from"))cp.putAll(FinanceShopeeAdsApi.plan(today,grant.get("last_success_at")==null?null:instant(grant.get("last_success_at")).atZone(zone).toLocalDate()));
+        if(LocalDate.parse(text(cp.get("from"))).isBefore(today.minusMonths(6))){
+            // Expired provider windows cannot be retried. Keep their coverage unknown while resuming readable history.
+            cp.clear();cp.put("from",today.minusMonths(6).toString());cp.put("until",today.toString());cp.put("unavailableBefore",today.minusMonths(6).toString());
+        }
         LocalDate from=LocalDate.parse(text(cp.get("from"))),until=LocalDate.parse(text(cp.get("until"))),to=FinanceShopeeAdsApi.windowEnd(from,until);
         if(from.isAfter(to)||until.isAfter(today)||from.isBefore(today.minusMonths(6)))throw bad("广告历史窗口超出官方可读取范围");
-        LocalDate requestFrom=from.equals(to)?from.minusDays(1):from;final LocalDate end=to;
+        boolean forward=from.equals(to)&&from.equals(today.minusMonths(6));
+        LocalDate requestFrom=from.equals(to)&&!forward?from.minusDays(1):from,requestTo=forward?to.plusDays(1):to;final LocalDate end=to;
         int saved=repo.jdbc().update("UPDATE finance_shopee_ad_grants SET checkpoint_json=? WHERE organization_id=? AND external_shop_id=? AND lease_token=?",repo.write(cp),org,external,lease);if(saved!=1)return;
-        var response=app.client().shopGetExact(FinanceShopeeAdsApi.PATH,new MarketplaceAccess.Connection(shop,tokens),FinanceShopeeAdsApi.query(requestFrom,to));var facts=FinanceShopeeAdsApi.daily(response,requestFrom,to);
+        var response=app.client().shopGetExact(FinanceShopeeAdsApi.PATH,new MarketplaceAccess.Connection(shop,tokens),FinanceShopeeAdsApi.query(requestFrom,requestTo));var facts=FinanceShopeeAdsApi.daily(response,requestFrom,requestTo);
         repo.transaction(()->{
             // Shop deletion also locks the connection before the grant.
             var connected=repo.jdbc().queryForList("SELECT id FROM finance_connections WHERE organization_id=? AND external_shop_id=? AND platform='SHOPEE' AND status='ACTIVE' AND enabled=TRUE FOR SHARE",org,external);
             if(!owns(org,external,lease))return null;
             if(connected.size()!=1){release(org,external,lease,"WAITING_SHOP",cp,false);return null;}
             var dates=new HashSet<String>();facts.forEach(r->dates.add(text(r.get("record_date"))));
-            var previous=repo.jdbc().queryForList("SELECT record_date,currency FROM finance_shopee_ad_daily WHERE organization_id=? AND external_shop_id=? AND record_date BETWEEN ? AND ? FOR UPDATE",org,external,requestFrom,end);
+            var previous=repo.jdbc().queryForList("SELECT record_date,currency FROM finance_shopee_ad_daily WHERE organization_id=? AND external_shop_id=? AND record_date BETWEEN ? AND ? FOR UPDATE",org,external,requestFrom,requestTo);
             if(previous.stream().anyMatch(r->!dates.contains(text(r.get("record_date")))||!text(grant.get("currency")).equals(r.get("currency"))))throw bad("广告刷新没有完整返回已有日期或币种发生变化，保留原消耗");
             for(var row:facts){String day=text(row.get("record_date")),currency=text(grant.get("currency"));String identity=hash("shopee-cpc\0"+org+"\0"+external+"\0"+day);
                 repo.jdbc().update("""
@@ -134,7 +139,7 @@ public class FinanceShopeeAds {
                     """,org,external,identity,day,currency,row.get("amount"),repo.write(row.get("raw")));
             }
             boolean done=!end.isBefore(until);
-            if(done){var remaining=new ArrayList<>(rows(cp.get("remaining")));cp.clear();if(!remaining.isEmpty()){cp.putAll(remaining.removeFirst());if(!remaining.isEmpty())cp.put("remaining",remaining);done=false;}}
+            if(done){var remaining=new ArrayList<>(rows(cp.get("remaining")));String unavailable=text(cp.get("unavailableBefore"));cp.clear();if(!unavailable.isBlank())cp.put("unavailableBefore",unavailable);if(!remaining.isEmpty()){cp.putAll(remaining.removeFirst());if(!remaining.isEmpty())cp.put("remaining",remaining);done=false;}}
             else cp.put("from",end.plusDays(1).toString());
             release(org,external,lease,done?"SUCCESS":"SYNCING",cp,done);return null;
         });
@@ -152,7 +157,11 @@ public class FinanceShopeeAds {
         }
     }
     private boolean owns(String org,String external,String lease){return !repo.jdbc().queryForList("SELECT external_shop_id FROM finance_shopee_ad_grants WHERE organization_id=? AND external_shop_id=? AND enabled=TRUE AND lease_token=? AND lease_until>UTC_TIMESTAMP(6) FOR UPDATE",org,external,lease).isEmpty();}
-    private void release(String org,String external,String lease,String status,Map<String,Object> cp,boolean done){repo.jdbc().update("UPDATE finance_shopee_ad_grants SET checkpoint_json=?,status=?,error_message=NULL,failures=0,next_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL ? SECOND),last_success_at=IF(?,UTC_TIMESTAMP(6),last_success_at),lease_token=NULL,lease_until=NULL WHERE organization_id=? AND external_shop_id=? AND lease_token=?",cp.isEmpty()?null:repo.write(cp),status,done?3600:5,done,org,external,lease);}
+    private void release(String org,String external,String lease,String status,Map<String,Object> cp,boolean done){
+        boolean partial=!text(cp.get("unavailableBefore")).isBlank();
+        String warning=partial?"部分历史回补窗口已超出官方可读取范围；未入库日期仍未知，已有消耗保留":null;
+        repo.jdbc().update("UPDATE finance_shopee_ad_grants SET checkpoint_json=?,status=?,error_message=?,failures=0,next_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL ? SECOND),last_success_at=IF(?,UTC_TIMESTAMP(6),last_success_at),lease_token=NULL,lease_until=NULL WHERE organization_id=? AND external_shop_id=? AND lease_token=?",cp.isEmpty()?null:repo.write(cp),done&&partial?"PARTIAL":status,warning,done?3600:5,done,org,external,lease);
+    }
     private void failed(Map<String,Object> grant,String lease,RuntimeException failure){
         String message=text(failure.getMessage()).toLowerCase(Locale.ROOT);boolean permission=message.contains("403")||message.contains("error_api_permission");boolean auth=message.contains("token")||message.contains("auth")||message.contains("401");boolean limited=message.contains("429")||message.contains("rate_limit");
         String status=permission?"NEEDS_PERMISSION":auth?"NEEDS_AUTHORIZATION":limited?"RATE_LIMITED":"ERROR";
