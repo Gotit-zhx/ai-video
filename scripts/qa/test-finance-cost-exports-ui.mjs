@@ -22,6 +22,7 @@ w.clearTimeout=id=>{if(polls.delete(id))cleared.push(id);else nativeClearTimeout
 
 const shops=[{id:'shop-a',name:'测试店',display_name:'测试店',platform:'SHOPEE',group_id:'group-a',region:'MY',currency:'MYR',timezone:'Asia/Kuala_Lumpur'}];
 const groups=[{id:'group-a',name:'测试组'}];
+const costContext={live:true,catalogLoaded:false,settingsLoaded:false,shopId:'shop-a',groupId:'group-a',groupName:'测试组'};
 const costs={live:true,shopId:'shop-a',groupId:'group-a',groupName:'测试组',sourceName:'成本.xlsx',costs:[],manualCosts:[],products:[],sampleOrders:1,orderLimit:2000,settings:{warehouse:'',rules:{}},settingsVersion:1,mappings:{},shopCatalogs:{'shop-a':{costRows:1,sourceName:'成本.xlsx'}}};
 const orderResult={items:[{id:'row-a',shop_id:'shop-a',order_id:'ORDER-A',record_date:'2026-10-01',order_created_time:'2026-10-01T00:00:00Z',first_settlement_date:'2026-10-05',settlement_currency:'MYR',product_cost_cny:8,product_cost_state:'已计算'}],total:1,page:1,pageSize:50,productCosts:{total:{ready_count:1,pending_count:0,estimated_count:0,amount_cny:8,known_amount_cny:8}},costAmountSummary:{order_count:1,pending_count:0,amount_cny:8}};
 
@@ -33,6 +34,7 @@ w.api=async(path,options={})=>{
   const url=new URL(path,'https://example.test'),body=options.body?JSON.parse(options.body):null;
   requests.push({url,options,body});
   if(url.pathname==='/api/v1/finance/shops')return {data:{items:shops,groups,sync:[]}};
+  if(url.pathname==='/api/v1/finance/workspace/costs/context')return {data:structuredClone(costContext)};
   if(url.pathname==='/api/v1/finance/workspace/costs')return {data:structuredClone(costs)};
   if(url.pathname==='/api/v1/finance/workspace/costs/orders')return {data:structuredClone(orderResult)};
   if(url.pathname==='/api/v1/finance/cost-exports'&&options.method==='POST'){
