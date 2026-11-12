@@ -99,7 +99,9 @@ public final class FinanceWorkbook {
     }
     /** Cost imports may ignore auxiliary formula columns, but must reject formulas in mapped cost fields. */
     static List<List<String>> readCostTable(byte[] bytes,String name){return read(bytes,name,true);}
-    private static List<List<String>> read(byte[] bytes,String name,boolean markFormulas){
+    static List<List<String>> readCostInputTable(byte[] bytes,String name){return read(bytes,name,true,true);}
+    private static List<List<String>> read(byte[] bytes,String name,boolean markFormulas){return read(bytes,name,markFormulas,false);}
+    private static List<List<String>> read(byte[] bytes,String name,boolean markFormulas,boolean retainNumericType){
         if(bytes.length>12*1024*1024)throw bad("文件不能超过 12 MB");
         if(name.toLowerCase(Locale.ROOT).endsWith(".csv"))return parseCsv(new String(bytes,StandardCharsets.UTF_8));
         if(!name.toLowerCase(Locale.ROOT).endsWith(".xlsx"))throw bad("支持 UTF-8 CSV 或 XLSX 文件");
@@ -125,7 +127,9 @@ public final class FinanceWorkbook {
                     if(col>199)throw bad("单次导入最多 200 列");while(row.size()<=col)row.add("");
                     if(cell.getElementsByTagName("f").getLength()>0){if(markFormulas){row.set(col,"[FORMULA]");continue;}throw bad("请将公式转换为值后导入");}
                     String type=cell.getAttribute("t");String value=type.equals("inlineStr")?cell.getTextContent():content(cell,"v");
-                    if(type.equals("s"))value=strings.get(Integer.parseInt(value));row.set(col,value);
+                    if(type.equals("s"))value=strings.get(Integer.parseInt(value));
+                    if(retainNumericType&&(type.isBlank()||type.equals("n"))&&!value.isBlank())value="[NUMBER]"+value;
+                    row.set(col,value);
                 }if(row.stream().anyMatch(v->!v.isBlank()))result.add(row);
                 if(result.size()>20001)throw bad("单次导入最多 20,000 行数据");
             }return result;

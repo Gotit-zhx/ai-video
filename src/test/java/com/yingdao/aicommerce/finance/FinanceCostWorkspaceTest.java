@@ -23,6 +23,7 @@ class FinanceCostWorkspaceTest {
         var book=Map.of("costs",List.of(Map.of("warehouse","菲律宾","sku","PACK"),Map.of("warehouse","泰国","sku","PACK")));
         when(db.queryForList(startsWith("SELECT id,source_name,data_json,created_at"),eq("org"),eq("group")))
             .thenReturn(List.of(Map.of("id","book","source_name","cost.csv","data_json",repo.write(book))));
+        when(db.queryForObject(startsWith("SELECT COUNT(*) FROM finance_cost_input_changes"),eq(Long.class),eq("org"),eq("group"),eq("group"))).thenReturn(0L);
         var workspace=new FinanceCostWorkspace(repo,service);
         assertEquals("菲律宾",workspace.costs(scope,"shop").get("suggestedWarehouse"));
         when(db.queryForList(startsWith("SELECT data_json,version FROM finance_cost_settings"),eq("org"),eq("shop")))
