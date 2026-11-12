@@ -1,13 +1,14 @@
 /* Human cost inputs stay separate from effective prices until their checks pass. */
 (() => {
   'use strict';
-  const statuses={BLOCKED:'资料有误，需修正',REVIEW:'等待其他财务人员复核',READY:'等待确认',APPLIED:'已应用',REJECTED:'已驳回',STALE:'预览已过期'};
+  const statuses={BLOCKED:'资料有误，需修正',REVIEW:'等待核对确认',READY:'等待确认',APPLIED:'已应用',REJECTED:'已驳回',STALE:'预览已过期'};
+  const statusText=change=>change.status==='REVIEW'&&change.requiresIndependentReview?'等待其他财务人员复核':statuses[change.status]||change.status;
   const types={IMPORT:'导入成本表',REMOVE_SOURCE:'移除成本来源',MANUAL_CREATE:'新增手动成本',MANUAL_UPDATE:'修改手动成本',MANUAL_DELETE:'删除手动成本',MAPPING:'人工 SKU 关联',SETTINGS:'修改成本设置',UNDO:'撤销人工操作'};
   const el=(tag,text,parent,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=String(text);if(cls)n.className=cls;parent?.append(n);return n;};
   const number=value=>value==null?'未核定':Number(value).toLocaleString('zh-CN',{maximumFractionDigits:6});
   function mount(root,options){
     let disposed=false,sequence=0,timer=null,page=1;
-    const {request,groupId='',shopId='',canManage=false,onChanged}=options,dialogs=new Set();
+    const {request,groupId='',shopId='',groups=[],shops=[],canManage=false,onChanged}=options,dialogs=new Set();
     root.replaceChildren();const head=el('div',null,root,'fi-card-head');el('h3','导入与操作核对',head);
     const actions=el('div',null,head,'fi-actions'),feedback=el('p','',root,'fc-feedback');feedback.setAttribute('role','status');
     el('p','这里核对人工上传和人工修改。暂存不会改变有效成本；确认前请核对来源、单位、差异及实际影响范围。',root,'fc-inline-note');
@@ -41,7 +42,7 @@
     }
     function scopeText(change){
       if(typeof change.actualScope==='string')return change.actualScope;
-      return change.actualScope?.description||change.impact?.description||'以保存时的实际店铺、分组和历史范围为准';
+      return change.actualScope?.description||change.impact?.actualScope||change.impact?.description||'以保存时的实际店铺、分组和历史范围为准';
     }
     function showImpact(parent,change){
       const impact=change.impact||{},scope=change.actualScope||{};el('strong','实际影响范围',parent);el('p',scopeText(change),parent,'fc-input-scope');
@@ -86,12 +87,16 @@
       const change=await request('/costs/input-changes/'+encodeURIComponent(id));if(disposed)return;
       const dialog=modal('人工成本操作核对'),meta=change.metadata||change.payload?.metadata||{};
       el('strong',change.sourceName||types[change.type]||change.type,dialog.body);
-      el('p',(types[change.type]||change.type)+' · '+(statuses[change.status]||change.status),dialog.body,'fc-inline-note');
+      el('p',(types[change.type]||change.type)+' · '+statusText(change),dialog.body,'fc-inline-note');
       const summary=change.inputSummary||{},validation=change.validation||{};
       const identityNames={SKU:'商品 SKU',SPU:'平台 SPU',MIXED:'SKU / SPU 混合类型，需核对'};
       const riskNames={BLOCKED:'存在硬性错误，不能应用',HIGH:'高风险，需复核',REVIEW:'需核对资料',LOW:'普通核对'};
       const risk=change.risk||validation.risk;
       table(dialog.body,['原始声明 / 校验摘要','待核对内容'],[
+        {cells:['归属分组',groups.find(g=>g.id===change.groupId)?.name||change.groupId||'未提供']},
+        {cells:['归属店铺',change.shopId?(shops.find(s=>s.id===change.shopId)?.display_name||shops.find(s=>s.id===change.shopId)?.name||change.shopId):'分组内相关店铺，范围见下方说明']},
+        {cells:['提交人标识',change.submittedBy||'未提供']},
+        {cells:['确认人标识',change.confirmedBy||'尚未确认']},
         {cells:['来源标识',meta.sourceKey||summary.sourceKey||'未填写，需对照原始凭据核对']},
         {cells:['成本计价单位',meta.unit||summary.unit||'未提供，请核对原表及配置差异']},
         {cells:['编号类型',identityNames[meta.identifierType||summary.identifierType]||'未明确，需核对']},
@@ -130,7 +135,7 @@
       table(next,['操作 / 来源','状态','影响范围','操作'],items.map(change=>{
         const title=el('div');el('strong',change.sourceName||types[change.type]||change.type,title);el('small',types[change.type]||change.type,title);
         const controls=el('div',null,null,'fi-actions');button(controls,'查看',()=>details(change.id),'fi-record-link');
-        return {id:change.id,cells:[title,statuses[change.status]||change.status,scopeText(change),controls]};
+        return {id:change.id,cells:[title,statusText(change),scopeText(change),controls]};
       }));
       if(!items.length)el('p','当前范围没有人工成本核对记录。',next,'fc-empty');
       const pages=el('div',null,next,'fi-pagebar');el('span',number(data.total??items.length)+' 条 · 第 '+page+' 页',pages);

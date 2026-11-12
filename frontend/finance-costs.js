@@ -204,7 +204,7 @@
         return {reason:reason.value.trim(),evidenceRef:evidence.value.trim(),...(importFields?{unit:unit.value.trim(),identifierType:type.value,sourceKey:source.value.trim(),revision:revision.checked,spuUniform:uniform.checked}:{})};
       };
     }
-    const savedMessage=(result,message)=>toast(result?.staged?'已暂存，尚未改变有效成本。请到「导入与操作核对」查看差异并确认。':message);
+    const savedMessage=(result,message)=>toast(result?.duplicate&&result.status==='APPLIED'&&!result.changeId?'与当前有效资料一致，无需重复提交。':result?.staged?'已暂存，尚未改变有效成本。请到「导入与操作核对」查看差异并确认。':message);
     function unavailable(message){const d=modal('功能预留');el('p',message||'页面结构已预留，正式保存与同步将在成本口径确认后接入。',d.body,'fi-muted');}
     function importDialog(){
       if(live){
@@ -606,7 +606,7 @@
       inputSafetyView?.dispose();inputSafetyView=null;
       globalThis.FinanceLabelCosts?.reset();
       if(state.tab==='input-safety'&&safeInputs){
-        if(globalThis.FinanceCostInputSafety)inputSafetyView=FinanceCostInputSafety.mount(host,{request:context.request,groupId:state.groupId,shopId:state.shopId,canManage:editable,onChanged:()=>reload()});
+        if(globalThis.FinanceCostInputSafety)inputSafetyView=FinanceCostInputSafety.mount(host,{request:context.request,groupId:state.groupId,shopId:state.shopId,groups:context.groups||[],shops,canManage:editable,onChanged:()=>reload()});
         else el('p','人工核对组件未加载，请刷新页面。',host,'fc-alert');return;
       }
       if(state.tab==='labels'){

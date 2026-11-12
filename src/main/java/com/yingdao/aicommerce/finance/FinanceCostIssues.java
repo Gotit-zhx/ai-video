@@ -10,9 +10,9 @@ public final class FinanceCostIssues {
     public static Map<String,Object> of(String code) {
         String[] detail=switch(code==null?"":code) {
             case "IDENTIFIER_INVALID" -> new String[]{"型号编号格式不正确或数值精度已损坏","成本资料","将原始编号按文本重新导出，不要补猜数字"};
-            case "IDENTIFIER_TYPE_UNKNOWN" -> new String[]{"未明确 SKU 或 SPU 编号类型","成本资料","声明编号类型；混合表逐行标明 SKU 或 SPU"};
+            case "IDENTIFIER_TYPE_UNKNOWN" -> new String[]{"SKU/SPU 编号类型需要核对","成本资料","明确选择 SKU、SPU 或混合类型，按核对单提示确认适用关系"};
             case "UNIT_UNKNOWN" -> new String[]{"成本计价单位不明","成本资料","补充并核对计价单位"};
-            case "WAREHOUSE_UNKNOWN" -> new String[]{"成本仓身份不明","成本资料","明确成本仓或使用已确认的仓库别名"};
+            case "WAREHOUSE_UNKNOWN" -> new String[]{"成本仓身份不明","成本资料","在原表逐行明确成本仓，不用上一行内容猜补"};
             case "WAREHOUSE_INVALID" -> new String[]{"成本仓格式不正确","成本资料","核对原始仓库字段"};
             case "CURRENCY_UNSUPPORTED" -> new String[]{"成本资料必须为人民币","成本资料","提供人民币成本及其来源依据"};
             case "PRICE_INVALID" -> new String[]{"单价格式不正确或超出支持范围","成本资料","提供非负人民币数值，核对公式和精度"};
@@ -20,14 +20,14 @@ public final class FinanceCostIssues {
             case "DUPLICATE_PRICE_CONFLICT" -> new String[]{"同批相同身份和月份存在不同单价","成本资料","核对并消除同批冲突后重新提交"};
             case "CURRENT_PRICE_CONFLICT" -> new String[]{"现有资料同一身份和月份存在不同单价","有效成本资料","先核对现有冲突，不能选择任意一条价格"};
             case "PRICE_OVERRIDE" -> new String[]{"变更将覆盖已有月份的成本单价","有效成本资料","声明修订依据并提交独立复核，不能直接覆盖"};
-            case "PRICE_BASELINE_MISSING" -> new String[]{"目标月份及之前没有可比较的同身份成本价","有效成本资料","补充适用月份的成本依据并独立复核"};
+            case "PRICE_BASELINE_MISSING" -> new String[]{"目标月份及之前没有可比较的同身份成本价","有效成本资料","补充适用月份的成本依据，核对范围并按核对单要求确认"};
             case "PRICE_REVISION_REQUIRED" -> new String[]{"已有单价不同，尚未声明修订","有效成本资料","声明修订并补充变更依据"};
-            case "PRICE_CHANGE_HIGH" -> new String[]{"单价变化超过复核阈值","有效成本资料","核对单价和单位并独立复核影响"};
-            case "NEW_IDENTIFIER" -> new String[]{"新型号缺少同身份历史成本依据","成本资料","核对型号、单位和成本来源后独立复核"};
+            case "PRICE_CHANGE_HIGH" -> new String[]{"单价变化超过复核阈值","有效成本资料","核对单价、单位和影响范围，按核对单的风险要求复核"};
+            case "NEW_IDENTIFIER" -> new String[]{"新型号缺少同身份历史成本依据","成本资料","核对型号、单位、来源和适用范围，再按核对单要求确认"};
             case "IDENTITY_CHANGED" -> new String[]{"型号对应仓库、单位或编号类型发生变化","有效成本资料","确认仓库、单位和 SKU/SPU 适用关系"};
             case "SPU_UNIFORM_UNCONFIRMED" -> new String[]{"SPU 尚无统一成本适用证据","成本资料","确认适用规格及统一成本证据"};
-            case "LEGACY_UNVERIFIED" -> new String[]{"历史成本的单位或编号类型尚未核验","历史成本资料","核对原始资料的单位和 SKU/SPU 类型后独立复核"};
-            case "SOURCE_UNVERIFIED" -> new String[]{"成本来源尚未独立核验","来源配置","核对来源配置并由其他复核人确认"};
+            case "LEGACY_UNVERIFIED" -> new String[]{"历史成本的单位或编号类型尚未核验","历史成本资料","核对原始资料的单位和 SKU/SPU 类型，按本次风险要求确认"};
+            case "SOURCE_UNVERIFIED" -> new String[]{"成本来源尚未核实","人工成本资料","核对原表和依据，按本次风险要求确认或独立复核"};
             case "MONTH_INVALID" -> new String[]{"成本月份格式不正确","成本资料","使用有效的 YYYY-MM 成本月份"};
             case "MONTH_OUT_OF_SCOPE" -> new String[]{"成本月份超出声明的适用期间","成本资料","核对并修正数据或适用起止月份"};
             case "PERIOD_INVALID" -> new String[]{"适用期间格式或先后顺序不正确","变更期间","填写有效且有序的起止月份"};
