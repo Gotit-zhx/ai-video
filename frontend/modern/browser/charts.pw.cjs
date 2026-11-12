@@ -3,6 +3,7 @@ test("lazy chart renders data, recreates for theme and leaves no canvas after na
   page,
   fixture,
 }) => {
+  await page.clock.setFixedTime("2026-11-12T11:03:00Z");
   const requested = new Set(),
     charts = [];
   page.on("request", (r) => {
@@ -12,6 +13,15 @@ test("lazy chart renders data, recreates for theme and leaves no canvas after na
       charts.push(r.url());
   });
   await open(page, fixture, "orders");
+  const root = page.locator("html"),
+    day = page.getByRole("button", { name: "日间", exact: true }),
+    night = page.getByRole("button", { name: "夜间", exact: true });
+  await expect(root).toHaveAttribute("data-theme-mode", "auto");
+  await expect(root).toHaveAttribute("data-theme", "dark");
+  await day.click();
+  await expect(day).toHaveAttribute("aria-pressed", "true");
+  await expect(root).toHaveAttribute("data-theme-mode", "light");
+  await expect(root).toHaveAttribute("data-theme", "light");
   await expect(
     page.getByRole("button", { name: "详情", exact: true }).first(),
   ).toBeVisible();
@@ -31,7 +41,10 @@ test("lazy chart renders data, recreates for theme and leaves no canvas after na
     }),
   ).toBe(true);
   const before = await canvas.elementHandle();
-  await page.getByRole("button", { name: "夜间", exact: true }).click();
+  await night.click();
+  await expect(night).toHaveAttribute("aria-pressed", "true");
+  await expect(root).toHaveAttribute("data-theme-mode", "dark");
+  await expect(root).toHaveAttribute("data-theme", "dark");
   await expect.poll(() => before.evaluate((n) => n.isConnected)).toBe(false);
   await expect(canvas).toBeVisible();
   await go(page, "orders");
