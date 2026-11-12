@@ -14,14 +14,14 @@ final class FinanceShopeeAdsApi {
     private static final DateTimeFormatter DATE=DateTimeFormatter.ofPattern("dd-MM-uuuu").withResolverStyle(ResolverStyle.STRICT);
     private FinanceShopeeAdsApi() {}
     static Map<String,Object> query(LocalDate from,LocalDate to){
-        if(from==null||to==null||!to.isAfter(from)||ChronoUnit.DAYS.between(from,to)>30)throw bad("Shopee 广告日报日期范围无效");
+        if(from==null||to==null||!to.isAfter(from)||ChronoUnit.DAYS.between(from,to)>29)throw bad("Shopee 广告日报日期范围无效");
         return Map.of("start_date",DATE.format(from),"end_date",DATE.format(to));
     }
     static List<Map<String,Object>> daily(Map<String,Object> envelope,LocalDate from,LocalDate to){
         query(from,to);
         if(!text(envelope.get("error")).isBlank()||!text(envelope.get("warning")).isBlank())throw bad("Shopee 广告报表返回错误或不完整提示，已保留原消耗");
         Object response=envelope.get("response");
-        if(!(response instanceof List<?> values)||values.size()>31)throw bad("Shopee 广告日报响应不完整");
+        if(!(response instanceof List<?> values)||values.size()>30)throw bad("Shopee 广告日报响应不完整");
         var seen=new HashSet<LocalDate>();var result=new ArrayList<Map<String,Object>>();
         for(Object item:values){
             if(!(item instanceof Map<?,?>))throw bad("Shopee 广告日报记录无效");
@@ -47,6 +47,11 @@ final class FinanceShopeeAdsApi {
         }else{plan.put("from",oldest.toString());plan.put("until",today.toString());}
         return plan;
     }
-    static LocalDate windowEnd(LocalDate from,LocalDate until){return from.withDayOfMonth(from.lengthOfMonth()).isBefore(until)?from.withDayOfMonth(from.lengthOfMonth()):until;}
+    static LocalDate windowEnd(LocalDate from,LocalDate until){
+        // Shopee's one-month limit is 30 inclusive days, including in 31-day months.
+        LocalDate end=from.withDayOfMonth(from.lengthOfMonth());
+        if(from.plusDays(29).isBefore(end))end=from.plusDays(29);
+        return end.isBefore(until)?end:until;
+    }
     static LocalDate start(LocalDate today,LocalDate lastSuccess){return today.minusDays(lastSuccess==null?89:lastSuccess.isBefore(today)?30:6);}
 }

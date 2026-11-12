@@ -99,7 +99,7 @@ class FinanceShopeeAdsIntegrationTest {
         assertEquals(new BigDecimal("5.000000"),fixture.db.queryForObject("SELECT amount FROM finance_shopee_ad_daily",BigDecimal.class));
         var checkpoint=fixture.repo.read(fixture.db.queryForObject("SELECT checkpoint_json FROM finance_shopee_ad_grants",String.class));
         assertEquals(today.minusMonths(6).toString(),checkpoint.get("unavailableBefore"));
-        for(int i=0;i<8&&!"PARTIAL".equals(fixture.db.queryForObject("SELECT status FROM finance_shopee_ad_grants",String.class));i++){
+        for(int i=0;i<16&&!"PARTIAL".equals(fixture.db.queryForObject("SELECT status FROM finance_shopee_ad_grants",String.class));i++){
             fixture.db.update("UPDATE finance_api_pacing SET next_allowed_at=UTC_TIMESTAMP(6) WHERE platform='SHOPEE_ADS'");
             fixture.db.update("UPDATE finance_shopee_ad_grants SET next_at=UTC_TIMESTAMP(6)");service.tick();
         }
