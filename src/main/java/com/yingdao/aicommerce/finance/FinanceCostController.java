@@ -89,24 +89,23 @@ public class FinanceCostController {
                 q.containsKey("end")?FinanceCostWorkspace.day(q.get("end")):today,q.getOrDefault("shopId",""),q.getOrDefault("platform",""),
                 q.getOrDefault("currency",""),"day",q.getOrDefault("groupId",""));
     }
-    @PostMapping("/costs/import") public ApiResponse<?> upload(@RequestParam String groupId,@RequestParam MultipartFile file,@RequestParam(required=false) String metadata,@AuthenticationPrincipal PlatformPrincipal p)throws Exception{
-        Map<String,Object> meta=metadata==null||metadata.isBlank()?Map.of():workspace.decode(metadata);
-        return ApiResponse.ok(workspace.inputSafety().stage(p,"IMPORT",groupId,"","",Map.of(),file.getBytes(),text(file.getOriginalFilename()),meta));
+    @PostMapping("/costs/import") public ApiResponse<?> upload(@RequestParam String groupId,@RequestParam MultipartFile file,@AuthenticationPrincipal PlatformPrincipal p)throws Exception{
+        return ApiResponse.ok(workspace.importCosts(service.authorize(p),p.userId(),groupId,file.getBytes(),text(file.getOriginalFilename())));
     }
-    public ApiResponse<?> upload(String groupId,MultipartFile file,PlatformPrincipal p)throws Exception{return upload(groupId,file,null,p);}
-    @PutMapping("/costs/{shopId}/settings") public ApiResponse<?> settings(@PathVariable String shopId,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){return stage(p,"SETTINGS","",shopId,"",body);}
-    @PutMapping("/costs/{shopId}/mapping") public ApiResponse<?> mapping(@PathVariable String shopId,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){return stage(p,"MAPPING","",shopId,"",body);}
-    @DeleteMapping("/costs/groups/{groupId}/files/{id}") public ApiResponse<?> removeSource(@PathVariable String groupId,@PathVariable String id,@RequestBody(required=false) Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){return stage(p,"REMOVE_SOURCE",groupId,"",id,body==null?Map.of():body);}
-    @PostMapping("/costs/{shopId}/manual-mapping") public ApiResponse<?> manualMapping(@PathVariable String shopId,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){return stage(p,"MANUAL_CREATE","",shopId,"",body);}
-    @PutMapping("/costs/groups/{groupId}/manual/{id}") public ApiResponse<?> editManual(@PathVariable String groupId,@PathVariable String id,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){return stage(p,"MANUAL_UPDATE",groupId,"",id,body);}
-    @DeleteMapping("/costs/groups/{groupId}/manual/{id}") public ApiResponse<?> deleteManual(@PathVariable String groupId,@PathVariable String id,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){return stage(p,"MANUAL_DELETE",groupId,"",id,body);}
-    private ApiResponse<?> stage(PlatformPrincipal p,String type,String group,String shop,String target,Map<String,Object> body){return ApiResponse.ok(workspace.inputSafety().stage(p,type,group,shop,target,body,null,"",map(body.get("metadata"))));}
-    @GetMapping("/costs/input-changes") public ApiResponse<?> inputChanges(@RequestParam(defaultValue="") String groupId,@RequestParam(defaultValue="") String shopId,@RequestParam(defaultValue="1") int page,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.inputSafety().list(p,groupId,shopId,page));}
-    @GetMapping("/costs/input-changes/{id}") public ApiResponse<?> inputChange(@PathVariable String id,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.inputSafety().detail(p,id));}
-    @PostMapping("/costs/input-changes/{id}/confirm") public ApiResponse<?> confirmInput(@PathVariable String id,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.inputSafety().confirm(p,id,body));}
-    @PostMapping("/costs/input-changes/{id}/revise") public ApiResponse<?> reviseInput(@PathVariable String id,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.inputSafety().revise(p,id,body));}
-    @PostMapping("/costs/input-changes/{id}/reject") public ApiResponse<?> rejectInput(@PathVariable String id,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.inputSafety().reject(p,id,body));}
-    @PostMapping("/costs/input-changes/{id}/undo") public ApiResponse<?> undoInput(@PathVariable String id,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.inputSafety().undo(p,id,body));}
+    @PutMapping("/costs/{shopId}/settings") public ApiResponse<?> settings(@PathVariable String shopId,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){workspace.settings(service.authorize(p),p.userId(),shopId,body);return ApiResponse.ok("成本口径已保存");}
+    @PutMapping("/costs/{shopId}/mapping") public ApiResponse<?> mapping(@PathVariable String shopId,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){workspace.mapping(service.authorize(p),p.userId(),shopId,body);return ApiResponse.ok("SKU 关联已保存");}
+    @DeleteMapping("/costs/groups/{groupId}/files/{id}") public ApiResponse<?> removeSource(@PathVariable String groupId,@PathVariable String id,@AuthenticationPrincipal PlatformPrincipal p){
+        workspace.removeSource(service.authorize(p),p.userId(),groupId,id);return ApiResponse.ok("已移除该文件的成本，手动成本保留");
+    }
+    @PostMapping("/costs/{shopId}/manual-mapping") public ApiResponse<?> manualMapping(@PathVariable String shopId,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){
+        return ApiResponse.ok(workspace.manualMapping(service.authorize(p),p.userId(),shopId,body));
+    }
+    @PutMapping("/costs/groups/{groupId}/manual/{id}") public ApiResponse<?> editManual(@PathVariable String groupId,@PathVariable String id,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){
+        workspace.changeManual(service.authorize(p),p.userId(),groupId,id,body,false);return ApiResponse.ok("手动成本已更新");
+    }
+    @DeleteMapping("/costs/groups/{groupId}/manual/{id}") public ApiResponse<?> deleteManual(@PathVariable String groupId,@PathVariable String id,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){
+        workspace.changeManual(service.authorize(p),p.userId(),groupId,id,body,true);return ApiResponse.ok("手动成本已删除");
+    }
     @PostMapping("/costs/{shopId}/auto-match") public ApiResponse<?> autoMatch(@PathVariable String shopId,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.autoMatch(service.authorize(p),p.userId(),shopId,body));}
     @GetMapping("/expenses") public ApiResponse<?> expenses(@RequestParam Map<String,String> query,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.expenses(service.authorize(p),query));}
     @PostMapping("/expenses") public ApiResponse<?> addExpense(@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.expense(service.authorize(p),p.userId(),null,body));}

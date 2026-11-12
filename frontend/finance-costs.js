@@ -1,11 +1,11 @@
 /* Cost configuration and SKU mappings. Explicit local previews never write to the service. */
 (() => {
   'use strict';
-  let state,loadSequence=0,inputSafetyView;
+  let state,loadSequence=0;
   const defaultRules=()=>({currency:'CNY',unit:'',basis:'order',missing:'previous',freight:'',inbound:''});
   const day=offset=>{const d=new Date();d.setDate(d.getDate()-offset);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
   const fresh=()=>({tab:'labels',shopId:'',groupId:'',collapsedShopId:'',spus:{},warehouse:'',month:'',search:'',status:'',page:1,orderPage:1,orderCostStatus:'ALL',orderNumbers:'',orderContext:null,start:day(29),end:day(0),datesKey:'',mappings:{},settings:{},rules:defaultRules()});
-  const reset=()=>{loadSequence++;inputSafetyView?.dispose();inputSafetyView=null;globalThis.FinanceLabelCosts?.reset();state=fresh();document.querySelectorAll('.fc-dialog').forEach(n=>n.remove());};
+  const reset=()=>{loadSequence++;globalThis.FinanceLabelCosts?.reset();state=fresh();document.querySelectorAll('.fc-dialog').forEach(n=>n.remove());};
   reset();
   const el=(tag,text,parent,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=String(text);if(cls)n.className=cls;parent?.append(n);return n;};
   const action=(parent,text,fn,cls='')=>{const n=el('button',text,parent,cls);n.type='button';n.onclick=async()=>{if(n.disabled)return;n.disabled=true;try{await fn();}catch(e){const feedback=n.closest('dialog')?.querySelector('[role=alert]')||document.querySelector('.fc-feedback');if(feedback)feedback.textContent=e.message||'操作失败，请重试';}finally{n.disabled=false;}};return n;};
@@ -99,9 +99,7 @@
     return {status:'missing',label:'待关联',note:'商品 SKU 与平台 SPU 均未匹配到成本型号，请人工确认',code:'',factor:1};
   }
   function mount(root,context={}){
-    inputSafetyView?.dispose();inputSafetyView=null;
     const preview=context.preview||null,live=preview?.live===true,shops=context.shops||[],editable=Boolean(context.canManage),costs=preview?.costs||[],manualCosts=preview?.manualCosts||[],products=preview?.products||[];
-    const safeInputs=live&&preview?.inputSafety?.enabled===true;
     if(context.dates?.start&&context.dates?.end){
       const key=JSON.stringify(context.dates);
       if(!state.orderContext?.recordId&&state.datesKey!==key){state.start=context.dates.start;state.end=context.dates.end;state.orderPage=1;}
@@ -181,30 +179,6 @@
       }
     }
     function toast(message){root.querySelector('.fc-feedback').textContent=message;}
-    function inputEvidence(parent,importFields=false){
-      if(!safeInputs)return ()=>({});
-      const section=el('section',null,parent,'fc-input-evidence');el('strong','人工资料依据',section);
-      el('p','提交后先暂存核对，不会立即改变有效成本。实际影响可能包含历史和后续订单，不限于当前查询月份。',section,'fc-inline-note');
-      function field(label,value=''){
-        const wrap=el('label',null,section);el('span',label,wrap);const n=el('input',null,wrap);n.type='text';n.maxLength=500;n.value=value;n.setAttribute('aria-label',label);return n;
-      }
-      let unit,type,source,revision,uniform;
-      if(importFields){
-        unit=field('成本计价单位',state.rules.unit||'');unit.placeholder='例如：包、片、箱、套';
-        type=select(section,'编号类型',[['','请选择'],['SKU','商品 SKU'],['SPU','平台 SPU'],['MIXED','混合类型，需逐行核对']],'',()=>{});
-        source=field('来源标识');source.placeholder='例如：采购核价表或供应商成本资料';
-        for(const [label,key]of [['明确修订已有价格','revision'],['确认 SPU 适用规格使用统一成本','uniform']]){
-          const wrap=el('label',null,section,'fc-check'),n=el('input',null,wrap);n.type='checkbox';n.setAttribute('aria-label',label);el('span',label,wrap);if(key==='revision')revision=n;else uniform=n;
-        }
-      }
-      const reason=field('操作原因'),evidence=field('依据编号或说明');
-      return ()=>{
-        if(!reason.value.trim()||!evidence.value.trim())throw Error('请填写操作原因和依据编号或说明');
-        if(importFields&&(!unit.value.trim()||!type.value))throw Error('请明确成本计价单位和编号类型');
-        return {reason:reason.value.trim(),evidenceRef:evidence.value.trim(),...(importFields?{unit:unit.value.trim(),identifierType:type.value,sourceKey:source.value.trim(),revision:revision.checked,spuUniform:uniform.checked}:{})};
-      };
-    }
-    const savedMessage=(result,message)=>toast(result?.duplicate&&result.status==='APPLIED'&&!result.changeId?'与当前有效资料一致，无需重复提交。':result?.staged?'已暂存，尚未改变有效成本。请到「导入与操作核对」查看差异并确认。':message);
     function unavailable(message){const d=modal('功能预留');el('p',message||'页面结构已预留，正式保存与同步将在成本口径确认后接入。',d.body,'fi-muted');}
     function importDialog(){
       if(live){
@@ -212,18 +186,16 @@
         const label=el('label',null,d.body);el('span','上传 XLSX / CSV（可多选）',label);const file=el('input',null,label);file.type='file';file.accept='.xlsx,.csv';file.multiple=true;file.setAttribute('aria-label','成本表文件');
         el('p','支持「型号、仓库、月份、单价」四列，或仓库 / 型号加多个月份的横排成本表。首个工作表需为数值；公式请先转换为值。',d.body,'fi-muted');
         el('p','每份文件独立保存、独立移除。同仓、同型号、同月份以最后导入的文件为准；不修改手动成本。金额统一为人民币。',d.body,'fi-muted');
-        if(safeInputs)d.body.lastElementChild.textContent='每份文件独立核对。同仓、同型号、同月份不同价必须明确修订并复核；不修改手动成本。金额统一为人民币。';
-        const readEvidence=inputEvidence(d.body,true);
         el('p','',d.body,'fc-alert').setAttribute('role','alert');
         action(d.foot,'确认导入',async()=>{
           if(!group.value||!file.files?.length)throw Error('请选择分组和成本文件');
-          const metadata=readEvidence(),target=group.value;let imported=0,duplicates=0,staged=0;group.disabled=true;file.disabled=true;
-          try{for(const selected of file.files){const form=new FormData();form.append('groupId',target);form.append('file',selected);if(safeInputs)form.append('metadata',JSON.stringify(metadata));
+          const target=group.value;let imported=0,duplicates=0;group.disabled=true;file.disabled=true;
+          try{for(const selected of file.files){const form=new FormData();form.append('groupId',target);form.append('file',selected);
             d.body.querySelector('[role=alert]').textContent='正在导入：'+selected.name;
-            const result=await context.request('/costs/import',{method:'POST',body:form});if(result.duplicate)duplicates++;else if(result.staged)staged++;else imported++;
-          }}catch(e){await reload('',target);throw Error(`${safeInputs?'已暂存 '+staged:'已导入 '+imported} 份，重复 ${duplicates} 份。${e.message}；可修正后重试。`);}
+            const result=await context.request('/costs/import',{method:'POST',body:form});if(result.duplicate)duplicates++;else imported++;
+          }}catch(e){await reload('',target);throw Error(`已导入 ${imported} 份，重复 ${duplicates} 份。${e.message}；可修正后重试，已导入文件不会重复。`);}
           finally{group.disabled=false;file.disabled=false;}
-          d.n.close();await reload('',target);toast(staged?`已暂存 ${staged} 份成本表，尚未改变有效成本。请到「导入与操作核对」确认；重复 ${duplicates} 份。`:`${safeInputs?'资料无新增变更':'已导入 '+imported+' 份成本表'}，跳过重复文件 ${duplicates} 份。`);
+          d.n.close();await reload('',target);toast(`已导入 ${imported} 份成本表，跳过重复文件 ${duplicates} 份。`);
         },'fi-primary');return;
       }
       const d=modal('导入成本表 · 设计预览');el('p','文件先进入待确认区，核对仓库、月份和计价口径后再启用。',d.body,'fi-muted');
@@ -278,7 +250,6 @@
       const factor=el('input',null,quantity);factor.type='number';factor.min='0.000001';factor.step='any';factor.value=String(rec.factor||rec.bundleQuantity||1);factor.setAttribute('aria-label','成本单位换算数量');
       el('p','例如：销售规格为 2 包装，成本为单包价，填 2；成本型号本身就是 2 包装，填 1。商品成本 = 人民币单价 × 购买数量 × 换算数量。',d.body,'fi-muted');
       let confirmed;if(live){const label=el('label',null,d.body,'fc-check');confirmed=el('input',null,label);confirmed.type='checkbox';el('span','我已核对销售规格、成本型号、单价和单位换算',label);}
-      const readEvidence=inputEvidence(d.body);
       const feedback=el('p','',d.body,'fc-alert');feedback.setAttribute('role','alert');
       action(d.foot,live?'保存关联':'应用到预览',async()=>{
         const selectedWarehouse=warehouse.value.trim(),manualNew=mode.value==='manual',manualExisting=!manualNew&&cost.value.startsWith('manual:');
@@ -290,11 +261,10 @@
           if(!confirmed.checked)throw Error('请先确认销售规格、单价与成本单位');
           const previous=state.mappings[key(product)+':'+selectedWarehouse]||{};
           const body={product_id:product.product_id,sku_id:product.sku_id,code:selectedCode,factor:factor.value,warehouse:selectedWarehouse,confirmed:true,version:previous.version||0};
-          if(safeInputs)body.metadata=readEvidence();
           if(manualNew)Object.assign(body,{unitPriceCny:price.value,unit:unit.value.trim(),zeroConfirmed:zero.checked});
           if(entry)body.manualCostId=entry.id;
-          const result=await context.request('/costs/'+encodeURIComponent(state.shopId)+(manualNew?'/manual-mapping':'/mapping'),{method:manualNew?'POST':'PUT',...json(body)});
-          if(!result?.staged)state.warehouse=selectedWarehouse;d.n.close();await reload();savedMessage(result,manualNew?'手动成本已保存并关联，可在「手动管理」查看。':'SKU 关联已保存。');return;
+          await context.request('/costs/'+encodeURIComponent(state.shopId)+(manualNew?'/manual-mapping':'/mapping'),{method:manualNew?'POST':'PUT',...json(body)});
+          state.warehouse=selectedWarehouse;d.n.close();await reload();toast(manualNew?'手动成本已保存并关联，可在「手动管理」查看。':'SKU 关联已保存。');return;
         }
         state.mappings[key(product)]={code:selectedCode,factor:Number(factor.value),warehouse:selectedWarehouse};
         d.n.close();draw();toast('关联已应用到本页预览；尚未写入正式系统。');
@@ -325,7 +295,7 @@
         if(live&&editable)action(file,'移除文件',()=>removeFile(entry),'fi-record-link fc-danger');
       }
       if(!files.length)el('p','本分组尚未上传成本文件，可一次选择多份 Excel。',source.n,'fc-empty');
-      el('p',safeInputs?'文件先暂存核对，不立即改变有效成本。改价覆盖和移除来源须复核后生效；移除后回退到其他有效文件，没有可用价格的订单保持待补齐。手动成本单独维护。':'同仓、同型号、同月份以最后导入的文件为准。移除后回退到其他仍存在的文件；没有可用价格的订单显示待补齐。手动成本单独维护。',source.n,'fc-inline-note');
+      el('p','同仓、同型号、同月份以最后导入的文件为准。移除后回退到其他仍存在的文件；没有可用价格的订单显示待补齐。手动成本单独维护。',source.n,'fc-inline-note');
       toolbar(source.n);
       const rows=currentCosts().filter(c=>(!state.warehouse||c.warehouse===state.warehouse)&&(!state.search||c.sku.toLowerCase().includes(state.search.toLowerCase())));
       table(source.n,['成本型号','成本仓','月份','单价（人民币）','来源文件','操作'],rows.slice((state.page-1)*12,state.page*12).map(c=>[
@@ -337,10 +307,9 @@
       el('p','仅移除这份文件提供的成本，其他文件和手动成本保留。相关订单会重新计算，缺价的订单回到待补齐。',d.body);
       if(file.legacy_merged)el('p','这是升级前保留的完整合并成本资料，移除会撤掉其中全部价格。',d.body,'fc-alert');
       el('p','',d.body,'fc-alert').setAttribute('role','alert');
-      const readEvidence=inputEvidence(d.body);
       action(d.foot,'确认移除文件',async()=>{
-        const result=await context.request('/costs/groups/'+encodeURIComponent(state.groupId)+'/files/'+encodeURIComponent(file.id),{method:'DELETE',...(safeInputs?json({metadata:readEvidence()}):{})});
-        d.n.close();await reload();savedMessage(result,'文件成本已移除，手动成本保留；相关订单正在重算。');
+        await context.request('/costs/groups/'+encodeURIComponent(state.groupId)+'/files/'+encodeURIComponent(file.id),{method:'DELETE'});
+        d.n.close();await reload();toast('文件成本已移除，手动成本保留；相关订单正在重算。');
       },'fi-primary');
     }
     function manualPanel(parent){
@@ -368,13 +337,11 @@
         const zeroLabel=el('label',null,d.body,'fc-check');zero=el('input',null,zeroLabel);zero.type='checkbox';el('span','若单价为 0，我确认该成本确实为零',zeroLabel);
       }
       el('p','',d.body,'fc-alert').setAttribute('role','alert');
-      const readEvidence=inputEvidence(d.body);
       action(d.foot,remove?'确认删除手动成本':'保存手动成本',async()=>{
         if(!remove&&(!price.value||!unit.value.trim()||!confirmed.checked))throw Error('请填写单价、单位，并确认重算范围');
         const body=remove?{version:row.version}:{version:row.version,unitPriceCny:price.value,unit:unit.value.trim(),confirmed:confirmed.checked,zeroConfirmed:zero.checked};
-        if(safeInputs)body.metadata=readEvidence();
-        const result=await context.request('/costs/groups/'+encodeURIComponent(state.groupId)+'/manual/'+encodeURIComponent(row.id),{method:remove?'DELETE':'PUT',...json(body)});
-        d.n.close();await reload();savedMessage(result,remove?'手动成本已删除，相关订单待重新核对。':'手动成本已更新，相关订单正在重算。');
+        await context.request('/costs/groups/'+encodeURIComponent(state.groupId)+'/manual/'+encodeURIComponent(row.id),{method:remove?'DELETE':'PUT',...json(body)});
+        d.n.close();await reload();toast(remove?'手动成本已删除，相关订单待重新核对。':'手动成本已更新，相关订单正在重算。');
       },'fi-primary');
     }
     function productRows(parent){
@@ -474,9 +441,8 @@
                 ['当月缺价时','missing',[['previous','用最近历史月份估算并标记'],['pending','保持待补价，不估算']]]
       ])select(form,label,options,state.rules[key],v=>{state.rules[key]=v;}).disabled=!editable;
       el('p','商品标准成本 = 商家 SKU 对应单价 × 购买数量 × 组合数量。优先使用完整组合装价格；退款不自动冲回商品成本。修改设置后后台重算并保留记录。',p.n,'fc-inline-note');
-      const readEvidence=inputEvidence(form);
       if(editable)action(form,live?'保存成本设置':'应用到预览',async()=>{
-        if(live){const result=await context.request('/costs/'+encodeURIComponent(state.shopId)+'/settings',{method:'PUT',...json({warehouse:state.warehouse,rules:state.rules,version:preview.settingsVersion||0,...(safeInputs?{metadata:readEvidence()}:{})})});await reload();savedMessage(result,'成本设置已保存。');return;}
+        if(live){await context.request('/costs/'+encodeURIComponent(state.shopId)+'/settings',{method:'PUT',...json({warehouse:state.warehouse,rules:state.rules,version:preview.settingsVersion||0})});await reload();toast('成本设置已保存。');return;}
         if(!preview)return unavailable();draw();toast('成本设置已应用到预览；正式数据未变更。');
       },'fi-primary');
     }
@@ -603,12 +569,7 @@
     }
     function body(){
       const host=root.querySelector('.fc-tab-content');if(!host)return;host.replaceChildren();
-      inputSafetyView?.dispose();inputSafetyView=null;
       globalThis.FinanceLabelCosts?.reset();
-      if(state.tab==='input-safety'&&safeInputs){
-        if(globalThis.FinanceCostInputSafety)inputSafetyView=FinanceCostInputSafety.mount(host,{request:context.request,groupId:state.groupId,shopId:state.shopId,groups:context.groups||[],shops,canManage:editable,onChanged:()=>reload()});
-        else el('p','人工核对组件未加载，请刷新页面。',host,'fc-alert');return;
-      }
       if(state.tab==='labels'){
         if(globalThis.FinanceLabelCosts&&live)FinanceLabelCosts.mount(host,{...context,filters:{...state.labelFilters,start:state.start,end:state.end},
           onFiltersChange:filters=>{state.labelFilters=filters;state.start=filters.start;state.end=filters.end;context.onDatesChange?.({start:state.start,end:state.end});}});
@@ -647,13 +608,13 @@
       ]){const n=el('div',null,metrics,'fc-metric');el('span',label,n);el('strong',value,n);el('small',note,n);}
       const tabs=el('div',null,root,'fc-tabs');tabs.setAttribute('role','tablist');
       if(state.tab==='labels'){shopControl.hidden=true;metrics.hidden=true;}
-      for(const [id,title,number]of [['labels','月度贴单账单','01'],['costs','商品成本表','02'],['manual','手动管理','03'],['mapping','SKU 关联','04'],['orders','订单成本','05'],...(safeInputs?[['input-safety','导入与操作核对','06']]:[])]){
-        const n=action(tabs,'',()=>{state.tab=id;state.page=1;state.search='';state.status='';draw();if(!['labels','orders','input-safety'].includes(id)&&missingAutomatic())void autoMatch();});n.setAttribute('role','tab');n.setAttribute('aria-selected',String(state.tab===id));n.setAttribute('aria-controls','fc-panel');el('span',number,n);el('strong',title,n);
+      for(const [id,title,number]of [['labels','月度贴单账单','01'],['costs','商品成本表','02'],['manual','手动管理','03'],['mapping','SKU 关联','04'],['orders','订单成本','05']]){
+        const n=action(tabs,'',()=>{state.tab=id;state.page=1;state.search='';state.status='';draw();if(!['labels','orders'].includes(id)&&missingAutomatic())void autoMatch();});n.setAttribute('role','tab');n.setAttribute('aria-selected',String(state.tab===id));n.setAttribute('aria-controls','fc-panel');el('span',number,n);el('strong',title,n);
       }
       el('p','',root,'fc-feedback').setAttribute('role','status');const host=el('div',null,root,'fc-tab-content');host.id='fc-panel';host.setAttribute('role','tabpanel');body();
     }
     draw();
-    if(!['orders','labels','input-safety'].includes(state.tab)&&missingAutomatic())void autoMatch();
+    if(!['orders','labels'].includes(state.tab)&&missingAutomatic())void autoMatch();
   }
   globalThis.FinanceCosts={mount,reset,candidate,shopId:()=>state.shopId,groupId:()=>state.groupId,openMapping:selection=>{
     state.mappingReturn=selection.returnToOrders?{shopId:state.shopId,warehouse:state.warehouse,orderPage:state.orderPage,orderContext:state.orderContext,orderCostStatus:state.orderCostStatus,start:state.start,end:state.end}:null;
