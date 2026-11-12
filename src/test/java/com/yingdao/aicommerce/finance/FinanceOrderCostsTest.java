@@ -14,6 +14,65 @@ class FinanceOrderCostsTest {
     Map<String,Object> tk(String id,String code){return new LinkedHashMap<>(Map.of("id",id,"product_id","product","sku_id","sku","seller_sku",code,"sku_name","Pants-XXXL"));}
     Map<String,Object> order(String platform,String status){return Map.of("platform",platform,"status",status,"record_date","2026-10-21");}
     void amountEquals(String expected,Object value){assertNotNull(value);assertEquals(0,new BigDecimal(expected).compareTo(decimal(value)));}
+    @Test void sellerSkuWinsAndPlatformSpuIsTheSecondAutomaticChoice(){
+        String spu="9007199254740993123";
+        var costs=List.of(cost("PACK","菲律宾","2026-10","7"),cost(spu,"菲律宾","2026-10","11"));
+        for(String platform:List.of("TIKTOK_SHOP","SHOPEE"))for(String seller:List.of("PACK","UNKNOWN","")){
+            var item=platform.equals("TIKTOK_SHOP")?Map.<String,Object>of("id","line","product_id",spu,"sku_id","variant","seller_sku",seller,"quantity",2):
+                Map.<String,Object>of("item_id",spu,"model_id","variant","model_sku",seller,"item_sku","","model_quantity_purchased",2);
+            var result=FinanceOrderCosts.calculate(order(platform,"COMPLETED"),Map.of(platform.equals("SHOPEE")?"item_list":"line_items",List.of(item)),context(costs,Map.of(),Map.of()));
+            assertEquals("READY",result.get("status"),platform+" / "+seller);
+            amountEquals(seller.equals("PACK")?"14":"22",result.get("amountCny"));
+            var line=rows(result.get("lines")).getFirst();assertEquals(seller,line.get("sellerSku"));
+            assertEquals(seller.equals("PACK")?"PACK":spu,line.get("costCode"));
+            assertEquals(seller.equals("PACK")?"SKU":"SPU",line.get("matchedBy"));
+        }
+    }
+    @Test void localSpuCanMatchWhenMerchantCodeOnlyExistsInAnotherWarehouse(){
+        var item=tk("line","PACK");item.put("product_id","40000000001");
+        var result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(item)),
+            context(List.of(cost("PACK","泰国","2026-10","100"),cost("40000000001","菲律宾","2026-10","8")),Map.of(),Map.of()));
+        assertEquals("READY",result.get("status"));amountEquals("8",result.get("amountCny"));
+        assertEquals("菲律宾",rows(result.get("lines")).getFirst().get("warehouse"));
+    }
+    @Test void platformVariantIdNeverSubstitutesForSpuAndBothMissesNeedConfirmation(){
+        var item=tk("line","");item.put("product_id","40000000001");item.put("sku_id","400000000002");
+        var result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(item)),
+            context(List.of(cost("400000000002","菲律宾","2026-10","8")),Map.of(),Map.of()));
+        assertEquals("INCOMPLETE",result.get("status"));assertNull(result.get("amountCny"));
+        String issue=text(rows(result.get("lines")).getFirst().get("issue"));assertTrue(issue.contains("SPU")&&issue.contains("人工确认"));
+    }
+    @Test void aMatchedSkuWithInvalidPriceDoesNotSwitchToTheSpuPrice(){
+        var item=tk("line","PACK");item.put("product_id","40000000001");
+        var result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(item)),
+            context(List.of(cost("PACK","菲律宾","2026-10","0"),cost("40000000001","菲律宾","2026-10","8")),Map.of(),Map.of()));
+        assertEquals("INCOMPLETE",result.get("status"));assertNull(result.get("amountCny"));
+        assertEquals("PACK",rows(result.get("lines")).getFirst().get("costCode"));
+    }
+    @Test void savedAutomaticSpuMappingRechecksSkuButManualMappingStillWins(){
+        var item=tk("line","PACK");item.put("product_id","40000000001");
+        var costs=List.of(cost("PACK","菲律宾","2026-10","7"),cost("40000000001","菲律宾","2026-10","11"));
+        for(boolean manual:List.of(false,true)){
+            var saved=new LinkedHashMap<String,Object>(Map.of("code","40000000001","warehouse","菲律宾","factor",1,"groupId","group"));
+            if(!manual)saved.put("method","SPU_CODE");
+            var result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(item)),
+                context(costs,Map.of(),Map.of("shop:40000000001:sku:菲律宾",saved)));
+            amountEquals(manual?"11":"7",result.get("amountCny"));
+        }
+    }
+    @Test void anAmbiguousSkuCanUseUniqueSpuWithoutBorrowingItsUnmatchedBundleFactor(){
+        var item=tk("line","（PACK） ×2");item.put("product_id","40000000001");item.put("quantity",3);
+        var result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(item)),
+            context(List.of(cost("PACK*2","菲律宾","2026-10","5"),cost("(PACK)*2","菲律宾","2026-10","6"),cost("40000000001","菲律宾","2026-10","7")),Map.of(),Map.of()));
+        assertEquals("READY",result.get("status"));amountEquals("21",result.get("amountCny"));
+        var line=rows(result.get("lines")).getFirst();assertEquals("SPU",line.get("matchedBy"));amountEquals("1",line.get("factor"));
+    }
+    @Test void ambiguousSpuModelsRemainIncompleteInsteadOfChoosingAPrice(){
+        var item=tk("line","");item.put("product_id","40000000001");
+        var result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(item)),
+            context(List.of(cost("(40000000001)","菲律宾","2026-10","5"),cost("（40000000001）","菲律宾","2026-10","6")),Map.of(),Map.of()));
+        assertEquals("INCOMPLETE",result.get("status"));assertNull(result.get("amountCny"));
+    }
     @Test void giftIsFixedZeroOnBothPlatformsWithoutCatalogueDateOrWarehouse(){
         for(String platform:List.of("TIKTOK_SHOP","SHOPEE"))for(String sku:List.of("GIFT","gift"," Gift ")){
             var item=platform.equals("SHOPEE")?Map.<String,Object>of("item_id","i","model_id","m","item_sku",sku):tk("gift",sku);
