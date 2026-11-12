@@ -130,12 +130,11 @@ test("same-company user change discards a late authorization without replay", as
     fixture.requests.filter((r) => r.path.endsWith("/shopee-ads/authorize")),
   ).toHaveLength(1);
 });
-test("gated classic experience click creates a new tab; bookmark and independent drafts survive", async ({
+test("actual classic experience click creates a new tab; bookmark and independent drafts survive", async ({
   page,
   context,
   fixture,
 }) => {
-  fixture.setExperience(true);
   await page.goto(fixture.url + "/?lang=zh#finance-overview");
   await expect(page.locator("#finance-page .fi-head")).toBeVisible();
   await page

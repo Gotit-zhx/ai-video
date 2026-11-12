@@ -155,5 +155,5 @@
     };
     return facade;
   }
-  return {modeFromSearch,cleanFilters,readInitialFilters,buildFinanceUrl,addExperienceLink,createFacade,enabled:false};
+  return {modeFromSearch,cleanFilters,readInitialFilters,buildFinanceUrl,addExperienceLink,createFacade,enabled:true};
 });

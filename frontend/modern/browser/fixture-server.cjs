@@ -24,7 +24,6 @@ async function createFixtureServer({ user, finance } = {}) {
   const requests = [],
     unhandled = [],
     errors = [];
-  let experience = false;
   let currentUser = user || {
     organizationId: "fixture-company",
     userId: "fixture-user",
@@ -163,12 +162,7 @@ async function createFixtureServer({ user, finance } = {}) {
         send(404, "");
         return;
       }
-      let bytes = await fs.readFile(file);
-      // Exercise the gated link without changing the production default.
-      if (experience && route === "/finance-entry.js")
-        bytes = Buffer.from(
-          bytes.toString().replace("enabled:false", "enabled:true"),
-        );
+      const bytes = await fs.readFile(file);
       send(200, bytes, {
         "Content-Type": types[extension] || "application/octet-stream",
       });
@@ -189,9 +183,6 @@ async function createFixtureServer({ user, finance } = {}) {
     errors,
     setUser(next) {
       currentUser = next;
-    },
-    setExperience(enabled) {
-      experience = enabled;
     },
     close() {
       return new Promise((resolve, reject) =>

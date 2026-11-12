@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createFixtureServer } from "../browser/fixture-server.cjs";
 test("local fixture rejects unknown API and private source without forwarding", async () => {
   const server = await createFixtureServer();
@@ -18,16 +19,20 @@ test("local fixture rejects unknown API and private source without forwarding", 
     await server.close();
   }
 });
-test("experience link override is confined to served fixture bytes", async () => {
+test("local fixture serves the actual entry bytes without a rollout override", async () => {
   const server = await createFixtureServer();
   try {
-    const read = () =>
-      fetch(server.url + "/finance-entry.js").then((r) => r.text());
-    assert.match(await read(), /enabled:false/);
-    server.setExperience(true);
-    assert.match(await read(), /enabled:true/);
-    server.setExperience(false);
-    assert.match(await read(), /enabled:false/);
+    const actual = readFileSync(
+      new URL("../../finance-entry.js", import.meta.url),
+      "utf8",
+    );
+    for (const suffix of ["", "?v=published-entry"])
+      assert.equal(
+        await fetch(server.url + "/finance-entry.js" + suffix).then((r) =>
+          r.text(),
+        ),
+        actual,
+      );
   } finally {
     await server.close();
   }
