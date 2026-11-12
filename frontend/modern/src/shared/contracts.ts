@@ -14,16 +14,16 @@ export interface FinanceFilters {
 }
 
 export const emptyFinanceFilters: FinanceFilters = {
-  start: '',
-  end: '',
-  shopId: '',
-  groupId: '',
-  platform: '',
-  currency: '',
-  displayCurrency: '',
-  granularity: '',
-  fxSnapshot: '',
-  dateBasis: ''
+  start: "",
+  end: "",
+  shopId: "",
+  groupId: "",
+  platform: "",
+  currency: "",
+  displayCurrency: "",
+  granularity: "",
+  fxSnapshot: "",
+  dateBasis: "",
 };
 
 export interface FinanceHostSnapshot {
@@ -46,11 +46,31 @@ export interface FinanceHost {
 
 export type FinanceRequestParam = string | number | boolean | null | undefined;
 export type FinanceRequestParams = Record<string, FinanceRequestParam>;
-export type FinanceWriteMethod = 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+export type FinanceWriteMethod = "POST" | "PUT" | "PATCH" | "DELETE";
+
+export interface FinanceRequestOptions {
+  headers?: HeadersInit;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
 
 export interface FinanceApi {
-  get<T>(path: string, params?: FinanceRequestParams, signal?: AbortSignal): Promise<T>;
-  send<T>(path: string, method: FinanceWriteMethod, body?: unknown): Promise<T>;
+  get<T>(
+    path: string,
+    params?: FinanceRequestParams,
+    signal?: AbortSignal,
+  ): Promise<T>;
+  send<T>(
+    path: string,
+    method: FinanceWriteMethod,
+    body?: unknown,
+    options?: FinanceRequestOptions,
+  ): Promise<T>;
   upload<T>(path: string, formData: FormData): Promise<T>;
-  download(path: string, params: FinanceRequestParams, filename?: string): Promise<void>;
+  download(
+    path: string,
+    params: FinanceRequestParams,
+    filename?: string,
+    options?: FinanceRequestOptions,
+  ): Promise<void>;
 }

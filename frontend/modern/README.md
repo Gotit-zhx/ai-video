@@ -1,0 +1,13 @@
+# Modern finance workspace
+
+This React/TypeScript frontend is an opt-in finance surface. The classic finance UI remains available. Host selection, login/session adaptation and production activation belong to the classic integration layer; feature modules never call legacy `window.Finance*` widgets.
+
+Use Node 22.12 or newer. From this directory run `npm test`, `npm run typecheck`, and `npm run build`. After building, run `node tests/build-smoke.mjs` to import the generated ESM mount entry and verify the one-CSS manifest contract. Build output is ignored under `../assets/finance-modern`; do not publish source or dependencies.
+
+`src/app/mount.tsx` exports `mountFinanceRoot`. Mount on a disposable host element and insert styles/overlays into its ShadowRoot. `FinanceApplication` supplies the nine-route shell. Its `pages` slots (`shops`, `costs`, `charges`, `qianyi`, `refunds`) accept components receiving `{route}`; these consume `useFinance()` for API, owner, permissions, filters and translation. Unfilled slots explicitly direct users to the classic workspace. `fees` aliases `fee-records`; `expense-ledger` is the charges slot.
+
+All reads use the scoped Query client. Default dates are the previous full Asia/Shanghai month, all native currencies displayed in CNY. Business dates remain date strings. Scope/currency edits invalidate the historical snapshot. `ORDER ALL` directly queries records; other record modes coordinate with an overview snapshot, while reconciliation carries its own evidence. Unknown amounts remain unavailable, known partials remain marked, and no totals are computed from a paginated table. Advertising spend, booked advertising and GMV Max remain separate scopes.
+
+Reusable operations are under `src/features/finance/operations`: personal FieldSettings, frozen ExportDialog, personal ExportJobs and management-only ImportDialog. Export jobs transmit a real Idempotency-Key; unknown submission recovery is explicit and reuses the same key/body. Closing/inactivity/owner changes clear scoped controls and cancel applicable reads/downloads. Generic and funding imports preview before commit and never automatically replay writes. Viewer-safe personal fields and export jobs remain available without management permission.
+
+UI labels use `useFinance().t`. The shared catalog currently adds substantial bundle weight; route and ECharts imports are lazy. Browser viewport/theme/language acceptance and complete costs/shop/Qianyi integration are separate gates before production activation.
