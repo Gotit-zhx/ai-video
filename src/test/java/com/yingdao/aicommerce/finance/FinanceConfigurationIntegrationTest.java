@@ -75,6 +75,7 @@ class FinanceConfigurationIntegrationTest {
         migration("V144__qianyi_receipt_qualification.sql");
         migration("V148__finance_ad_automation.sql");
         migration("V152__finance_ad_bc_funding.sql");
+        migration("V154__finance_shopee_ads.sql");
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_cost_sources",Integer.class));
         assertEquals(1,db.queryForObject("SELECT legacy_merged FROM finance_cost_sources WHERE id='old2'",Integer.class));
         assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_cost_books",Integer.class),"legacy snapshots remain for audit");
@@ -89,6 +90,7 @@ class FinanceConfigurationIntegrationTest {
         for(String statement:sql.split(";"))if(!statement.isBlank())db.execute(statement);
     }
     @BeforeEach void setup(){
+        for(String table:List.of("finance_shopee_ad_daily","finance_shopee_ad_grants","finance_shopee_ad_groups"))db.update("DELETE FROM "+table);
         for(String table:List.of("finance_ad_bc_stage","finance_ad_bc_costs","finance_ad_bc_sync"))db.update("DELETE FROM "+table);
         for(String table:List.of("finance_ad_report_stage","finance_ad_coverage","finance_ad_streams","finance_ad_stores"))db.update("DELETE FROM "+table);
         db.update("UPDATE finance_api_pacing SET next_allowed_at=UTC_TIMESTAMP(6),interval_seconds=5,throttle_count=0,success_count=0");

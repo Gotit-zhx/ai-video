@@ -192,6 +192,16 @@ public class ShopeeOfficialClient implements MarketplaceAccess.Client {
         return checked(http.get(MarketplaceHttp.uri(apiBaseUrl, path, query), Map.of()), path);
     }
 
+    /** Opt-in monetary reader for signed financial reports; other marketplace responses keep their parser. */
+    public Map<String, Object> shopGetExact(String path, MarketplaceAccess.Connection connection,
+                                          Map<String, ?> businessQuery) {
+        Shop shop = connection.shop();
+        long timestamp = Instant.now().getEpochSecond();
+        Map<String, Object> query = shopQuery(path, timestamp, connection.tokens().accessToken(), shop.getExternalShopId());
+        if (businessQuery != null) query.putAll(businessQuery);
+        return checked(http.getExact(MarketplaceHttp.uri(apiBaseUrl, path, query), Map.of()), path);
+    }
+
     public Map<String, Object> shopPost(String path, MarketplaceAccess.Connection connection,
                                         Map<String, ?> body) {
         requireWriteDestination();

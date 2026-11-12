@@ -59,12 +59,14 @@ final class FinanceAdSpendReport {
         if(quote!=null)quote.preload(sources.stream().map(FinanceFx::businessDate).filter(Objects::nonNull).toList());
         var imports=new HashSet<String>();var series=new HashSet<String>();var importCounts=new HashMap<String,Integer>();var officialByCampaign=new HashMap<String,List<Map<String,Object>>>();var apiPeriods=new HashSet<String>();var fundingPeriods=new HashSet<String>();
         for(var r:media){String key=campaignKey(r);if(text(r.get("source")).startsWith("API_"))apiPeriods.add(periodKey(r));if("IMPORT_FUNDING".equals(r.get("source"))){imports.add(key);importCounts.merge(key,1,Integer::sum);fundingPeriods.add(periodKey(r));}if(Set.of("API_GMV","API_CAMPAIGN").contains(text(r.get("source"))))officialByCampaign.computeIfAbsent(key,k->new ArrayList<>()).add(r);if(!text(r.get("campaign_id")).isBlank())series.add(bucket(r));}
+        var shopeeTotals=new HashSet<String>();for(var row:sources)if("API_SHOPEE_CPC".equals(row.get("source")))shopeeTotals.add(bucket(row));
         var splits=new HashMap<String,List<Map<String,Object>>>();assignments.forEach(a->splits.computeIfAbsent(text(a.get("source_key")),k->new ArrayList<>()).add(a));
         var prepared=new ArrayList<Map<String,Object>>();int excluded=0,unresolved=0;
         for(var source:media){
             String currency=text(source.get("currency")),platform=text(source.get("platform"));LocalDate day=LocalDate.parse(text(source.get("record_date")));
             if(day.isBefore(f.start())||day.isAfter(f.end())||!f.platform().isBlank()&&!platform.equals(f.platform())||!f.currency().isBlank()&&!currency.equals(f.currency()))continue;
-            if(!"IMPORT_FUNDING".equals(source.get("source"))&&imports.contains(campaignKey(source))||"API_BASIC".equals(source.get("source"))&&!text(source.get("account_id")).isBlank()&&series.contains(bucket(source))){excluded++;continue;}
+            if("SHOPEE".equals(platform)&&!"API_SHOPEE_CPC".equals(source.get("source"))&&shopeeTotals.contains(bucket(source))){excluded++;continue;}
+            if(!"API_SHOPEE_CPC".equals(source.get("source"))&&(!"IMPORT_FUNDING".equals(source.get("source"))&&imports.contains(campaignKey(source))||"API_BASIC".equals(source.get("source"))&&!text(source.get("account_id")).isBlank()&&series.contains(bucket(source)))){excluded++;continue;}
             var attributed=new LinkedHashMap<>(source);
             var confirmed=splits.getOrDefault(text(source.get("source_key")),List.of());
             if(confirmed.isEmpty()&&"IMPORT_FUNDING".equals(source.get("source"))&&"SHOPEE".equals(platform)){
