@@ -18,4 +18,4 @@
 - [x] 通过独立 Shopee UI 模块展示授权与同步状态；新增 JSDOM 用例验证只读、公司切换及导出三表来源。更新业务说明和配置示例。
 - [x] 运行相关 Java/隔离数据库/UI/资源检查，独立代码审查；只提交本次支持分支并创建 develop PR。主机操作须重新协调、双锁并显式处理新迁移，申请未通过时不声称真实数据已补齐。
 
-2026-11-12 已完成正式配置、V154 和共享服务器源码激活；真实金额补齐仍待店铺管理员完成新应用授权。首次回补优先上个完整月，再本月和更早日期。历史开发验证见 `docs/releases/finance/finance-shopee-ads-20261111.md`，当前激活与待办见 `docs/releases/finance/finance-shopee-ads-activation-20261112.md`。
+2026-11-12 已完成正式配置、V154 和共享服务器源码激活；两家已授权店铺已完成近 90 天 CPC 日报回补，真实三表核对通过；其余店铺需独立官方授权。首次回补优先上个完整月，再本月和更早日期。历史开发验证见 `docs/releases/finance/finance-shopee-ads-20261111.md`，当前激活与待办见 `docs/releases/finance/finance-shopee-ads-activation-20261112.md`。

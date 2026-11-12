@@ -14,7 +14,8 @@ class FinanceShopeeAdsApiTest {
     @Test void usesOfficialDateFormatAndRejectsSameDayAndOversizedWindows(){
         assertEquals(Map.of("start_date","01-10-2026","end_date","07-10-2026"),FinanceShopeeAdsApi.query(from,to));
         assertThrows(RuntimeException.class,()->FinanceShopeeAdsApi.query(from,from));
-        assertThrows(RuntimeException.class,()->FinanceShopeeAdsApi.query(from,from.plusDays(31)));
+        assertEquals(Map.of("start_date","01-10-2026","end_date","30-10-2026"),FinanceShopeeAdsApi.query(from,from.plusDays(29)));
+        assertThrows(RuntimeException.class,()->FinanceShopeeAdsApi.query(from,from.plusDays(30)));
     }
     @Test void readsArrayResponseAndPreservesRealZeroRefundsAndDecimalPrecision(){
         var rows=FinanceShopeeAdsApi.daily(envelope(row("01-10-2026","12.340001"),row("02-10-2026",0),row("03-10-2026","-1.2")),from,to);
@@ -35,9 +36,18 @@ class FinanceShopeeAdsApiTest {
         var remaining=rows(plan.get("remaining"));assertEquals(2,remaining.size());
         assertEquals("2026-11-01",remaining.getFirst().get("from"));assertEquals(today.toString(),remaining.getFirst().get("until"));
         assertEquals(today.minusDays(89).toString(),remaining.getLast().get("from"));assertEquals("2026-09-30",remaining.getLast().get("until"));
-        assertEquals(LocalDate.of(2026,10,31),FinanceShopeeAdsApi.windowEnd(LocalDate.of(2026,10,1),today));
+        assertEquals(LocalDate.of(2026,10,30),FinanceShopeeAdsApi.windowEnd(LocalDate.of(2026,10,1),today));
         assertEquals(today,FinanceShopeeAdsApi.windowEnd(LocalDate.of(2026,11,1),today));
         assertEquals(today.minusDays(6).toString(),FinanceShopeeAdsApi.plan(today,today).get("from"));
+    }
+    @Test void thirtyOneDayMonthsSplitTheLastDayWithoutLosingExistingCheckpointCoverage(){
+        LocalDate last=LocalDate.of(2026,10,31),first=last.withDayOfMonth(1);
+        LocalDate end=FinanceShopeeAdsApi.windowEnd(first,last);
+        assertEquals(last.minusDays(1),end);
+        LocalDate next=end.plusDays(1),lastEnd=FinanceShopeeAdsApi.windowEnd(next,last);
+        assertEquals(last,lastEnd);
+        assertEquals(Map.of("start_date","30-10-2026","end_date","31-10-2026"),FinanceShopeeAdsApi.query(next.minusDays(1),lastEnd));
+        assertEquals(LocalDate.of(2026,2,28),FinanceShopeeAdsApi.windowEnd(LocalDate.of(2026,2,1),LocalDate.of(2026,3,1)));
     }
     @Test void scheduleKeepsNinetyDaysInitiallyAndRefreshesSevenOrThirtyOneDays(){
         LocalDate today=LocalDate.of(2026,11,11);
