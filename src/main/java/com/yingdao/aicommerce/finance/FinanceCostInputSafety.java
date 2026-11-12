@@ -284,7 +284,15 @@ public class FinanceCostInputSafety {
     });}
     private Map<String,Object> reversePreview(Scope s,String group,String shop,Map<String,Object> row){
         var impact=state.impact(s,group,Set.of("MAPPING","SETTINGS").contains(text(row.get("type")))?shop:"");
-        var diffs=new ArrayList<Map<String,Object>>();for(var old:rows(decode(row.get("diff_json")).get("items"))){var reversed=new LinkedHashMap<>(old);if(old.containsKey("oldPrice")){reversed.put("oldPrice",old.get("newPrice"));reversed.put("newPrice",old.get("oldPrice"));}else{reversed.put("before",old.get("after"));reversed.put("after",old.get("before"));}diffs.add(reversed);}
+        var diffs=new ArrayList<Map<String,Object>>();
+        for(var old:rows(decode(row.get("diff_json")).get("items"))){
+            var reversed=new LinkedHashMap<>(old);
+            if(old.containsKey("oldPrice")){
+                reversed.put("oldPrice",old.get("newPrice"));reversed.put("newPrice",old.get("oldPrice"));
+                reversed.put("oldSource",old.get("newSource"));reversed.put("newSource",old.get("oldSource"));
+            }else{reversed.put("before",old.get("after"));reversed.put("after",old.get("before"));}
+            diffs.add(reversed);
+        }
         return Map.<String,Object>of("validation",Map.of("blocked",false,"risk","HIGH","issues",List.of(issue("UNDO_REVIEW","REVIEW","撤销会恢复该操作前配置，须独立复核"))),"impact",impact,"diff",diffs,"requiresIndependentReview",true,"status","REVIEW");
     }
     private static String boundedParseReason(String message){String safe=text(message).replaceAll("[\\p{Cntrl}]"," ");return safe.substring(0,Math.min(300,safe.length()));}

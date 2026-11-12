@@ -113,7 +113,7 @@
       reason.readOnly=!canManage;evidence.readOnly=!canManage;
       if(canManage&&change.canConfirm&&change.status!=='BLOCKED'&&!['APPLIED','REJECTED','STALE'].includes(change.status)){
         const impact=check(dialog.body,'我已核对实际影响范围'),historical=(change.impact?.hasHistorical||change.actualScope?.hasHistorical)?check(dialog.body,'我已确认会影响历史及后续订单'):null;
-        const revision=meta.revision===true||change.validation?.issues?.some(i=>['PRICE_REVISION_REQUIRED','PRICE_OVERRIDE'].includes(i.code))?check(dialog.body,'明确修订已有价格',meta.revision===true):null;
+        const revision=validation.priceOverride===true||meta.revision===true||change.validation?.issues?.some(i=>['PRICE_REVISION_REQUIRED','PRICE_OVERRIDE'].includes(i.code))?check(dialog.body,'明确修订已有价格',meta.revision===true):null;
         button(dialog.foot,change.requiresIndependentReview?'复核并应用':'确认应用',async()=>{
           if(!impact.checked||historical&&!historical.checked)throw Error('请明确确认实际影响范围及历史影响');
           if(!reason.value.trim()||!evidence.value.trim())throw Error('请填写操作原因和核对依据');

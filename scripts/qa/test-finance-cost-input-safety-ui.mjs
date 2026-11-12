@@ -27,7 +27,7 @@ const options={groupId:'g',shopId:'',groups:[{id:'g',name:'服装成本分组（
  }
  const body=JSON.parse(request.body||'{}');writes.push({path:url.pathname,method,body});
  const id=url.pathname.split('/').at(-2),item=items.find(v=>v.id===id);
- if(url.pathname.endsWith('/confirm')){assert.equal(body.version,item.version);const apply=()=>{Object.assign(item,{status:'APPLIED',version:2,canConfirm:false,canRevise:false,canUndo:true});return structuredClone(item);};if(delayConfirm)return new Promise(resolve=>{finishConfirm=()=>resolve(apply());});return apply();}
+ if(url.pathname.endsWith('/confirm')){assert.equal(body.version,item.version);if(item.validation?.priceOverride===true&&body.revision!==true)throw Error('覆盖已有价格须声明修订意图并提供依据');const apply=()=>{Object.assign(item,{status:'APPLIED',version:2,canConfirm:false,canRevise:false,canUndo:true});return structuredClone(item);};if(delayConfirm)return new Promise(resolve=>{finishConfirm=()=>resolve(apply());});return apply();}
  if(url.pathname.endsWith('/revise')){assert.equal(body.version,item.version);Object.assign(item,{metadata:{...item.metadata,...body.metadata},version:item.version+1});return structuredClone(item);}
  if(url.pathname.endsWith('/reject')){assert.equal(body.version,item.version);item.status='REJECTED';return structuredClone(item);}
  if(url.pathname.endsWith('/undo')){assert.equal(body.version,item.version);return {staged:true,changeId:'undo-draft',status:'REVIEW'};}
@@ -59,6 +59,21 @@ await click('保存并重新校验',dialog);
 const revised=writes.at(-1);assert(revised.path.endsWith('/revise/revise'));assert.equal(revised.body.version,1);assert.equal(revised.body.metadata.unit,'套');assert.equal(revised.body.metadata.identifierType,'SPU');assert.equal(revised.body.metadata.spuUniform,true);assert.equal(revised.body.metadata.revision,true);
 view.dispose();
 items=[make('done',{status:'APPLIED',canConfirm:false,canRevise:false,canUndo:true})];view=w.FinanceCostInputSafety.mount(d.querySelector('#root'),options);await settle();await click('查看',row('done'));dialog=d.querySelector('dialog');await click('撤销本次操作',dialog);dialog=d.querySelector('dialog');field('操作原因','本次资料有误，申请恢复',dialog);field('依据编号或说明','更正单-1',dialog);await click('生成撤销核对单',dialog);assert(writes.at(-1).path.endsWith('/done/undo'));assert.equal(writes.at(-1).body.version,1);
+view.dispose();
+// Exact MANUAL_UPDATE detail shape: an independent reviewer cannot revise owner metadata,
+// and the priceOverride flag is authoritative even without import-specific issue codes.
+items=[{id:'manual-price-review',type:'MANUAL_UPDATE',status:'REVIEW',groupId:'g',shopId:'',sourceName:'',submittedBy:'owner',lastEditedBy:'owner',version:1,
+ canConfirm:true,canReject:false,canRevise:false,canUndo:false,requiresIndependentReview:true,
+ metadata:{reason:'按采购单调整人工价格',evidenceRef:'人工核价单-9'},
+ validation:{blocked:false,risk:'HIGH',priceOverride:true,issues:[{code:'HUMAN_INPUT_UNVERIFIED',severity:'REVIEW',message:'请核对理由、原始依据和操作实际适用范围'}]},
+ diff:[{field:'unitPriceCny',before:8,after:9}],impact:{scopeShops:1,scopeOrderCount:2,hasHistorical:true,coverage:'SCOPE_UPPER_BOUND',amountChange:null},actualScope:'分组内相关店铺历史及后续订单'}];
+view=w.FinanceCostInputSafety.mount(d.querySelector('#root'),options);await settle();await click('查看',row('manual-price-review'));dialog=d.querySelector('dialog');
+assert(![...dialog.querySelectorAll('button')].some(b=>b.textContent==='补充资料'),'独立复核者不能通过修改提交者资料绕过价格修订声明');
+assert(dialog.querySelector('[aria-label="明确修订已有价格"]'),'实际MANUAL_UPDATE响应的priceOverride标记必须显示价格修订声明');
+check('我已核对实际影响范围',dialog);check('我已确认会影响历史及后续订单',dialog);
+const beforeManualConfirmation=writes.length;await click('复核并应用',dialog);assert.equal(writes.length,beforeManualConfirmation,'未勾选修订声明时不能发出人工改价确认');assert(dialog.textContent.includes('请明确声明本次价格修订'));
+check('明确修订已有价格',dialog);await click('复核并应用',dialog);
+assert.equal(writes.length,beforeManualConfirmation+1);assert(writes.at(-1).path.endsWith('/manual-price-review/confirm'));assert.equal(writes.at(-1).body.revision,true);assert.equal(items[0].status,'APPLIED');assert(row('manual-price-review').textContent.includes('已应用'));
 view.dispose();
 items=[make('read-only',{sourceName:'<img src=x onerror=alert(1)>.xlsx'})];view=w.FinanceCostInputSafety.mount(d.querySelector('#root'),{...options,canManage:false});await settle();await click('查看',row('read-only'));dialog=d.querySelector('dialog');assert(dialog.textContent.includes('<img src=x onerror=alert(1)>.xlsx'));assert.equal(d.querySelectorAll('img').length,0);assert(![...dialog.querySelectorAll('button')].some(b=>/确认应用|补充资料|驳回|撤销本次/.test(b.textContent)));
 view.dispose();

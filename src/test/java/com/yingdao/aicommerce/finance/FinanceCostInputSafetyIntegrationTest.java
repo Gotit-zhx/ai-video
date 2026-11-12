@@ -313,5 +313,39 @@ class FinanceCostInputSafetyIntegrationTest extends FinanceConfigurationIntegrat
             return result;
         }
     }
+    @Test void laterWarehouseSettingsPreventGeneratingUndoOfTheirImport(){
+        inputFixture();var imported=stage("10");safety.confirm(principal(),id(imported),ack(info(imported)));
+        var configured=safety.stage(principal(),"SETTINGS",group,shop,"",settingsBody(0),null,"",meta());safety.confirm(reviewer(),id(configured),ack(info(configured)));
+        assertThrows(RuntimeException.class,()->safety.undo(principal(),id(imported),ack(info(imported))));
+        assertEquals("APPLIED",info(configured).get("status"));assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_cost_sources",Integer.class));
+        assertEquals("海外仓-菲律宾",repo.read(db.queryForObject("SELECT data_json FROM finance_cost_settings WHERE shop_id=?",String.class,shop)).get("warehouse"));
+    }
+    @Test void laterSiblingWarehouseSettingsInvalidateAnAlreadyStagedImportUndo(){
+        inputFixture();String sibling=groupedShop(owner,"later-settings",group);var imported=stage("10");safety.confirm(principal(),id(imported),ack(info(imported)));
+        var reverse=safety.undo(principal(),id(imported),ack(info(imported)));
+        var configured=safety.stage(principal(),"SETTINGS",group,sibling,"",settingsBody(0),null,"",meta());safety.confirm(reviewer(),id(configured),ack(info(configured)));
+        assertThrows(RuntimeException.class,()->safety.confirm(reviewer(),id(reverse),ack(info(reverse))));assertEquals("STALE",info(reverse).get("status"));
+        assertEquals("APPLIED",info(configured).get("status"));assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_cost_sources",Integer.class));
+        assertEquals("海外仓-菲律宾",repo.read(db.queryForObject("SELECT data_json FROM finance_cost_settings WHERE shop_id=?",String.class,sibling)).get("warehouse"));
+    }
+    @Test void laterSiblingSettingsProtectWarehouseProvidedByManualCreation(){
+        inputFixture();String sibling=groupedShop(owner,"manual-warehouse-settings",group);var created=appliedManual();
+        var configured=safety.stage(principal(),"SETTINGS",group,sibling,"",settingsBody(0),null,"",meta());safety.confirm(reviewer(),id(configured),ack(info(configured)));
+        assertThrows(RuntimeException.class,()->safety.undo(principal(),id(created),ack(info(created))));
+        assertEquals("APPLIED",info(configured).get("status"));assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_manual_costs",Integer.class));
+    }
+    @Test void firstImportUndoShowsRemovedSourceAndNoReplacementSource(){
+        inputFixture();var imported=stage("10");safety.confirm(principal(),id(imported),ack(info(imported)));
+        var reverse=safety.undo(principal(),id(imported),ack(info(imported)));var diff=rows(info(reverse).get("diff")).getFirst();
+        assertEquals(0,decimal("10").compareTo(decimal(diff.get("oldPrice"))));assertNull(diff.get("newPrice"));
+        assertEquals("candidate.csv",diff.get("oldSource"));assertEquals("",diff.get("newSource"),"absence must remain absence, not a fabricated replacement source");
+    }
+    @Test void overriddenImportUndoKeepsEachPriceWithItsActualSource(){
+        inputFixture();var original=safety.stage(principal(),"IMPORT",group,"","",Map.of(),csv("10"),"source-A.csv",meta());safety.confirm(principal(),id(original),ack(info(original)));
+        var overwrite=safety.stage(principal(),"IMPORT",group,"","",Map.of(),csv("20"),"source-B.csv",meta());safety.confirm(reviewer(),id(overwrite),ack(info(overwrite)));
+        var reverse=safety.undo(principal(),id(overwrite),ack(info(overwrite)));var diff=rows(info(reverse).get("diff")).getFirst();
+        assertEquals(0,decimal("20").compareTo(decimal(diff.get("oldPrice"))));assertEquals("source-B.csv",diff.get("oldSource"));
+        assertEquals(0,decimal("10").compareTo(decimal(diff.get("newPrice"))));assertEquals("source-A.csv",diff.get("newSource"));
+    }
     static byte[] csv(String price){return ("仓库,型号,202610\n海外仓-菲律宾,PACK,"+price+"\n").getBytes(StandardCharsets.UTF_8);}
 }

@@ -27,6 +27,14 @@ final class FinanceCostInputState {
                 NOT IN ('EXACT_CODE','NORMALIZED_CODE','BUNDLE_CODE','SPU_CODE')
             ORDER BY m.id
             """,s.organizationId(),group));
+        // A later warehouse/basis decision in any group shop also depends on shared sources/manual prices.
+        result.put("explicitSettings",repo.jdbc().queryForList("""
+            SELECT st.shop_id,st.data_json,st.version
+            FROM finance_cost_settings st JOIN finance_connections c
+              ON c.organization_id=st.organization_id AND c.id=st.shop_id
+            WHERE st.organization_id=? AND c.group_id=? AND c.status<>'REMOVED'
+            ORDER BY st.shop_id
+            """,s.organizationId(),group));
         result.put("shops",repo.jdbc().queryForList("SELECT id,group_id,status FROM finance_connections WHERE organization_id=? AND group_id=? AND status<>'REMOVED' ORDER BY id",s.organizationId(),group));
         if(!shop.isBlank()){
             result.put("settings",repo.jdbc().queryForList("SELECT data_json,version FROM finance_cost_settings WHERE organization_id=? AND shop_id=?",s.organizationId(),shop));
