@@ -562,3 +562,198 @@ it("polls unfinished deletion every three seconds, stops when hidden, and unmoun
     vi.useRealTimers();
   }
 });
+
+describe("Qianyi fresh editing sessions", () => {
+  it("requires a fresh held read on quick reopen and submits B pause/start rather than cached A", async () => {
+    const a = {
+      ...config,
+      enabled: true,
+      status: "READY",
+      sync_start: "2026-08-01",
+    };
+    const b = {
+      ...config,
+      enabled: false,
+      status: "PAUSED",
+      sync_start: "2026-10-15",
+    };
+    let reads = 0;
+    let release!: (value: unknown) => void;
+    const api = fixture();
+    api.get = vi.fn(async (path: string) =>
+      path === "/qianyi"
+        ? ++reads === 1
+          ? a
+          : new Promise((resolve) => {
+              release = resolve;
+            })
+        : [],
+    ) as never;
+    const r = renderFinance(<QianyiSettingsModal open onClose={() => {}} />, {
+      api,
+    });
+    const d = overlay(r);
+    expect(await d.findByLabelText("历史同步开始日期")).toHaveValue(
+      a.sync_start,
+    );
+    expect(d.getByRole("switch", { name: "千易自动同步" })).toBeChecked();
+    r.rerender(<QianyiSettingsModal open={false} onClose={() => {}} />);
+    r.rerender(<QianyiSettingsModal open onClose={() => {}} />);
+    await waitFor(() => expect(reads).toBe(2));
+    expect(d.queryByLabelText("千易 App ID")).toBeNull();
+    expect(d.queryByRole("button", { name: "保存全局配置" })).toBeNull();
+    expect(api.send).not.toHaveBeenCalled();
+    await act(async () => release(b));
+    expect(await d.findByLabelText("历史同步开始日期")).toHaveValue(
+      b.sync_start,
+    );
+    expect(d.getByRole("switch", { name: "千易自动同步" })).not.toBeChecked();
+    fireEvent.click(d.getByRole("button", { name: "保存全局配置" }));
+    await waitFor(() =>
+      expect(api.send).toHaveBeenCalledWith(
+        "/qianyi",
+        "PUT",
+        {
+          environment: "CN",
+          appId: "existing",
+          appSecret: "",
+          syncStart: b.sync_start,
+          enabled: false,
+        },
+        undefined,
+      ),
+    );
+  });
+  it("refreshes paused settings and current association page read-only while preserving draft edits", async () => {
+    let server = { ...config };
+    const calls: Array<{ path: string; params: unknown }> = [];
+    const api = fixture();
+    api.get = vi.fn(async (path: string, params: unknown) => {
+      calls.push({ path, params });
+      return path === "/qianyi"
+        ? server
+        : path === "/qianyi/shops"
+          ? JSON.stringify(params).includes("2")
+            ? [{ id: "page2", name: "Page two shop", status: server.status }]
+            : Array.from({ length: 50 }, (_, i) => ({
+                id: String(i),
+                name: "Shop " + i,
+              }))
+          : [];
+    }) as never;
+    const r = renderFinance(<QianyiSettingsModal open onClose={() => {}} />, {
+      api,
+    });
+    const d = overlay(r);
+    await d.findByLabelText("千易 App ID");
+    await waitFor(() =>
+      expect(d.getByRole("button", { name: "下一页" })).toBeEnabled(),
+    );
+    fireEvent.click(d.getByRole("button", { name: "下一页" }));
+    await d.findByText("Page two shop");
+    fireEvent.change(d.getByLabelText("历史同步开始日期"), {
+      target: { value: "2026-09-11" },
+    });
+    fireEvent.change(d.getByLabelText("千易 App ID"), {
+      target: { value: "draft-app" },
+    });
+    server = { ...server, status: "ERROR", sync_start: "2026-11-01" };
+    const before = calls.length;
+    fireEvent.click(d.getByRole("button", { name: "刷新关联状态" }));
+    await d.findByText("ERROR");
+    expect(calls.slice(before)).toEqual(
+      expect.arrayContaining([
+        { path: "/qianyi", params: {} },
+        { path: "/qianyi/shops", params: { page: 2 } },
+      ]),
+    );
+    expect(d.getByLabelText("千易 App ID")).toHaveValue("draft-app");
+    expect(d.getByLabelText("历史同步开始日期")).toHaveValue("2026-09-11");
+    expect(api.send).not.toHaveBeenCalled();
+  });
+  it("recovers an initial settings read failure with explicit refresh and no mutation", async () => {
+    let fail = true;
+    const api = fixture();
+    api.get = vi.fn(async (path: string) => {
+      if (path === "/qianyi") {
+        if (fail) throw new Error("公司配置读取失败");
+        return config;
+      }
+      return [];
+    }) as never;
+    const r = renderFinance(<QianyiSettingsModal open onClose={() => {}} />, {
+      api,
+    });
+    const d = overlay(r);
+    await d.findByText("公司配置读取失败");
+    expect(d.queryByRole("button", { name: "保存全局配置" })).toBeNull();
+    fail = false;
+    fireEvent.click(d.getByRole("button", { name: "刷新关联状态" }));
+    expect(await d.findByLabelText("千易 App ID")).toHaveValue("existing");
+    expect(api.send).not.toHaveBeenCalled();
+  });
+});
+
+it("keeps intentional Qianyi draft edits through later enabled status polls", async () => {
+  let server = { ...config, enabled: true, status: "READY" };
+  const api = fixture();
+  api.get = vi.fn(async (path: string) =>
+    path === "/qianyi" ? server : [],
+  ) as never;
+  vi.useFakeTimers();
+  const r = renderFinance(<QianyiSettingsModal open onClose={() => {}} />, {
+    api,
+  });
+  const d = overlay(r);
+  try {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    fireEvent.change(d.getByLabelText("千易 App ID"), {
+      target: { value: "my-draft" },
+    });
+    fireEvent.change(d.getByLabelText("历史同步开始日期"), {
+      target: { value: "2026-09-11" },
+    });
+    fireEvent.click(d.getByRole("switch", { name: "千易自动同步" }));
+    server = { ...server, status: "SYNCING", sync_start: "2026-11-01" };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10001);
+    });
+    expect(
+      vi.mocked(api.get).mock.calls.filter((call) => call[0] === "/qianyi")
+        .length,
+    ).toBe(2);
+    expect(d.getByText(/状态.*SYNCING/)).toBeVisible();
+    expect(d.getByLabelText("千易 App ID")).toHaveValue("my-draft");
+    expect(d.getByLabelText("历史同步开始日期")).toHaveValue("2026-09-11");
+    expect(d.getByRole("switch", { name: "千易自动同步" })).not.toBeChecked();
+    expect(api.send).not.toHaveBeenCalled();
+  } finally {
+    r.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it("recovers paused association read failures with the explicit read-only refresh", async () => {
+  let fail = true;
+  const api = fixture();
+  api.get = vi.fn(async (path: string) => {
+    if (path === "/qianyi") return config;
+    if (path === "/qianyi/shops") {
+      if (fail) throw new Error("关联状态读取失败");
+      return [{ id: "recovered", name: "Recovered association" }];
+    }
+    return [];
+  }) as never;
+  const r = renderFinance(<QianyiSettingsModal open onClose={() => {}} />, {
+    api,
+  });
+  const d = overlay(r);
+  await d.findByText("关联状态读取失败");
+  fail = false;
+  fireEvent.click(d.getByRole("button", { name: "刷新关联状态" }));
+  expect(await d.findByText("Recovered association")).toBeVisible();
+  expect(d.getByRole("switch", { name: "千易自动同步" })).not.toBeChecked();
+  expect(api.send).not.toHaveBeenCalled();
+});

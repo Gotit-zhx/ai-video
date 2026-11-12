@@ -25,8 +25,12 @@ export function QianyiSettingsModal(props: QianyiSettingsModalProps) {
 function QianyiModal({ onClose, onSaved }: QianyiSettingsModalProps) {
   const { api, t } = useFinance();
   const visible = useVisible();
+  // Every open is a new editing session. Never initialize a writable draft
+  // from retained data belonging to a previous open, even inside staleTime.
+  const [openSession] = useState(() => crypto.randomUUID());
   const query = useFinanceQuery({
-    queryKey: ["qianyi-settings"],
+    queryKey: ["qianyi-settings", openSession],
+    gcTime: 0,
     queryFn: ({ signal }) => api.get<Row>("/qianyi", {}, signal),
     refetchInterval: visible
       ? (query) => (query.state.data?.enabled === true ? 10000 : false)
@@ -45,13 +49,25 @@ function QianyiModal({ onClose, onSaved }: QianyiSettingsModalProps) {
         <SettingsForm
           initial={query.data}
           current={query.data}
+          refreshing={query.isFetching}
+          onRefresh={() => query.refetch()}
           onSaved={async () => {
             onSaved?.();
             await query.refetch();
           }}
         />
       ) : (
-        <Alert type="info" title={t("正在读取公司千易配置")} />
+        <Space orientation="vertical">
+          {query.isFetching && (
+            <Alert type="info" title={t("正在读取公司千易配置")} />
+          )}
+          <Button
+            loading={query.isFetching}
+            onClick={() => void query.refetch()}
+          >
+            {t("刷新关联状态")}
+          </Button>
+        </Space>
       )}
     </FinanceModal>
   );
@@ -59,10 +75,14 @@ function QianyiModal({ onClose, onSaved }: QianyiSettingsModalProps) {
 function SettingsForm({
   initial,
   current,
+  refreshing,
+  onRefresh,
   onSaved,
 }: {
   initial: Row;
   current: Row;
+  refreshing: boolean;
+  onRefresh: () => Promise<unknown>;
   onSaved: () => Promise<void>;
 }) {
   const { api, t } = useFinance();
@@ -83,6 +103,7 @@ function SettingsForm({
     [page, setPage] = useState(1);
   const associations = useFinanceQuery({
     queryKey: ["qianyi-settings-shops", page],
+    refetchOnMount: "always",
     queryFn: ({ signal }) =>
       api.get<unknown>("/qianyi/shops", { page }, signal),
     refetchInterval: visible && current.enabled === true ? 10000 : false,
@@ -195,7 +216,15 @@ function SettingsForm({
           onChange={setEnabled}
         />
       </label>
-      <Space>
+      <Space wrap>
+        <Button
+          loading={refreshing || associations.isFetching}
+          onClick={() =>
+            void Promise.all([onRefresh(), associations.refetch()])
+          }
+        >
+          {t("刷新关联状态")}
+        </Button>
         <Button type="primary" loading={command.pending} onClick={save}>
           {t("保存全局配置")}
         </Button>
