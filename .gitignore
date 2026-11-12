@@ -34,3 +34,6 @@ apps/automation-agent/*ui-check*.png
 # Private source-development configuration, compiler state and local data
 .env.development
 .dev/
+
+# Generated modern Finance BI browser assets
+/frontend/assets/finance-modern/
