@@ -26,7 +26,11 @@ const labels: Record<string, string> = {
   REJECTED: "已驳回",
   STALE: "预览已过期",
 };
-export function InputReview() {
+export function InputReview({
+  onChanged,
+}: {
+  onChanged?: () => void | Promise<void>;
+}) {
   const { filters, t } = useFinance();
   const [page, setPage] = useState(1),
     [selected, setSelected] = useState(""),
@@ -76,7 +80,8 @@ export function InputReview() {
           onClose={() => setSelected("")}
           onDone={(v) => {
             setNotice(operationReceipt(v));
-            void query.refetch();
+            if (onChanged) void onChanged();
+            else void query.refetch();
           }}
         />
       )}

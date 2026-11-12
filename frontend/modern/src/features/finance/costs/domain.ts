@@ -1,5 +1,5 @@
 import type { FinanceRequestParams, Row } from "../../../shared/contracts";
-import { record, text } from "../../../shared/rows";
+import { record, rows, text } from "../../../shared/rows";
 export const costPath = "/workspace/costs";
 export const id = (value: unknown) => encodeURIComponent(text(value) || "");
 export function costOrderSelection(
@@ -119,13 +119,114 @@ export function costCandidate(
         note: "组合装候选：请确认换算数量，避免完整套装重复计价",
       };
   }
-  const spu = match(text(product.product_id) || "", "SPU_");
-  if (spu?.code) return spu;
+  const spu = match(text(product.product_id) || "");
+  if (spu?.code) return { ...spu, method: "SPU_CODE" };
   return (
     direct ||
     spu ||
     pending("当前成本仓无唯一价格型号，不能自动使用其他国家成本")
   );
+}
+const automaticMethods = new Set([
+  "EXACT_CODE",
+  "NORMALIZED_CODE",
+  "BUNDLE_CODE",
+  "SPU_CODE",
+]);
+export function costMappingMethod(method: unknown, manual = false): string {
+  const value = text(method) || "";
+  return (
+    (
+      {
+        EXACT_CODE: "商品 SKU 精确匹配（EXACT_CODE）",
+        NORMALIZED_CODE: "商品 SKU 规范化匹配（NORMALIZED_CODE）",
+        BUNDLE_CODE: "组合装匹配（BUNDLE_CODE）",
+        SPU_CODE: "平台 SPU 自动匹配（SPU_CODE）",
+      } as Record<string, string>
+    )[value] ||
+    value ||
+    (manual ? "手动成本（已保存）" : "人工关联（已保存）")
+  );
+}
+/** A retained reference is not necessarily an effective mapping. Never replace a lost manual reference with an Excel candidate. */
+export function costMappingView(product: Row, data: Row, warehouse: string) {
+  const mappings = record(data.mappings) || {};
+  const saved =
+    record(
+      mappings[
+        [data.shopId, product.product_id, product.sku_id, warehouse].join(":")
+      ],
+    ) ||
+    record(
+      mappings[[data.shopId, product.product_id, product.sku_id].join(":")],
+    );
+  const candidate = costCandidate(product, rows(data.costs), warehouse);
+  const automatic =
+    !!saved &&
+    !saved.manualCostId &&
+    automaticMethods.has(text(saved.method) || "");
+  const sourceWarehouse = text(saved?.warehouse) || warehouse;
+  const sourceValid =
+    !!saved &&
+    (!saved.groupId || saved.groupId === data.groupId) &&
+    !!sourceWarehouse &&
+    sourceWarehouse === warehouse &&
+    (saved.manualCostId
+      ? rows(data.manualCosts).some(
+          (c) =>
+            text(c.id ?? c.manualId) === text(saved.manualCostId) &&
+            c.sku === saved.code &&
+            c.warehouse === sourceWarehouse,
+        )
+      : rows(data.costs).some(
+          (c) => c.sku === saved.code && c.warehouse === sourceWarehouse,
+        ));
+  if (candidate.fixedGift)
+    return {
+      saved,
+      sourceValid: false,
+      automatic,
+      code: candidate.code,
+      factor: candidate.factor,
+      method: "GIFT",
+      status: "gift",
+      note: candidate.note,
+      storedMethod: "—",
+    };
+  const storedMethod = saved
+    ? costMappingMethod(saved.method, !!saved.manualCostId)
+    : "—";
+  if (saved && !automatic)
+    return {
+      saved,
+      sourceValid,
+      automatic,
+      code: text(saved.code) || "",
+      factor: text(saved.factor) || "1",
+      method: storedMethod,
+      storedMethod,
+      status: sourceValid ? "saved" : "pending",
+      note: sourceValid
+        ? "已有人工关系，当前来源有效"
+        : saved.manualCostId
+          ? "原关联的手动成本已移除或不再匹配，保留失效引用，需重新核对；不会自动切换到表格价格"
+          : "原关联的表格成本已移除或不在当前仓，保留失效引用，需重新核对",
+    };
+  return {
+    saved,
+    sourceValid,
+    automatic,
+    code: candidate.code,
+    factor: candidate.factor,
+    method: candidate.code
+      ? candidate.method === "SPU_CODE"
+        ? "本地候选 · 平台 SPU"
+        : "本地候选 · 商品 SKU"
+      : "待核对",
+    storedMethod,
+    status: candidate.code ? "candidate" : "pending",
+    note: candidate.note,
+  };
 }
 export function decimalValid(v: string, positive = false) {
   return /^\d{1,18}(\.\d{1,6})?$/.test(v) && (!positive || /[1-9]/.test(v));

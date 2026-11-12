@@ -94,7 +94,17 @@ function Returns() {
   const download = useDownload();
   const summary = record(query.data?.summary) || {};
   const patch = (key: string, v: string) =>
-    setDraft((d) => ({ ...d, [key]: v }));
+    setDraft((d) => {
+      const next = { ...d, [key]: v };
+      if (
+        ["type", "returnStatus", "receiptStatus"].includes(key) &&
+        (next.type !== "SALES_RETURN" ||
+          next.returnStatus !== "FINISH" ||
+          next.receiptStatus !== "SIGNED")
+      )
+        next.receiptScope = "ALL";
+      return next;
+    });
   const search = (numbers?: string) => {
     setSelection({
       ...draft,
@@ -124,6 +134,7 @@ function Returns() {
               setDraft((d) => ({
                 ...d,
                 receiptScope: v,
+                type: "SALES_RETURN",
                 returnStatus: v === "RECEIVED" ? "FINISH" : "",
                 receiptStatus: v === "RECEIVED" ? "SIGNED" : "",
               }))

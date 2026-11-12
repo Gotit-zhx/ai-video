@@ -165,7 +165,7 @@ describe("cost contracts", () => {
     ).toMatchObject({
       code: "12345678901234567890",
       factor: "1",
-      method: "SPU_EXACT_CODE",
+      method: "SPU_CODE",
     });
   });
   it("distinguishes blocked staging from applied duplicate", () => {

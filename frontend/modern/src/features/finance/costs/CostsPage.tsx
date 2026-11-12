@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
-import { Alert, Tabs } from "antd";
+import { useEffect, useRef, useState } from "react";
+import { Alert, Button, Tabs } from "antd";
+import { useQueryClient } from "@tanstack/react-query";
+import { record, text } from "../../../shared/rows";
 import { useFinance } from "../context";
 import { selectionKey } from "../domain";
-import { Failure } from "../presentation";
+import { Failure, useOwnerFence } from "../presentation";
 import { LabelsPage } from "../charges/LabelsPage";
 import { CostCatalog } from "./CostCatalog";
 import { OrderCosts } from "./OrderCosts";
@@ -61,7 +63,8 @@ function CostNavigation({
 }) {
   const { filters } = useFinance();
   const [tab, setTab] = useState(initialTab);
-  useEffect(() => setTab(initialTab), [initialTab]);
+  const routeKey = selectionKey(Object.fromEntries(routeParams.entries()));
+  useEffect(() => setTab(initialTab), [initialTab, routeKey]);
   return (
     <CostWorkspace
       key={selectionKey({ ...filters })}
@@ -80,12 +83,38 @@ function CostWorkspace({
   setTab: (v: string) => void;
   routeParams: URLSearchParams;
 }) {
-  const { filters, t, setFilters } = useFinance();
+  const { filters, t, setFilters, session } = useFinance();
+  const queryClient = useQueryClient(),
+    owner = useOwnerFence();
+  const [refreshBlocked, setRefreshBlocked] = useState(false),
+    [refreshError, setRefreshError] = useState<unknown>();
+  const refreshGeneration = useRef(0);
   const query = useCostRead(costPath, {
     shopId: filters.shopId,
     groupId: filters.groupId,
   });
   const data = query.data;
+  async function reloadWorkspace() {
+    if (!owner.isCurrent()) return;
+    const generation = ++refreshGeneration.current;
+    setRefreshBlocked(true);
+    setRefreshError(undefined);
+    // Invalidate related scoped results, while the editable workspace performs
+    // one explicit fresh read and stays unavailable until that read succeeds.
+    const related = queryClient.invalidateQueries({
+      queryKey: ["finance", session.organizationId, session.userId],
+      predicate: (q) => q.queryKey[3] !== costPath,
+    });
+    try {
+      await query.refetch({ throwOnError: true });
+      if (owner.isCurrent() && generation === refreshGeneration.current)
+        setRefreshBlocked(false);
+    } catch (error) {
+      if (owner.isCurrent() && generation === refreshGeneration.current)
+        setRefreshError(error);
+    }
+    await related;
+  }
   const entries = [
     ["labels", "月度贴单账单"],
     ["costs", "商品成本表"],
@@ -97,19 +126,34 @@ function CostWorkspace({
   ];
   return (
     <>
-      <Failure error={query.error} />
+      <Failure error={refreshError || query.error} />
+      {refreshBlocked && (
+        <Alert
+          type="info"
+          title={t("正在重新读取有效成本资料")}
+          action={
+            <Button onClick={() => void reloadWorkspace()}>
+              {t("重试读取有效成本")}
+            </Button>
+          }
+        />
+      )}
       <Tabs
         activeKey={tab}
         onChange={setTab}
         destroyOnHidden
         items={entries.map(([key, label]) => ({
           key: key!,
-          label: t(label!),
+          label:
+            key === "input-review"
+              ? `${t(label!)} · ${text(record(data?.inputSafety)?.pendingCount) ?? "—"}`
+              : t(label!),
           children:
             key === "labels" ? (
               <LabelsPage />
             ) : key === "orders" ? (
               <OrderCosts
+                key={selectionKey(Object.fromEntries(routeParams.entries()))}
                 initial={Object.fromEntries(routeParams.entries())}
                 onMapping={(shopId) => {
                   setTab("mapping");
@@ -118,8 +162,8 @@ function CostWorkspace({
                 }}
               />
             ) : key === "input-review" ? (
-              <InputReview />
-            ) : data ? (
+              <InputReview onChanged={reloadWorkspace} />
+            ) : data && !refreshBlocked ? (
               <CostCatalog
                 key={key}
                 data={data}

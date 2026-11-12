@@ -16,6 +16,7 @@ import {
 } from "./common";
 import {
   costCandidate,
+  costMappingView,
   costPath,
   id,
   metadataBody,
@@ -268,48 +269,22 @@ export function CostCatalog({
               { value: "", label: "全部状态" },
               { value: "pending", label: "待关联" },
               { value: "saved", label: "已有关系" },
+              { value: "candidate", label: "自动候选" },
               { value: "gift", label: "固定零赠品" },
             ]}
           />
           <DataTable
             data={products
               .map((p): Row => {
-                const saved =
-                  record(
-                    mappings[
-                      [
-                        data.shopId,
-                        p.product_id,
-                        p.sku_id,
-                        effectiveWarehouse,
-                      ].join(":")
-                    ],
-                  ) ||
-                  record(
-                    mappings[[data.shopId, p.product_id, p.sku_id].join(":")],
-                  );
-                const candidate = costCandidate(p, costs, effectiveWarehouse);
+                const current = costMappingView(p, data, effectiveWarehouse);
                 return {
                   ...p,
-                  matchCode: candidate.fixedGift
-                    ? candidate.code
-                    : (saved?.code ?? candidate.code),
-                  matchMethod: candidate.fixedGift
-                    ? candidate.method
-                    : (saved?.method ?? candidate.method),
-                  matchFactor: candidate.fixedGift
-                    ? candidate.factor
-                    : (saved?.factor ?? candidate.factor),
-                  matchNote: candidate.fixedGift
-                    ? candidate.note
-                    : saved
-                      ? "已有保存关系；自动关系由服务端按最新资料判断"
-                      : candidate.note,
-                  matchStatus: candidate.fixedGift
-                    ? "gift"
-                    : saved
-                      ? "saved"
-                      : "pending",
+                  matchCode: current.code,
+                  matchFactor: current.factor,
+                  matchMethod: t(current.method),
+                  storedMethod: t(current.storedMethod),
+                  matchNote: t(current.note),
+                  matchStatus: current.status,
                 };
               })
               .filter(
@@ -328,7 +303,8 @@ export function CostCatalog({
               ["sku_id", "平台规格 ID"],
               ["matchCode", "成本型号"],
               ["matchFactor", "换算数量"],
-              ["matchMethod", "匹配来源"],
+              ["matchMethod", "当前候选 / 人工关系"],
+              ["storedMethod", "服务端已保存来源"],
               ["matchNote", "核对说明"],
               ["pending_cost_reason", "历史待补原因"],
             ]}

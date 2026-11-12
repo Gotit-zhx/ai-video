@@ -131,6 +131,7 @@ export function RecordDetail({
                 columns={[
                   ["name", "商品"],
                   ["costCode", "成本 SKU"],
+                  ["matchedBy", "服务端匹配依据（SKU / SPU / MANUAL）"],
                   ["quantity", "数量"],
                   ["factor", "换算系数"],
                   ["priceMonth", "价格月份"],

@@ -14,7 +14,7 @@ import {
   useCostAction,
 } from "./common";
 import {
-  costCandidate,
+  costMappingView,
   costPath,
   decimalValid,
   id,
@@ -277,11 +277,15 @@ export function MappingForm({
     record(maps[[data.shopId, product.product_id, product.sku_id].join(":")]) ||
     {};
   const initial = saved(defaultWarehouse),
-    candidate = costCandidate(product, costs, defaultWarehouse);
+    current = costMappingView(product, data, defaultWarehouse);
   const [mode, setMode] = useState(initial.manualCostId ? "manual" : "excel"),
-    [code, setCode] = useState(text(initial.code) || candidate.code),
-    [manualId, setManualId] = useState(text(initial.manualCostId) || ""),
-    [factor, setFactor] = useState(text(initial.factor) || candidate.factor),
+    [code, setCode] = useState(
+      current.status === "pending" ? "" : current.code,
+    ),
+    [manualId, setManualId] = useState(
+      current.sourceValid ? text(initial.manualCostId) || "" : "",
+    ),
+    [factor, setFactor] = useState(current.factor),
     [price, setPrice] = useState(""),
     [unit, setUnit] = useState(""),
     [confirmed, setConfirmed] = useState(false),

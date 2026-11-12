@@ -24,8 +24,8 @@ export function OrderCosts({
   onMapping?: (shopId: string) => void;
 }) {
   const { filters, t } = useFinance();
-  const [start, setStart] = useState(text(initial.start) || filters.start),
-    [end, setEnd] = useState(text(initial.end) || filters.end),
+  const [start, setStart] = useState(text(initial.start) ?? filters.start),
+    [end, setEnd] = useState(text(initial.end) ?? filters.end),
     [numbers, setNumbers] = useState(text(initial.numbers) || ""),
     [pending, setPending] = useState(initial.costStatus === "PENDING"),
     [kind, setKind] = useState(text(initial.kind) || "SETTLED_ORDER"),
