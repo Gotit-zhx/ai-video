@@ -21,6 +21,9 @@ const Records = lazy(() =>
     default: module.RecordsPage,
   })),
 );
+const Shops = lazy(() =>
+  import("./shops/ShopsPage").then((module) => ({ default: module.ShopsPage })),
+);
 export interface FinanceExtensionProps {
   route: string;
 }
@@ -94,7 +97,7 @@ function Workspace({ pages }: { pages: FinancePageExtensions }) {
     setFilters((current) => changeFinanceFilters(current, patch));
   const Extension =
     route === "shops"
-      ? pages.shops
+      ? pages.shops || Shops
       : route === "costs"
         ? pages.costs
         : route === "expense-ledger"
