@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import {createAdvertisingFixture} from './fixtures/finance-advertising.mjs';
+import {advertisingWorkspaceResponse,createAdvertisingFixture} from './fixtures/finance-advertising.mjs';
 const {JSDOM}=await import(process.env.JSDOM_MODULE||'jsdom');
 const dom=new JSDOM('<main id="finance-page"></main>',{url:'https://example.test/#finance-shops',runScripts:'outside-only',pretendToBeVisual:true});
 const w=dom.window,d=w.document,root=d.querySelector('main'),fixture=createAdvertisingFixture(),requests=[];
@@ -31,6 +31,7 @@ w.api=async(path,options={})=>{
   if(endpoint==='/ads/authorize')return {data:{url:'https://example.test/authorize',expiresAt:'2026-12-01T00:00:00Z'}};
   if(endpoint==='/overview')return {data:fixture.overview(q)};
   if(endpoint==='/records')return {data:fixture.records(q)};
+  if(endpoint==='/workspace/query')return {data:advertisingWorkspaceResponse(fixture,q,{adAccounts:fixture.accounts})};
   throw Error('Unexpected endpoint '+endpoint);
 };
 for(const name of ['incremental-dom.js','incremental-charts.js','finance-workspace.js'])w.eval(await fs.readFile(new URL('../../frontend/'+name,import.meta.url),'utf8'));
@@ -51,7 +52,7 @@ try{
   dialog.close();
   w.FinanceWorkspace.enter('ads');await ready();await select('店铺分组','');
   await select('开始日期','2026-10-01');await select('结束日期','2026-10-31');
-  assert.equal(requests.filter(r=>r.endpoint==='/ads').at(-1).q.start,'2026-10-01');
+  assert.equal(requests.filter(r=>r.endpoint==='/workspace/query').at(-1).q.start,'2026-10-01');
   assert(card('店铺广告费用（已入账）').textContent.includes('GMV Max 报表消耗（待核对）'));
   assert(card('店铺广告费用（已入账）').textContent.includes('99.9'),'GMV source cost is visible without adding it to posted fees');
   const health=card('广告数据同步');assert(health.textContent.includes('31 / 31 天'));assert(health.textContent.includes('7 / 31 天'));

@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import {createAdvertisingFixture} from './fixtures/finance-advertising.mjs';
+import {advertisingWorkspaceResponse,createAdvertisingFixture} from './fixtures/finance-advertising.mjs';
 const {JSDOM}=await import(process.env.JSDOM_MODULE||'jsdom');
 const dom=new JSDOM('<main id="finance-page"></main>',{url:'https://example.test/#finance-ads',runScripts:'outside-only',pretendToBeVisual:true});
 const w=dom.window,d=w.document,root=d.querySelector('main'),fixture=createAdvertisingFixture(),writes=[],reads=[];
@@ -15,6 +15,12 @@ w.api=async(path,options={})=>{const u=new URL(path,'https://example.test'),q=Ob
  if(endpoint==='/overview')return {data:fixture.overview(q)};
  if(endpoint==='/records')return {data:fixture.records(q)};
  if(endpoint==='/ads')return {data:fixture.accounts};
+ if(endpoint==='/workspace/query'){
+   if(failSpend)return {data:advertisingWorkspaceResponse(fixture,q,{adAccounts:fixture.accounts,adSpendError:true})};
+   if(q.search==='slow')await new Promise(resolve=>{resumeHeld=resolve;});
+   const report={...spend,page:Number(q.spendPage)||1,items:spend.items.map(r=>({...r,campaign_name:q.search||r.campaign_name}))};
+   return {data:advertisingWorkspaceResponse(fixture,q,{adAccounts:fixture.accounts,adSpend:report})};
+ }
  if(endpoint==='/advertising/spend'){if(failSpend)throw Error('offline');if(q.search==='slow')await new Promise(resolve=>{resumeHeld=resolve;});return {data:{...spend,page:Number(q.page)||1,items:spend.items.map(r=>({...r,campaign_name:q.search||r.campaign_name}))}};}
  if(endpoint==='/advertising/spend/record-a')return {data:{...spend.items[0],fingerprint:'verified',currency:'USD',amount:10,cash_amount:0,credit_amount:9,grant_amount:1,allocations:[]}};
  if(endpoint.endsWith('/allocations'))return {data:'已保存'};
@@ -25,7 +31,7 @@ const wait=async fn=>{for(let i=0;i<300;i++){if(fn())return;await new Promise(r=
 const ready=()=>wait(()=>root.getAttribute('aria-busy')==='false');
 try{
  w.FinanceWorkspace.enter('ads');await ready();
- const main=root.querySelector('[data-ad-spend-workspace]');assert(main,'three primary spending tables are mounted');
+ let main=root.querySelector('[data-ad-spend-workspace]');assert(main,'three primary spending tables are mounted');
  assert.deepEqual([...main.querySelectorAll('h3')].map(n=>n.textContent),['分组广告消耗','店铺广告消耗','店铺消耗明细']);
  for(const t of main.querySelectorAll('table'))for(const label of ['现金消耗','信用额度消耗','广告费用赠款消耗'])assert([...t.querySelectorAll('th')].some(n=>n.textContent.includes(label)),label);
  assert.deepEqual([...main.querySelectorAll('table')][2].querySelector('thead tr')&&[...[...main.querySelectorAll('table')][2].querySelectorAll('thead th')].slice(0,8).map(n=>n.textContent),['日期','平台','店铺','展示币种','现金消耗','信用额度消耗','广告费用赠款消耗','广告消耗（投放报表）'],'the first visible detail columns prioritize ownership and spending');
@@ -46,16 +52,16 @@ try{
  fixture.accounts[0].funding={...fixture.accounts[0].funding,status:'NEEDS_FINANCE_ROLE',error_message:'需要 BC Finance Analyst 角色'};spend.accountFunding[1].tax_amount=null;spend.accountFunding[1].known_tax_amount=1;spend.accountFunding[1].partial_tax_amount=0.4;
  w.FinanceWorkspace.enter('ads');await ready();fundingView=root.querySelector('[data-ad-funding]');fundingTable=fundingView.querySelector('table');assert.equal(fundingCell('BC资金费用','预估税额（单列）'),'0.40（已知部分）');assert(fundingView.querySelector('[data-bc-funding-status]').textContent.includes('角色'));
  fixture.accounts[0].funding={...fixture.accounts[0].funding,status:'ERROR',permissionRequired:false,error_message:'BC 资金同步未完成，已保留旧费用'};w.FinanceWorkspace.enter('ads');await ready();assert(root.querySelector('[data-bc-funding-status]').textContent.includes('同步异常'));
- delete fixture.accounts[0].funding;spend.accountFunding=originalFunding;w.FinanceWorkspace.enter('ads');await ready();assert(!root.querySelector('[data-bc-funding-status]'),'older account responses without funding remain supported');assert(!root.querySelector('[data-ad-funding]').open);assert.equal(root.querySelectorAll('[data-ad-spend-workspace]>.fi-card:not(details)').length,3,'only the three main spending tables remain');
- const search=main.querySelector('[aria-label="消耗系列或账户查询"]');search.value='共享';search.closest('form').dispatchEvent(new w.Event('submit',{cancelable:true}));await ready();assert.equal(reads.filter(r=>r.endpoint==='/advertising/spend').at(-1).q.search,'共享');
- main.querySelector('[data-ad-spend-next]').click();await ready();assert.equal(reads.filter(r=>r.endpoint==='/advertising/spend').at(-1).q.page,'2');
+ delete fixture.accounts[0].funding;spend.accountFunding=originalFunding;w.FinanceWorkspace.enter('ads');await ready();main=root.querySelector('[data-ad-spend-workspace]');assert(!root.querySelector('[data-bc-funding-status]'),'older account responses without funding remain supported');assert(!root.querySelector('[data-ad-funding]').open);assert.equal(root.querySelectorAll('[data-ad-spend-workspace]>.fi-card:not(details)').length,3,'only the three main spending tables remain');
+ const search=main.querySelector('[aria-label="消耗系列或账户查询"]');search.value='共享';search.closest('form').dispatchEvent(new w.Event('submit',{cancelable:true}));await ready();assert.equal(reads.filter(r=>r.endpoint==='/workspace/query').at(-1).q.search,'共享');
+ main.querySelector('[data-ad-spend-next]').click();await ready();assert.equal(reads.filter(r=>r.endpoint==='/workspace/query').at(-1).q.spendPage,'2');
  const query=root.querySelector('[aria-label="消耗系列或账户查询"]');query.value='slow';query.closest('form').dispatchEvent(new w.Event('submit',{cancelable:true}));await wait(()=>!!resumeHeld);
- query.value='latest';query.closest('form').dispatchEvent(new w.Event('submit',{cancelable:true}));await new Promise(r=>setTimeout(r,25));assert(reads.some(r=>r.endpoint==='/advertising/spend'&&r.q.search==='latest'),'a newer search must replace an in-flight spending read');await ready();resumeHeld();await new Promise(r=>setTimeout(r,10));assert(root.querySelector('[data-ad-spend-workspace]').textContent.includes('latest'));
+ query.value='latest';query.closest('form').dispatchEvent(new w.Event('submit',{cancelable:true}));await new Promise(r=>setTimeout(r,25));assert(reads.some(r=>r.endpoint==='/workspace/query'&&r.q.search==='latest'),'a newer search must replace an in-flight spending read');await ready();resumeHeld();await new Promise(r=>setTimeout(r,10));assert(root.querySelector('[data-ad-spend-workspace]').textContent.includes('latest'));
  w.currentUser.permissions.push('finance:manage');w.FinanceWorkspace.enter('ads');await ready();root.querySelector('[data-ad-spend-allocate]').click();await wait(()=>d.querySelector('dialog [data-allocation-add]'));
  d.querySelector('[data-allocation-add]').click();const form=d.querySelector('dialog');for(const [field,value]of Object.entries({amount:'10',cash_amount:'0',credit_amount:'9',grant_amount:'1'}))form.querySelector('[data-allocation-field="'+field+'"]').value=value;
  [...form.querySelectorAll('button')].find(b=>b.textContent==='保存核实金额').click();await wait(()=>writes.some(r=>r.endpoint.endsWith('/allocations')));await wait(()=>!d.querySelector('dialog'));
  const sent=JSON.parse(writes.at(-1).options.body);assert.equal(sent.allocations[0].shop_id,'a');assert.equal(sent.allocations[0].credit_amount,'9');assert.equal(sent.fingerprint,'verified');
- w.FinanceWorkspace.leave();w.currentUser={...w.currentUser,organizationId:'another-company'};w.FinanceWorkspace.enter('ads');await ready();assert.equal(reads.filter(r=>r.endpoint==='/advertising/spend').at(-1).q.search,'','spending search does not leak into the next company');assert.equal(reads.filter(r=>r.endpoint==='/advertising/spend').at(-1).q.page,'1');
+ w.FinanceWorkspace.leave();w.currentUser={...w.currentUser,organizationId:'another-company'};w.FinanceWorkspace.enter('ads');await ready();assert.equal(reads.filter(r=>r.endpoint==='/workspace/query').at(-1).q.search,'','spending search does not leak into the next company');assert.equal(reads.filter(r=>r.endpoint==='/workspace/query').at(-1).q.spendPage,'1');
  [...root.querySelectorAll('button')].find(b=>b.textContent==='导入消耗报表').click();await wait(()=>d.querySelector('dialog [aria-label="平台"]'));const platform=d.querySelector('dialog [aria-label="平台"]');platform.value='SHOPEE';platform.dispatchEvent(new w.Event('change'));
  const source=d.querySelector('dialog [aria-label="已有投放来源（可选）"]');assert(source,'Shopee has a shop source selector');source.value='SHOP_123';source.dispatchEvent(new w.Event('change'));assert.equal(d.querySelector('dialog input').value,'SHOP_123');assert(![...source.options].some(n=>n.value==='100001'),'TikTok accounts are not offered as Shopee source shops');d.querySelector('dialog').close();
  failSpend=true;w.FinanceWorkspace.enter('ads');await ready();assert(root.textContent.includes('店铺消耗读取失败'));assert(!root.querySelector('[data-ad-spend-workspace]'),'failed reads must not display stale primary amounts');
