@@ -1,0 +1,17 @@
+import fs from 'node:fs/promises';
+import assert from 'node:assert/strict';
+const {JSDOM}=await import(process.env.JSDOM_MODULE||'jsdom');
+const dom=new JSDOM('<main></main>',{url:'https://example.test/#finance-shops',runScripts:'outside-only'}),w=dom.window,d=w.document,root=d.querySelector('main');
+w.eval(await fs.readFile(new URL('../../frontend/finance-shopee-ads.js',import.meta.url),'utf8'));
+let organization='one',manager=true,requests=[],resolveRequest;
+const el=(tag,text,parent,cls)=>{const n=d.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;parent?.append(n);return n;};
+const button=(label,parent,fn)=>{const b=el('button',label,parent);b.onclick=()=>fn(b);return b;};
+const ctx={el,button,card:(p,title)=>{const n=el('section',null,p),h=el('h3',title,n);return {n,h};},table:(p,headers,rows)=>el('p',rows.map(r=>r.join(' | ')).join('\n'),p),company:()=>organization,allowed:()=>true,canManage:()=>manager,json:(method,body)=>({method,body:JSON.stringify(body)}),request:async(...args)=>{requests.push(args);return new Promise(r=>resolveRequest=r);},reload:()=>{},filters:{},shops:[],dialog:()=>{const n=el('dialog',null,d.body);return {d:n,body:el('div',null,n),feedback:el('p',null,n)};},authorizationLink:(box,result)=>el('a',result.authorizationUrl,box.body)};
+let status={configured:false,items:[],coverageBasis:'CPC 日报 expense，不叠加 GMS'};
+w.FinanceShopeeAds.render(root,{...ctx,status});assert(root.textContent.includes('正式'));assert(![...root.querySelectorAll('button')].some(b=>!b.disabled&&b.textContent.includes('授权')));
+root.replaceChildren();manager=false;w.FinanceShopeeAds.render(root,{...ctx,status:{configured:true,items:[{external_shop_id:'10001',shop_id:'s',name:'Test',currency:'PHP',enabled:true,status:'NEEDS_PERMISSION'}]}});assert(!root.querySelector('button'));assert(root.textContent.includes('权限'));
+root.replaceChildren();manager=true;w.FinanceShopeeAds.render(root,{...ctx,status:{configured:true,items:[]}});root.querySelector('button').click();await Promise.resolve();assert.equal(requests[0][0],'/shopee-ads/authorize');assert.equal(JSON.parse(requests[0][1].body).organizationId,'one');organization='two';resolveRequest({authorizationUrl:'https://open.shopee.com/auth?state=qa'});await new Promise(r=>setTimeout(r,5));assert(!d.querySelector('dialog a'),'late response cannot expose previous company authorization');
+root.replaceChildren();w.FinanceShopeeAds.render(root,{...ctx,status:{loadError:true}},true);assert(root.textContent.includes('读取失败'));assert(!root.textContent.includes('实际零'));
+root.replaceChildren();w.FinanceShopeeAds.render(root,{...ctx,status:{configured:true,items:[{external_shop_id:'10001',status:'NEEDS_PERMISSION',error_message:'申请权限后重试'}]}},true);assert(root.textContent.includes('申请权限后重试'),'analysis must show failures, not only connected count');
+root.replaceChildren();w.FinanceShopeeAds.render(root,{...ctx,status:{configured:true,items:[{external_shop_id:'10001',status:'PARTIAL',error_message:'过期历史未回补，缺失日期仍未知'}]}},true);assert(root.textContent.includes('历史覆盖待核对'));assert(root.textContent.includes('缺失日期仍未知'),'analysis must keep expired history visible after current collection recovers');
+dom.window.close();console.log('PASS Shopee Ads configuration, read-only permissions, company switch and missing-status UI');

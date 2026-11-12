@@ -17,6 +17,8 @@
 
 旧版前端仍直接使用 HTML/JS/CSS，无需 npm 构建。本地 Spring 直接从 `frontend/` 读取公开资源；服务器由 Nginx bind 同一目录。新版财务 BI 的 TypeScript 先编译为该目录下的带哈希资源，运行时不需要 Node 服务。源码启动器会在首次启动及来源变化后安装锁定依赖、编译新版资源；失败不会启动新应用上下文。连续编辑新版时另开终端执行 `npm --prefix frontend/modern run dev`，保存后手动刷新当前新版标签页。新版重建不会自动刷新仍在工作的旧版标签页，也不会删除已打开页面所需的旧资源。详见[财务 BI 双界面开发](finance-modern-ui.md)。
 
+财务 BI 主导航直接按当前用户的 `platformAdmin`、`ADMIN`、`finance:view` / `finance:manage` 判断可见性，不能依赖后加载工作台脚本是否已注册。工作台及财务 API 仍独立鉴权。导航时序回归入口为 `node --test frontend/test/finance-navigation.test.cjs`。
+
 ## 配置入口及优先级
 
 - `.env.development` 是源码开发的私有环境文件；`python3 scripts/dev.py init` 只在它缺失时生成，不覆盖已有内容，也不修改 `.env` 或其他环境文件。
@@ -37,7 +39,8 @@
 | 发布 | `APP_PRODUCT_PUBLISHING_PROVIDER`、`APP_SHOP_LIVE_PUBLISHING_ENABLED` | 初始 `DRY_RUN`/false；需要已有授权及目标店铺字段校验 |
 | 图片 | `APP_PRODUCT_WATERMARK_PROVIDER/MODEL_ID`、`APP_PRODUCT_WATERMARK_LOCAL_*` | 本地检测只是证据；默认关闭不能当作已验收无水印 |
 | OSS | `APP_OSS_*`、`ALIBABA_CLOUD_ECS_METADATA` | 核对 endpoint、签名身份、私有凭据挂载及素材权限；本机不直接使用生产实例角色 |
-| 广告 | `APP_TIKTOK_ADS_CREDENTIALS_FILE` 或 `APP_TIKTOK_ADS_APP_ID/APP_SECRET` | 文件优先；模板在 `config/`，挂载覆盖见 `compose.finance-ads.yaml` |
+| TikTok 广告 | `APP_TIKTOK_ADS_CREDENTIALS_FILE` 或 `APP_TIKTOK_ADS_APP_ID/APP_SECRET` | 文件优先；模板在 `config/`，挂载覆盖见 `compose.finance-ads.yaml` |
+| Shopee 广告 | `APP_SHOPEE_ADS_CREDENTIALS_FILE` | 独立 Ads Service 正式配置；模板 `config/shopee-ads.properties.example`，默认关闭，审核和新店铺授权前不借用 ERP 凭据 |
 | 文档转换 | `APP_KNOWLEDGE_PREVIEW_URL/TOKEN`、`DOCUMENT_PREVIEW_TOKEN` | 通过 `compose.document-preview.yaml` 显式启用，内部令牌一致 |
 
 `.env.example` 保持 `APP_SESSION_COOKIE_SECURE=true`，这不是本地 HTTP 的适用值。若出现登录成功后立即 401，先核对 Cookie 及访问主机，不要先重置账号或清空 Redis。

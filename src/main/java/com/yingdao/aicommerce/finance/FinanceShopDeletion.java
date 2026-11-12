@@ -39,6 +39,7 @@ final class FinanceShopDeletion {
                   scopes_json=JSON_ARRAY(),updated_at=UTC_TIMESTAMP(6)
                 WHERE organization_id=? AND id=?
                 """,scope.organizationId(),shopId);
+            repo.jdbc().update("UPDATE finance_shopee_ad_grants SET enabled=FALSE,status='REMOVED',access_token_encrypted='',refresh_token_encrypted=NULL,lease_token=NULL,lease_until=NULL WHERE organization_id=? AND external_shop_id=? AND ?='SHOPEE'",scope.organizationId(),shop.get("external_shop_id"),shop.get("platform"));
             // Invalidate outstanding worker ownership before returning to the user.
             repo.jdbc().update("UPDATE finance_ad_stores SET match_status='REMOVED',report_eligible=FALSE WHERE organization_id=? AND shop_id=?",scope.organizationId(),shopId);
             repo.jdbc().update("""
@@ -121,7 +122,9 @@ final class FinanceShopDeletion {
                     "organization_id=? AND JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.target'))=? AND JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.scope'))='shop'",keys);
             case 9 -> delete("finance_imports","organization_id=? AND shop_id=?",keys);
             case 10 -> {
-                int removed=delete("finance_records","organization_id=? AND shop_id=?",keys);
+                int removed=delete("finance_shopee_ad_daily","organization_id=? AND external_shop_id IN (SELECT external_shop_id FROM finance_connections WHERE organization_id=? AND id=? AND platform='SHOPEE')",org,org,shop);
+                if(removed==0)removed=delete("finance_shopee_ad_grants","organization_id=? AND external_shop_id IN (SELECT external_shop_id FROM finance_connections WHERE organization_id=? AND id=? AND platform='SHOPEE')",org,org,shop);
+                if(removed==0)removed=delete("finance_records","organization_id=? AND shop_id=?",keys);
                 if(removed==0)removed=delete("finance_reporting_months","organization_id=? AND shop_id=?",keys);
                 yield removed;
             }
