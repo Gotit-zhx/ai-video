@@ -13,7 +13,7 @@
 | 本地前端 | dev profile 的 Spring 直接读取本地 `frontend/`，API/UI 同源 |
 | Compose | 保留 base → production → `.2images` → `source-development.frontend.json` → `source-development.app.json` 完整叠加链；精确路径以受限 runtime 配置及现场回执为准，不只运行最后一份覆盖文件 |
 | watcher | `heyi-source-watch.service` 已 enabled、active，最终状态 ready、健康且无遗留 gate；配置 `/etc/heyi-dev/runtime.json` |
-| 数据库 | 源码切换时已核对 V150；广告/历史汇率任务新增 V151/V152；人工成本输入防错已显式新增 V153，当前指纹 `33386457…`，runtime 守卫已同步。详情见[人工成本上线验收](../releases/finance/finance-cost-input-safety-20261112.md)及[广告/历史汇率验收](../releases/finance/finance-ad-history-fx-20261111.md) |
+| 数据库 | V153 迁移及表保留，人工成本安全核对功能已按用户要求撤销。回退验收时后续 Shopee V154 已在库，指纹 `6eb4cd6e…`；本次未改运行守卫，后续维护仍须现场核对。详情见[人工成本上线及撤销验收](../releases/finance/finance-cost-input-safety-20261112.md)及[广告/历史汇率验收](../releases/finance/finance-ad-history-fx-20261111.md) |
 | 自动迁移 | 共享环境 Flyway 自动执行已禁用；migration 源码/hash/history 守卫阻止普通保存执行 DDL |
 
 共享源码状态与中断恢复由 root 在源码根执行：

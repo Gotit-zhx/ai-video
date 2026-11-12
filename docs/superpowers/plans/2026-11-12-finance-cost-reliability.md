@@ -1,5 +1,7 @@
 # 人工成本输入防错 Implementation Plan
 
+> **已撤销。** 用户已取消本功能；下列完成项描述撤销前的历史实现，不代表当前仍启用。恢复流程见[撤销计划](2026-11-12-finance-cost-input-rollback.md)，不要据此重新执行或恢复安全核对功能。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 仅阻止人工成本表格与人工配置误操作直接影响有效成本。
