@@ -51,6 +51,18 @@ function ensureScope(host: FinanceHost, expected: string): void {
   if (scope(host.getSnapshot()) !== expected) throw new FinanceScopeChangedError();
 }
 
+async function readScopedBody<T>(
+  host: FinanceHost,
+  expectedScope: string,
+  read: () => Promise<T>
+): Promise<T> {
+  try {
+    return await read();
+  } finally {
+    ensureScope(host, expectedScope);
+  }
+}
+
 function requestUrl(baseUrl: string, path: string, params?: FinanceRequestParams): string {
   if (!path.startsWith('/') || path.startsWith('//')) {
     throw new TypeError('Finance API path must start with one slash');
@@ -126,9 +138,11 @@ export function createFinanceApi(host: FinanceHost, options: CreateFinanceApiOpt
     });
     ensureScope(host, expectedScope);
     if (response.status === 401) host.onSessionExpired();
-    if (!response.ok) throw new FinanceApiError(await readMessage(response), response.status);
-    const data = await unwrap<T>(response);
-    ensureScope(host, expectedScope);
+    if (!response.ok) {
+      const message = await readScopedBody(host, expectedScope, () => readMessage(response));
+      throw new FinanceApiError(message, response.status);
+    }
+    const data = await readScopedBody(host, expectedScope, () => unwrap<T>(response));
     return data;
   }
 
@@ -159,9 +173,11 @@ export function createFinanceApi(host: FinanceHost, options: CreateFinanceApiOpt
       });
       ensureScope(host, expectedScope);
       if (response.status === 401) host.onSessionExpired();
-      if (!response.ok) throw new FinanceApiError(await readMessage(response), response.status);
-      const blob = await response.blob();
-      ensureScope(host, expectedScope);
+      if (!response.ok) {
+        const message = await readScopedBody(host, expectedScope, () => readMessage(response));
+        throw new FinanceApiError(message, response.status);
+      }
+      const blob = await readScopedBody(host, expectedScope, () => response.blob());
       saveBlob(blob, filename ?? responseFilename(response) ?? 'finance-download');
     }
   };

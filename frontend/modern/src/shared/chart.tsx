@@ -22,13 +22,15 @@ export function FinanceChart({
 }: FinanceChartProps) {
   const elementRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ECharts | null>(null);
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
 
   useEffect(() => {
     const element = elementRef.current;
     if (!element) return;
     const chart = echarts.init(element, theme);
     chartRef.current = chart;
-    onReady?.(chart);
+    onReadyRef.current?.(chart);
     const observer = new ResizeObserver(() => chart.resize());
     observer.observe(element);
     return () => {
@@ -36,11 +38,11 @@ export function FinanceChart({
       chart.dispose();
       chartRef.current = null;
     };
-  }, [onReady, theme]);
+  }, [theme]);
 
   useEffect(() => {
     chartRef.current?.setOption(option, setOption);
-  }, [option, setOption]);
+  }, [option, setOption, theme]);
 
   return (
     <div

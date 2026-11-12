@@ -10,6 +10,33 @@ function jsonResponse(data: unknown, status = 200): Response {
   });
 }
 
+function delayedJsonResponse(data: unknown, status: number) {
+  const bytes = new TextEncoder().encode(JSON.stringify(data));
+  let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let markStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const body = new ReadableStream<Uint8Array>({
+    start(nextController) {
+      controller = nextController;
+    },
+    pull() {
+      markStarted?.();
+      markStarted = undefined;
+    }
+  });
+  return {
+    response: new Response(body, {
+      status,
+      headers: { 'Content-Type': 'application/json' }
+    }),
+    started,
+    release() {
+      controller?.enqueue(bytes);
+      controller?.close();
+    }
+  };
+}
+
 describe('FinanceApi', () => {
   it('sends same-origin scoped reads and unwraps ApiResponse.data', async () => {
     const { host } = createFinanceHostFixture();
@@ -74,5 +101,49 @@ describe('FinanceApi', () => {
 
     await expect(api.get('/overview')).rejects.toBeInstanceOf(FinanceApiError);
     expect(fixture.onSessionExpired).toHaveBeenCalledOnce();
+  });
+
+  it('lets a scope change override a streamed non-success JSON message', async () => {
+    const fixture = createFinanceHostFixture();
+    const delayed = delayedJsonResponse({ success: false, data: null, message: 'tenant-specific failure' }, 503);
+    const api = createFinanceApi(fixture.host, { fetch: vi.fn(async () => delayed.response) });
+    const request = api.get('/overview');
+
+    await delayed.started;
+    fixture.update({ ...defaultSession, organizationId: 'org-2' });
+    delayed.release();
+
+    await expect(request).rejects.toBeInstanceOf(FinanceScopeChangedError);
+  });
+
+  it('lets a scope change override a streamed binary-download error message', async () => {
+    const fixture = createFinanceHostFixture();
+    const delayed = delayedJsonResponse({ success: false, data: null, message: 'private export failure' }, 500);
+    const saveBlob = vi.fn();
+    const api = createFinanceApi(fixture.host, {
+      fetch: vi.fn(async () => delayed.response),
+      saveBlob
+    });
+    const request = api.download('/export', {});
+
+    await delayed.started;
+    fixture.update({ ...defaultSession, organizationId: 'org-2' });
+    delayed.release();
+
+    await expect(request).rejects.toBeInstanceOf(FinanceScopeChangedError);
+    expect(saveBlob).not.toHaveBeenCalled();
+  });
+
+  it('lets a scope change override an unsuccessful streamed envelope', async () => {
+    const fixture = createFinanceHostFixture();
+    const delayed = delayedJsonResponse({ success: false, data: null, message: 'old tenant envelope' }, 200);
+    const api = createFinanceApi(fixture.host, { fetch: vi.fn(async () => delayed.response) });
+    const request = api.get('/overview');
+
+    await delayed.started;
+    fixture.update({ ...defaultSession, organizationId: 'org-2' });
+    delayed.release();
+
+    await expect(request).rejects.toBeInstanceOf(FinanceScopeChangedError);
   });
 });
