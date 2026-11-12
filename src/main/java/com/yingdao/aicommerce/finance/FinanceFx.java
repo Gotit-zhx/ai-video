@@ -1,6 +1,7 @@
 package com.yingdao.aicommerce.finance;
 
 import org.springframework.stereotype.Service;
+import jakarta.annotation.PreDestroy;
 import tools.jackson.databind.ObjectMapper;
 import java.net.URI;
 import java.net.http.*;
@@ -138,8 +139,9 @@ public class FinanceFx {
     }
     public Quote historical(String snapshotId,Collection<LocalDate> dates){return history.quote(snapshotId,dates);}
     public Map<String,Object> market(){return history.market();}
+    @PreDestroy void close(){history.close();}
     /** Legacy reads never insert new formats into finance_fx_snapshots. */
-    public synchronized Quote quote(String snapshotId){
+    public Quote quote(String snapshotId){
         if(snapshotId==null||snapshotId.isBlank())return historical(null,List.of(LocalDate.now(ZoneOffset.UTC)));
         if(snapshotId.matches("[a-f0-9]{32}"))return historical(snapshotId,List.of());
         var rows=repo.jdbc().queryForList("SELECT * FROM finance_fx_snapshots WHERE id=?",snapshotId);
