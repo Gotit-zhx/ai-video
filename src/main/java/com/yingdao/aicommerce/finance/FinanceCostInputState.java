@@ -16,6 +16,17 @@ final class FinanceCostInputState {
         result.put("sources",repo.jdbc().queryForList("SELECT id,content_hash,data_json,source_order FROM finance_cost_sources WHERE organization_id=? AND group_id=? ORDER BY id",s.organizationId(),group));
         result.put("manual",repo.jdbc().queryForList("SELECT id,code,warehouse,unit,unit_price_cny,version FROM finance_manual_costs WHERE organization_id=? AND group_id=? ORDER BY id",s.organizationId(),group));
         result.put("bookId",workspace.book(s,group).getOrDefault("bookId",""));
+        // Shared sources/manual prices can acquire new human dependencies in any shop in this group.
+        // The four automatic methods are deliberately excluded: they are not later explicit decisions.
+        result.put("explicitMappings",repo.jdbc().queryForList("""
+            SELECT m.id,m.shop_id,m.product_id,m.sku_id,m.warehouse,m.data_json,m.version
+            FROM finance_cost_mappings m JOIN finance_connections c
+              ON c.organization_id=m.organization_id AND c.id=m.shop_id
+            WHERE m.organization_id=? AND c.group_id=? AND c.status<>'REMOVED'
+              AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.data_json,'$.method')),'')
+                NOT IN ('EXACT_CODE','NORMALIZED_CODE','BUNDLE_CODE','SPU_CODE')
+            ORDER BY m.id
+            """,s.organizationId(),group));
         result.put("shops",repo.jdbc().queryForList("SELECT id,group_id,status FROM finance_connections WHERE organization_id=? AND group_id=? AND status<>'REMOVED' ORDER BY id",s.organizationId(),group));
         if(!shop.isBlank()){
             result.put("settings",repo.jdbc().queryForList("SELECT data_json,version FROM finance_cost_settings WHERE organization_id=? AND shop_id=?",s.organizationId(),shop));

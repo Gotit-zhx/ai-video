@@ -45,7 +45,7 @@ public class FinanceCostInputSafety {
     private Object semanticPayload(Map<String,Object> payload){
         if(!payload.containsKey("costs"))return payload;
         var normalized=new TreeMap<String,Object>();
-        for(var row:rows(payload.get("costs"))){var copy=new TreeMap<>(row);copy.remove("row");var prices=new TreeMap<String,Object>();map(row.get("prices")).forEach((month,price)->prices.put(month,decimal(price)==null?price:decimal(price)));copy.put("prices",prices);normalized.put(state.digest(copy),copy);}
+        for(var row:rows(payload.get("costs"))){var copy=new TreeMap<>(row);copy.remove("row");copy.remove("identifierEvidence");var prices=new TreeMap<String,Object>();map(row.get("prices")).forEach((month,price)->prices.put(month,decimal(price)==null?price:decimal(price)));copy.put("prices",prices);normalized.put(state.digest(copy),copy);}
         return normalized.values();
     }
     private Map<String,Object> insert(Scope s,String actor,String type,String group,String shop,String target,Map<String,Object> payload,Map<String,Object> meta,byte[] bytes,String name,String semantic,String baseline,Map<String,Object> preview,Map<String,Object> before,String original){
@@ -156,6 +156,20 @@ public class FinanceCostInputSafety {
         var found=repo.jdbc().queryForList("SELECT "+(privateData?"*":PUBLIC_COLUMNS)+" FROM finance_cost_input_changes WHERE organization_id=? AND id=?"+(lock?" FOR UPDATE":""),s.organizationId(),id);
         if(found.isEmpty())throw bad("没有找到本公司的成本暂存单");return found.getFirst();
     }
+    /** Resolve the immutable routing key before opening a repeatable-read snapshot, then lock group first.
+     * Every draft mutation follows group -> draft -> original draft. Shop FOR SHARE gating remains in state.lock.
+     */
+    private <T> T changeTransaction(Scope s,String id,java.util.function.Function<Map<String,Object>,T> action){
+        var route=state.one("SELECT group_id FROM finance_cost_input_changes WHERE organization_id=? AND id=?",s.organizationId(),id);
+        if(route.isEmpty())throw bad("没有找到本公司的成本暂存单");String group=text(route.get("group_id"));
+        return repo.transaction(()->{
+            // Missing/deleted groups still allow rejecting a draft; confirm marks those drafts STALE.
+            repo.jdbc().queryForList("SELECT id FROM finance_groups WHERE organization_id=? AND id=? FOR UPDATE",s.organizationId(),group);
+            var locked=row(s,id,true,true);
+            if(!group.equals(text(locked.get("group_id"))))throw bad("暂存单分组已变化，请刷新");
+            return action.apply(locked);
+        });
+    }
     private Map<String,Object> view(PlatformPrincipal p,Map<String,Object> row,boolean details){
         var result=new LinkedHashMap<String,Object>();
         for(String field:List.of("id","type","status","version"))result.put(field,row.get(field));
@@ -170,8 +184,8 @@ public class FinanceCostInputSafety {
         return result;
     }
     public Map<String,Object> confirm(PlatformPrincipal p,String id,Map<String,Object> request){
-        Scope s=manager(p);Map<String,Object> result=repo.transaction(()->{
-            var row=row(s,id,true,true);if("APPLIED".equals(row.get("status")))return view(p,row,true);
+        Scope s=manager(p);Map<String,Object> result=changeTransaction(s,id,row->{
+            if("APPLIED".equals(row.get("status")))return view(p,row,true);
             version(row,request);if(!Set.of("READY","REVIEW").contains(text(row.get("status"))))throw bad("此暂存单不可确认，请修正或重新预览");
             var payload=decode(row.get("payload_json"));String group=text(row.get("group_id")),shop=text(row.get("shop_id")),type=text(row.get("type")),target=text(row.get("target_id"));
             try{state.lock(s,group,shop);}catch(com.yingdao.aicommerce.common.exception.BusinessException e){markStale(s,id);return Map.of("stale",true);}
@@ -234,11 +248,11 @@ public class FinanceCostInputSafety {
     }
     private List<Map<String,Object>> normalizedCosts(Map<String,Object> payload){
         var merged=new LinkedHashMap<String,Map<String,Object>>();
-        for(var row:rows(payload.get("costs"))){String sku=text(row.get("sku"));var target=merged.computeIfAbsent(row.get("warehouse")+"\0"+sku,k->new LinkedHashMap<>(Map.of("sku",sku,"warehouse",row.get("warehouse"),"prices",new TreeMap<String,Object>())));for(var price:map(row.get("prices")).entrySet())map(target.get("prices")).put(price.getKey(),decimal(price.getValue()));}
+        for(var row:rows(payload.get("costs"))){if(!(row.get("sku") instanceof String))throw bad("暂存编号类型不安全，请重新上传原始资料");String sku=text(row.get("sku"));var target=merged.computeIfAbsent(row.get("warehouse")+"\0"+sku,k->new LinkedHashMap<>(Map.of("sku",sku,"warehouse",row.get("warehouse"),"prices",new TreeMap<String,Object>())));for(var price:map(row.get("prices")).entrySet())map(target.get("prices")).put(price.getKey(),decimal(price.getValue()));}
         return new ArrayList<>(merged.values());
     }
-    public Map<String,Object> revise(PlatformPrincipal p,String id,Map<String,Object> request){Scope s=manager(p);return repo.transaction(()->{
-        var row=row(s,id,true,true);version(row,request);owner(p,row);if(!OPEN.contains(text(row.get("status"))))throw bad("此暂存单不可补充资料，请重新提交");
+    public Map<String,Object> revise(PlatformPrincipal p,String id,Map<String,Object> request){Scope s=manager(p);return changeTransaction(s,id,row->{
+        version(row,request);owner(p,row);if(!OPEN.contains(text(row.get("status"))))throw bad("此暂存单不可补充资料，请重新提交");
         String group=text(row.get("group_id")),shop=text(row.get("shop_id")),type=text(row.get("type")),target=text(row.get("target_id"));state.lock(s,group,shop);
         var meta=metadata(map(request.get("metadata")));var payload=decode(row.get("payload_json"));
         var current=state.capture(s,type,group,shop,target,payload);
@@ -255,12 +269,12 @@ public class FinanceCostInputSafety {
         repo.jdbc().update("UPDATE finance_cost_input_changes SET semantic_hash=?,payload_json=?,metadata_json=?,validation_json=?,diff_json=?,impact_json=?,state_json=?,baseline_hash=?,requires_independent_review=?,status=?,last_edited_by=?,version=version+1,updated_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND id=?",state.digest(Map.of("type",type,"target",target,"shop",shop,"payload",semanticPayload(payload),"metadata",meta)),repo.write(payload),repo.write(meta),repo.write(preview.get("validation")),repo.write(Map.of("items",preview.get("diff"))),repo.write(preview.get("impact")),repo.write(current),state.fingerprint(s,group,shop,payload),preview.get("requiresIndependentReview"),preview.get("status"),p.userId(),s.organizationId(),id);
         return view(p,row(s,id,false,false),true);
     });}
-    public Map<String,Object> reject(PlatformPrincipal p,String id,Map<String,Object> request){Scope s=manager(p);return repo.transaction(()->{
-        var row=row(s,id,true,true);version(row,request);owner(p,row);if(!OPEN.contains(text(row.get("status"))))throw bad("此暂存单不可驳回");
+    public Map<String,Object> reject(PlatformPrincipal p,String id,Map<String,Object> request){Scope s=manager(p);return changeTransaction(s,id,row->{
+        version(row,request);owner(p,row);if(!OPEN.contains(text(row.get("status"))))throw bad("此暂存单不可驳回");
         repo.jdbc().update("UPDATE finance_cost_input_changes SET status='REJECTED',reason=?,version=version+1,updated_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND id=?",FinanceCostWorkspace.required(request,"reason",2000),s.organizationId(),id);return view(p,row(s,id,false,false),true);
     });}
-    public Map<String,Object> undo(PlatformPrincipal p,String id,Map<String,Object> request){Scope s=manager(p);return repo.transaction(()->{
-        var row=row(s,id,true,true);version(row,request);if(!"APPLIED".equals(row.get("status"))||"UNDO".equals(row.get("type")))throw bad("此操作不可撤销");
+    public Map<String,Object> undo(PlatformPrincipal p,String id,Map<String,Object> request){Scope s=manager(p);return changeTransaction(s,id,row->{
+        version(row,request);if(!"APPLIED".equals(row.get("status"))||"UNDO".equals(row.get("type")))throw bad("此操作不可撤销");
         String group=text(row.get("group_id")),shop=text(row.get("shop_id"));state.lock(s,group,shop);var original=decode(row.get("payload_json"));
         if(!Objects.equals(row.get("after_hash"),state.fingerprint(s,group,shop,original)))throw bad("之后已有其他修改，无法唯一反向恢复；请重新预览所需操作");
         String reason=FinanceCostWorkspace.required(request,"reason",2000),evidence=FinanceCostWorkspace.required(request,"evidenceRef",2000);

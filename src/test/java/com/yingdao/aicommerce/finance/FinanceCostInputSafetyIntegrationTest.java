@@ -219,5 +219,99 @@ class FinanceCostInputSafetyIntegrationTest extends FinanceConfigurationIntegrat
         inputFixture();oldCost();byte[] file="仓库,型号,202610\n新仓库,PACK,10\n".getBytes(StandardCharsets.UTF_8);
         var draft=safety.stage(principal(),"IMPORT",group,"","",Map.of(),file,"warehouse.csv",meta());assertEquals(true,info(draft).get("requiresIndependentReview"));assertEquals(false,info(draft).get("canConfirm"));
     }
+    @Test void numericXlsxIdentifierStaysTheSameStringAcrossJsonAndApply(){
+        inputFixture();String numeric="123456789012345.0",textId="00012345678901234567890";
+        byte[] file=FinanceWorkbook.xlsx(Map.of("Sheet",List.of(List.of("型号","仓库","202610"),List.of(numeric,"海外仓-菲律宾","10"))),Map.of("Sheet",Set.of(0,2)));
+        var draft=safety.stage(principal(),"IMPORT",group,"","",Map.of(),file,"numeric.xlsx",meta());
+        var persisted=repo.read(db.queryForObject("SELECT payload_json FROM finance_cost_input_changes WHERE id=?",String.class,id(draft)));
+        Object storedCode=rows(persisted.get("costs")).getFirst().get("sku");
+        assertInstanceOf(String.class,storedCode,"validated identifiers must never enter numeric JSON");assertEquals("123456789012345",storedCode);
+        String shown=text(rows(info(draft).get("diff")).getFirst().get("sku"));assertEquals(storedCode,shown);
+        safety.confirm(principal(),id(draft),ack(info(draft)));
+        assertEquals(shown,rows(workspace.book(owner,group).get("costs")).getFirst().get("sku"));
+        byte[] textFile=FinanceWorkbook.xlsx(Map.of("Sheet",List.of(List.of("型号","仓库","202610"),List.of(textId,"海外仓-菲律宾","10"))));
+        var longText=safety.stage(principal(),"IMPORT",group,"","",Map.of(),textFile,"text.xlsx",meta());safety.confirm(principal(),id(longText),ack(info(longText)));
+        assertTrue(rows(workspace.book(owner,group).get("costs")).stream().anyMatch(row->textId.equals(row.get("sku"))));
+    }
+    private Map<String,Object> appliedManual(){var draft=safety.stage(principal(),"MANUAL_CREATE",group,shop,"",manualBody(),null,"",meta());safety.confirm(principal(),id(draft),ack(info(draft)));return draft;}
+    private Map<String,Object> relate(String shopId,String code,String manualId){
+        var body=new LinkedHashMap<String,Object>(Map.of("product_id","later-product","sku_id","later-sku","warehouse","海外仓-菲律宾","code",code,"factor",1,"confirmed",true,"version",0));
+        if(!manualId.isBlank())body.put("manualCostId",manualId);
+        var draft=safety.stage(principal(),"MAPPING",group,shopId,"",body,null,"",meta());safety.confirm(principal(),id(draft),ack(info(draft)));return draft;
+    }
+    @Test void undoCreationCannotRemoveManualCostReferencedByLaterSameShopSku(){
+        inputFixture();var created=appliedManual();String manual=db.queryForObject("SELECT id FROM finance_manual_costs",String.class);var later=relate(shop,"MANUAL",manual);
+        assertThrows(RuntimeException.class,()->safety.undo(principal(),id(created),ack(info(created))));
+        assertEquals("APPLIED",info(later).get("status"));assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_manual_costs",Integer.class));
+    }
+    @Test void stagedUndoCannotRemoveManualCostReferencedLaterBySiblingShop(){
+        inputFixture();String sibling=groupedShop(owner,"sibling-reference",group);var created=appliedManual();String manual=db.queryForObject("SELECT id FROM finance_manual_costs",String.class);
+        var reverse=safety.undo(principal(),id(created),ack(info(created)));var later=relate(sibling,"MANUAL",manual);
+        assertThrows(RuntimeException.class,()->safety.confirm(reviewer(),id(reverse),ack(info(reverse))));assertEquals("STALE",info(reverse).get("status"));
+        assertEquals("APPLIED",info(later).get("status"));assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_manual_costs",Integer.class));
+        assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_cost_mappings",Integer.class));
+    }
+    @Test void undoImportCannotRemoveSourceNeededByLaterExplicitMapping(){
+        inputFixture();var imported=stage("10");safety.confirm(principal(),id(imported),ack(info(imported)));var reverse=safety.undo(principal(),id(imported),ack(info(imported)));
+        relate(shop,"PACK","");assertThrows(RuntimeException.class,()->safety.undo(principal(),id(imported),ack(info(imported))));
+        assertThrows(RuntimeException.class,()->safety.confirm(reviewer(),id(reverse),ack(info(reverse))));assertEquals("STALE",info(reverse).get("status"));assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_cost_sources",Integer.class));
+    }
+    @Test void unrelatedAutomaticMethodsDoNotInvalidateAnImportUndo(){
+        inputFixture();var imported=stage("10");safety.confirm(principal(),id(imported),ack(info(imported)));
+        for(String method:List.of("EXACT_CODE","NORMALIZED_CODE","BUNDLE_CODE","SPU_CODE"))db.update("INSERT INTO finance_cost_mappings(id,organization_id,shop_id,product_id,sku_id,warehouse,data_json,updated_by) VALUES(?,?,?,?,?,?,?,?)",hash(method),owner.organizationId(),shop,"auto-"+method,"auto","海外仓-菲律宾",repo.write(Map.of("method",method,"code","PACK","warehouse","海外仓-菲律宾","groupId",group)),"automatic");
+        var reverse=safety.undo(principal(),id(imported),ack(info(imported)));assertEquals("APPLIED",safety.confirm(reviewer(),id(reverse),ack(info(reverse))).get("status"));
+        assertEquals(4,db.queryForObject("SELECT COUNT(*) FROM finance_cost_mappings",Integer.class));
+    }
+    @Test void headerCandidatesCannotBorrowMissingColumnsFromPreamble(){
+        inputFixture();byte[] malformed="仓库,说明\n型号,202610\nABC,10\n".getBytes(StandardCharsets.UTF_8);
+        var invalid=safety.stage(principal(),"IMPORT",group,"","",Map.of(),malformed,"missing-warehouse.csv",meta());assertEquals("BLOCKED",invalid.get("status"));
+        for(String valid:List.of("仓库,说明\n型号,仓库,202610\nA,海外仓-菲律宾,10\n","仓库,说明\n型号,仓库,月份,单价\nB,海外仓-菲律宾,202610,10\n")){
+            var draft=safety.stage(principal(),"IMPORT",group,"","",Map.of(),valid.getBytes(StandardCharsets.UTF_8),"valid-header.csv",meta());assertNotEquals("BLOCKED",draft.get("status"));assertEquals("APPLIED",safety.confirm(principal(),id(draft),ack(info(draft))).get("status"));
+        }
+    }
+    @Test void confirmingUndoAndGeneratingAnotherUndoUseOneLockOrder()throws Exception{assertUndoLockOrder(false);}
+    @Test void revisingUndoAndGeneratingAnotherUndoUseOneLockOrder()throws Exception{assertUndoLockOrder(true);}
+    private void assertUndoLockOrder(boolean revise)throws Exception{
+        inputFixture();var original=stage("10");safety.confirm(principal(),id(original),ack(info(original)));var reverse=safety.undo(principal(),id(original),ack(info(original)));
+        var originalAck=ack(info(original));var reverseAck=ack(info(reverse));var reviseRequest=Map.<String,Object>of("version",info(reverse).get("version"),"metadata",meta());
+        var controlled=new ControlledInputJdbc(dataSource,id(original));var guardedRepo=new FinanceRepository(controlled,new tools.jackson.databind.ObjectMapper());
+        var guarded=new FinanceCostInputSafety(guardedRepo,service,workspace);var sequence=new java.util.concurrent.atomic.AtomicInteger();
+        var executor=java.util.concurrent.Executors.newFixedThreadPool(2,r->new Thread(r,"input-lock-"+sequence.incrementAndGet()));
+        try{
+            var a=executor.submit(()->attempt(()->revise?guarded.revise(principal(),id(reverse),reviseRequest):guarded.confirm(reviewer(),id(reverse),reverseAck)));
+            assertTrue(controlled.aGroupLocked.await(5,java.util.concurrent.TimeUnit.SECONDS),"first connection acquired the real group lock");
+            var b=executor.submit(()->attempt(()->guarded.undo(principal(),id(original),originalAck)));
+            assertTrue(controlled.bGroupAttempt.await(5,java.util.concurrent.TimeUnit.SECONDS),"second connection reached the competing group lock");
+            boolean inverted=controlled.bOriginalBeforeGroup.get();controlled.releaseA.countDown();
+            Object first=a.get(5,java.util.concurrent.TimeUnit.SECONDS),second=b.get(5,java.util.concurrent.TimeUnit.SECONDS);
+            assertNotEquals(controlled.connections.get("input-lock-1"),controlled.connections.get("input-lock-2"));
+            assertFalse(inverted,"original draft was locked before the group: "+first.getClass().getSimpleName()+" / "+second.getClass().getSimpleName());
+            assertInstanceOf(Map.class,first,"undo action must finish without a database deadlock");
+            if(revise)assertInstanceOf(Map.class,second,"metadata revision leaves a second reverse preview valid");
+            else assertInstanceOf(com.yingdao.aicommerce.common.exception.BusinessException.class,second,"after a successful undo the competing request should reject the changed baseline as a domain error");
+        }finally{controlled.releaseA.countDown();executor.shutdownNow();assertTrue(executor.awaitTermination(5,java.util.concurrent.TimeUnit.SECONDS));}
+    }
+    private static Object attempt(java.util.function.Supplier<Object> action){try{return action.get();}catch(RuntimeException error){return error;}}
+    /** Real SQL is executed; barriers only select a reproducible two-connection interleaving. */
+    private static final class ControlledInputJdbc extends org.springframework.jdbc.core.JdbcTemplate {
+        final String original;
+        final java.util.concurrent.CountDownLatch aGroupLocked=new java.util.concurrent.CountDownLatch(1),bGroupAttempt=new java.util.concurrent.CountDownLatch(1),releaseA=new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.atomic.AtomicBoolean pausedA=new java.util.concurrent.atomic.AtomicBoolean(),observedB=new java.util.concurrent.atomic.AtomicBoolean(),bOriginalHeld=new java.util.concurrent.atomic.AtomicBoolean(),bOriginalBeforeGroup=new java.util.concurrent.atomic.AtomicBoolean();
+        final Map<String,Long> connections=new java.util.concurrent.ConcurrentHashMap<>();
+        ControlledInputJdbc(javax.sql.DataSource source,String original){super(source);this.original=original;}
+        @Override public List<Map<String,Object>> queryForList(String sql,Object...args){
+            String thread=Thread.currentThread().getName();boolean groupLock=sql.contains("FROM finance_groups")&&sql.endsWith("FOR UPDATE");
+            if(groupLock&&thread.equals("input-lock-2")&&observedB.compareAndSet(false,true)){
+                connections.put(thread,super.queryForObject("SELECT CONNECTION_ID()",Long.class));bOriginalBeforeGroup.set(bOriginalHeld.get());bGroupAttempt.countDown();
+            }
+            var result=super.queryForList(sql,args);
+            if(thread.equals("input-lock-2")&&sql.contains("FROM finance_cost_input_changes")&&sql.endsWith("FOR UPDATE")&&Arrays.asList(args).contains(original))bOriginalHeld.set(true);
+            if(groupLock&&thread.equals("input-lock-1")&&pausedA.compareAndSet(false,true)){
+                connections.put(thread,super.queryForObject("SELECT CONNECTION_ID()",Long.class));aGroupLocked.countDown();
+                try{if(!releaseA.await(5,java.util.concurrent.TimeUnit.SECONDS))throw new IllegalStateException("Test group barrier timed out");}catch(InterruptedException e){Thread.currentThread().interrupt();throw new IllegalStateException(e);}
+            }
+            return result;
+        }
+    }
     static byte[] csv(String price){return ("仓库,型号,202610\n海外仓-菲律宾,PACK,"+price+"\n").getBytes(StandardCharsets.UTF_8);}
 }

@@ -23,6 +23,8 @@ final class FinanceCostInputPreview {
         var table=FinanceWorkbook.readCostInputTable(bytes,name);int header=-1,sku=-1,warehouse=-1,month=-1,price=-1,type=-1,unit=-1,currency=-1;
         var months=new LinkedHashMap<Integer,String>();
         for(int r=0;r<Math.min(8,table.size());r++){
+            // A candidate header is one physical row, never a union with preceding notes.
+            header=sku=warehouse=month=price=type=unit=currency=-1;months.clear();
             var row=table.get(r);
             for(int c=0;c<row.size();c++){
                 String h=raw(row,c);
@@ -45,8 +47,10 @@ final class FinanceCostInputPreview {
             var row=new LinkedHashMap<String,Object>();row.put("row",r+1);row.put("sku",code);row.put("warehouse",raw(input,warehouse));
             if(cell(input,sku).startsWith("[NUMBER]")){
                 BigDecimal n=decimal(code);
-                if(n==null||(long)n.precision()-n.scale()>15||n.stripTrailingZeros().scale()>0)throw bad("第 "+(r+1)+" 行编号为不安全的 Excel 数值，请从原始资料恢复为文本");
-                row.put("sku",n);
+                if(n==null||n.signum()<0||(long)n.precision()-n.scale()>15||n.stripTrailingZeros().scale()>0||code.matches(".*[eE].*"))throw bad("第 "+(r+1)+" 行编号为不安全的 Excel 数值，请从原始资料恢复为文本");
+                // Never persist an identifier as JSON numeric: decimal cells otherwise read back as Double.
+                row.put("sku",n.toBigIntegerExact().toString());
+                row.put("identifierEvidence",Map.of("cellType","NUMERIC","raw",code));
             }
             if(type>=0)row.put("identifierType",raw(input,type));if(unit>=0)row.put("unit",raw(input,unit));if(currency>=0)row.put("currency",raw(input,currency));
             var prices=new LinkedHashMap<String,Object>();
