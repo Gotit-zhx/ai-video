@@ -35,11 +35,12 @@ assert.equal(w.FinanceCosts.candidate({seller_sku:' ( BABY-BPants-XXL ) × 2 '},
 const ambiguousCosts=[...preview.costs,{sku:'(BABY-BPants-XXL)*2',warehouse:'菲律宾仓',prices:{'2026-09':19}}];
 assert.equal(w.FinanceCosts.candidate({seller_sku:'（BABY-BPants-XXL） × 2'},ambiguousCosts,'菲律宾仓').status,'conflict','normalized duplicate codes need review');
 assert.equal(w.FinanceCosts.candidate({seller_sku:'BABY-BPants-XXL*2'},ambiguousCosts,'菲律宾仓').code,'BABY-BPants-XXL*2','exact code still has priority');
-assert.equal(w.FinanceCosts.candidate({seller_sku:'(BABY-BPants-XXL)*3'},preview.costs,'菲律宾仓').status,'bundle','base multiplication remains only a manual suggestion');
+assert.equal(w.FinanceCosts.candidate({seller_sku:'(BABY-BPants-XXL)*3'},preview.costs,'菲律宾仓').status,'auto','an unambiguous encoded bundle is automatically matched');
+assert.equal(w.FinanceCosts.candidate({seller_sku:'(BABY-BPants-XXL)*3'},preview.costs,'菲律宾仓').factor,3,'the encoded bundle quantity is retained');
 assert.equal(w.FinanceCosts.candidate(preview.products[2],preview.costs,'菲律宾仓').code,'BABY-BPants-XXL*2','sales description size no longer blocks the merchant SKU');
 assert.equal(w.FinanceCosts.candidate(preview.products[0],preview.costs,'').status,'missing','warehouse ambiguity must not silently choose a cost');
 const firstProduct=d.querySelector('[data-product-id="product-1"] .fc-spu-parent');if(firstProduct.getAttribute('aria-expanded')==='false')firstProduct.click();
-const row=[...d.querySelectorAll('tbody tr')].find(n=>n.textContent.includes('sku-1'));button('核对关联',row).click();
+const row=[...d.querySelectorAll('tbody tr')].find(n=>n.textContent.includes('sku-1'));button('查看 / 调整',row).click();
 let dialog=d.querySelector('dialog');assert(dialog.textContent.includes('商品 ID：product-1'));
 button('应用到预览',dialog).click();assert(d.body.textContent.includes('预览已关联'));assert(d.body.textContent.includes('尚未写入正式系统'));
 select('成本分组','other-group');assert(!d.body.textContent.includes('sku-1'),'shop samples must not bleed into another shop');
