@@ -90,6 +90,15 @@ public class FinanceQueryProjections {
             scope.organizationId(),filter.platform(),month);
     }
 
+    /** Enqueue the two default business months, with every company's previous month first. */
+    void warmDefaults(Instant now){
+        var organizations=repo.jdbc().queryForList("SELECT DISTINCT organization_id FROM finance_connections WHERE status<>'REMOVED' ORDER BY organization_id",String.class);
+        var previous=FinanceCalendar.previousMonth(now);
+        for(var month:List.of(previous,previous.plusMonths(1)))for(String organization:organizations)
+            for(String platform:List.of("","SHOPEE","TIKTOK_SHOP"))
+                request(companyScope(organization),new Filter(month.atDay(1),month.atEndOfMonth(),"",platform,"","day"));
+    }
+
     public Map<String,Object> status(Scope scope){
         var result=new LinkedHashMap<>(repo.jdbc().queryForMap("SELECT COUNT(*) partitions,COALESCE(SUM(built_revision>0 AND built_revision=requested_revision),0) ready,COALESCE(SUM(built_revision<>requested_revision),0) pending,COALESCE(SUM(lease_until>UTC_TIMESTAMP(6)),0) running,COALESCE(SUM(failures>0),0) failed FROM finance_query_partitions WHERE organization_id=?",scope.organizationId()));
         long events=number(repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_query_events WHERE organization_id=?",Long.class,scope.organizationId()));
