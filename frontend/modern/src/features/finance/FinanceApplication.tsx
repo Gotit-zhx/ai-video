@@ -24,6 +24,15 @@ const Records = lazy(() =>
 const Shops = lazy(() =>
   import("./shops/ShopsPage").then((module) => ({ default: module.ShopsPage })),
 );
+const Costs = lazy(() =>
+  import("./costs/CostsPage").then((module) => ({ default: module.CostsPage })),
+);
+const Charges = lazy(() =>
+  import("./charges/ChargesPage").then((module) => ({ default: module.ChargesPage })),
+);
+const Qianyi = lazy(() =>
+  import("./qianyi/QianyiPage").then((module) => ({ default: module.QianyiPage })),
+);
 export interface FinanceExtensionProps {
   route: string;
 }
@@ -99,13 +108,13 @@ function Workspace({ pages }: { pages: FinancePageExtensions }) {
     route === "shops"
       ? pages.shops || Shops
       : route === "costs"
-        ? pages.costs
+        ? pages.costs || Costs
         : route === "expense-ledger"
-          ? pages.charges
+          ? pages.charges || Charges
           : route === "qianyi"
-            ? pages.qianyi
+            ? pages.qianyi || Qianyi
             : undefined;
-  const Refunds = pages.refunds || pages.qianyi;
+  const Refunds = pages.refunds || pages.qianyi || Qianyi;
   const recordView = (
     {
       settlements: "SETTLEMENT",
@@ -323,7 +332,7 @@ function Workspace({ pages }: { pages: FinancePageExtensions }) {
             {...(Refunds ? { refundContent: <Refunds route="refunds" /> } : {})}
           />
         ) : Extension ? (
-          <Extension route={route} />
+          <Extension route={hostRoute} />
         ) : (
           <Alert
             type="warning"
