@@ -95,6 +95,7 @@
         {cells:['来源标识',meta.sourceKey||summary.sourceKey||'未填写，需对照原始凭据核对']},
         {cells:['成本计价单位',meta.unit||summary.unit||'未提供，请核对原表及配置差异']},
         {cells:['编号类型',identityNames[meta.identifierType||summary.identifierType]||'未明确，需核对']},
+        {cells:['SPU 统一成本声明',meta.spuUniform===true?'已声明；需对照适用规格和依据核对':'未声明，不能推定同一 SPU 的所有规格同价']},
         {cells:['校验摘要',`新增或变更成本单元：${number(validation.changedCells)}；未变单元：${number(validation.unchangedCells)}`]},
         {cells:['风险判断',riskNames[risk]||risk||(change.requiresIndependentReview?'需要独立复核':'需要核对资料') ]}
       ]);
@@ -102,7 +103,7 @@
       showImpact(dialog.body,change);showIssues(dialog.body,change);
       const diffs=Array.isArray(change.diff)?change.diff:change.diff?.items||change.diff?.rows||[];
       const valueText=value=>value!=null&&typeof value==='object'?JSON.stringify(value):value??'无';
-      if(diffs.length){el('h4','旧值与新值',dialog.body);table(dialog.body,['型号 / 配置','成本仓 / 月份','原值','新值'],diffs.slice(0,100).map(item=>({cells:[item.sku||item.field||item.code,[item.warehouse,item.month].filter(Boolean).join(' · '),valueText(item.oldPrice??item.before),valueText(item.newPrice??item.after)]})));}
+      if(diffs.length){el('h4','旧值与新值',dialog.body);table(dialog.body,['型号 / 配置','成本仓 / 月份','原值','新值','原来源','新来源'],diffs.slice(0,100).map(item=>({cells:[item.sku||item.field||item.code,[item.warehouse,item.month].filter(Boolean).join(' · '),valueText(item.oldPrice??item.before),valueText(item.newPrice??item.after),item.oldSource||'未提供',item.newSource||'未提供']})));}
       const reason=field(dialog.body,'操作原因',meta.reason||change.reason||'','textarea'),evidence=field(dialog.body,'依据编号或说明',meta.evidenceRef||change.evidenceRef||'');
       reason.readOnly=!canManage;evidence.readOnly=!canManage;
       if(canManage&&change.canConfirm&&change.status!=='BLOCKED'&&!['APPLIED','REJECTED','STALE'].includes(change.status)){

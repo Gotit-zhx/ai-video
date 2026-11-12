@@ -15,9 +15,9 @@ w.clearTimeout=id=>{if(id<10000)realClear(id);};
 const make=(id,extra={})=>({id,type:'IMPORT',status:'READY',sourceName:'十一月成本.xlsx',submittedBy:'u',version:1,createdAt:'2026-11-12T03:00:00Z',groupId:'g',shopId:'',canConfirm:true,canReject:true,canRevise:true,canUndo:false,requiresIndependentReview:false,
  metadata:{sourceKey:'采购成本来源-A',unit:'包',identifierType:'SKU',reason:'补充十一月价格',evidenceRef:'采购核价单-11'},
  validation:{issues:[{code:'SOURCE_UNVERIFIED',severity:'REVIEW',message:'需要核对来源',source:'人工上传成本表',action:'提供采购核价依据'}],changedCells:1,unchangedCells:0},
- diff:[{sku:'PACK',warehouse:'菲律宾',month:'2026-11',oldPrice:null,newPrice:2,kind:'ADD'}],
+ diff:[{sku:'PACK',warehouse:'菲律宾',month:'2026-11',oldPrice:null,newPrice:2,kind:'ADD',oldSource:'此前已核价来源-A',newSource:'本次新核价来源-B'}],
  impact:{scopeShops:2,scopeOrderCount:80,hasHistorical:true,coverage:'SCOPE_UPPER_BOUND',amountChange:null},actualScope:'本分组相关店铺的历史及后续订单',...extra});
-let items=[make('draft-a'),make('draft-risk',{status:'REVIEW',requiresIndependentReview:true,canConfirm:false,canRevise:false,sourceName:'冲突文件.xlsx'}),make('done',{status:'APPLIED',canConfirm:false,canRevise:false,canUndo:true})];
+let items=[make('draft-a',{canRevise:false,metadata:{sourceKey:'采购成本来源-A',unit:'包',identifierType:'SPU',spuUniform:true,reason:'补充统一规格成本',evidenceRef:'核价凭据-11'}}),make('draft-risk',{status:'REVIEW',requiresIndependentReview:true,canConfirm:false,canRevise:false,sourceName:'冲突文件.xlsx'}),make('done',{status:'APPLIED',canConfirm:false,canRevise:false,canUndo:true})];
 const options={groupId:'g',shopId:'',canManage:true,onChanged:async()=>{changeCallbacks++;},request:async(path,request={})=>{
  const url=new URL(path,'https://example.test'),method=request.method||'GET';
  if(method==='GET'){
@@ -41,7 +41,7 @@ const check=(label,root=d)=>{const n=root.querySelector(`[aria-label="${label}"]
 let view=w.FinanceCostInputSafety.mount(d.querySelector('#root'),options);await settle();
 assert(d.body.textContent.includes('十一月成本.xlsx'));assert(d.body.textContent.includes('等待其他财务人员复核'));
 await click('查看',row('draft-a'));
-let dialog=d.querySelector('dialog');assert(dialog.textContent.includes('成本计价单位'),'详情必须展示计价单位供独立复核');assert(dialog.textContent.includes('采购成本来源-A'),'详情必须展示来源标识');assert(dialog.textContent.includes('编号类型'),'详情必须展示SKU/SPU类型');assert(dialog.textContent.includes('校验摘要'),'详情必须展示变更计数及风险');assert(dialog.textContent.includes('人工上传成本表'));assert(dialog.textContent.includes('提供采购核价依据'));assert(dialog.textContent.includes('历史及后续订单'));
+let dialog=d.querySelector('dialog');assert(dialog.textContent.includes('成本计价单位'),'详情必须展示计价单位供独立复核');assert(dialog.textContent.includes('采购成本来源-A'),'详情必须展示来源标识');assert(dialog.textContent.includes('编号类型'),'详情必须展示SKU/SPU类型');assert(dialog.textContent.includes('校验摘要'),'详情必须展示变更计数及风险');assert(dialog.textContent.includes('SPU 统一成本声明'),'不能修改资料的复核者也必须看到SPU适用声明');assert(dialog.textContent.includes('此前已核价来源-A')&&dialog.textContent.includes('本次新核价来源-B'),'改价必须同时显示旧新来源');assert(dialog.textContent.includes('人工上传成本表'));assert(dialog.textContent.includes('提供采购核价依据'));assert(dialog.textContent.includes('历史及后续订单'));
 await click('确认应用',dialog);assert.equal(writes.length,0,'未明确确认实际范围不得写入');
 check('我已核对实际影响范围',dialog);check('我已确认会影响历史及后续订单',dialog);
 field('操作原因','核对采购凭据后补充',dialog);field('依据编号或说明','采购核价单-202611',dialog);
