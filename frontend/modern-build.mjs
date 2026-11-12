@@ -1,22 +1,87 @@
 /* Compile optional finance sources privately, then publish immutable assets. */
 import {createHash, randomBytes} from 'node:crypto';
-import {readFile, mkdir, rename, rm, writeFile, open} from 'node:fs/promises';
+import {readFile, mkdir, rename, rm, writeFile, open, lstat} from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 
 const frontend = path.dirname(fileURLToPath(import.meta.url));
 
+// Match the host's fixed JavaScript entry and single, standalone stylesheet.
+// Manifest keys are identifiers; only validated output paths touch the filesystem.
+function manifestAssets(manifest) {
+  const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (!record(manifest)) throw new Error('Invalid finance asset manifest');
+  const chunks = Object.values(manifest), assets = new Set();
+  function asset(file) {
+    if (typeof file !== 'string' || !/^assets\/[A-Za-z0-9_-]+\.(?:js|css|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|eot|wasm)$/.test(file)) {
+      throw new Error('Invalid finance asset path');
+    }
+    assets.add(file);
+  }
+  for (const chunk of chunks) {
+    if (!record(chunk)) throw new Error('Invalid finance asset record');
+    asset(chunk.file);
+    for (const field of ['src','name']) {
+      if (Object.hasOwn(chunk,field) && (typeof chunk[field] !== 'string' || !chunk[field])) throw new Error('Invalid finance asset '+field);
+    }
+    for (const field of ['isEntry','isDynamicEntry']) {
+      if (Object.hasOwn(chunk,field) && typeof chunk[field] !== 'boolean') throw new Error('Invalid finance asset '+field);
+      if (chunk[field] === true && !chunk.file.endsWith('.js')) throw new Error('Invalid finance JavaScript entry asset');
+    }
+    for (const field of ['imports','dynamicImports','css','assets']) {
+      if (Object.hasOwn(chunk,field) && (!Array.isArray(chunk[field]) || chunk[field].some(value => typeof value !== 'string' || !value))) {
+        throw new Error('Invalid finance asset '+field);
+      }
+    }
+  }
+  const entry = manifest['src/app/build-entry.ts'];
+  if (!Object.hasOwn(manifest,'src/app/build-entry.ts') || entry.isEntry !== true || !entry.file.endsWith('.js')) throw new Error('Missing finance entry asset');
+  const styles = chunks.filter(chunk => chunk.file.endsWith('.css'));
+  if (styles.length !== 1) throw new Error('Invalid finance stylesheet asset');
+  // Check every record, including transitive and currently unreachable chunks.
+  // Cycles are valid; checking each edge once avoids recursive traversal.
+  for (const chunk of chunks) {
+    for (const field of ['imports','dynamicImports']) {
+      if (Object.hasOwn(chunk,field) && !chunk.file.endsWith('.js')) throw new Error('Invalid finance dependency owner');
+      for (const key of chunk[field] || []) {
+        if (!Object.hasOwn(manifest,key) || !manifest[key].file.endsWith('.js')) throw new Error('Unresolved finance asset '+field);
+      }
+    }
+    for (const file of chunk.css || []) {
+      asset(file);
+      if (file !== styles[0].file) throw new Error('Invalid finance stylesheet reference');
+    }
+    for (const file of chunk.assets || []) {
+      asset(file);
+      if (file.endsWith('.css')) throw new Error('Invalid finance asset reference: use css');
+    }
+  }
+  return [...assets];
+}
+
+async function checkPath(file, directory = false, optional = false) {
+  try {
+    const info = await lstat(file);
+    if (directory ? !info.isDirectory() : !info.isFile()) throw new Error('Invalid finance asset filesystem path');
+  } catch (error) { if (!optional || error.code !== 'ENOENT') throw error; }
+}
+
 export async function publishModernAssets(source, target) {
+  await checkPath(source,true);
+  await checkPath(path.join(source,'manifest.json'));
   const raw = await readFile(path.join(source, 'manifest.json'), 'utf8');
-  const manifest = JSON.parse(raw);
-  const assets = [...new Set(Object.values(manifest).map(item => item.file))];
-  if (!assets.length || !Object.values(manifest).some(item => item.isEntry === true)) throw new Error('Missing finance entry asset');
+  const assets = manifestAssets(JSON.parse(raw));
+  await checkPath(path.join(source,'assets'),true);
+  await checkPath(target,true,true);
+  await checkPath(path.join(target,'assets'),true,true);
+  await checkPath(path.join(target,'manifest.json'),false,true);
   const checked = [];
   // Complete validation precedes any public write. Incomplete builds keep the old entry.
   for (const relative of assets) {
-    if (typeof relative !== 'string' || !/^assets\/[A-Za-z0-9_-]+\.(?:js|css)$/.test(relative)) throw new Error('Invalid finance asset path');
+    await checkPath(path.join(source,relative));
     const data = await readFile(path.join(source, relative));
     checked.push({relative,data});
+    await checkPath(path.join(target,relative),false,true);
     try {
       const existing = await readFile(path.join(target, relative));
       if (!existing.equals(data)) throw new Error('An immutable finance asset would be overwritten');
