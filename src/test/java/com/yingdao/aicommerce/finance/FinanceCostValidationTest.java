@@ -184,6 +184,12 @@ class FinanceCostValidationTest {
             assertTrue(encoded.length()<32,"Exponent must not expand into hundreds of zeroes");
         }
     }
+    @Test void extremeCompactExponentCannotOverflowThePriceDigitLimit() {
+        var result=analyze(List.of(row("A","2026-11","1E+2147483647")),List.of(),metadata());
+        assertEquals(true,result.get("blocked"));issue(result,"PRICE_INVALID","BLOCK");
+        assertTrue(rows(result.get("normalizedCosts")).isEmpty());
+        assertEquals(64,result.get("semanticHash").toString().length());
+    }
     @Test void reorderedAliasesHaveIdenticalNormalizedWarehousePricesAndEarliestRow() {
         var meta=metadata();meta.put("warehouseAliases",Map.of("菲律宾","ph","旧菲律宾仓","ph"));
         var first=row("A","2026-11","2");

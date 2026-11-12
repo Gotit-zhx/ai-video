@@ -83,7 +83,7 @@ public final class FinanceCostValidation {
                     if((from!=null&&parsed.isBefore(from))||(to!=null&&parsed.isAfter(to)))add(issues,"MONTH_OUT_OF_SCOPE","BLOCK",row,costMonth);
                     if(now!=null&&parsed.isAfter(now))add(issues,"FUTURE_MONTH","REVIEW",row,costMonth);
                 }
-                boolean validPrice=price!=null&&price.signum()>=0&&price.precision()-price.scale()<=18&&Math.max(0,price.stripTrailingZeros().scale())<=18;
+                boolean validPrice=price!=null&&price.signum()>=0&&(long)price.precision()-price.scale()<=18&&Math.max(0,price.stripTrailingZeros().scale())<=18;
                 if(!validPrice)add(issues,"PRICE_INVALID","BLOCK",row,costMonth);
                 else if(price.signum()==0)add(issues,"ZERO_PRICE","BLOCK",row,costMonth);
                 if(validIdentity&&validWarehouse&&validPrice&&parsed!=null)candidates.computeIfAbsent(cell.key(),k->new ArrayList<>()).add(cell);
@@ -197,7 +197,7 @@ public final class FinanceCostValidation {
         if(id.isBlank()||id.length()>255||formula(id)||raw.strip().matches("[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)[eE][+-]?\\d+"))return false;
         if(value instanceof Number) {
             var number=decimal(value);
-            return number!=null&&number.signum()>=0&&number.stripTrailingZeros().scale()<=0&&number.precision()-number.scale()<=15;
+            return number!=null&&number.signum()>=0&&number.stripTrailingZeros().scale()<=0&&(long)number.precision()-number.scale()<=15;
         }
         return true;
     }
