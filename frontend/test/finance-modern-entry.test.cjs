@@ -111,6 +111,14 @@ test('a reader without financial access cannot trigger either renderer',async()=
   f.facade.dispose();f.dom.window.close();
 });
 
+test('modern Qianyi after-sales remains reachable through the shared portal facade',async()=>{
+  const f=fixture('modern');
+  await f.facade.enter('qianyi');
+  assert.equal(f.container.textContent,'modern qianyi');
+  assert.equal(f.counts().legacyLoads,0);
+  f.facade.dispose();f.dom.window.close();
+});
+
 function sanitizedBootstrap(search,hash='#finance-overview') {
   const source=fs.readFileSync(path.join(__dirname,'../index.html'),'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
   let replaced;
@@ -136,4 +144,12 @@ test('OAuth result is handed off in memory and credentials never survive in the 
   const unsafe=sanitizedBootstrap('?financeAuth=error&financeMessage=access_token%3Dsecret','#finance-shops');
   assert(!JSON.stringify(unsafe.notice).includes('secret'));
   assert.equal(sanitizedBootstrap('?view=finance&token=secret','').url,'/app#finance-shops');
+});
+
+test('OAuth notices reject JSON and camel-case credential fields as well as query-shaped secrets',()=>{
+  for (const message of ['{"access_token":"private-canary"}','appSecret: private-canary','refreshToken private-canary','Cookie private-canary']) {
+    const result=sanitizedBootstrap('?financeAuth=error&financeMessage='+encodeURIComponent(message),'#finance-shops');
+    assert.equal(result.url,'/app#finance-shops');
+    assert(!JSON.stringify(result.notice).includes('private-canary'));
+  }
 });

@@ -30,6 +30,7 @@ import {
 import { ReportChart } from "./ReportChart";
 import { AdvertisingPage } from "./AdvertisingPage";
 import { RecordDetail } from "../records/RecordDetail";
+import { OverviewOperations } from "./OverviewOperations";
 export interface ReportsPageProps {
   view: "overview" | "live" | "ads";
   initialAdTab?: string;
@@ -238,6 +239,7 @@ function OverviewReport({ live }: { live: boolean }) {
     orderSync = sync.filter((row) => row.channel === "ORDER_LIVE");
   return (
     <Space orientation="vertical" className="finance-page-stack" size="medium">
+      {!live && <OverviewOperations data={data} />}
       <Failure error={query.error} />
       {query.isPending && (
         <Alert type="info" title={t("正在读取财务数据")} />

@@ -4,11 +4,13 @@ import { FinanceModal } from "../../../shared/dialogs";
 import type { FinanceRequestParams } from "../../../shared/contracts";
 import { useFinance } from "../context";
 import { Failure, useOwnerFence } from "../presentation";
+import { FieldSettings } from "./FieldSettings";
 export interface ExportDialogProps {
   open: boolean;
   selection: FinanceRequestParams;
   onClose: () => void;
   path?: string;
+  viewOptions?: readonly { value: string; label: string }[];
 }
 export function ExportDialog(props: ExportDialogProps) {
   const { session, active } = useFinance();
@@ -23,11 +25,16 @@ function ExportSession({
   selection,
   onClose,
   path = "/export",
+  viewOptions,
 }: ExportDialogProps) {
   const { api, t } = useFinance(),
     owner = useOwnerFence();
   const [snapshot] = useState(() => ({ ...selection })),
     [format, setFormat] = useState("xlsx"),
+    [selectedView, setSelectedView] = useState(() =>
+      String(selection.view || viewOptions?.[0]?.value || "ALL"),
+    ),
+    [fieldsOpen, setFieldsOpen] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState<unknown>(),
     [done, setDone] = useState(false);
@@ -42,10 +49,15 @@ function ExportSession({
     setBusy(true);
     setError(undefined);
     try {
-      await api.download(path, { ...snapshot, format }, undefined, {
-        signal: controller.current.signal,
-        timeoutMs: 180000,
-      });
+      await api.download(
+        path,
+        { ...snapshot, ...(viewOptions ? { view: selectedView } : {}), format },
+        undefined,
+        {
+          signal: controller.current.signal,
+          timeoutMs: 180000,
+        },
+      );
       if (owner.isCurrent()) setDone(true);
     } catch (e) {
       if (owner.isCurrent()) setError(e);
@@ -101,9 +113,32 @@ function ExportSession({
             children: String(snapshot[key]),
           }))}
       />
+      {viewOptions && (
+        <Space orientation="vertical" style={{ width: "100%" }}>
+          <Select
+            aria-label={t("导出类型")}
+            style={{ width: "100%" }}
+            value={selectedView}
+            disabled={busy}
+            onChange={setSelectedView}
+            options={viewOptions.map((option) => ({
+              value: option.value,
+              label: t(option.label),
+            }))}
+          />
+          <Button
+            type="link"
+            disabled={busy}
+            onClick={() => setFieldsOpen(true)}
+          >
+            {t("配置导出字段")}
+          </Button>
+        </Space>
+      )}
       <Select
         aria-label={t("导出格式")}
         value={format}
+        disabled={busy}
         onChange={setFormat}
         options={[
           { value: "xlsx", label: "Excel" },
@@ -121,6 +156,14 @@ function ExportSession({
       />
       <Failure error={error} />
       {done && <Alert type="success" title={t("已请求浏览器保存文件")} />}
+      {viewOptions && (
+        <FieldSettings
+          view={selectedView}
+          open={fieldsOpen}
+          onClose={() => setFieldsOpen(false)}
+          onSaved={() => setFieldsOpen(false)}
+        />
+      )}
     </FinanceModal>
   );
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Alert, Button, Input, Select, Space, Typography } from "antd";
 import type { Row } from "../../../shared/contracts";
 import { rows, text } from "../../../shared/rows";
@@ -25,9 +25,10 @@ import {
   syncLabel,
 } from "./SyncDetails";
 import { enabled, shopName, useShopCommand } from "./common";
+import { ShopeeAdsPanel, ShopeeAuthorizationModal } from "./ShopeeAdsPanel";
 type Dialog =
   | { type: "config" | "remove" | "sync" | "authorize"; shop: Row }
-  | { type: "groups" | "qianyi" | "connect" }
+  | { type: "groups" | "qianyi" | "connect" | "shopee" }
   | { type: "ad"; account?: Row };
 export function ShopsPage() {
   const { active, session } = useFinance();
@@ -43,6 +44,10 @@ function ShopsContent() {
   const [dialog, setDialog] = useState<Dialog | null>(null),
     [search, setSearch] = useState(""),
     [monthFilter, setMonthFilter] = useState("ALL");
+  useEffect(() => {
+    if (!session.canManage)
+      setDialog(current => current?.type === "shopee" ? null : current);
+  }, [session.canManage]);
   const shopsQuery = useFinanceQuery({
     queryKey: ["/shops", selectionKey({})],
     queryFn: ({ signal }) => api.get<Row>("/shops", {}, signal),
@@ -78,6 +83,16 @@ function ShopsContent() {
     groups = rows(shopsQuery.data?.groups),
     accounts = rows(adsQuery.data),
     deletions = rows(shopsQuery.data?.deletions);
+  const shopeeQuery = useFinanceQuery({
+    queryKey: ["shopee-ads"],
+    queryFn: ({ signal }) => api.get<Row>("/shopee-ads", {}, signal),
+    refetchInterval:
+      visible && !dialog
+        ? deletions.some((job) => job.status !== "COMPLETE")
+          ? 3000
+          : 15000
+        : false,
+  });
   const shopStates = (shop: Row) => states.filter((s) => s.shop_id === shop.id);
   const scoped = shops.filter(
     (s) =>
@@ -525,6 +540,24 @@ function ShopsContent() {
       {adsQuery.data !== undefined && (
         <AccountCoverage accounts={accounts} shops={shops} />
       )}
+      <ShopeeAdsPanel
+        data={shopeeQuery.data}
+        error={shopeeQuery.error}
+        loading={shopeeQuery.isPending}
+        pending={command.pending}
+        onAuthorize={() => setDialog({ type: "shopee" })}
+        onToggle={(item) => {
+          void command.run(
+            "/shopee-ads/" + encodeURIComponent(String(item.external_shop_id)),
+            "PUT",
+            {
+              organizationId: session.organizationId,
+              enabled: !enabled(item.enabled),
+            },
+            refresh,
+          );
+        }}
+      />
       {dialog?.type === "sync" && currentShop && (
         <SyncDetails
           shop={currentShop}
@@ -545,6 +578,9 @@ function ShopsContent() {
             <RemoveShopModal shop={currentShop} onClose={close} />
           )}
           {dialog?.type === "groups" && <GroupsModal onClose={close} />}
+          {dialog?.type === "shopee" && (
+            <ShopeeAuthorizationModal onClose={close} />
+          )}
           {dialog?.type === "connect" && (
             <AuthorizationModal kind="shop" onClose={close} />
           )}

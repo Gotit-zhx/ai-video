@@ -7,7 +7,7 @@
 })(typeof globalThis === 'object' ? globalThis : this, function () {
   'use strict';
   const filterKeys = ['start','end','shopId','groupId','platform','currency','displayCurrency'];
-  const routes = new Set(['overview','live','settlements','reconciliation','orders','fees','fee-records','expense-ledger','costs','ads','shops']);
+  const routes = new Set(['overview','live','settlements','reconciliation','orders','fees','fee-records','expense-ledger','costs','ads','shops','qianyi']);
   const languages = new Set(['zh','en','ms','id','th','vi','fil']);
 
   function modeFromSearch(search) {

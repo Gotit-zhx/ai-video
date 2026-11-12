@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Alert,
   Button,
@@ -43,6 +43,7 @@ import {
   GmvSummary,
 } from "./AdvertisingSupport";
 import { amountText } from "../../../shared/rows";
+import { ShopeeAdsPanel } from "../shops/ShopeeAdsPanel";
 const moneyFields = [...fundingFields, "net_amount"] as const;
 const labels: Record<string, string> = {
   amount: "广告消耗（投放报表）",
@@ -57,8 +58,17 @@ const sources: Record<string, string> = {
   API_BASIC: "普通账户投放",
   API_BC_COST: "BC 资金费用",
   API_CAMPAIGN: "系列投放报表",
+  API_SHOPEE_CPC: "Shopee 店铺 CPC 日报",
   LEGACY_IMPORT: "历史导入",
 };
+function allocationAllowed(row: Row) {
+  return (
+    !["OFFICIAL", "SOURCE_REVIEW"].includes(String(row.assignment_status)) &&
+    (!row.shop_id ||
+      row.shop_id === "UNASSIGNED" ||
+      String(row.source).includes("IMPORT"))
+  );
+}
 export function AdvertisingPage({
   initialTab = "spend",
 }: {
@@ -77,7 +87,10 @@ export function AdvertisingPage({
         : "spend",
     ),
     [operation, setOperation] = useState(""),
-    [sourceKey, setSourceKey] = useState("");
+    [sourceSelection, setSourceSelection] = useState<{
+      key: string;
+      allocate: boolean;
+    } | null>(null);
   const params = { ...filters, page, search, assignment };
   const query = useReport("/advertising/spend", params);
   const data = query.data;
@@ -172,6 +185,7 @@ export function AdvertisingPage({
                   </Button>
                 )}
               </Space>
+              <ShopeeAdsPanel data={record(data.shopeeAds)} compact />
               {rows(data.totals).length ? (
                 rows(data.totals).map((total, index) => (
                   <div className="finance-metric-grid" key={index}>
@@ -202,6 +216,11 @@ export function AdvertisingPage({
                   {t("全范围来源记录")}: {text(data.scopeRecords) || "—"}
                 </StatusTag>
               </Space>
+              <Typography.Paragraph>
+                {t(
+                  "同账户、日期及币种的 Shopee 官方店铺日报优先，其他来源按系列和账户核对重叠；排除汇总的来源记录仍保留。",
+                )}
+              </Typography.Paragraph>
               {summary(true)}
               {summary(false)}
               <Panel title={t("店铺消耗明细")}>
@@ -283,17 +302,26 @@ export function AdvertisingPage({
                     { title: t("归属状态"), dataIndex: "assignment_status" },
                     {
                       title: t("操作"),
-                      render: (_, row) => (
-                        <Button
-                          onClick={() =>
-                            setSourceKey(text(row.source_key) || "")
-                          }
-                        >
-                          {t(
-                            session.canManage ? "查看 / 核实分配" : "来源详情",
-                          )}
-                        </Button>
-                      ),
+                      render: (_, row) =>
+                        row.source === "API_SHOPEE_CPC" ? (
+                          <Typography.Text>{t("官方店铺日报")}</Typography.Text>
+                        ) : (
+                          <Button
+                            onClick={() =>
+                              setSourceSelection({
+                                key: text(row.source_key) || "",
+                                allocate: allocationAllowed(row),
+                              })
+                            }
+                            disabled={!text(row.source_key)}
+                          >
+                            {t(
+                              session.canManage && allocationAllowed(row)
+                                ? "查看 / 核实分配"
+                                : "来源详情",
+                            )}
+                          </Button>
+                        ),
                     },
                   ]}
                 />
@@ -459,11 +487,13 @@ export function AdvertisingPage({
         onImported={() => void refresh()}
         onClose={() => setOperation("")}
       />
-      {sourceKey && (
+      {sourceSelection?.key && (
         <AllocationDialog
-          sourceKey={sourceKey}
+          key={sourceSelection.key}
+          sourceKey={sourceSelection.key}
+          allowAllocation={sourceSelection.allocate}
           shops={rows(metadata.data?.items)}
-          onClose={() => setSourceKey("")}
+          onClose={() => setSourceSelection(null)}
         />
       )}
     </Space>
@@ -471,14 +501,16 @@ export function AdvertisingPage({
 }
 function AllocationDialog({
   sourceKey,
+  allowAllocation,
   shops,
   onClose,
 }: {
   sourceKey: string;
+  allowAllocation: boolean;
   shops: Row[];
   onClose: () => void;
 }) {
-  const { api, t, session, refresh } = useFinance(),
+  const { api, t, session, refresh, active } = useFinance(),
     owner = useOwnerFence();
   const [form] = Form.useForm();
   const [error, setError] = useState<unknown>(),
@@ -493,6 +525,15 @@ function AllocationDialog({
         signal,
       ),
   });
+  const allocatable =
+    allowAllocation &&
+    session.canManage &&
+    active &&
+    !!source.data &&
+    (!source.data.shop_id || source.data.shop_id === "UNASSIGNED");
+  const canWrite = useRef(false),
+    inFlight = useRef(false);
+  canWrite.current = allocatable;
   useEffect(() => {
     if (source.data)
       form.setFieldsValue({
@@ -506,6 +547,8 @@ function AllocationDialog({
     (field) => numeric(source.data?.[field]) !== undefined,
   );
   const save = async () => {
+    if (!canWrite.current || inFlight.current || !owner.isCurrent()) return;
+    inFlight.current = true;
     setBusy(true);
     let dispatched = false;
     try {
@@ -516,7 +559,7 @@ function AllocationDialog({
         shops,
         session.organizationId,
       );
-      if (!owner.isCurrent()) return;
+      if (!owner.isCurrent() || !canWrite.current) return;
       dispatched = true;
       await api.send(
         "/advertising/spend/" + encodeURIComponent(sourceKey) + "/allocations",
@@ -534,6 +577,7 @@ function AllocationDialog({
           setUncertain(true);
       }
     } finally {
+      inFlight.current = false;
       if (owner.isCurrent()) setBusy(false);
     }
   };
@@ -544,7 +588,7 @@ function AllocationDialog({
       onCancel={onClose}
       width={850}
       footer={
-        session.canManage ? (
+        allocatable ? (
           <Button
             type="primary"
             loading={busy}
@@ -580,7 +624,7 @@ function AllocationDialog({
               "按原币核实；仅填写来源已有分项，未分配余款继续保留，历史版本保留。",
             )}
           />
-          <Form form={form} disabled={!session.canManage} layout="vertical">
+          <Form form={form} disabled={!allocatable} layout="vertical">
             <Form.List name="allocations">
               {(items, { add, remove }) => (
                 <Space orientation="vertical" style={{ width: "100%" }}>
@@ -616,12 +660,14 @@ function AllocationDialog({
                           <Input style={{ width: 120 }} inputMode="decimal" />
                         </Form.Item>
                       ))}
-                      <Button onClick={() => remove(item.name)}>
-                        {t("移除")}
-                      </Button>
+                      {allocatable && (
+                        <Button onClick={() => remove(item.name)}>
+                          {t("移除")}
+                        </Button>
+                      )}
                     </Space>
                   ))}
-                  {session.canManage && (
+                  {allocatable && (
                     <Button onClick={() => add({})}>{t("添加店铺分配")}</Button>
                   )}
                 </Space>
