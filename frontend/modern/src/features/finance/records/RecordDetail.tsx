@@ -3,6 +3,7 @@ import type { FinanceRequestParams, Row } from "../../../shared/contracts";
 import { amountText, record, rows, text } from "../../../shared/rows";
 import { FinanceDrawer } from "../../../shared/dialogs";
 import { Panel } from "../../../shared/components";
+import { timestampText } from "../domain";
 import { useFinance, useFinanceQuery } from "../context";
 import {
   Failure,
@@ -13,6 +14,13 @@ import {
 } from "../presentation";
 export function fieldValue(row: Row, field: Row): unknown {
   const id = text(field.id) || "";
+  const fxFields: Record<string, string> = {
+    fx_time: "time",
+    fx_provider: "provider",
+    fx_business_date: "businessDate",
+    fx_rate_date: "rateDate",
+  };
+  if (Object.hasOwn(fxFields, id)) return record(row.fx)?.[fxFields[id]!];
   return id === "order_id" && row.kind === "ORDER"
     ? (row.order_id ?? row.external_id)
     : row[id];
@@ -23,22 +31,29 @@ export function renderField(row: Row, field: Row) {
   if (id === "product_skus") return <SkuIdentity row={row} />;
   if (field.type === "money") return amountText(value);
   if (field.type === "datetime" && text(value)) {
-    const time = new Date(String(value));
-    if (Number.isFinite(time.getTime())) {
-      const zone =
-        id.includes("beijing") || id === "updated_at"
-          ? "Asia/Shanghai"
+    const label = text(field.label) || "";
+    const utcIds = [
+      "create_time",
+      "update_time",
+      "paid_time",
+      "payout_time",
+      "statement_time",
+      "settlement_completed_time",
+      "actual_release_time",
+    ];
+    const zone =
+      label.includes("北京时间") ||
+      id.includes("beijing") ||
+      id === "updated_at"
+        ? "Asia/Shanghai"
+        : label.includes("UTC") || utcIds.includes(id)
+          ? "UTC"
           : text(row.order_timezone) || "UTC";
-      try {
-        return new Intl.DateTimeFormat(undefined, {
-          dateStyle: "short",
-          timeStyle: "short",
-          timeZone: zone,
-        }).format(time);
-      } catch {
-        return valueText(value);
-      }
-    }
+    return (
+      <time dateTime={text(value)} title={zone}>
+        {timestampText(value, zone)}
+      </time>
+    );
   }
   return valueText(value);
 }

@@ -206,6 +206,8 @@ function Workspace({ pages }: { pages: FinancePageExtensions }) {
           <label>
             {t("平台")}
             <Select
+              id="finance-platform"
+              aria-label={t("平台")}
               value={filters.platform}
               onChange={(value) => change({ platform: value, shopId: "" })}
               options={[
@@ -216,13 +218,24 @@ function Workspace({ pages }: { pages: FinancePageExtensions }) {
             />
           </label>
           <label>
-            {t("币种口径")}
+            {t("原币筛选")}
             <Select
               disabled={live}
+              id="finance-native-currency"
+              aria-label={t("原币筛选")}
               value={live ? "" : filters.currency}
               onChange={(value) => change({ currency: value })}
               options={[
-                { value: "", label: t("全部币种（人民币汇总）") },
+                {
+                  value: "",
+                  label: t(
+                    live || filters.displayCurrency === "CNY"
+                      ? "全部币种（人民币汇总）"
+                      : route === "ads"
+                        ? "全部原币（分币种展示）"
+                        : "自动选择原币",
+                  ),
+                },
                 ...[
                   ...new Set(
                     shops
@@ -230,6 +243,26 @@ function Workspace({ pages }: { pages: FinancePageExtensions }) {
                       .filter((value): value is string => !!value),
                   ),
                 ].map((value) => ({ value, label: value })),
+              ]}
+            />
+          </label>
+          <label>
+            {t("金额展示币种")}
+            <Select
+              id="finance-display-currency"
+              aria-label={t("金额展示币种")}
+              disabled={live}
+              value={
+                live
+                  ? "CNY"
+                  : filters.displayCurrency === "CNY"
+                    ? "CNY"
+                    : "ORIGINAL"
+              }
+              onChange={(value) => change({ displayCurrency: value })}
+              options={[
+                { value: "CNY", label: t("人民币 ¥") },
+                { value: "ORIGINAL", label: t("原币") },
               ]}
             />
           </label>

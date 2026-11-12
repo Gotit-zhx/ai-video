@@ -37,6 +37,11 @@ import {
 } from "../presentation";
 import { ExportDialog, ImportDialog } from "../operations";
 import { RecordsPage } from "../records/RecordsPage";
+import {
+  AccountCoverage,
+  BookedBreakdowns,
+  GmvSummary,
+} from "./AdvertisingSupport";
 import { amountText } from "../../../shared/rows";
 const moneyFields = [...fundingFields, "net_amount"] as const;
 const labels: Record<string, string> = {
@@ -412,6 +417,18 @@ export function AdvertisingPage({
               />
             </>
           )}
+          {tab === "booked" && (
+            <BookedBreakdowns
+              report={ad}
+              shops={rows(metadata.data?.items)}
+              groups={rows(metadata.data?.groups)}
+              accounts={accounts.data}
+              accountFailed={!!accounts.error}
+            />
+          )}
+          {["booked", "AD_GMV"].includes(tab) && (
+            <GmvSummary summary={ad.gmv} />
+          )}
           {["AD", "ledger", "AD_GMV"].includes(tab) && (
             <RecordsPage
               view={tab === "ledger" ? "FEE" : tab}
@@ -420,7 +437,12 @@ export function AdvertisingPage({
           )}
           <section hidden={tab !== "accounts" && tab !== "spend"}>
             <Failure error={accounts.error} />
-            {accounts.data && <AccountCoverage accounts={accounts.data} />}
+            {accounts.data && (
+              <AccountCoverage
+                accounts={accounts.data}
+                shops={rows(metadata.data?.items)}
+              />
+            )}
           </section>
         </>
       )}
@@ -445,73 +467,6 @@ export function AdvertisingPage({
         />
       )}
     </Space>
-  );
-}
-function AccountCoverage({ accounts }: { accounts: unknown }) {
-  const { t, navigate } = useFinance();
-  return (
-    <Panel title={t("账户、店铺发现与同步覆盖")}>
-      <Typography.Paragraph>
-        {t("账户访问关系不证明店铺归属；仅展示已完成发现和已入库覆盖。")}
-      </Typography.Paragraph>
-      {rows(accounts).map((account) => (
-        <Panel
-          key={text(account.advertiser_id)}
-          title={text(account.name) || text(account.advertiser_id)}
-        >
-          <Space wrap>
-            <StatusTag>
-              {t("账户状态")}: {text(account.status)}
-            </StatusTag>
-            <StatusTag>
-              {t("店铺发现")}: {text(account.discovery_status)}
-            </StatusTag>
-            <StatusTag>
-              {t("资金状态")}:{" "}
-              {text(record(account.funding)?.status) || t("未知")}
-            </StatusTag>
-          </Space>
-          <Typography.Paragraph>
-            {text(account.error_message) ||
-              text(account.discovery_error) ||
-              text(record(account.funding)?.error_message)}
-          </Typography.Paragraph>
-          <FactTable
-            data={account.stores}
-            columns={[
-              ["store_name", "店铺"],
-              ["store_id", "平台店铺 ID"],
-              ["shop_id", "财务店铺 ID"],
-              ["match_status", "匹配状态", "status"],
-              ["gmv_available", "GMV 可用"],
-              ["report_eligible", "报表可用"],
-            ]}
-          />
-          <FactTable
-            data={account.streams}
-            columns={[
-              ["channel", "数据流"],
-              ["store_id", "店铺"],
-              ["status", "状态", "status"],
-              ["last_success_at", "最近成功"],
-              ["error_message", "异常"],
-            ]}
-          />
-          <FactTable
-            data={account.coverage}
-            columns={[
-              ["channel", "数据流"],
-              ["covered_days", "已覆盖天数"],
-              ["records", "记录数"],
-              ["amount", "已入库金额", "money"],
-              ["first_day", "首日"],
-              ["last_day", "末日"],
-            ]}
-          />
-        </Panel>
-      ))}
-      <Button onClick={() => navigate("shops")}>{t("前往财务店铺管理")}</Button>
-    </Panel>
   );
 }
 function AllocationDialog({

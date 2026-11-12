@@ -38,8 +38,12 @@ export function changeFinanceFilters(
     )
   )
     next.currency = "";
-  if (Object.hasOwn(patch, "currency"))
-    next.displayCurrency = patch.currency ? "ORIGINAL" : "CNY";
+  if (
+    Object.hasOwn(patch, "currency") &&
+    !patch.currency &&
+    !Object.hasOwn(patch, "displayCurrency")
+  )
+    next.displayCurrency = "CNY";
   return next;
 }
 export function exactNumbers(value: string): string {
@@ -87,6 +91,15 @@ function aggregate(values: unknown[]): number | null {
     ? values.reduce<number>((sum, value) => sum + numeric(value)!, 0)
     : null;
 }
+function knownAggregate(values: unknown[], count = false): number | null {
+  if (!values.length) return null;
+  const known = values.flatMap((value) =>
+    numeric(value) === undefined ? [] : [numeric(value)!],
+  );
+  return known.length || count
+    ? known.reduce((sum, value) => sum + value, 0)
+    : null;
+}
 /** Presentation only: inputs are the complete server ranking, never paginated records. */
 export function operatingRows(data: Row, grouped = false): Row[] {
   const shops = rows(data.shops),
@@ -129,7 +142,19 @@ export function operatingRows(data: Row, grouped = false): Row[] {
         (text(grouped ? r.group_id : r.shop_id) || "") === id &&
         (!r.currency || r.currency === currency),
     );
-    const pending = aggregate(cost.map((c) => c.pending_count));
+    const pending = knownAggregate(
+      cost.map((c) => c.pending_count),
+      true,
+    );
+    const partial = (kindName: string) =>
+      kind(kindName).some(
+        (row) =>
+          numeric(row.amount) === undefined ||
+          row.fx_complete === false ||
+          (numeric(row.known_amounts) !== undefined &&
+            numeric(row.records) !== undefined &&
+            numeric(row.known_amounts)! < numeric(row.records)!),
+      );
     return {
       id,
       currency,
@@ -138,14 +163,28 @@ export function operatingRows(data: Row, grouped = false): Row[] {
         : text(shops.find((s) => s.id === id)?.display_name) ||
           text(shops.find((s) => s.id === id)?.name) ||
           id,
-      order_count: aggregate(kind("ORDER").map((r) => r.records)),
-      order_amount: aggregate(kind("ORDER").map((r) => r.amount)),
+      order_count: knownAggregate(
+        kind("ORDER").map((r) => r.records),
+        true,
+      ),
+      order_amount: knownAggregate(kind("ORDER").map((r) => r.amount)),
+      order_amount_partial: partial("ORDER"),
       sales: aggregate(kind("SETTLEMENT").map((r) => r.settled_gross_amount)),
-      fees: aggregate(kind("FEE").map((r) => r.amount)),
+      fees: knownAggregate(kind("FEE").map((r) => r.amount)),
+      fees_partial: partial("FEE"),
       advertising: bookedAmount(ad),
+      advertising_partial: ad?.complete === false,
+      advertising_has_records:
+        !!ad && ad.hasRecords !== false && numeric(ad.records) !== 0,
       commission: bookedAmount(record(ad)?.commission),
+      commission_partial: record(ad?.commission)?.complete === false,
       gmv: bookedAmount(record(ad)?.gmv),
-      product_cost: aggregate(
+      gmv_partial: record(ad?.gmv)?.complete === false,
+      product_cost_partial: !!pending && pending > 0,
+      product_cost_estimated: cost.some(
+        (row) => (numeric(row.estimated_count) || 0) > 0,
+      ),
+      product_cost: knownAggregate(
         cost.map((c) =>
           pending && pending > 0 ? c.known_amount_cny : c.amount_cny,
         ),
@@ -218,4 +257,37 @@ export function allocationPayload(
       throw new Error("分项合计不等于总额");
   }
   return { organizationId, fingerprint: source.fingerprint, allocations };
+}
+
+/** Calendar dates never use this function; only explicit timestamp fields do. */
+export function timestampText(value: unknown, timeZone: string): string {
+  const source = text(value);
+  if (!source) return "—";
+  // JDBC timestamp strings without an offset denote UTC instants in this API.
+  const normalized =
+    /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(source) &&
+    !/(Z|[+-]\d{2}:?\d{2})$/.test(source)
+      ? source.replace(" ", "T") + "Z"
+      : source;
+  const date = new Date(normalized);
+  if (!Number.isFinite(date.getTime())) return source;
+  try {
+    const parts = Object.fromEntries(
+      new Intl.DateTimeFormat("en-CA", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hourCycle: "h23",
+      })
+        .formatToParts(date)
+        .map((part) => [part.type, part.value]),
+    );
+    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+  } catch {
+    return source;
+  }
 }

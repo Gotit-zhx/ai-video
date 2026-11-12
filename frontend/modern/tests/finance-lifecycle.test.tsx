@@ -135,7 +135,7 @@ it("carries the resolved historical snapshot into subsequent page requests", asy
   await waitFor(() =>
     expect(v.getByLabelText("snapshot")).toHaveTextContent("history-october"),
   );
-  fireEvent.click(v.getByRole("button", { name: "Page 2" }));
+  fireEvent.click(v.getByRole("button", { name: /^(Page|页) 2$/ }));
   await waitFor(() =>
     expect(requests.at(-1)).toMatchObject({
       page: 2,

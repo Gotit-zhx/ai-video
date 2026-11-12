@@ -19,6 +19,7 @@ import {
   selectionKey,
 } from "../domain";
 import {
+  AmountWithStatus,
   Failure,
   FactTable,
   ScopeEvidence,
@@ -105,6 +106,7 @@ function OverviewReport({ live }: { live: boolean }) {
     label: string;
     value: unknown;
     partial?: boolean;
+    estimated?: boolean;
     route?: string;
     dialog?: string;
   }[] = live
@@ -152,7 +154,12 @@ function OverviewReport({ live }: { live: boolean }) {
           partial: profit.operatingCost == null,
           dialog: "cost",
         },
-        { label: "利润额", value: profit.amount, dialog: "profit" },
+        {
+          label: "利润额",
+          value: profit.amount,
+          estimated: profit.estimated === true,
+          dialog: "profit",
+        },
       ];
   const chart = (
     source: Row[],
@@ -214,7 +221,14 @@ function OverviewReport({ live }: { live: boolean }) {
           ).map(([key, label]) => ({
             title: t(label),
             dataIndex: key,
-            render: (v: unknown) => amountText(v),
+            render: (v: unknown, row: Row) => (
+              <AmountWithStatus
+                value={v}
+                partial={row[key + "_partial"] === true}
+                partialLabel={key === "product_cost" ? "已算部分" : "已知部分"}
+                estimated={row[key + "_estimated"] === true}
+              />
+            ),
           })),
         ]}
       />
@@ -288,14 +302,18 @@ function OverviewReport({ live }: { live: boolean }) {
                       : amountText(card.value, currency)
                   }
                   detail={
-                    card.partial
-                      ? t("已知部分")
-                      : card.value == null
-                        ? t("数据待补齐")
-                        : undefined
+                    card.estimated
+                      ? t("历史价格暂估")
+                      : card.partial
+                        ? t("已知部分")
+                        : card.value == null
+                          ? t("数据待补齐")
+                          : undefined
                   }
                   tone={
-                    card.partial || card.value == null ? "warning" : "default"
+                    card.estimated || card.partial || card.value == null
+                      ? "warning"
+                      : "default"
                   }
                 />
               </button>

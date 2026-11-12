@@ -4,7 +4,7 @@ import { BusinessTable, Panel, StatusTag } from "../../shared/components";
 import type { FinanceRequestParams, Row } from "../../shared/contracts";
 import { amountText, numeric, record, rows, text } from "../../shared/rows";
 import { useFinance, useFinanceQuery } from "./context";
-import { selectionKey } from "./domain";
+import { selectionKey, timestampText } from "./domain";
 export type ColumnSpec = readonly [
   key: string,
   label: string,
@@ -71,11 +71,65 @@ export function FactTable({
   return title ? <Panel title={t(title)}>{table}</Panel> : table;
 }
 export function ScopeEvidence({ data }: { data: unknown }) {
-  const { t } = useFinance();
+  const { t, filters } = useFinance();
   const source = record(data),
-    fx = record(source?.fx);
+    fx = record(source?.fx),
+    cache = record(source?.cache),
+    calculation = record(source?.settlementCalculation),
+    resolved = record(source?.filters);
   return (
     <Space orientation="vertical" size="small">
+      {resolved && (
+        <Typography.Text>
+          {t("当前口径")}:{" "}
+          {text(resolved.displayCurrency) ||
+            text(resolved.currency) ||
+            t(
+              filters.displayCurrency === "ORIGINAL"
+                ? "全部原币（分币种展示）"
+                : "尚无币种数据",
+            )}
+        </Typography.Text>
+      )}
+      {cache && (
+        <Alert
+          type={cache.refreshing ? "warning" : "info"}
+          title={t(
+            cache.refreshing
+              ? "正在后台更新，当前显示已有快照"
+              : "快照生成时间",
+          )}
+          description={
+            <time dateTime={text(cache.generatedAt)} title="Asia/Shanghai">
+              {timestampText(cache.generatedAt, "Asia/Shanghai")}
+            </time>
+          }
+        />
+      )}
+      {calculation &&
+        ["RUNNING", "FAILED", "INTERRUPTED", "PARTIAL"].includes(
+          text(calculation.status) || "",
+        ) && (
+          <Alert
+            type={calculation.status === "RUNNING" ? "info" : "warning"}
+            title={t(
+              calculation.status === "RUNNING"
+                ? "结算金额计算中"
+                : calculation.status === "PARTIAL"
+                  ? "结算金额部分完成"
+                  : "历史结算计算暂时中断，已保留数据与进度",
+            )}
+            description={
+              <Space wrap>
+                <span>{text(calculation.scope)}</span>
+                <span>
+                  {t("已处理")}: {text(calculation.processed) ?? "—"} /{" "}
+                  {text(calculation.total) ?? "—"}
+                </span>
+              </Space>
+            }
+          />
+        )}
       {text(source?.basis) && (
         <Typography.Paragraph>{text(source?.basis)}</Typography.Paragraph>
       )}
@@ -213,5 +267,28 @@ export function MonetaryFact({
         text(row["reason_" + field]) || t("未提供")
       )}
     </>
+  );
+}
+
+export function AmountWithStatus({
+  value,
+  currency,
+  partial = false,
+  estimated = false,
+  partialLabel = "已知部分",
+}: {
+  value: unknown;
+  currency?: string | undefined;
+  partial?: boolean;
+  estimated?: boolean;
+  partialLabel?: string;
+}) {
+  const { t } = useFinance();
+  return (
+    <Space size="small" wrap>
+      <span>{amountText(value, currency)}</span>
+      {partial && <StatusTag status="warning">{t(partialLabel)}</StatusTag>}
+      {estimated && <StatusTag status="warning">{t("历史价格暂估")}</StatusTag>}
+    </Space>
   );
 }
