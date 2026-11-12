@@ -80,7 +80,7 @@
   <link rel="stylesheet" href="/product-bulk-history.css?v=20260910-bulk-history-2">
   <link rel="stylesheet" href="/product-main-image-styles.css?v=20261019-detail-1">
   <link rel="stylesheet" href="/knowledge-workspace.css?v=20260923-3">
-    <link rel="stylesheet" href="/finance-workspace.css?v=20261111-shopee-ads-1">
+    <link rel="stylesheet" href="/finance-workspace.css?v=20261112-modern-host-1">
     <link rel="stylesheet" href="/finance-costs.css?v=20261104-amount-2">
     <link rel="stylesheet" href="/finance-expenses-design.css?v=20261022-cost-shops-2">
     <link rel="stylesheet" href="/hr-workspace.css?v=20261012-progress-compact-3">
@@ -131,7 +131,7 @@
           <label for="organization-code">公司代码</label>
           <div class="field">
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 21V7l8-4 8 4v14M8 10h2m4 0h2M8 14h2m4 0h2M9 21v-3h6v3"/></svg>
-            <input id="organization-code" name="organizationCode" autocomplete="organization" maxlength="40" pattern="[A-Za-z0-9_-]{2,40}" value="heyi" placeholder="例如：heyi" required>
+            <input id="organization-code" name="organizationCode" autocomplete="organization" maxlength="40" pattern="[A-Za-z0-9_\-]{2,40}" value="heyi" placeholder="例如：heyi" required>
           </div>
 
           <label for="username">手机号</label>
@@ -1725,7 +1725,7 @@
       </div>
       <div class="form-grid">
         <label>角色名称<input name="name" required maxlength="100" placeholder="例如：商品运营"></label>
-        <label>角色编码<input name="code" required pattern="[A-Za-z0-9_-]{2,60}" placeholder="例如：PRODUCT_OPERATOR"></label>
+        <label>角色编码<input name="code" required pattern="[A-Za-z0-9_\-]{2,60}" placeholder="例如：PRODUCT_OPERATOR"></label>
         <label>数据范围<select name="dataScope" required>
           <option value="SELF">仅本人</option>
           <option value="DEPARTMENT">本部门</option>
@@ -1750,7 +1750,7 @@
       </div>
       <div class="form-grid">
         <label>部门名称<input name="name" required maxlength="120" placeholder="例如：内容运营部"></label>
-        <label>部门编码<input name="code" required pattern="[A-Za-z0-9_-]{2,60}" placeholder="例如：CONTENT"></label>
+        <label>部门编码<input name="code" required pattern="[A-Za-z0-9_\-]{2,60}" placeholder="例如：CONTENT"></label>
         <label class="full-field">上级部门<select name="parentId" id="parent-department"><option value="">无上级部门</option></select></label>
       </div>
       <div id="department-form-error" class="form-error" hidden></div>
@@ -1784,7 +1784,7 @@
       </div>
       <div class="form-grid">
         <label>公司名称<input name="name" required maxlength="120" placeholder="例如：华南内容中心"></label>
-        <label>公司代码<input name="code" required maxlength="40" pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,39}" placeholder="例如：south_content"></label>
+        <label>公司代码<input name="code" required maxlength="40" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{1,39}" placeholder="例如：south_content"></label>
         <label class="full-field">公司简介<textarea name="description" maxlength="1000" rows="3" placeholder="说明该工作空间服务的业务范围"></textarea></label>
       </div>
       <p class="form-help">公司代码用于登录，创建后不可重复；建议使用简短英文或拼音。</p>

@@ -22,10 +22,8 @@
 
 ```bash
 npm --prefix frontend/modern ci --ignore-scripts
-npm --prefix frontend/modern run typecheck
-npm --prefix frontend/modern test
-npm --prefix frontend/modern run build
-node frontend/modern/tests/build-smoke.mjs
+node scripts/ci/qa/node_modules/playwright/cli.js install chromium firefox webkit
+npm --prefix frontend/modern run verify:ci
 ```
 
 持续编辑使用 `npm --prefix frontend/modern run dev`，不要与同一 worktree 的另一编译器同时运行。它监听 TypeScript 并重新发布资源；手动刷新新版查看更新。旧版标签页不会因新版重建自动刷新。已有 `scripts/dev.py run` 在需要时完成一次编译；共享服务器不得自动同步所有 worktree，也不以本机源码启动器重启共享运行任务。
@@ -49,3 +47,5 @@ UI 文案显式调用 `t()`。构建只保留现代页面引用的旧词条，�
 店铺管理单独展示 Shopee 官方广告授权、采集状态和暂停/启用。状态按当前分组、店铺、平台及原币筛选，已同步日报数与商品覆盖率分开。页面可见且没有打开对话框时沿用 15 秒刷新，有删除任务时为 3 秒；隐藏、离开或对话框打开时不增加轮询。授权链接只由明确点击生成，采用原有回调；Shopee 回调标签页进入默认旧版，原新版标签页保留。授权信息在离开、切换身份或失去管理权限后关闭。
 
 广告分析的官方 Shopee CPC 日报只展示已返回的证据，不调用仅支持导入/财务记录的来源详情接口，也不提供跨店分配。官方归属或来源待核实记录不提供分配操作；可分配的导入/未归店记录继续使用原金额及来源版本核实。CPC 与 GMS 的覆盖关系未知，不能叠加至已入账广告、利润或推算现金、赠款、净额。
+
+完整的本地浏览器动作矩阵、预算理由、合成夹具边界与未验证项见[现代界面验收矩阵](finance-modern-acceptance.md)。正式入口开关在隔离验收阶段保持关闭。

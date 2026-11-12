@@ -92,6 +92,7 @@ Windows 使用 WSL2 Linux 环境运行源码启动器：在 WSL2 内安装 JDK 2
 | --- | --- | --- |
 | Java 单元/条件集成测试 | `mvn -B -s maven-settings.xml test` | JDK 21；数据库集成测试可能按环境跳过 |
 | 选定 Java 类 | `mvn -B -s maven-settings.xml -Dtest=FinanceSourceOrderIntegrationTest test` | 下述隔离 MySQL 条件 |
+| 新版财务完整本地门禁 | `npm --prefix frontend/modern run verify:ci` | 需先安装锁定 QA 依赖和三种 Playwright 引擎；仅连接本地合成夹具，见[验收矩阵](finance-modern-acceptance.md) |
 | 前端 Node 测试 | `node --test frontend/test/*.test.cjs frontend/test/*.test.mjs frontend/tests/*.test.mjs` | 个别测试另有文件/依赖条件；浏览器测试不是此命令的等价覆盖 |
 | Pi 模块 | `node --test services/pi-runtime/test/*.test.mjs` | 先 `npm --prefix services/pi-runtime ci`；部分 watch 测试需要镜像工具 |
 | 实际 Pi SDK 本地模拟 | `node --test services/pi-runtime/test/product-main-image-agent.integration.mjs` | 已安装锁定依赖；调用 loopback 模拟模型，不是付费模型验收 |

@@ -11,7 +11,12 @@
     "dev": "node ../modern-build.mjs --watch",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint:antd": "node scripts/antd-gate.mjs",
+    "test:browser": "node ../../scripts/ci/qa/node_modules/@playwright/test/cli.js test -c browser/playwright.config.cjs",
+    "check:bundle": "node scripts/bundle-budget.mjs",
+    "verify:ci": "npm run typecheck && npm test && npm run test:source && npm run lint:antd && npm run build && node tests/build-smoke.mjs && npm run check:bundle && npm run test:browser",
+    "test:source": "node --test scripts/*.test.mjs"
   },
   "dependencies": {
     "@ant-design/cssinjs": "2.1.2",
@@ -23,6 +28,7 @@
     "react-dom": "19.3.1"
   },
   "devDependencies": {
+    "@ant-design/cli": "6.7.0",
     "@testing-library/dom": "10.4.2",
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/react": "16.3.3",

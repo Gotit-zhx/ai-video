@@ -11,6 +11,8 @@
     "Segoe UI",
     sans-serif;
   min-height: 100%;
+  min-width: 0;
+  width: 100%;
 }
 
 :host,
@@ -95,6 +97,7 @@
 }
 .finance-workspace-heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -193,5 +196,11 @@
   .finance-filter-bar label .ant-select {
     min-width: 0;
     width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .finance-metric h3.ant-typography {
+    font-size: 18px;
   }
 }

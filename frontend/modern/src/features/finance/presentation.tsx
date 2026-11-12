@@ -141,11 +141,25 @@ export function ScopeEvidence({ data }: { data: unknown }) {
           <StatusTag status={fx.status === "PARTIAL" ? "warning" : "default"}>
             {t(fx.status === "PARTIAL" ? "部分历史汇率缺失" : "历史汇率快照")}
           </StatusTag>
-          <Typography.Text>
-            {[text(fx.id), text(fx.provider), text(fx.mode)]
-              .filter(Boolean)
-              .join(" · ")}
-          </Typography.Text>
+          <details>
+            <summary>{t("历史汇率依据")}</summary>
+            <dl>
+              {(
+                [
+                  ["id", "快照标识"],
+                  ["provider", "汇率来源"],
+                  ["mode", "换算方式"],
+                ] as const
+              ).map(([key, label]) =>
+                text(fx[key]) ? (
+                  <div key={key}>
+                    <dt>{t(label)}</dt>
+                    <dd>{text(fx[key])}</dd>
+                  </div>
+                ) : null,
+              )}
+            </dl>
+          </details>
         </Space>
       )}
     </Space>

@@ -1,0 +1,70 @@
+# 财务 BI 现代界面验收矩阵
+
+本记录对应 2026-11-12 的隔离本地验收。全部业务数据、账号、授权地址和下载内容均为合成夹具；不表示生产数据已完整同步或完成官方对账。旧版仍是默认，`FinanceEntry.enabled` 保持 `false`，体验入口激活由最终评审和现场协调单独决定。
+
+## 可重复执行
+
+在仓库根目录使用 Node 22.21.1：
+
+```bash
+npm --prefix scripts/ci/qa ci --ignore-scripts
+npm --prefix frontend/modern ci --ignore-scripts
+node scripts/ci/qa/node_modules/playwright/cli.js install --with-deps chromium firefox webkit
+npm --prefix frontend/modern run verify:ci
+python3 scripts/ci/run.py frontend
+```
+
+`verify:ci` 依次检查类型、现代组件、AntD 零问题扫描、构建、ESM/CSS 清单、压缩预算及真实浏览器。Playwright 固定为 1.65.0，AntD CLI 固定为 6.7.0；`.pw.cjs` 由专用配置发现，Vitest 只发现 `tests/**/*.test.{ts,tsx}`。CLI 即使退出码为 0，只要存在 issue、skippedFiles、partial 或任何非零 summary，仍使门禁失败。`scripts/ci/frontend.py` 只做静态资源检查；完整旧前端回归入口是 `scripts/ci/run.py frontend`。
+
+浏览器加载真实 `index.html`、登录宿主、`finance-entry.js`、`finance-host.js` 和构建 ESM。HTTP 夹具仅绑定 `127.0.0.1`，只响应逐项列出的 API，不转发未知请求；浏览器拦截并拒绝外部请求。实际请求 query、JSON、multipart、幂等键、取消状态与二进制下载事件均被断言。未知 API、服务器异常、未预期 console/page 错误使测试失败。预设的 401/503/懒加载失败有明确允许的错误类型和可见恢复结果断言。
+
+Firefox 的应用配置也位于本 worktree 的 `.dev/finance-browser-profile`，通过 `MOZ_APP_DATA` 和 `MOZ_LOCAL_APP_DATA` 隔离，不读取日常浏览器资料。小型结果在 `target/finance-modern-browser/results.json`，失败 trace 和合成截图在相邻 `artifacts/`；这些产物不进入 Git。
+
+## 功能与动作证据
+
+| 范围 | 浏览器证据 | 补充约束 |
+| --- | --- | --- |
+| 九个主页面 | `routes.pw.cjs` 逐页进入总览、实时、结算、对账、订单、费用、成本、广告、店铺 | 包含 `fees`、`expense-ledger` 别名及独立千易 |
+| 旧版入口与返回 | `lifecycle.pw.cjs` 实际点击旧版链接打开新标签，核对 noopener、URL seed、书签刷新、旧标签筛选与未保存字段草稿 | 仅夹具替换入口标志；生产源标志保持关闭 |
+| 新旧数据口径 | `routes.pw.cjs`/`parity.pw.cjs` 同一 HTTP 夹具核对总览金额、刷单来源汇总、广告原币事实及导出条件/历史 FX | 夹具提供权威结果，不复制利润或汇率计算公式 |
+| 字段、导入、下载 | `operations.pw.cjs` 显示/导出字段分别保存；账单真实文件选择→映射→预览→确认；冻结范围二进制下载 | 验证提交正文与下载事件；文件解析和真实 Excel 生成由后端测试负责 |
+| 导出任务 | 费用未知写入结果不重放；显式恢复复用原 body 和 Idempotency-Key；成本待补齐任务使用全公司范围 | 浏览器只消费合成任务回执，无生产任务 |
+| 商品成本 | `costs.pw.cjs` 映射数量/版本、真实零价确认、手动单价、仓库规则、分组导入、来源删除、输入核对确认 | 保留历史影响确认及乐观版本，不改变后端计算 |
+| 贴单与刷单 | 月度文件保持公司级范围；刷单本金非零笔数 87、费合计 432.10 在分页后不变；来源证据及预览确认 | 合计由服务端返回，页面不能用单页数据替代 |
+| 千易 | 合格收货筛选、返程证据、范围改变后的导出、全局配置保留暂停、更换身份必须提供 Secret | 不触发真实千易请求，凭据为空或合成 |
+| 店铺与广告授权 | `shops.pw.cjs` 分组新增/重命名，店铺配置，输入精确名称删除，同步，TikTok/Shop/Shopee 显式授权、账户暂停、授权更新 | 只断言合成 HTTPS 地址，不打开平台授权站点 |
+| 广告核实 | `advertising.pw.cjs` 原币分项/来源 fingerprint/公司身份保存；未知结果按钮锁定；资金文件预览再提交 | CPC/GMS 不叠加至已入账口径；底层分类由既有单元测试覆盖 |
+| 权限、生命周期 | reader 无管理动作但可保存个人字段；401 用真实宿主退出；取消下载/离开中止读请求；切换同公司用户丢弃迟到授权 | 不把写失败自动重试；离开停止图表和作用域样式 |
+| 页面代码加载失败 | `lazy-failure.pw.cjs` 中断懒加载页面脚本，保留可用旧版链接 | 边界不显示原始异常、不重放提交，权限/身份/活动状态继续由宿主管理 |
+| 图表 | `charts.pw.cjs` 订单页不请求 ECharts；总览真实 canvas 绘制、主题切换重建、离开清理 | 仅引入 line/bar、grid、tooltip、legend 与 canvas renderer |
+
+细粒度原始字段、广告来源资格、原币分项、历史/月度成本、GIFT、仓/国家/SKU/SPU 规则、过期核对单、费用/广告来源缺失与真实零等继续由现代组件测试及原有前端测试补充。本矩阵不将一条浏览器流程描述成所有业务排列的穷举验证。
+
+## 浏览器、语言与响应式
+
+Chromium、Firefox、WebKit 各执行相同核心流程。语言/主题矩阵每引擎 14 组：七语言分别覆盖浅色和深色，轮换 360、390、768、1024、1440、1920 px；没有执行七语言×两主题×六尺寸×三引擎的全部笛卡尔积。另以 Chromium 390 px 触屏配置执行成本、店铺、广告和通用导入导出完整流程。
+
+矩阵检查整个 document 无横向溢出、宽表可内部横向滚动、字段弹层在视口内且保存按钮可达、弹层属于 ShadowRoot。翻译使用现有目录与现代补充文案，缺词明确回退源文案；Filipino 的 AntD 标准组件使用英语。语言测试证明当前配置可工作，不声称全部财务短文案已经完整人工翻译。
+
+Chromium/Firefox/WebKit 是所安装测试引擎；这不是独立的 Edge 品牌、正式 Safari/iOS 设备或生产浏览器认证。截图只包含合成数据。
+
+## 资源预算与直接修复
+
+静态预算使用实际构建清单和 gzip，不靠调大 Vite chunk 警告阈值。入口模块图限制 10 次模块请求、430 KiB gzip，惰性图表限制 190 KiB gzip，全部现代清单资源限制 800 KiB gzip。入口预算给约 353 KiB 的共享 React/AntD 基线保留约 20% 增长空间；图表预算要求移除地图、3D/其他未用图表后仍低于 190 KiB；总量预算给当前约 618 KiB 留有限新增空间。超预算需要解释/优化，不默认放宽阈值。
+
+ECharts 从全量约 371 KB gzip 降至约 179 KB gzip，保留当前实际 line 和共享 bar 支持。AntD 共享展示块仍约 349 KB gzip、约 1.09 MB raw，Vite 的 500 kB 原始块警告保留并如实记录。初次载入性能仍受网络和旧宿主资源影响，本地夹具时长不等于生产性能。
+
+验收直接发现并修复：Shadow 宿主网格最小宽度导致宽表撑大整页；长语言标题/返回链接不换行；360 px 金额末位折行（保留双列并减小标题字号）；外层 topbar 翻译控件溢出（仅活动新版财务页面的宿主规则生效）；图表消费者未传主题；FX 技术标识改为有标签的折叠证据；懒加载页面失败缺少旧版逃生入口；HTML 标识符 pattern 的连字符需符合 Unicode sets 模式。每项通过失败证据定位后进行最小修改。
+
+
+## 2026-11-12 本地回执
+
+- 现代类型检查通过；Vitest 23 文件、165 项通过；Node 门禁/夹具/标识符检查 11 项通过。
+- AntD CLI 全量扫描：0 issues、0 skipped、partial=false；doctor 14 pass、0 warn、0 fail。
+- Playwright 143/143 通过，0 skipped、0 unexpected、0 flaky：Chromium/Firefox/WebKit 各 43 项，Chromium 390 px 触屏 14 项。回执启动时间为 `2026-11-12T10:19:35.132Z`，耗时约 300 秒。
+- 旧前端完整回归 807 项、39 个 UI 脚本通过，0 unexpected skips；随后针对最终入口与静态资源的 66 项检查通过。人工/外部依赖排除项仍按原回归目录声明保留。
+- 最终构建清单：入口静态 JS 图 5 个模块、361,309 字节 gzip；图表 533,735 字节 raw / 178,852 字节 gzip；全部清单资源 631,986 字节 gzip。原全量图表为 1,117,294 字节 raw / 367,776 字节 gzip，全部清单资源为 820,551 字节 gzip。
+
+## 未验证边界
+
+未请求生产服务器、数据库或上游广告/千易服务，未做真实导入、删除、同步、授权、部署或数据修复。未验证真实 Excel 解析/生成、生产租约调度、网络限流、完整数据覆盖和第三方回调授权成功。现有完整前端回归中的人工/真实依赖排除项继续保留，不计为本次通过。生产只读验收、代码综合复审、PR、发布与体验激活由主会话在当前实际运行基线下协调。

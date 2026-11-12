@@ -10,7 +10,7 @@ const echartsMock = vi.hoisted(() => ({
   }>
 }));
 
-vi.mock('echarts', () => ({ init: echartsMock.init }));
+vi.mock('echarts/core', () => ({ init: echartsMock.init, use: vi.fn() }));
 
 import { FinanceChart } from '../src/shared/chart';
 

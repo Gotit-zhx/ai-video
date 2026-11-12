@@ -14,7 +14,7 @@ export function ReportChart({
   title: string;
   option: EChartsCoreOption;
 }) {
-  const { t } = useFinance();
+  const { t, session } = useFinance();
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   useEffect(() => {
@@ -32,7 +32,10 @@ export function ReportChart({
       <div ref={ref} aria-label={t(title)} style={{ minHeight: 280 }}>
         {visible && (
           <Suspense fallback={<span>{t("图表加载中")}</span>}>
-            <Chart option={option} />
+            <Chart
+              option={option}
+              {...(session.theme === "dark" ? { theme: "dark" } : {})}
+            />
           </Suspense>
         )}
       </div>
