@@ -11,11 +11,9 @@ test("source allocation sends exact original components and fingerprint; unknown
   fixture,
   audit,
 }) => {
-  fixture.overrides.set("PUT /advertising/spend/ad1/allocations", () => ({
-    fixtureError: "fixture allocation result unknown",
-    status: 503,
-  }));
-  audit.expectedErrors.push(/503/);
+  fixture.overrides.set("PUT /advertising/spend/ad1/allocations", (c) =>
+    audit.injectHttpFailure(c, 503, "fixture allocation result unknown"),
+  );
   await open(page, fixture, "ads");
   await page.getByRole("button", { name: "查看 / 核实分配" }).click();
   const d = await shadowDialog(page);
@@ -45,13 +43,11 @@ test("funding import previews then commits original account identity and no fabr
   const d = await shadowDialog(page);
   await d.getByLabel("真实平台账户 ID").fill("fixture-account");
   await d.getByLabel("账户名称").fill("Fixture account");
-  await d
-    .locator("input[type=file]")
-    .setInputFiles({
-      name: "fixture-funding.csv",
-      mimeType: "text/csv",
-      buffer: Buffer.from("date,amount\n2026-10-01,12"),
-    });
+  await d.locator("input[type=file]").setInputFiles({
+    name: "fixture-funding.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("date,amount\n2026-10-01,12"),
+  });
   await d.getByRole("button", { name: "校验并预览" }).click();
   await expect(d.getByText("预览行数: 1")).toBeVisible();
   expect(

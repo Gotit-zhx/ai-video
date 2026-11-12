@@ -49,11 +49,9 @@ test("auth expiry clears modern content and uses the real host login flow", asyn
   fixture,
   audit,
 }) => {
-  fixture.overrides.set("GET /overview", () => ({
-    fixtureError: "fixture session expired",
-    status: 401,
-  }));
-  audit.expectedErrors.push(/401/);
+  fixture.overrides.set("GET /overview", (c) =>
+    audit.injectHttpFailure(c, 401, "fixture session expired"),
+  );
   await page.goto(fixture.url + "/?lang=zh&financeUi=modern#finance-overview");
   await expect(page.locator("[data-finance-modern-host]")).toHaveCount(0);
   await expect(page.locator("#login-form")).toBeVisible();

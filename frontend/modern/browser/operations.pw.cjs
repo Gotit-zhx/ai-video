@@ -76,10 +76,9 @@ test("uncertain export creation never replays; explicit recovery preserves body 
   let submitted = 0;
   fixture.overrides.set("POST /fee-exports", (c) =>
     ++submitted === 1
-      ? { fixtureError: "fixture result unknown", status: 503 }
+      ? audit.injectHttpFailure(c, 503, "fixture result unknown")
       : fixture.handle(c),
   );
-  audit.expectedErrors.push(/503/);
   await open(page, fixture, "fee-records");
   await page.getByRole("button", { name: "费用矩阵导出", exact: true }).click();
   const d = await shadowDialog(page);

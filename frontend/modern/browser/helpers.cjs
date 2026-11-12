@@ -4,6 +4,7 @@ const {
 } = require("../../../scripts/ci/qa/node_modules/@playwright/test");
 const { createFixtureServer } = require("./fixture-server.cjs");
 const { createFinanceData } = require("./data.cjs");
+const { createErrorAudit } = require("./error-audit.cjs");
 const test = base.extend({
   fixture: async ({}, use) => {
     const data = createFinanceData();
@@ -21,9 +22,8 @@ const test = base.extend({
   },
   audit: [
     async ({ context, fixture }, use) => {
-      const errors = [],
+      const audit = createErrorAudit(fixture.url),
         external = [],
-        expectedErrors = [],
         pendingConsole = [];
       await context.route("**/*", async (route) => {
         const url = new URL(route.request().url());
@@ -36,44 +36,87 @@ const test = base.extend({
         } else await route.continue();
       });
       context.on("page", (p) => {
-        p.on("pageerror", (e) => errors.push(e.message));
+        p.on("pageerror", (e) =>
+          audit.record({
+            kind: "pageerror",
+            name: e.name,
+            message: e.message,
+            stack: e.stack,
+            pageUrl: p.url(),
+          }),
+        );
+        p.on("response", (response) => {
+          const request = response.request();
+          audit.record({
+            kind: "response",
+            url: response.url(),
+            method: request.method(),
+            resourceType: request.resourceType(),
+            status: response.status(),
+            pageUrl: p.url(),
+          });
+        });
+        p.on("requestfailed", (request) =>
+          audit.record({
+            kind: "requestfailed",
+            url: request.url(),
+            method: request.method(),
+            resourceType: request.resourceType(),
+            errorText: request.failure()?.errorText,
+            pageUrl: p.url(),
+          }),
+        );
         p.on("console", (msg) => {
-          if (msg.type() === "error") {
-            // Firefox exposes Error objects as JSHandle@object in text().
-            // Preserve their actual message so only the injected failure is allowed.
-            pendingConsole.push(
-              Promise.all(
-                msg
-                  .args()
-                  .map((arg) =>
-                    arg
-                      .evaluate((value) =>
-                        value instanceof Error
-                          ? value.name + ": " + value.message
-                          : typeof value === "string"
-                            ? value
-                            : JSON.stringify(value),
-                      )
-                      .catch(() => msg.text()),
-                  ),
-              ).then((parts) => {
-                errors.push(
-                  (parts.filter(Boolean).join(" ") || msg.text()) +
-                    " " +
-                    msg.location().url,
-                );
+          if (msg.type() !== "error") return;
+          pendingConsole.push(
+            Promise.all(
+              msg
+                .args()
+                .map((arg) =>
+                  arg
+                    .evaluate((value) =>
+                      value instanceof Error
+                        ? {
+                            exception: {
+                              name: value.name,
+                              message: value.message,
+                              stack: value.stack,
+                            },
+                          }
+                        : {
+                            text:
+                              typeof value === "string"
+                                ? value
+                                : JSON.stringify(value),
+                          },
+                    )
+                    .catch(() => ({ text: msg.text() })),
+                ),
+            ).then((parts) =>
+              audit.record({
+                kind: "console",
+                message:
+                  parts
+                    .map(
+                      (p) =>
+                        p.text ||
+                        (p.exception
+                          ? p.exception.name + ": " + p.exception.message
+                          : ""),
+                    )
+                    .filter(Boolean)
+                    .join(" ") || msg.text(),
+                exception: parts.find((p) => p.exception)?.exception,
+                source: msg.location(),
+                pageUrl: p.url(),
               }),
-            );
-          }
+            ),
+          );
         });
       });
-      await use({ errors, expectedErrors });
+      await use(audit);
       await Promise.all(pendingConsole);
-      for (const pattern of expectedErrors) {
-        for (let index = errors.length - 1; index >= 0; index--)
-          if (pattern.test(errors[index])) errors.splice(index, 1);
-      }
-      expect(errors, "browser console/page errors").toEqual([]);
+      audit.assertClean();
       expect(external, "external requests are forbidden").toEqual([]);
     },
     { auto: true },

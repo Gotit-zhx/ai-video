@@ -5,10 +5,10 @@ test("failed lazy page chunk keeps a usable legacy escape without replay", async
   fixture,
   audit,
 }) => {
-  audit.expectedErrors.push(
-    /CostsPage-|dynamically imported|Importing a module|ERR_FAILED|Load failed|Loading module/,
-  );
-  await context.route("**/CostsPage-*.js", (route) => route.abort("failed"));
+  await context.route("**/CostsPage-*.js", (route) => {
+    audit.expectModuleFailure(route.request());
+    return route.abort("failed");
+  });
   await open(page, fixture);
   await go(page, "costs");
   await expect(
