@@ -325,7 +325,7 @@
         if(live&&editable)action(file,'移除文件',()=>removeFile(entry),'fi-record-link fc-danger');
       }
       if(!files.length)el('p','本分组尚未上传成本文件，可一次选择多份 Excel。',source.n,'fc-empty');
-      el('p','同仓、同型号、同月份以最后导入的文件为准。移除后回退到其他仍存在的文件；没有可用价格的订单显示待补齐。手动成本单独维护。',source.n,'fc-inline-note');
+      el('p',safeInputs?'文件先暂存核对，不立即改变有效成本。改价覆盖和移除来源须复核后生效；移除后回退到其他有效文件，没有可用价格的订单保持待补齐。手动成本单独维护。':'同仓、同型号、同月份以最后导入的文件为准。移除后回退到其他仍存在的文件；没有可用价格的订单显示待补齐。手动成本单独维护。',source.n,'fc-inline-note');
       toolbar(source.n);
       const rows=currentCosts().filter(c=>(!state.warehouse||c.warehouse===state.warehouse)&&(!state.search||c.sku.toLowerCase().includes(state.search.toLowerCase())));
       table(source.n,['成本型号','成本仓','月份','单价（人民币）','来源文件','操作'],rows.slice((state.page-1)*12,state.page*12).map(c=>[
