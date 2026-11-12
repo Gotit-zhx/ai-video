@@ -70,7 +70,7 @@
       button(dialog.foot,'保存并重新校验',async()=>{
         if(!reason.value.trim()||!evidence.value.trim())throw Error('请填写操作原因和核对依据');
         await request('/costs/input-changes/'+encodeURIComponent(change.id)+'/revise',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:change.version,metadata:{unit:unit.value.trim(),identifierType:type.value,sourceKey:source.value.trim(),reason:reason.value.trim(),evidenceRef:evidence.value.trim(),spuUniform:uniform.checked,revision:revision.checked}})});
-        dialog.n.close();await refresh();feedback.textContent='资料已重新校验，请查看最新差异和状态。';
+        if(disposed)return;dialog.n.close();await refresh();if(disposed)return;feedback.textContent='资料已重新校验，请查看最新差异和状态。';
       },'fi-primary');
     }
     async function undo(change){
@@ -79,7 +79,7 @@
       button(dialog.foot,'生成撤销核对单',async()=>{
         if(!reason.value.trim()||!evidence.value.trim())throw Error('请填写撤销原因和依据');
         await request('/costs/input-changes/'+encodeURIComponent(change.id)+'/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:change.version,reason:reason.value.trim(),evidenceRef:evidence.value.trim()})});
-        dialog.n.close();await refresh();feedback.textContent='撤销核对单已生成，请核对后确认。';
+        if(disposed)return;dialog.n.close();await refresh();if(disposed)return;feedback.textContent='撤销核对单已生成，请核对后确认。';
       },'fi-primary');
     }
     async function details(id){
@@ -87,10 +87,22 @@
       const dialog=modal('人工成本操作核对'),meta=change.metadata||change.payload?.metadata||{};
       el('strong',change.sourceName||types[change.type]||change.type,dialog.body);
       el('p',(types[change.type]||change.type)+' · '+(statuses[change.status]||change.status),dialog.body,'fc-inline-note');
+      const summary=change.inputSummary||{},validation=change.validation||{};
+      const identityNames={SKU:'商品 SKU',SPU:'平台 SPU',MIXED:'SKU / SPU 混合类型，需核对'};
+      const riskNames={BLOCKED:'存在硬性错误，不能应用',HIGH:'高风险，需复核',REVIEW:'需核对资料',LOW:'普通核对'};
+      const risk=change.risk||validation.risk;
+      table(dialog.body,['原始声明 / 校验摘要','待核对内容'],[
+        {cells:['来源标识',meta.sourceKey||summary.sourceKey||'未填写，需对照原始凭据核对']},
+        {cells:['成本计价单位',meta.unit||summary.unit||'未提供，请核对原表及配置差异']},
+        {cells:['编号类型',identityNames[meta.identifierType||summary.identifierType]||'未明确，需核对']},
+        {cells:['校验摘要',`新增或变更成本单元：${number(validation.changedCells)}；未变单元：${number(validation.unchangedCells)}`]},
+        {cells:['风险判断',riskNames[risk]||risk||(change.requiresIndependentReview?'需要独立复核':'需要核对资料') ]}
+      ]);
       if(change.requiresIndependentReview)el('p','此操作需要另一位有财务管理权限的人员复核，提交者不能自审。',dialog.body,'fc-alert');
       showImpact(dialog.body,change);showIssues(dialog.body,change);
       const diffs=Array.isArray(change.diff)?change.diff:change.diff?.items||change.diff?.rows||[];
-      if(diffs.length){el('h4','旧值与新值',dialog.body);table(dialog.body,['型号 / 配置','成本仓 / 月份','原值','新值'],diffs.slice(0,100).map(item=>({cells:[item.sku||item.field||item.code,[item.warehouse,item.month].filter(Boolean).join(' · '),item.oldPrice??item.before??'无',item.newPrice??item.after??'无']})));}
+      const valueText=value=>value!=null&&typeof value==='object'?JSON.stringify(value):value??'无';
+      if(diffs.length){el('h4','旧值与新值',dialog.body);table(dialog.body,['型号 / 配置','成本仓 / 月份','原值','新值'],diffs.slice(0,100).map(item=>({cells:[item.sku||item.field||item.code,[item.warehouse,item.month].filter(Boolean).join(' · '),valueText(item.oldPrice??item.before),valueText(item.newPrice??item.after)]})));}
       const reason=field(dialog.body,'操作原因',meta.reason||change.reason||'','textarea'),evidence=field(dialog.body,'依据编号或说明',meta.evidenceRef||change.evidenceRef||'');
       reason.readOnly=!canManage;evidence.readOnly=!canManage;
       if(canManage&&change.canConfirm&&change.status!=='BLOCKED'&&!['APPLIED','REJECTED','STALE'].includes(change.status)){
@@ -101,14 +113,14 @@
           if(!reason.value.trim()||!evidence.value.trim())throw Error('请填写操作原因和核对依据');
           if(revision&&!revision.checked)throw Error('请明确声明本次价格修订');
           const result=await request('/costs/input-changes/'+encodeURIComponent(change.id)+'/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:change.version,reason:reason.value.trim(),evidenceRef:evidence.value.trim(),acknowledgeImpact:true,acknowledgeHistorical:historical?.checked===true,revision:revision?.checked===true})});
-          dialog.n.close();await refresh();feedback.textContent=result.status==='APPLIED'?'本次操作已应用，相关成本按现有后台流程更新。':'本次确认已记录，请查看最新状态。';await onChanged?.();
+          if(disposed)return;dialog.n.close();await refresh();if(disposed)return;feedback.textContent=result.status==='APPLIED'?'本次操作已应用，相关成本按现有后台流程更新。':'本次确认已记录，请查看最新状态。';await onChanged?.();
         },'fi-primary');
       }
       if(canManage&&change.canRevise&&!['APPLIED','REJECTED'].includes(change.status))button(dialog.foot,'补充资料',async()=>{dialog.n.close();await revise(change);});
       if(canManage&&change.canReject&&!['APPLIED','REJECTED'].includes(change.status))button(dialog.foot,'驳回',async()=>{
         if(!reason.value.trim())throw Error('请填写驳回原因');
         await request('/costs/input-changes/'+encodeURIComponent(change.id)+'/reject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:change.version,reason:reason.value.trim()})});
-        dialog.n.close();await refresh();feedback.textContent='本次暂存已驳回，有效成本保持原结果。';
+        if(disposed)return;dialog.n.close();await refresh();if(disposed)return;feedback.textContent='本次暂存已驳回，有效成本保持原结果。';
       });
       if(canManage&&change.canUndo&&change.status==='APPLIED')button(dialog.foot,'撤销本次操作',async()=>{dialog.n.close();await undo(change);});
     }
