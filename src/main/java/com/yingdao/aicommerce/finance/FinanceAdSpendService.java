@@ -37,12 +37,18 @@ public class FinanceAdSpendService {
             """+" AND s.source_key IN ("+String.join(",",Collections.nCopies(batch.size(),"?"))+")",args.toArray()));}
         return result;
     }
-    Map<String,Object> report(Scope s,Filter f,boolean cny,String fxSnapshot,String search,String status){
-        // Financial rows/assignments share a DB snapshot; public rate fetching happens after it closes.
-        var snapshot=repo.readSnapshot(30,()->{
+    /** The authoritative source/assignment snapshot, before display currency conversion. */
+    Map<String,Object> buildNativeSpendFacts(Scope s,Filter f){
+        return repo.readSnapshot(30,()->{
             var shops=finance.shops(s);var sources=sources(s,f);var nativeData=new LinkedHashMap<String,Object>();
             nativeData.put("shops",shops);nativeData.put("sources",sources);nativeData.put("assignments",assignments(s,sources.stream().filter(r->!"API_BC_COST".equals(r.get("source"))).map(r->text(r.get("source_key"))).toList()));return nativeData;
         });
+    }
+    Map<String,Object> report(Scope s,Filter f,boolean cny,String fxSnapshot,String search,String status){
+        // Financial rows/assignments share a DB snapshot; public rate fetching happens after it closes.
+        return reportFromNative(buildNativeSpendFacts(s,f),f,cny,fxSnapshot,search,status);
+    }
+    Map<String,Object> reportFromNative(Map<String,Object> snapshot,Filter f,boolean cny,String fxSnapshot,String search,String status){
         var sources=rows(snapshot.get("sources"));
         var quote=cny?finance.exchangeRates().historical(fxSnapshot,sources.stream().map(FinanceFx::businessDate).filter(Objects::nonNull).toList()):null;
         var result=FinanceAdSpendReport.build(sources,rows(snapshot.get("assignments")),rows(snapshot.get("shops")),f,quote,search,status);

@@ -70,6 +70,7 @@ class FinanceConfigurationIntegrationTest {
         migration("V139__finance_label_arrival_queue.sql");
         migration("V140__finance_qianyi_company_configuration.sql");
         migration("V141__finance_cost_date_covering.sql");
+        db.execute("CREATE INDEX idx_finance_page ON finance_records(organization_id,kind,record_date DESC,id,shop_id,platform,currency,source,status,category,order_id)");
         migration("V142__finance_sync_priority.sql");
         migration("V143__finance_calendar_month_completion.sql");
         migration("V144__qianyi_receipt_qualification.sql");
