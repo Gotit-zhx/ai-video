@@ -342,3 +342,18 @@ CREATE TRIGGER fin_qp_ad_allocations_au AFTER UPDATE ON finance_ad_spend_allocat
 CREATE TRIGGER fin_qp_ad_allocations_ad AFTER DELETE ON finance_ad_spend_allocations FOR EACH ROW
  INSERT INTO finance_query_events(organization_id,event_scope,source_table)
  SELECT s.organization_id,'ALL','finance_ad_spend_allocations' FROM finance_ad_spend_allocation_sets s WHERE s.id=OLD.allocation_set_id;
+
+-- Shopee's independent CPC reports live outside the profit ledger. Observation
+-- timestamps alone do not change financial facts or force a historical rebuild.
+CREATE TRIGGER fin_qp_shopee_ad_daily_ai AFTER INSERT ON finance_shopee_ad_daily FOR EACH ROW
+ INSERT INTO finance_query_events(organization_id,event_scope,record_date,shop_id,order_id,record_id,source_table)
+ SELECT NEW.organization_id,'DAY',NEW.record_date,NULL,NULL,NULL,'finance_shopee_ad_daily';
+
+CREATE TRIGGER fin_qp_shopee_ad_daily_au AFTER UPDATE ON finance_shopee_ad_daily FOR EACH ROW
+ INSERT INTO finance_query_events(organization_id,event_scope,record_date,shop_id,order_id,record_id,source_table)
+ SELECT OLD.organization_id,'DAY',OLD.record_date,NULL,NULL,NULL,'finance_shopee_ad_daily' WHERE NOT (OLD.organization_id <=> NEW.organization_id AND OLD.external_shop_id <=> NEW.external_shop_id AND OLD.source_key <=> NEW.source_key AND OLD.record_date <=> NEW.record_date AND OLD.currency <=> NEW.currency AND OLD.amount <=> NEW.amount)
+ UNION ALL SELECT NEW.organization_id,'DAY',NEW.record_date,NULL,NULL,NULL,'finance_shopee_ad_daily' WHERE NOT (OLD.organization_id <=> NEW.organization_id AND OLD.external_shop_id <=> NEW.external_shop_id AND OLD.source_key <=> NEW.source_key AND OLD.record_date <=> NEW.record_date AND OLD.currency <=> NEW.currency AND OLD.amount <=> NEW.amount);
+
+CREATE TRIGGER fin_qp_shopee_ad_daily_ad AFTER DELETE ON finance_shopee_ad_daily FOR EACH ROW
+ INSERT INTO finance_query_events(organization_id,event_scope,record_date,shop_id,order_id,record_id,source_table)
+ SELECT OLD.organization_id,'DAY',OLD.record_date,NULL,NULL,NULL,'finance_shopee_ad_daily';

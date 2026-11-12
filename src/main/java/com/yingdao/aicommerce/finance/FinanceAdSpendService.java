@@ -48,9 +48,9 @@ public class FinanceAdSpendService {
     }
     Map<String,Object> report(Scope s,Filter f,boolean cny,String fxSnapshot,String search,String status){
         // Financial rows/assignments share a DB snapshot; public rate fetching happens after it closes.
-        return reportFromNative(buildNativeSpendFacts(s,f),f,cny,fxSnapshot,search,status);
+        return reportFromNative(s,buildNativeSpendFacts(s,f),f,cny,fxSnapshot,search,status);
     }
-    Map<String,Object> reportFromNative(Map<String,Object> snapshot,Filter f,boolean cny,String fxSnapshot,String search,String status){
+    Map<String,Object> reportFromNative(Scope s,Map<String,Object> snapshot,Filter f,boolean cny,String fxSnapshot,String search,String status){
         var sources=rows(snapshot.get("sources"));
         var quote=cny?finance.exchangeRates().historical(fxSnapshot,sources.stream().map(FinanceFx::businessDate).filter(Objects::nonNull).toList()):null;
         var result=FinanceAdSpendReport.build(sources,rows(snapshot.get("assignments")),rows(snapshot.get("shops")),f,quote,search,status);

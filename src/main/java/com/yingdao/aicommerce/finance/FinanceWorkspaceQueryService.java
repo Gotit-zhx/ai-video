@@ -89,7 +89,7 @@ public class FinanceWorkspaceQueryService {
             snapshot.rawCounts().stream().filter(row->"RECORD".equals(row.get("basis"))&&"BILL".equals(row.get("kind")))
                 .map(row->text(row.get("currency"))).distinct().sorted().toList());
         if(primary){
-            var report=spend.reportFromNative(prepared.nativeSpend(),requested,selected.cny(),selected.fxSnapshot(),selected.search(),selected.assignment());
+            var report=spend.reportFromNative(scope,prepared.nativeSpend(),requested,selected.cny(),selected.fxSnapshot(),selected.search(),selected.assignment());
             var items=rows(report.get("items"));int offset=(int)Math.min(items.size(),(selected.spendPage()-1L)*50);
             report.put("items",new ArrayList<>(items.subList(offset,Math.min(items.size(),offset+50))));
             report.put("total",items.size());report.put("page",selected.spendPage());report.put("pageSize",50);

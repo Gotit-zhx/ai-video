@@ -97,6 +97,23 @@ class FinanceQueryProjectionIntegrationTest {
         long refreshed=projections.find(fixture.owner,f).orElseThrow().rawCounts().stream().filter(r->"RECORD".equals(r.get("basis"))&&"FEE".equals(r.get("kind"))&&number(r.get("advertising_fee"))==1).mapToLong(r->number(r.get("records"))).sum();
         assertEquals(3,refreshed);assertEquals(number(fixture.repo.advertisingFeeDetails(fixture.owner,f,1,50,"").get("total")),refreshed);
     }
+    @Test void shopeeCpcSourceChangesInvalidateBothDatesWithoutDirtyingObservationOnlyUpdates(){
+        build("2026-10-01","2026-11-30","");
+        var october=filter("2026-10-01","2026-10-31","");var november=filter("2026-11-01","2026-11-30","");
+        String key=hash("shopee-cpc-source");
+        fixture.db.update("INSERT INTO finance_shopee_ad_daily(organization_id,external_shop_id,source_key,record_date,currency,amount,source_json) VALUES(?,'10001',?,'2026-10-03','PHP',9.123456,'{}')",fixture.owner.organizationId(),key);
+        assertTrue(projections.find(fixture.owner,october).isEmpty(),"New Shopee daily source must fence the old empty projection");
+        drainAndBuild();var ready=projections.find(fixture.owner,october).orElseThrow();
+        var row=rows(ready.spendFacts().get("sources")).getFirst();assertEquals("API_SHOPEE_CPC",row.get("source"));assertEquals(decimal("9.123456"),decimal(row.get("amount")));
+        fixture.db.update("UPDATE finance_shopee_ad_daily SET observed_at=DATE_ADD(observed_at,INTERVAL 1 SECOND) WHERE source_key=?",key);
+        assertEquals(ready.revision(),projections.find(fixture.owner,october).orElseThrow().revision());
+        fixture.db.update("UPDATE finance_shopee_ad_daily SET record_date='2026-11-02',amount=11 WHERE source_key=?",key);
+        assertTrue(projections.find(fixture.owner,october).isEmpty());assertTrue(projections.find(fixture.owner,november).isEmpty());
+        drainAndBuild();assertTrue(rows(projections.find(fixture.owner,october).orElseThrow().spendFacts().get("sources")).isEmpty());
+        assertEquals(0,decimal("11").compareTo(decimal(rows(projections.find(fixture.owner,november).orElseThrow().spendFacts().get("sources")).getFirst().get("amount"))));
+        fixture.db.update("DELETE FROM finance_shopee_ad_daily WHERE source_key=?",key);assertTrue(projections.find(fixture.owner,november).isEmpty());
+        drainAndBuild();assertTrue(rows(projections.find(fixture.owner,november).orElseThrow().spendFacts().get("sources")).isEmpty());
+    }
     @Test void directSqlMovesDirtyBothDatesAndRollbackDoesNotInvalidate(){
         fee("moving","2026-10-02","12","SHOPEE","UNASSIGNED");build("2026-10-01","2026-11-30","");
         var october=filter("2026-10-01","2026-10-31","");var before=projections.find(fixture.owner,october).orElseThrow();
