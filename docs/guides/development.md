@@ -16,6 +16,8 @@
 
 普通前端不需要 `npm install` 或 `npm run build`。本地 Spring 直接从 `frontend/` 读取 HTML/JS/CSS；服务器由 Nginx bind 同一源码目录。保存后刷新即可，开发专用浏览器轮询可自动刷新。新增资源仍须检查 `index.html` 引用和相关页面测试，但日常运行不生成 gzip、静态发布目录或前端镜像。
 
+财务 BI 主导航直接按当前用户的 `platformAdmin`、`ADMIN`、`finance:view` / `finance:manage` 判断可见性，不能依赖后加载工作台脚本是否已注册。工作台及财务 API 仍独立鉴权。导航时序回归入口为 `node --test frontend/test/finance-navigation.test.cjs`。
+
 ## 配置入口及优先级
 
 - `.env.development` 是源码开发的私有环境文件；`python3 scripts/dev.py init` 只在它缺失时生成，不覆盖已有内容，也不修改 `.env` 或其他环境文件。
