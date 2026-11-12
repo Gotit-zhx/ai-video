@@ -153,3 +153,19 @@ test('OAuth notices reject JSON and camel-case credential fields as well as quer
     assert(!JSON.stringify(result.notice).includes('private-canary'));
   }
 });
+
+test('OAuth notices replace structured and camel-case state values with the generic fallback',()=>{
+  for (const message of [
+    '{"state":"private-canary"}',
+    '{ "state" : "private-canary" }',
+    'oauthState: private-canary',
+    'oauth_state = private-canary',
+    '{"oauthState":"private-canary"}'
+  ]) {
+    const result=sanitizedBootstrap('?financeAuth=error&financeMessage='+encodeURIComponent(message),'#finance-shops');
+    assert.equal(result.url,'/app#finance-shops');
+    assert.equal(result.notice.status,'error');
+    assert.equal(result.notice.message,'财务授权未完成，请查看账户连接状态');
+    assert(!JSON.stringify(result.notice).includes('private-canary'));
+  }
+});

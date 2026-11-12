@@ -31,7 +31,7 @@
       const authStatus = incoming.get("financeAuth");
       if (authStatus === "success" || authStatus === "error") {
         const message = incoming.get("financeMessage") || "";
-        const safeMessage = message.length <= 300 && !/[\u0000-\u001f]|https?:\/\/|token|auth[_-]?code|password|cookie|secret|\bstate\b\s*[=:]|bearer\s+/i.test(message);
+        const safeMessage = message.length <= 300 && !/[\u0000-\u001f]|https?:\/\/|token|auth[_-]?code|password|cookie|secret|\b(?:oauth[_-]?)?state\b(?:\\?["'])?\s*[=:]|bearer\s+/i.test(message);
         window.HoyeeFinanceAuthNotice = {
           status: authStatus,
           message: safeMessage && message ? message : (authStatus === "success" ? "财务授权已完成" : "财务授权未完成，请查看账户连接状态")
