@@ -39,6 +39,12 @@ class FinanceCostIssuesTest {
         assertEquals("未知",result.get("source"));assertEquals("UNKNOWN",call("describe",null).get("code"));
         assertEquals("UNKNOWN",call("of","not-a-real-code").get("code"));
     }
+    @Test void overrideAndMissingBaselineHaveActionableMetadata() {
+        for(String code:List.of("PRICE_OVERRIDE","PRICE_BASELINE_MISSING")) {
+            var result=FinanceCostIssues.of(code);assertEquals(code,result.get("code"));
+            assertFalse(result.get("source").toString().isBlank());assertFalse(result.get("action").toString().isBlank());
+        }
+    }
     @Test void knownValidationMetadataCanBeUsedWithoutParsingMessages() {
         var issue=call("of","DUPLICATE_PRICE_CONFLICT");assertEquals("DUPLICATE_PRICE_CONFLICT",issue.get("code"));
         assertFalse(issue.get("message").toString().isBlank());assertFalse(issue.get("action").toString().isBlank());

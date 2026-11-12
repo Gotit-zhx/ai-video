@@ -67,7 +67,7 @@ public final class FinanceCostValidation {
             if(!validIdentity)add(issues,"IDENTIFIER_INVALID","BLOCK",row,"");
             if(!Set.of("SKU","SPU").contains(type))add(issues,"IDENTIFIER_TYPE_UNKNOWN","REVIEW",row,"");
             if(unit.isBlank())add(issues,"UNIT_UNKNOWN","REVIEW",row,"");
-            if(warehouse.isBlank())add(issues,"WAREHOUSE_UNKNOWN","REVIEW",row,"");
+            if(warehouse.isBlank())add(issues,"WAREHOUSE_UNKNOWN","BLOCK",row,"");
             boolean validWarehouse=warehouse.length()<=120&&!formula(warehouse);
             if(!validWarehouse)add(issues,"WAREHOUSE_INVALID","BLOCK",row,"");
             if(type.equals("SPU")&&!Boolean.TRUE.equals(meta.get("spuUniform")))add(issues,"SPU_UNIFORM_UNCONFIRMED","REVIEW",row,"");
@@ -111,11 +111,15 @@ public final class FinanceCostValidation {
             else {
                 changed++;
                 if(now!=null&&month(candidate.key().month()).isBefore(now))add(issues,"HISTORICAL_MONTH","REVIEW",row,candidate.key().month());
-                if(!prior.isEmpty()&&!Boolean.TRUE.equals(meta.get("revision")))add(issues,"PRICE_REVISION_REQUIRED","REVIEW",row,candidate.key().month());
+                if(!prior.isEmpty()) {
+                    add(issues,"PRICE_OVERRIDE","REVIEW",row,candidate.key().month());
+                    if(!Boolean.TRUE.equals(meta.get("revision")))add(issues,"PRICE_REVISION_REQUIRED","REVIEW",row,candidate.key().month());
+                }
                 var historyMonths=historyByIdentity.get(candidate.key().identity());
                 var historyEntry=historyMonths==null?null:historyMonths.floorEntry(candidate.key().month());
                 Cell history=historyEntry==null?null:historyEntry.getValue().getFirst();
                 boolean known=historyMonths!=null;
+                if(known&&history==null)add(issues,"PRICE_BASELINE_MISSING","REVIEW",row,candidate.key().month());
                 if(!known) {
                     boolean sameSku=knownSkus.contains(candidate.key().identity().sku());
                     add(issues,sameSku?"IDENTITY_CHANGED":"NEW_IDENTIFIER","REVIEW",row,candidate.key().month());
@@ -135,13 +139,17 @@ public final class FinanceCostValidation {
                         add(issues,"PRICE_CHANGE_HIGH","REVIEW",row,candidate.key().month());
                 }
             }
-            String groupKey=canonical(List.of(candidate.key().identity().sku(),candidate.warehouse(),candidate.warehouseId(),
+            String groupKey=canonical(List.of(candidate.key().identity().sku(),candidate.key().identity().warehouseKey(),
                 candidate.key().identity().type(),candidate.key().identity().unit()));
             var target=normalized.computeIfAbsent(groupKey,k->{
                 var result=new LinkedHashMap<String,Object>();result.put("sku",candidate.key().identity().sku());result.put("warehouse",candidate.warehouse());
                 result.put("warehouseId",candidate.warehouseId());result.put("identifierType",candidate.key().identity().type());result.put("unit",candidate.key().identity().unit());
                 result.put("prices",new TreeMap<String,BigDecimal>());result.put("row",candidate.row());return result;
             });
+            for(var evidence:cells) {
+                if(evidence.warehouse().compareTo(text(target.get("warehouse")))<0)target.put("warehouse",evidence.warehouse());
+                target.put("row",earliestRow(target.get("row"),evidence.row()));
+            }
             @SuppressWarnings("unchecked") var prices=(Map<String,BigDecimal>)target.get("prices");
             prices.put(candidate.key().month(),candidate.price().stripTrailingZeros());
         }
@@ -170,6 +178,14 @@ public final class FinanceCostValidation {
         issue.put("sku",row==null?"":identifier(row.get("sku")));issue.put("warehouse",row==null?"":text(row.get("warehouse")));
         issue.put("month",month);issue.put("row",row==null?null:row.get("row"));issues.add(issue);
     }
+    private static Object earliestRow(Object left,Object right) {
+        if(left==null)return right;if(right==null)return left;
+        BigDecimal a=decimal(left),b=decimal(right);
+        int order=a!=null&&b!=null?a.compareTo(b):text(left).compareTo(text(right));
+        if(order==0)order=text(left).compareTo(text(right));
+        if(order==0)order=left.getClass().getName().compareTo(right.getClass().getName());
+        return order<=0?left:right;
+    }
     private static Object value(Map<String,Object> row,Map<String,Object> meta,String name) {return row.containsKey(name)?row.get(name):meta.get(name);}
     private static boolean present(Map<String,Object> map,String name) {return !text(map.get(name)).isBlank();}
     private static String text(Object value) {return value==null?"":value.toString();}
@@ -195,7 +211,12 @@ public final class FinanceCostValidation {
     }
     private static String canonical(Object value) {
         if(value instanceof Collection<?> values) {var result=new StringBuilder();for(var item:values){String encoded=canonical(item);result.append(encoded.length()).append(':').append(encoded);}return result.toString();}
-        return value instanceof BigDecimal number?number.stripTrailingZeros().toPlainString():text(value);
+        if(value instanceof BigDecimal number) {
+            var normalized=number.stripTrailingZeros();
+            // Preserve the existing encoding for ordinary costs; never expand an unbounded exponent.
+            return normalized.scale()>=-18&&normalized.scale()<=18?normalized.toPlainString():normalized.toString();
+        }
+        return text(value);
     }
     private static String hash(String value) {
         try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}

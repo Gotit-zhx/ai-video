@@ -89,7 +89,9 @@ class FinanceCostValidationTest {
         var result=analyze(List.of(row("A","2026-11","10.01")),List.of(current("A","2026-11","10")),metadata());
         issue(result,"PRICE_REVISION_REQUIRED","REVIEW");assertEquals(true,result.get("requiresReview"));
         var meta=metadata();meta.put("revision",true);
-        assertEquals(false,analyze(List.of(row("A","2026-11","10.01")),List.of(current("A","2026-11","10")),meta).get("requiresReview"));
+        var revision=analyze(List.of(row("A","2026-11","10.01")),List.of(current("A","2026-11","10")),meta);
+        assertEquals(true,revision.get("requiresReview"));issue(revision,"PRICE_OVERRIDE","REVIEW");
+        assertEquals("REVIEW",revision.get("risk"));
     }
     @Test void verifiedKnownIdentitySupplementIsSafeButNewOrUnverifiedSourceNeedsReview() {
         var current=List.of(current("A","2026-10","2"));var incoming=List.of(row("A","2026-11","2"));
@@ -114,10 +116,10 @@ class FinanceCostValidationTest {
     }
     @Test void thresholdRequiresBothAbsoluteAndPercentageChangesAndUsesStrictExceeds() {
         var meta=metadata();meta.put("revision",true);
-        for(String price:List.of("11","12","8"))assertEquals(false,analyze(List.of(row("A","2026-11",price)),List.of(current("A","2026-11","10")),meta).get("requiresReview"));
-        var result=analyze(List.of(row("A","2026-11","12.01")),List.of(current("A","2026-11","10")),meta);
+        for(String price:List.of("11","12","8"))assertEquals(false,analyze(List.of(row("A","2026-11",price)),List.of(current("A","2026-10","10")),meta).get("requiresReview"));
+        var result=analyze(List.of(row("A","2026-11","12.01")),List.of(current("A","2026-10","10")),meta);
         issue(result,"PRICE_CHANGE_HIGH","REVIEW");assertEquals("HIGH",result.get("risk"));
-        assertEquals(false,analyze(List.of(row("A","2026-11","1.4")),List.of(current("A","2026-11","1")),meta).get("requiresReview"));
+        assertEquals(false,analyze(List.of(row("A","2026-11","1.4")),List.of(current("A","2026-10","1")),meta).get("requiresReview"));
     }
     @Test void supplementCannotEvadePriceJumpProtectionByUsingANewMonth() {
         var result=analyze(List.of(row("A","2026-11","100")),List.of(current("A","2026-10","2")),metadata());
@@ -146,7 +148,7 @@ class FinanceCostValidationTest {
         issue(analyze(List.of(row("A","2026-11","2")),List.of(),Map.of()),"NOW_MONTH_UNKNOWN","REVIEW");
         var meta=metadata();meta.put("currency","USD");issue(analyze(List.of(row("A","2026-11","2")),List.of(),meta),"CURRENCY_UNSUPPORTED","BLOCK");
         issue(analyze(List.of(),List.of(),metadata()),"EMPTY_COSTS","BLOCK");
-        var bad=row("A","2026-11","2");bad.put("warehouse","");issue(analyze(List.of(bad),List.of(),metadata()),"WAREHOUSE_UNKNOWN","REVIEW");
+        var bad=row("A","2026-11","2");bad.put("warehouse","");issue(analyze(List.of(bad),List.of(),metadata()),"WAREHOUSE_UNKNOWN","BLOCK");
     }
     @Test void conflictingHistoricalPricesCannotBeChosenArbitrarilyForSupplement() {
         var result=analyze(List.of(row("A","2026-11","2")),List.of(current("A","2026-10","2"),current("A","2026-10","2.01")),metadata());
@@ -167,6 +169,33 @@ class FinanceCostValidationTest {
     @Test void rejectedNumericIdentifierRetainsOriginalEvidenceInIssue() {
         var result=analyze(List.of(row(new BigDecimal("1E+18"),"2026-11","2")),List.of(),metadata());
         assertEquals("1E+18",rows(result.get("issues")).stream().filter(i->"IDENTIFIER_INVALID".equals(i.get("code"))).findFirst().orElseThrow().get("sku"));
+    }
+    @Test void futureOnlyPriceCannotSupplyASafeSupplementBaseline() {
+        var result=analyze(List.of(row("A","2026-11","2")),List.of(current("A","2026-12","2")),metadata());
+        assertEquals(true,result.get("requiresReview"));assertNotEquals("LOW",result.get("risk"));
+        issue(result,"PRICE_BASELINE_MISSING","REVIEW");
+    }
+    @Test void outOfRangeExponentsAreBlockedAndCanonicalEncodingStaysBounded() throws Exception {
+        var encoder=FinanceCostValidation.class.getDeclaredMethod("canonical",Object.class);encoder.setAccessible(true);
+        for(String value:List.of("1E+512","1E-512")) {
+            var result=analyze(List.of(row("A","2026-11",value)),List.of(),metadata());
+            assertEquals(true,result.get("blocked"));issue(result,"PRICE_INVALID","BLOCK");
+            String encoded=(String)encoder.invoke(null,new BigDecimal(value));
+            assertTrue(encoded.length()<32,"Exponent must not expand into hundreds of zeroes");
+        }
+    }
+    @Test void reorderedAliasesHaveIdenticalNormalizedWarehousePricesAndEarliestRow() {
+        var meta=metadata();meta.put("warehouseAliases",Map.of("菲律宾","ph","旧菲律宾仓","ph"));
+        var first=row("A","2026-11","2");
+        var alias=row("A","2026-11","2.00");alias.put("warehouse","旧菲律宾仓");alias.put("row",8);
+        var historical=row("A","2026-10","1");historical.put("row",2);
+        var forward=analyze(List.of(first,alias,historical),List.of(),meta);
+        var reverse=analyze(List.of(historical,alias,first),List.of(),meta);
+        assertEquals(forward.get("semanticHash"),reverse.get("semanticHash"));
+        assertEquals(forward.get("normalizedCosts"),reverse.get("normalizedCosts"));
+        var normalized=rows(forward.get("normalizedCosts"));assertEquals(1,normalized.size());
+        assertEquals("旧菲律宾仓",normalized.getFirst().get("warehouse"));assertEquals(2,normalized.getFirst().get("row"));
+        assertEquals(Map.of("2026-10",BigDecimal.ONE,"2026-11",new BigDecimal("2")),normalized.getFirst().get("prices"));
     }
     @Test void analysisDoesNotMutateCallerRowsMetadataOrPolicy() {
         var incoming=List.of(Collections.unmodifiableMap(row("A","2026-11","2.00")));

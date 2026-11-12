@@ -19,6 +19,8 @@ public final class FinanceCostIssues {
             case "ZERO_PRICE" -> new String[]{"成本表为零值，需核对单价","成本资料","核对原始单价；明确的人工零价须另行确认"};
             case "DUPLICATE_PRICE_CONFLICT" -> new String[]{"同批相同身份和月份存在不同单价","成本资料","核对并消除同批冲突后重新提交"};
             case "CURRENT_PRICE_CONFLICT" -> new String[]{"现有资料同一身份和月份存在不同单价","有效成本资料","先核对现有冲突，不能选择任意一条价格"};
+            case "PRICE_OVERRIDE" -> new String[]{"变更将覆盖已有月份的成本单价","有效成本资料","声明修订依据并提交独立复核，不能直接覆盖"};
+            case "PRICE_BASELINE_MISSING" -> new String[]{"目标月份及之前没有可比较的同身份成本价","有效成本资料","补充适用月份的成本依据并独立复核"};
             case "PRICE_REVISION_REQUIRED" -> new String[]{"已有单价不同，尚未声明修订","有效成本资料","声明修订并补充变更依据"};
             case "PRICE_CHANGE_HIGH" -> new String[]{"单价变化超过复核阈值","有效成本资料","核对单价和单位并独立复核影响"};
             case "NEW_IDENTIFIER" -> new String[]{"新型号缺少同身份历史成本依据","成本资料","核对型号、单位和成本来源后独立复核"};
