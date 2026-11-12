@@ -347,5 +347,29 @@ class FinanceCostInputSafetyIntegrationTest extends FinanceConfigurationIntegrat
         assertEquals(0,decimal("20").compareTo(decimal(diff.get("oldPrice"))));assertEquals("source-B.csv",diff.get("oldSource"));
         assertEquals(0,decimal("10").compareTo(decimal(diff.get("newPrice"))));assertEquals("source-A.csv",diff.get("newSource"));
     }
+    @Test void manualPriceOnlyDetailShowsActualTargetAndUnchangedUnitWithoutFalseDeletions(){
+        inputFixture();appliedManual();var before=db.queryForMap("SELECT id,code,warehouse,unit,unit_price_cny FROM finance_manual_costs");String manual=text(before.get("id"));
+        var metadata=Map.<String,Object>of("reason","按采购单调整人工单价","evidenceRef","核价单-9");
+        var draft=safety.stage(principal(),"MANUAL_UPDATE",group,"",manual,Map.of("unit","包","unitPriceCny","9","confirmed",true,"version",1),null,"",metadata);
+        var detail=safety.detail(reviewer(),id(draft));assertEquals(true,detail.get("canConfirm"));assertEquals(false,detail.get("canRevise"));
+        var differences=rows(detail.get("diff"));assertEquals(List.of("unitPriceCny"),differences.stream().map(r->text(r.get("field"))).toList(),"partial update does not delete code/warehouse or change an unchanged unit");
+        assertEquals(0,decimal("8").compareTo(decimal(differences.getFirst().get("before"))));assertEquals(0,decimal("9").compareTo(decimal(differences.getFirst().get("after"))));
+        var summary=map(detail.get("inputSummary"));assertEquals(Map.of("code","MANUAL","warehouse","海外仓-菲律宾","unit","包","oldUnit","包","newUnit","包"),summary);
+        for(String privateField:List.of("payload","payload_json","state","state_json","original_bytes","result_json"))assertFalse(detail.containsKey(privateField));
+        safety.confirm(reviewer(),id(draft),ack(detail));var saved=db.queryForMap("SELECT code,warehouse,unit,unit_price_cny FROM finance_manual_costs WHERE id=?",manual);
+        for(String unchanged:List.of("code","warehouse","unit"))assertEquals(before.get(unchanged),saved.get(unchanged));assertEquals(0,decimal("9").compareTo(decimal(saved.get("unit_price_cny"))));
+        assertEquals(summary,safety.detail(reviewer(),id(draft)).get("inputSummary"),"applied detail preserves the same reviewed target/unit summary");
+    }
+    @Test void manualUnitDetailUsesEffectivePayloadInsteadOfDeclaredMetadata(){
+        inputFixture();appliedManual();String manual=db.queryForObject("SELECT id FROM finance_manual_costs",String.class);
+        var metadata=Map.<String,Object>of("unit","套","reason","更正实际计价单位","evidenceRef","单位核对-1");
+        var draft=safety.stage(principal(),"MANUAL_UPDATE",group,"",manual,Map.of("unit","箱","unitPriceCny","8","confirmed",true,"version",1),null,"",metadata);
+        var detail=safety.detail(reviewer(),id(draft));var expected=Map.of("code","MANUAL","warehouse","海外仓-菲律宾","unit","箱","oldUnit","包","newUnit","箱");
+        assertEquals(expected,detail.get("inputSummary"));var differences=rows(detail.get("diff"));assertEquals(List.of("unit"),differences.stream().map(r->text(r.get("field"))).toList(),"equal numeric prices do not become a fake price difference");
+        assertEquals("包",differences.getFirst().get("before"));assertEquals("箱",differences.getFirst().get("after"));
+        var revised=safety.revise(principal(),id(draft),Map.of("version",detail.get("version"),"metadata",Map.of("unit","片","reason","补充凭据","evidenceRef","单位核对-2")));
+        assertEquals(expected,revised.get("inputSummary"));safety.confirm(reviewer(),id(draft),ack(revised));
+        var saved=db.queryForMap("SELECT code,warehouse,unit,unit_price_cny FROM finance_manual_costs WHERE id=?",manual);assertEquals("MANUAL",saved.get("code"));assertEquals("海外仓-菲律宾",saved.get("warehouse"));assertEquals("箱",saved.get("unit"));assertEquals(0,decimal("8").compareTo(decimal(saved.get("unit_price_cny"))));
+    }
     static byte[] csv(String price){return ("仓库,型号,202610\n海外仓-菲律宾,PACK,"+price+"\n").getBytes(StandardCharsets.UTF_8);}
 }

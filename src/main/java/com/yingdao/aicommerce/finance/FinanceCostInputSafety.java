@@ -57,14 +57,14 @@ public class FinanceCostInputSafety {
             original_bytes,original_hash,original_change_id,semantic_hash,baseline_hash,validation_json,diff_json,impact_json,state_json,requires_independent_review,submitted_by,last_edited_by)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,id,s.organizationId(),group,shop,type,preview.get("status"),target,name.substring(0,Math.min(250,name.length())),repo.write(payload),repo.write(meta),storedBytes,
-            originalHash,originalRef,semantic,baseline,repo.write(preview.get("validation")),repo.write(Map.of("items",preview.get("diff"))),repo.write(preview.get("impact")),repo.write(before),preview.get("requiresIndependentReview"),actor,actor);
+            originalHash,originalRef,semantic,baseline,repo.write(preview.get("validation")),repo.write(previewData(preview)),repo.write(preview.get("impact")),repo.write(before),preview.get("requiresIndependentReview"),actor,actor);
         return Map.of("staged",true,"changeId",id,"status",preview.get("status"),"duplicate",false,"rows",rows(payload.get("costs")).size());
     }
     private Map<String,Object> staged(Map<String,Object> row,boolean duplicate,int count){return Map.of("staged",true,"changeId",row.get("id"),"status",row.get("status"),"duplicate",duplicate,"rows",count);}
     private Map<String,Object> preview(Scope s,String type,String group,String shop,String target,Map<String,Object> payload,Map<String,Object> meta,String name){
         String scopeShop=Set.of("MAPPING","SETTINGS").contains(type)?shop:"";
         var impact=state.impact(s,group,scopeShop);boolean independent=number(impact.get("scopeOrderCount"))>LARGE_ORDER_SCOPE;
-        Map<String,Object> validation;List<Map<String,Object>> diff;
+        Map<String,Object> validation;List<Map<String,Object>> diff;Map<String,Object> inputSummary=Map.of();
         if(type.equals("IMPORT")){
             var current=rows(workspace.book(s,group).get("costs"));var supplied=new LinkedHashMap<>(meta);supplied.put("nowMonth",YearMonth.now(java.time.ZoneId.of("Asia/Shanghai")).toString());supplied.put("sourceVerified",false);
             validation=Boolean.TRUE.equals(payload.get("parseInvalid"))?new LinkedHashMap<>(parseFailure(text(payload.get("parseReason")))):new LinkedHashMap<>(FinanceCostValidation.analyze(rows(payload.get("costs")),current,supplied,Map.of()));
@@ -94,15 +94,28 @@ public class FinanceCostInputSafety {
                 var manual=map(before.get("manual"));if(!manual.isEmpty()){old.put("unit",manual.get("unit"));old.put("unitPriceCny",manual.get("unit_price_cny"));old.put("code",manual.get("code"));old.put("warehouse",manual.get("warehouse"));}
             }
             if(type.equals("REMOVE_SOURCE")){var source=map(before.get("source"));old.put("sourceName",source.get("source_name"));old.put("costRows",rows(decode(source.get("data_json")).get("costs")).size());}
-            diff=configurationDiff(old,Set.of("REMOVE_SOURCE","MANUAL_DELETE").contains(type)?Map.of():payload);
+            Map<String,Object> effectiveAfter=Set.of("REMOVE_SOURCE","MANUAL_DELETE").contains(type)?Map.of():payload;
+            if(type.equals("MANUAL_UPDATE")){
+                // changeManual updates only unit and price; the target code/warehouse remain unchanged.
+                old.put("unitPriceCny",decimal(old.get("unitPriceCny")).stripTrailingZeros());
+                var after=new LinkedHashMap<>(old);after.put("unit",payload.get("unit"));after.put("unitPriceCny",decimal(payload.get("unitPriceCny")).stripTrailingZeros());
+                effectiveAfter=after;
+                inputSummary=Map.of("code",old.get("code"),"warehouse",old.get("warehouse"),"unit",after.get("unit"),"oldUnit",old.get("unit"),"newUnit",after.get("unit"));
+            }
+            diff=configurationDiff(old,effectiveAfter);
             independent|=Set.of("REMOVE_SOURCE","MANUAL_UPDATE","MANUAL_DELETE").contains(type);
             if(type.equals("SETTINGS"))independent|=!diff.isEmpty();
             if(Set.of("MAPPING","MANUAL_CREATE").contains(type))independent|=!repo.jdbc().queryForList("SELECT id FROM finance_cost_mappings WHERE organization_id=? AND shop_id=? AND product_id=? AND sku_id=? LIMIT 1",s.organizationId(),shop,payload.get("product_id"),payload.get("sku_id")).isEmpty();
             validation=new LinkedHashMap<>();validation.put("blocked",false);validation.put("risk",independent?"HIGH":"REVIEW");validation.put("issues",List.of(issue("HUMAN_INPUT_UNVERIFIED","REVIEW","请核对理由、原始依据和操作实际适用范围")));
             validation.put("priceOverride",type.equals("MANUAL_UPDATE")&&decimal(old.get("unitPriceCny")).compareTo(decimal(payload.get("unitPriceCny")))!=0);
         }
-        var result=new LinkedHashMap<String,Object>();result.put("validation",validation);result.put("impact",impact);result.put("diff",diff);result.put("requiresIndependentReview",independent);
+        var result=new LinkedHashMap<String,Object>();if(!inputSummary.isEmpty())result.put("inputSummary",inputSummary);result.put("validation",validation);result.put("impact",impact);result.put("diff",diff);result.put("requiresIndependentReview",independent);
         result.put("status",Boolean.TRUE.equals(validation.get("blocked"))?"BLOCKED":independent||Boolean.TRUE.equals(validation.get("requiresReview"))||!rows(validation.get("issues")).isEmpty()?"REVIEW":"READY");return result;
+    }
+    /** Persist only the bounded public preview, never the application payload or private target snapshot. */
+    private Map<String,Object> previewData(Map<String,Object> preview){
+        var result=new LinkedHashMap<String,Object>();result.put("items",preview.get("diff"));
+        if(preview.containsKey("inputSummary"))result.put("inputSummary",preview.get("inputSummary"));return result;
     }
     private void validate(Scope s,String type,String group,String shop,String target,Map<String,Object> body){
         Set<String> allowed=switch(type){
@@ -180,7 +193,16 @@ public class FinanceCostInputSafety {
         result.put("validation",validation);result.put("impact",decode(row.get("impact_json")));result.put("requiresIndependentReview",independent);
         result.put("canConfirm",manage&&Set.of("READY","REVIEW").contains(status)&&!Boolean.TRUE.equals(validation.get("blocked"))&&!Boolean.TRUE.equals(validation.get("needsMetadata"))&&(!independent||!own&&!p.userId().equals(row.get("last_edited_by"))));
         result.put("canReject",manage&&own&&OPEN.contains(status));result.put("canRevise",manage&&own&&OPEN.contains(status));result.put("canUndo",manage&&status.equals("APPLIED")&&!"UNDO".equals(row.get("type")));
-        if(details){result.put("metadata",decode(row.get("metadata_json")));result.put("diff",rows(decode(row.get("diff_json")).get("items")).stream().limit(DISPLAY_LIMIT).toList());result.put("actualScope",decode(row.get("impact_json")).get("actualScope"));result.put("reason",row.get("reason"));result.put("evidenceRef",row.get("evidence_ref"));}
+        if(details){
+            var preview=decode(row.get("diff_json"));result.put("metadata",decode(row.get("metadata_json")));result.put("diff",rows(preview.get("items")).stream().limit(DISPLAY_LIMIT).toList());
+            if("MANUAL_UPDATE".equals(row.get("type"))){
+                // These five server-generated strings are bounded by target schema and validated unit length.
+                var summary=new LinkedHashMap<String,Object>();var saved=map(preview.get("inputSummary"));
+                for(String field:List.of("code","warehouse","unit","oldUnit","newUnit"))if(saved.get(field) instanceof String value)summary.put(field,value);
+                if(!summary.isEmpty())result.put("inputSummary",summary);
+            }
+            result.put("actualScope",decode(row.get("impact_json")).get("actualScope"));result.put("reason",row.get("reason"));result.put("evidenceRef",row.get("evidence_ref"));
+        }
         return result;
     }
     public Map<String,Object> confirm(PlatformPrincipal p,String id,Map<String,Object> request){
@@ -266,7 +288,7 @@ public class FinanceCostInputSafety {
             if(!type.equals("IMPORT"))validate(s,type,group,shop,target,payload);
             preview=preview(s,type,group,shop,target,payload,meta,text(row.get("source_name")));
         }
-        repo.jdbc().update("UPDATE finance_cost_input_changes SET semantic_hash=?,payload_json=?,metadata_json=?,validation_json=?,diff_json=?,impact_json=?,state_json=?,baseline_hash=?,requires_independent_review=?,status=?,last_edited_by=?,version=version+1,updated_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND id=?",state.digest(Map.of("type",type,"target",target,"shop",shop,"payload",semanticPayload(payload),"metadata",meta)),repo.write(payload),repo.write(meta),repo.write(preview.get("validation")),repo.write(Map.of("items",preview.get("diff"))),repo.write(preview.get("impact")),repo.write(current),state.fingerprint(s,group,shop,payload),preview.get("requiresIndependentReview"),preview.get("status"),p.userId(),s.organizationId(),id);
+        repo.jdbc().update("UPDATE finance_cost_input_changes SET semantic_hash=?,payload_json=?,metadata_json=?,validation_json=?,diff_json=?,impact_json=?,state_json=?,baseline_hash=?,requires_independent_review=?,status=?,last_edited_by=?,version=version+1,updated_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND id=?",state.digest(Map.of("type",type,"target",target,"shop",shop,"payload",semanticPayload(payload),"metadata",meta)),repo.write(payload),repo.write(meta),repo.write(preview.get("validation")),repo.write(previewData(preview)),repo.write(preview.get("impact")),repo.write(current),state.fingerprint(s,group,shop,payload),preview.get("requiresIndependentReview"),preview.get("status"),p.userId(),s.organizationId(),id);
         return view(p,row(s,id,false,false),true);
     });}
     public Map<String,Object> reject(PlatformPrincipal p,String id,Map<String,Object> request){Scope s=manager(p);return changeTransaction(s,id,row->{

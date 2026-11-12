@@ -98,7 +98,11 @@
         {cells:['提交人标识',change.submittedBy||'未提供']},
         {cells:['确认人标识',change.confirmedBy||'尚未确认']},
         {cells:['来源标识',meta.sourceKey||summary.sourceKey||'未填写，需对照原始凭据核对']},
-        {cells:['成本计价单位',meta.unit||summary.unit||'未提供，请核对原表及配置差异']},
+        ...(change.type==='MANUAL_UPDATE'?[
+          {cells:['目标型号',summary.code||'未提供，请重新预览']},
+          {cells:['目标成本仓',summary.warehouse||'未提供，请重新预览']}
+        ]:[]),
+        {cells:['成本计价单位',summary.unit||meta.unit||'未提供，请核对原表及配置差异']},
         {cells:['编号类型',identityNames[meta.identifierType||summary.identifierType]||'未明确，需核对']},
         {cells:['SPU 统一成本声明',meta.spuUniform===true?'已声明；需对照适用规格和依据核对':'未声明，不能推定同一 SPU 的所有规格同价']},
         {cells:['校验摘要',`新增或变更成本单元：${number(validation.changedCells)}；未变单元：${number(validation.unchangedCells)}`]},

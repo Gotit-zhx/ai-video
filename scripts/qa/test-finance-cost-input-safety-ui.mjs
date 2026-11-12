@@ -65,10 +65,15 @@ view.dispose();
 items=[{id:'manual-price-review',type:'MANUAL_UPDATE',status:'REVIEW',groupId:'g',shopId:'',sourceName:'',submittedBy:'owner',lastEditedBy:'owner',version:1,
  canConfirm:true,canReject:false,canRevise:false,canUndo:false,requiresIndependentReview:true,
  metadata:{reason:'按采购单调整人工价格',evidenceRef:'人工核价单-9'},
+ inputSummary:{code:'MANUAL-REVIEW',warehouse:'海外仓-菲律宾',unit:'包',oldUnit:'包',newUnit:'包'},
  validation:{blocked:false,risk:'HIGH',priceOverride:true,issues:[{code:'HUMAN_INPUT_UNVERIFIED',severity:'REVIEW',message:'请核对理由、原始依据和操作实际适用范围'}]},
  diff:[{field:'unitPriceCny',before:8,after:9}],impact:{scopeShops:1,scopeOrderCount:2,hasHistorical:true,coverage:'SCOPE_UPPER_BOUND',amountChange:null},actualScope:'分组内相关店铺历史及后续订单'}];
 view=w.FinanceCostInputSafety.mount(d.querySelector('#root'),options);await settle();await click('查看',row('manual-price-review'));dialog=d.querySelector('dialog');
 assert(![...dialog.querySelectorAll('button')].some(b=>b.textContent==='补充资料'),'独立复核者不能通过修改提交者资料绕过价格修订声明');
+const manualSummaryValue=label=>[...dialog.querySelectorAll('tr')].find(tr=>tr.children[0]?.textContent===label)?.children[1]?.textContent;
+assert.equal(manualSummaryValue('目标型号'),'MANUAL-REVIEW','独立复核者必须看到真实目标型号');assert.equal(manualSummaryValue('目标成本仓'),'海外仓-菲律宾','独立复核者必须看到真实成本仓');assert.equal(manualSummaryValue('成本计价单位'),'包','即使单位未变且没有unit差异行，仍须显示真实单位');
+await click('关闭',dialog);items[0].metadata.unit='误填的声明单位';await click('查看',row('manual-price-review'));dialog=d.querySelector('dialog');
+assert.equal(manualSummaryValue('成本计价单位'),'包','实际保存单位必须优先于客户端元数据声明');
 assert(dialog.querySelector('[aria-label="明确修订已有价格"]'),'实际MANUAL_UPDATE响应的priceOverride标记必须显示价格修订声明');
 check('我已核对实际影响范围',dialog);check('我已确认会影响历史及后续订单',dialog);
 const beforeManualConfirmation=writes.length;await click('复核并应用',dialog);assert.equal(writes.length,beforeManualConfirmation,'未勾选修订声明时不能发出人工改价确认');assert(dialog.textContent.includes('请明确声明本次价格修订'));
