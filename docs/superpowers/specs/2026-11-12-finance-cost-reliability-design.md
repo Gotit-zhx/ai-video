@@ -1,56 +1,50 @@
-# 商品成本资料可靠性改造设计
+# 人工成本输入防错设计
 
-日期：2026-11-12。用户已批准聊天中的完整方案并要求实施。基线为 `develop` fe7b597，加已验证的 SKU/SPU 前置变更（b03bbb1、0061a2c）；本功能分支从 develop 创建并以 no-ff 合入该前置分支。普通开发不操作共享服务器、凭据或生产数据库。
+日期：2026-11-12。用户最新范围：**只预防人工传入表格和人工操作的不可靠性，其他内容不处理**。本说明替代同文件上一版广泛治理设计；旧版仅保留在 Git 历史，不作为实施要求。
 
-## 目标与保护边界
+## 范围
 
-所有外部成本文件与人工成本变更进入持久候选批次；可靠资料自动处理，冲突不按上传时间覆盖。修改有明确期间、来源、单位及影响报告，正式结果按有效版本提供。保留 ERP 实际凭据优先、人工已确认关系优先、SKU→SPU、GIFT、取消/退款、首次结算及租户隔离口径；不新增利润扣项。平台已结算与财务关账分别处理。
+仅在商品成本人工入口增加“暂存→校验/差异和影响范围预览→确认或独立复核→原有保存和重算”。覆盖成本表上传、成本来源移除、人工成本新增/修改/删除、人工 SKU 关联及成本设置。平台订单同步、ERP、自动 SKU/SPU 匹配、计算公式、成本 worker、报表/导出查询及其状态保持现有实现。不新增结果视图、全量成本版本切换、财务关账、来源连接器、全局仓库主数据或自动数据异常工作台。
 
-仅使用现有 Java 21/Spring/JDBC/MySQL/原生 JS，无新外部服务。迁移仅新增 V153，不修改已应用迁移。自动重算不追加完整 before/after JSON；只保存当前结果、候选受影响结果、配置版本与简明审计。不实施未经验证的 ERP 接口，不伪造来源可信度。
+不增加新的计价期间规则。预览必须展示操作真正影响的范围：分组文件影响分组相关店铺，人工关联/设置影响当前店铺，固定人工价格适用相关规格历史和后续订单。若现有保存会重算历史，必须明确显示并单独确认；不能让用户误以为只修改了当前查询月份。
 
-## 数据与状态
+## 人工输入暂存和校验
 
-- `finance_cost_changes`：公司/分组/可选店铺、类型、原始来源及内容哈希、语义哈希、原始解析或错误、规范化 payload、基线签名、状态、风险、校验及预演、操作者/复核者、版本、游标与处理进度。类型 IMPORT / REMOVE_SOURCE / MANUAL_CREATE / MANUAL_UPDATE / MANUAL_DELETE / MAPPING / SETTINGS / ROLLBACK。状态 QUEUED / VALIDATING / BLOCKED / REVIEW / REVIEW_SECOND / PREPARING / ACTIVE / REJECTED / STALE / FAILED。来源证据不能由客户端的 trusted=true 决定。
-- `finance_cost_group_state`：公司/分组活动 revision、活动批次及生效时间。现有来源以 LEGACY_UNVERIFIED 标识，保留原计算结果，不迁移成“已审核”。组行锁串行化生效与版本修改。
-- `finance_cost_change_results`：仅受影响订单的候选商品成本及输入哈希/旧成本/任务水位，按 change/order 主键分页保存；候选永不作为正式结果提前展示。
-- `finance_cost_periods`：公司/分组/月关账状态及理由/版本。已关账变更需两个不同于提交人的独立复核者；普通人工复核须与提交人不同。生效前重验审批绑定的 payload、基线和期间版本。
-- `finance_cost_source_profiles`：公司/分组来源标识、模板/单位/编号类型/仓库别名、确认状态及复核者。对人工上传，首次或不可靠资料需独立复核；仅已确认来源、完整单位和身份、无覆盖冲突且影响受控的补充资料可自动生效。来源标识须与已确认配置绑定，不因填写文件名获得可信度。
-- 仓库以稳定公司/分组内 ID 识别，别名只由已确认配置关联；现有仓名保留兼容显示与旧结果。不得从不明仓名猜国家并自动确认。
+新增 V153（不改旧迁移）保存 `finance_cost_input_changes`，字段含公司/分组/店铺、类型、状态、payload、原始文件 bytes/hash、语义 hash、当前基线签名、校验结果、差异、影响范围摘要、提交人/确认人/理由/凭据、version、created/updated/applied。类型 IMPORT、REMOVE_SOURCE、MANUAL_CREATE、MANUAL_UPDATE、MANUAL_DELETE、MAPPING、SETTINGS、UNDO。状态 BLOCKED、REVIEW、READY、APPLIED、REJECTED、STALE。只保存显式人工操作的资料和审计，不改自动订单结果存储。
 
-## 校验与风险
+原有人工 HTTP 写入口统一提交暂存单，不能再直接写正式成本。既有内部应用函数可保留 package-private，供经过验证的应用事务及原回归夹具使用；前端旧接口也不能绕过。上传成功返回 staged，不宣称生效。自动 auto-match 不进入人工审批，不改其行为。
 
-校验输出统一 `{code,severity,message,source,action,sku,warehouse,month,row}`，severity 为 BLOCK / REVIEW / INFO。格式不合法、公式、损坏的长数字、非人民币、同批同键不同价、缺少/歧义身份、单位不明均不得直接生效。相同键为公司、分组、仓、编号类型、型号、月份、单位；同值幂等。输入缺行只补充，不代表删除。不同有效价格需要明确修订，不按最后上传时间判断真实性。
+表格保持现有四列和月横排格式，补充 unit、identifierType（SKU/SPU/MIXED）、sourceKey/evidenceRef、reason、revision、spuUniform 元数据；编号列可显式指定每行类型，不能仅凭数字猜测 SPU。缺单位/类型、SPU统一成本尚未确认需要补充信息；文件名或上传者声明不当作已验证数据来源。可识别的无变更重复导入直接返回重复，不产生第二次写入或重算。
 
-初始风险阈值可配置：单价变化比例超过 20% 且每单位差额超过 1 元；预演成本绝对变化超过 1000 元或相对变化超过 5%（旧金额大于 0 才计算比例）；造成新增未完成订单、仓/单位/换算改变、已有人工关系替换、回溯月份均需复核。这些为初始产品保护参数，不代表真实数据分布验证。新型号没有历史价时不能自动假定可信。SPU 需有明确适用规格/统一成本证据，否则只生成候选。
+硬性拦截：缺必要列、同批同键不同价、公式、负数/非法值、损坏/科学计数编号、XLSX数值长编号丢精度、非CNY、空仓库、无效型号、越权分组/仓库和无效单位换算。Excel未知零成本不得直接确认通过；真实零由现有手动成本零价确认流程处理，GIFT例外保持。已核验同值重复只去重，不因缺行撤销其他资料。
 
-编号保持字符串，科学计数法或超过 Excel 安全整数精度的数值编号拒绝，不修补成猜测 ID；保留原行号。四列/月横排成本表继续可读；缺单位/编号类型/来源的老格式进入待确认，页面提供批次级字段补充，不能静默按“件”处理。
+不同文件同仓同型号同月不同价不再按最后上传自动覆盖：预览列出原价、新价、原来源、新来源，必须 revision=true、有效理由/依据，并进入独立复核。新型号/普通新增非冲突资料须确认资料含义，但无需新增组织审批流程。错误资料保留暂存原因，修正可重传或 revise 元数据，旧审批失效。
 
-## 生效与期间
+## 操作预览与确认
 
-导入及所有人工写入的现有 HTTP 入口改为提交候选，不能通过旧接口直写绕过；内部兼容的应用方法仅用于已校验的生效事务及测试夹具。每次变更要求 reason 与 evidenceRef；修改已有价格必须声明 revision。人工固定价、关联及设置需有效起止月份，缺省为当前成本月份而非全部历史/未来。历史旧配置作为兼容基线保留，新的期间版本按业务成本月份选择，不能因更新当前配置丢失之前期间的关系。
+预览至少包含新增/未变/改价的成本单元数量、逐行异常（示例有界）、旧新配置差异、影响店铺数量/订单数量及历史范围、当前固定人工成本的真实适用范围。金额影响只有能够按现有数据可靠得到时展示；不能将样本估算声称全量准确金额。数据不足显示未核定并按高风险处理。
 
-候选后台每次最多读取/计算 100 笔订单，持久游标、重启恢复；预演涵盖目标组/店铺中受期间影响的已入库订单，金额影响按已有首次结算口径另外统计，明确已覆盖范围。复核绑定本次预演及基线。每批使用来源哈希和配置 revision；基线/订单输入变化重验并重新准备，不使用过期结果。
+低风险：有明确资料、身份/单位、无覆盖冲突、无异常的新增和不改变既有结果的操作，可由提交者确认后沿用原有写入；语义无变化不写。高风险：已有价格覆盖、仓/计价口径/换算改变、已存在人工关联替换、大范围修改/删除或影响不能核定，必须另一个有 finance:manage 的同公司用户复核；提交者不能自审。原始硬错误不可通过复核忽略。初始单价风险值20%且绝对差额>1 CNY，仅作风险提示，不代替覆盖冲突门控；大范围按影响超过1000笔标记，阈值集中常量并在响应说明。首次新目录缺历史比较并不意味着已验证真实性。
 
-所有候选准备完毕并核对输入水位后，在组锁事务内写入有效配置并切换活动 revision。可使用 `finance_current_order_costs` 视图将活动候选结果覆盖旧结果，普通重算在同版本和新输入下更新当前结果；所有成本查询、导出、队列判断与千易参考成本读取同一活动资料。预演期间继续提供旧有效结果并提示更新中；没有旧结果的订单保持未知。不能通过复制全历史 JSON 或一个无界大事务实现切换。旧任务生效前校验组 revision，过期任务不得覆盖新版本。贴单独立任务不能覆盖商品成本。
+确认请求必须携带 version、acknowledgeImpact、acknowledgeHistorical（涉及历史时）、reason、evidenceRef。在同一事务内锁定组/目标配置，重算当前基线签名并核对旧版本和规范化payload；任何其他人工更改导致基线变化即标记 STALE，不能使用旧预览落地。确认人与权限由登录身份得出，不能由客户端填写。重复确认返回原结果，不重复保存/重算。错误事务回滚，保留旧有效配置。
 
-撤销以新候选版本恢复上一个有效配置并预演重算，不删原始来源/订单/账本。文件撤回为状态化来源撤回，不物理丢失证据。关账期间显示明确调整范围，保留原版本与修订记录。
+原始文件保留一次，12MiB沿用上限；详情接口只提供有界解析/差异，不返回完整原文件或全部业务订单。删除来源原始资料保存在本次显式输入记录，审计保留。已应用操作可“撤销本次操作”：生成反向暂存单并重新做同样的基线/影响/复核，不能回退其他后续更改。若后续修改使反向恢复不唯一，明确拒绝并提示重新预览。
 
-## API 与页面契约
+## API/前端契约
 
-统一前缀 `/api/v1/finance/workspace/cost-governance`，沿用财务授权、manage、同源校验及公司范围。
+沿用 `/api/v1/finance/workspace` 权限与同源校验。
 
-- GET `?groupId=&shopId=&page=` → `{changes,profiles,periods,state,policy,page,total}`；批次含 id/type/status/risk/sourceName/submittedBy/effectiveFrom/effectiveTo/createdAt/version/progress/validation/impact/canReview/reviewCount。
-- GET `/{id}` → 完整批次（规范化记录分页、有界异常示例，不输出完整订单或私密凭据）。
-- POST `/{id}/revise` → reason/evidenceRef/effectiveFrom/effectiveTo/unit/identifierType/sourceKey/warehouseAliases/spuUniform/revision/version，重新校验并使旧审批失效。
-- POST `/{id}/review` → version/reason/decision APPROVE或REJECT；独立身份校验、审批绑定预演，重大/关账第二人复核。
-- POST `/{id}/retry` → version；仅可重试当前范围，不重置其他同步。
-- POST `/{id}/rollback` → reason/effectiveFrom/effectiveTo；新候选而非物理删除。
-- POST `/profiles` → 来源配置提交/复核（不能自审直接信任）；POST `/periods` → month/closed/reason/version，有明确权限及范围。
-- GET `/issues?groupId=&shopId=&page=` → 分页结构化当前异常，包含订单号、来源、原因、下一步、处理入口和最后更新时间；排队、缺资料、系统失败分别展示。
-- 原上传 `/costs/import` 增加可选 metadata JSON 字段，返回 `{staged:true,changeId,status,rows,duplicate}`。原 settings/mapping/manual/remove HTTP 返回相同候选信息。前端不能继续提示“已生效/已重算”。
+- GET `/costs/input-changes?groupId=&shopId=&page=` → `{items,total,page,pageSize}`；每项 id/type/status/groupId/shopId/sourceName/submittedBy/version/createdAt/validation/impact/requiresIndependentReview/canConfirm/canReject。
+- GET `/costs/input-changes/{id}` → 该暂存单详情，含 diff、metadata、actualScope 和有界 rows/issues。
+- POST `/costs/input-changes/{id}/revise` → metadata、version，重做校验/差异，已拒绝或已应用不能修改。
+- POST `/costs/input-changes/{id}/confirm` → version、reason、evidenceRef、acknowledgeImpact、acknowledgeHistorical、revision（冲突时）；执行确认/独立复核和原有保存。
+- POST `/costs/input-changes/{id}/reject` → version、reason；取消暂存，不改正式成本。
+- POST `/costs/input-changes/{id}/undo` → version、reason、evidenceRef，生成反向暂存单。
+- 原 `/costs/import` 增 optional metadata JSON multipart；所有原人工变更返回 `{staged:true,changeId,status,duplicate?,rows?}`。
+- `/costs` 只增加 `inputSafety:{enabled:true,pendingCount}`，使前端启用暂存语义；不改变原成本结构。前端新页签“导入与操作核对”，不新增自动订单异常页。
 
-成本管理新增“资料校验与版本”“成本异常”两个页签；导入表单补来源、单位、编号类型、适用月份、修订意图。人工编辑补期间和依据。列表显示状态、进度、影响订单/金额和复核入口，支持查看差异、补充说明、驳回、重试、撤销版本；不提供忽略全部异常或按零填充按钮。来源配置和关账放在此管理页，不新增全站导航。只读用户可看不可写，提交者不展示自审入口。任何轮询仅刷新数据不重复提交；失败保留上次有效结果并给出错误。
+前端使用 `FinanceCostInputSafety.mount(root,{request,groupId,shopId,canManage,onChanged})`，返回 dispose。新增模块 `frontend/finance-cost-input-safety.js`。表格上传和人工操作补理由/依据，显示真实影响范围和待确认状态；暂存详情显示旧新值、来源、单位、数量、风险、分组/店铺，并提供补充资料/确认/驳回/撤销按钮。read-only不显示写按钮，高风险提交者不能看到自审按钮。轮询仅GET，失败保留旧显示，所有不可信文本用textContent。兼容本地预览；线上 enabled=true 时旧按钮不能继续提示立即已保存。
 
-## 验收
+## 验证
 
-单元/隔离 MySQL/真实 DOM 交互覆盖：语义重复、旧文件误覆盖、分组/仓隔离、损坏长ID、单位冲突、SPU规格差异、缺价与真零、适用月、既有人工关系保护、独立及双人复核、审批后输入变化、期间关账、任务重启和过期任务、候选不影响正式汇总、切换一致、只撤销本版本、来源不丢失、导出范围及价格追溯。迁移在可销毁数据库验证旧数据保留和新表索引；所有现有成本回归保持，不能通过全局绕过治理使测试变绿。
+纯校验先RED后GREEN。隔离MySQL验证暂存不改原值、冲突不覆盖、跨公司拒绝、自审高风险拒绝、过期预览拒绝、重复确认幂等、失败回滚、删除可查来源、撤销不覆盖后续变更。真实JSDOM交互验证表格/人工操作提交暂存、元数据和确认ack、只读/自审限制、差异提示、失败保留内容、GET-only刷新。重跑原商品成本/SKU-SPU/导出回归，证明自动计算链路没有改动。当前任务只本地实施和验证，不部署到共享服务器。
