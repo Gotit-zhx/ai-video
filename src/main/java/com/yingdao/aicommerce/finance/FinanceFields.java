@@ -299,6 +299,7 @@ public final class FinanceFields {
             if(platform.equals("TIKTOK_SHOP"))row.put("order_type_label",orderType(first(raw,"order_type"),text(raw.get("is_sample_order"))));
             FinanceProductSkus.put(row,FinanceProductSkus.fromOrder(platform,raw));
             var identities=FinanceProductSkus.identities(platform,raw);
+            row.put("product_spu_values",identities.stream().map(item->text(item.get("productId"))).filter(id->!id.isBlank()).distinct().toList());
             if(identities.stream().anyMatch(item->text(item.get("sellerSku")).isBlank()))
                 row.put("product_sku_details",identities);
             Object items=raw.get(platform.equals("SHOPEE")?"item_list":"line_items");
