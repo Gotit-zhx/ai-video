@@ -13,10 +13,10 @@ w.api=async path=>{
   const u=new URL(path,'https://example.test'),q=Object.fromEntries(u.searchParams);reads.push(u);
   if(u.pathname.endsWith('/shops'))return {data:{items:fixture.shops,groups:fixture.groups||[],sync:[]}};
   if(u.pathname.endsWith('/ads'))return {data:fixture.accounts};
-  if(u.pathname.endsWith('/workspace/status'))return {data:{revision:statusRevision,status:statusState}};
+  if(u.pathname.endsWith('/workspace/status'))return {data:{revision:statusRevision,status:statusState,operations:{settlementCalculation:{status:'COMPLETE'},costState:{rebuilding:false,hasProductJobs:false},sync:[]}}};
   if(!u.pathname.endsWith('/workspace/query'))throw Error('Page must not wait for a separate overview or record request: '+u.pathname);
   if(hold){hold=false;await new Promise(r=>release=r);}
-  const context=fixture.overview(q),records={...fixture.records(q),page:Number(q.page||1),pageSize:50,total:100};
+  const context=fixture.overview(q);context.settlementCalculation={status:'RUNNING',processed:1,total:5};context.productCosts={scope:'SETTLED_ORDER',processing:true,productProcessing:true,total:{ready_count:1,pending_count:0,amount_cny:12,known_amount_cny:12},shops:[]};const records={...fixture.records(q),page:Number(q.page||1),pageSize:50,total:100};
   if(q.view==='ads'&&failPrimary)throw Error('Advertising sources exceed limit');
   if(q.view==='ads')return {data:{...context,readModel:{revision:primaryRevision,status:'READY'},adAccounts:fixture.accounts,adSpend:{items:[],shops:[],groups:[],totals:[],accountFunding:[],total:0,page:1,pageSize:50,filters:{currency:'',displayCurrency:'CNY'}}}};
   return {data:{...context,records,readModel:{revision:q.view==='ads-support'?'v2':'v1',generatedAt:'2026-11-12T00:00:00Z',status:'READY'}}};
@@ -28,7 +28,12 @@ try{
   w.FinanceWorkspace.enter('fees');await ready();
   assert.equal(reads.length,1);assert.equal(reads[0].pathname,'/api/v1/finance/workspace/query');
   assert(d.querySelector('tbody tr'),'fee rows appear from the same response as the summary');
+  assert(d.body.textContent.includes('结算金额计算中'));assert(d.body.textContent.includes('商品成本计算中'));
+  const draft=d.querySelector('.fi-number-search textarea');draft.value='unsent user draft';
   const beforePoll=reads.length;await polls.shift()();
+  assert(!d.body.textContent.includes('结算金额计算中'),'a completed heartbeat clears animation even when financial revision is unchanged');
+  assert(!d.body.textContent.includes('商品成本计算中'),'idle jobs clear stale running state without changing amounts');
+  assert.equal(d.querySelector('.fi-number-search textarea'),draft);assert.equal(draft.value,'unsent user draft','status updates cannot replace forms or lose unsubmitted queries');
   assert.equal(reads.length,beforePoll+1);assert(reads.at(-1).pathname.endsWith('/workspace/status'));
   assert.equal(reads.filter(u=>u.pathname.endsWith('/workspace/query')).length,1,'unchanged status cannot reread the whole financial page');
   statusState='PENDING';await polls.shift()();
@@ -46,13 +51,13 @@ try{
   assert(!support.textContent.includes('独立投放明细'),'closed auxiliary section must not fetch or render ledger rows');
   support.open=true;support.dispatchEvent(new w.Event('toggle'));await new Promise(r=>setTimeout(r,30));
   assert.equal(reads.length,count+1);assert.equal(reads.at(-1).searchParams.get('view'),'ads-support');
-  const primaryReads=reads.filter(u=>u.searchParams.get('view')==='ads').length;
+  const primaryReads=reads.filter(u=>u.pathname.endsWith('/workspace/query')&&u.searchParams.get('view')==='ads').length;
   [...support.querySelectorAll('button')].find(n=>n.textContent.trim()==='下一页').click();await new Promise(r=>setTimeout(r,30));
-  assert.equal(reads.filter(u=>u.searchParams.get('view')==='ads').length,primaryReads,'auxiliary pagination cannot rebuild the primary spending report');
+  assert.equal(reads.filter(u=>u.pathname.endsWith('/workspace/query')&&u.searchParams.get('view')==='ads').length,primaryReads,'auxiliary pagination cannot rebuild the primary spending report');
   assert.equal(reads.at(-1).searchParams.get('view'),'ads-support');assert.equal(reads.at(-1).searchParams.get('page'),'2');
-  const beforeRevisionPoll=reads.filter(u=>u.searchParams.get('view')==='ads').length;
+  const beforeRevisionPoll=reads.filter(u=>u.pathname.endsWith('/workspace/query')&&u.searchParams.get('view')==='ads').length;
   primaryRevision='v2';statusRevision='v2';await polls.pop()();await ready();
-  assert.equal(reads.filter(u=>u.searchParams.get('view')==='ads').length,beforeRevisionPoll+1,'auxiliary v2 cannot relabel the old v1 primary and suppress its refresh');
+  assert.equal(reads.filter(u=>u.pathname.endsWith('/workspace/query')&&u.searchParams.get('view')==='ads').length,beforeRevisionPoll+1,'auxiliary v2 cannot relabel the old v1 primary and suppress its refresh');
   w.FinanceWorkspace.reset();failPrimary=true;w.FinanceWorkspace.enter('ads');await ready();
   assert(d.querySelector('[data-ad-spend-support]'),'primary spending failures retain an auxiliary lookup entry');
   console.log('Finance dedicated page loads and lazy ad support passed');

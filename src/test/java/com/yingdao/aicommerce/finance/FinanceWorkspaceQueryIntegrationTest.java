@@ -110,16 +110,55 @@ class FinanceWorkspaceQueryIntegrationTest {
             shared.invalidate(companyScope(fixture.owner.organizationId()));
             var guarded=spy(fixture.repo);
             queries=new FinanceWorkspaceQueryService(guarded,fixture.service,new FinanceAdSpendService(fixture.repo,fixture.service),projections,mock(FinanceAds.class),shared);
+            String heartbeatKey="heyi:finance:calculation:{"+fixture.owner.organizationId()+"}:settlements";
+            template.opsForValue().set(heartbeatKey,new tools.jackson.databind.ObjectMapper().writeValueAsString(Map.of("heartbeat",System.currentTimeMillis(),"status","RUNNING","shops",List.of(Map.of("shopId",shop,"complete",false,"records",1,"total",5)))));
             var first=queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,""));
+            assertEquals("RUNNING",map(first.get("settlementCalculation")).get("status"));
+            template.opsForValue().set(heartbeatKey,new tools.jackson.databind.ObjectMapper().writeValueAsString(Map.of("heartbeat",System.currentTimeMillis(),"status","COMPLETE","shops",List.of(Map.of("shopId",shop,"complete",true,"records",5,"total",5)))));
             doThrow(new AssertionError("A warm identical Redis page must not reread raw rows")).when(guarded).details(any(),any(),eq("FEE"),anyInt(),anyInt(),any(),anyBoolean());
             new FinanceFields(fixture.repo).save(fixture.owner,"FEE",List.of("external_id"),List.of("external_id"));
             var cached=queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,""));
+            assertEquals("COMPLETE",map(cached.get("settlementCalculation")).get("status"));template.delete(heartbeatKey);
             var item=rows(map(cached.get("records")).get("items")).getFirst();
             assertEquals(decimal("12.123456"),decimal(item.get("amount")));assertNotNull(cached.get("cache"));
             assertEquals(map(first.get("cache")).get("generatedAt"),map(cached.get("cache")).get("generatedAt"));
             assertTrue(((List<?>)map(map(cached.get("records")).get("fieldSettings")).get("visible")).contains("external_id"));
             assertFalse(((List<?>)map(map(cached.get("records")).get("fieldSettings")).get("visible")).contains("amount"));
         }finally{shared.stop();factory.destroy();}
+    }
+
+    @Test void spendingPaginationReusesThePeriodReportWithinItsPublishedRevision(){
+        String group=new FinanceGroups(fixture.repo).save(fixture.owner,null,"Redis group");
+        fixture.groupedShop(fixture.owner,"10002",group);
+        for(String external:List.of("10001","10002"))for(int day=1;day<=31;day++)fixture.db.update("INSERT INTO finance_shopee_ad_daily(organization_id,external_shop_id,source_key,record_date,currency,amount,source_json) VALUES(?,?,?,?,'PHP',1,'{}')",
+            fixture.owner.organizationId(),external,hash(external+"/"+day),LocalDate.of(2026,10,day));
+        build();
+        var factory=new org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory("127.0.0.1",Integer.parseInt(System.getenv("HEYI_DESIGN_HTTP_REDIS_PORT")));factory.afterPropertiesSet();factory.start();
+        var template=new org.springframework.data.redis.core.StringRedisTemplate(factory);template.afterPropertiesSet();
+        var shared=new FinanceReadCache(template,new tools.jackson.databind.ObjectMapper());
+        try{
+            shared.invalidate(companyScope(fixture.owner.organizationId()));
+            var source=spy(new FinanceAdSpendService(fixture.repo,fixture.service));
+            queries=new FinanceWorkspaceQueryService(fixture.repo,fixture.service,source,projections,mock(FinanceAds.class),shared);
+            var first=queries.query(fixture.owner,fixture.owner,month,new FinanceWorkspaceQueryService.Selection("ads","AD",false,false,"",1,1,"","",""));
+            var second=queries.query(fixture.owner,fixture.owner,month,new FinanceWorkspaceQueryService.Selection("ads","FEE",false,false,"",2,2,"","",""));
+            assertEquals(62,number(map(first.get("adSpend")).get("total")));assertEquals(50,rows(map(first.get("adSpend")).get("items")).size());
+            assertEquals(12,rows(map(second.get("adSpend")).get("items")).size());
+            assertEquals(map(first.get("cache")).get("generatedAt"),map(second.get("cache")).get("generatedAt"),"Paging must retain the period calculation's original generation time");
+            verify(source,times(1)).reportFromNative(any(),any(),any(),anyBoolean(),any(),any(),any());
+        }finally{shared.stop();factory.destroy();}
+    }
+
+    @Test void operationalLifecycleChangesWithoutRelabellingTheFinancialRevision(){
+        fee("stable","PHP");build();var version=queries.status(fixture.owner,month);
+        fixture.db.update("INSERT INTO finance_cost_rebuilds(organization_id,shop_id,status) VALUES(?,?,'READY')",fixture.owner.organizationId(),shop);
+        var running=queries.status(fixture.owner,month);assertEquals(version.get("revision"),running.get("revision"));
+        assertEquals(true,map(map(running.get("operations")).get("costState")).get("rebuilding"));
+        fixture.db.update("UPDATE finance_cost_rebuilds SET status='DONE' WHERE organization_id=? AND shop_id=?",fixture.owner.organizationId(),shop);
+        var idle=queries.status(fixture.owner,month);assertEquals(version.get("revision"),idle.get("revision"));
+        assertEquals(false,map(map(idle.get("operations")).get("costState")).get("rebuilding"));
+        assertNotEquals(map(running.get("operations")).get("revision"),map(idle.get("operations")).get("revision"));
+        assertFalse(idle.containsKey("facts"));assertFalse(idle.containsKey("items"));
     }
 
 }

@@ -11,6 +11,7 @@ public class FinanceWorkspaceQueryService {
                             int page,int spendPage,String numbers,String search,String assignment){}
     final FinanceRepository repo;final FinanceService finance;final FinanceAdSpendService spend;
     final FinanceQueryProjections projections;final FinanceAds ads;final FinanceReadCache cache;
+    @org.springframework.beans.factory.annotation.Autowired(required=false) private FinanceShopeeAds shopeeAds;
     public FinanceWorkspaceQueryService(FinanceRepository repo,FinanceService finance,FinanceAdSpendService spend,
             FinanceQueryProjections projections,FinanceAds ads,FinanceReadCache cache){
         this.repo=repo;this.finance=finance;this.spend=spend;this.projections=projections;this.ads=ads;this.cache=cache;
@@ -30,6 +31,7 @@ public class FinanceWorkspaceQueryService {
         }else result=fallback(scope,filter,selected);
         // Personal field preferences are read after the shared financial cache.
         var copy=new LinkedHashMap<>(result);
+        if(cache!=null)copy.put("settlementCalculation",cache.settlementCalculation(scope,selectedShops(rows(copy.get("shops")),filter)));
         if(result.containsKey("records")){
             var records=new LinkedHashMap<>(map(result.get("records")));
             records.put("fieldSettings",new FinanceFields(repo).settings(personal,selected.view().equals("reconciliation")?"RECONCILIATION":selected.kind()));
@@ -37,7 +39,30 @@ public class FinanceWorkspaceQueryService {
         }
         return copy;
     }
-    public Map<String,Object> status(Scope scope,Filter filter){return projections.version(scope,nativeFilter(filter));}
+    public Map<String,Object> status(Scope scope,Filter filter){return status(scope,filter,"");}
+    public Map<String,Object> status(Scope scope,Filter filter,String view){
+        var result=new LinkedHashMap<>(projections.version(scope,nativeFilter(filter)));
+        var ids=selectedShops(finance.shops(scope),filter);var operations=new LinkedHashMap<String,Object>();
+        operations.put("sync",finance.syncStates(scope,filter));
+        operations.put("settlementCalculation",cache==null?Map.of():cache.settlementCalculation(scope,ids));
+        boolean rebuilding=false,jobs=false;
+        if(!ids.isEmpty()){
+            String slots=String.join(",",Collections.nCopies(ids.size(),"?"));var args=new ArrayList<Object>();args.add(scope.organizationId());args.addAll(ids);
+            rebuilding=!repo.jdbc().queryForList("SELECT shop_id FROM finance_cost_rebuilds WHERE organization_id=? AND shop_id IN ("+slots+") AND status='READY' LIMIT 1",args.toArray()).isEmpty();
+            jobs=!repo.jdbc().queryForList("SELECT order_record_id FROM finance_order_cost_jobs FORCE INDEX(idx_cost_job_shop) WHERE organization_id=? AND shop_id IN ("+slots+") AND priority<2 LIMIT 1",args.toArray()).isEmpty();
+        }
+        operations.put("costState",Map.of("rebuilding",rebuilding,"hasProductJobs",jobs));
+        if(Set.of("ads","ads-support").contains(text(view))){
+            try{operations.put("adAccounts",ads.list(scope,filter.start(),filter.end()));operations.put("adAccountError",false);}
+            catch(RuntimeException unavailable){operations.put("adAccountError",true);}
+            if(shopeeAds!=null)operations.put("shopeeAds",shopeeAds.status(scope));
+        }
+        operations.put("revision",hash(repo.write(operations)));operations.put("generatedAt",java.time.Instant.now().toString());
+        result.put("operations",operations);return result;
+    }
+    private static List<String> selectedShops(List<Map<String,Object>> shops,Filter filter){
+        return shops.stream().filter(shop->FinanceGroups.matches(shop,filter)).map(shop->text(shop.get("id"))).toList();
+    }
     private Map<String,Object> fallback(Scope scope,Filter f,Selection selected){
         // Enqueue outside the read-only snapshot; failures never publish fake empty facts.
         projections.request(scope,nativeFilter(f));
@@ -89,7 +114,14 @@ public class FinanceWorkspaceQueryService {
             snapshot.rawCounts().stream().filter(row->"RECORD".equals(row.get("basis"))&&"BILL".equals(row.get("kind")))
                 .map(row->text(row.get("currency"))).distinct().sorted().toList());
         if(primary){
-            var report=spend.reportFromNative(scope,prepared.nativeSpend(),requested,selected.cny(),selected.fxSnapshot(),selected.search(),selected.assignment());
+            java.util.function.Supplier<Map<String,Object>> calculate=()->spend.reportFromNative(scope,prepared.nativeSpend(),requested,selected.cny(),selected.fxSnapshot(),selected.search(),selected.assignment());
+            // Summary, allocation and FX work belongs to the period, not to each page.
+            // Reuse the existing bounded/compressed fact cache; page changes only slice
+            // its immutable result. A published revision or selection picks a new key.
+            var periodKey=new FinanceSnapshotCache.Key(companyScope(scope.organizationId()),requested,selected.cny(),
+                "workspace-spend:"+hash(repo.write(List.of(snapshot==null?"":snapshot.revision(),selected.fxSnapshot(),selected.search(),selected.assignment()))),false);
+            var report=new LinkedHashMap<>(cache!=null&&snapshot!=null?cache.facts(periodKey,calculate):calculate.get());
+            for(String stamp:List.of("_financeDataRevision","_financeFactsBuilt"))if(report.containsKey(stamp))out.put(stamp,report.remove(stamp));
             var items=rows(report.get("items"));int offset=(int)Math.min(items.size(),(selected.spendPage()-1L)*50);
             report.put("items",new ArrayList<>(items.subList(offset,Math.min(items.size(),offset+50))));
             report.put("total",items.size());report.put("page",selected.spendPage());report.put("pageSize",50);

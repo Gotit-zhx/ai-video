@@ -19,7 +19,7 @@ public class FinanceWorkspaceQueryController {
         return ApiResponse.ok(queries.query(scope,guard.personal(principal),guard.filter(q),selection));
     }
     @GetMapping("/status") public ApiResponse<?> status(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal principal){
-        return ApiResponse.ok(queries.status(guard.s(principal),guard.filter(q)));
+        return ApiResponse.ok(queries.status(guard.s(principal),guard.filter(q),q.get("view")));
     }
     private static int page(String value){try{int page=Integer.parseInt(value);if(page<1)throw new NumberFormatException();return page;}catch(NumberFormatException invalid){throw bad("页码不正确");}}
 }
