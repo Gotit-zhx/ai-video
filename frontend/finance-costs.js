@@ -88,6 +88,7 @@
   const fixedGift=p=>String(p.seller_sku||'').trim().toUpperCase()==='GIFT';
   function candidate(product,costs,warehouse,prepared){
     if(fixedGift(product))return {status:'draft',label:'赠品 · 固定 0 成本',note:'GIFT 商品固定按 0 元计算，无需关联成本资料',code:'GIFT',fixedGift:true};
+    if(!warehouse)return {status:'missing',label:'请选择成本仓',note:'尚未确定店铺成本仓，请先配置成本仓后再自动匹配',code:'',factor:1};
     const available=prepared?.rows||costs.filter(c=>!warehouse||c.warehouse===warehouse),match=automaticProduct(product,available,prepared);
     if(match.rows.length===1){
       const by=match.matchedBy==='SPU'?'平台 SPU':'商品 SKU',factor=match.bundleQuantity||1;

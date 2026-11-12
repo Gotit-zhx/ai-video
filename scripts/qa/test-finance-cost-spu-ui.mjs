@@ -27,6 +27,15 @@ try{
   }
   const missed=w.FinanceCosts.candidate({...product,seller_sku:'UNKNOWN',product_id:'missing'},catalog,'菲律宾');
   assert.equal(missed.status,'missing');assert.match(missed.note,/SKU.*SPU/);
+  const unresolvedCosts=[{sku:'PACK',warehouse:'菲律宾-A',prices:{'2026-10':7}},{sku:'OTHER',warehouse:'菲律宾-B',prices:{'2026-10':11}}];
+  const unresolved=w.FinanceCosts.candidate(product,unresolvedCosts,'');
+  assert.equal(unresolved.status,'missing','a unique code across warehouses cannot resolve the shop cost warehouse');
+  assert.match(unresolved.label,/成本仓/);
+  assert.equal(w.FinanceCosts.candidate({...product,seller_sku:'GIFT'},unresolvedCosts,'').fixedGift,true);
+  w.FinanceCosts.reset();w.FinanceCosts.mount(d.querySelector('main'),{...context,preview:{...preview,costs:unresolvedCosts,settings:{}}});
+  assert.equal([...d.querySelectorAll('.fc-metric')].find(x=>x.textContent.includes('已关联 SKU')).querySelector('strong').textContent,'0',
+    'a shop without a resolved warehouse must not count code suggestions as completed links');
+  w.FinanceCosts.reset();w.FinanceCosts.mount(d.querySelector('main'),context);
   preview.mappings={'shop:9007199254740993123:variant:菲律宾':{code:'MANUAL',warehouse:'菲律宾',factor:1,groupId:'group'}};
   w.FinanceCosts.openMapping({shopId:'shop',productId:spu,skuId:'variant'});w.FinanceCosts.mount(d.querySelector('main'),context);
   assert(d.querySelector('tbody').textContent.includes('MANUAL'),'confirmed manual relationship must survive automatic matches');
