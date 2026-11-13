@@ -117,7 +117,7 @@ public final class FinanceCostReport {
     /** Read first-settled orders and their cost snapshots once for every dashboard metric. */
     List<Map<String,Object>> dashboardFacts(Scope scope,Filter filter){
         var q=repo.query(scope,filter,"r");
-        var facts=repo.jdbc().queryForList("""
+        var facts=repo.aggregateWindows(filter,q,"r.record_date",1,part->repo.jdbc().queryForList("""
             SELECT r.shop_id,r.record_date,o.record_date fx_date,r.currency settlement_currency,o.currency,'ORDER' kind,'' category,
               o.status,COUNT(o.id) records,COUNT(o.amount) known_amounts,COUNT(o.revenue) known_revenues,
               SUM(o.amount) amount,SUM(o.revenue) revenue,SUM(o.impressions) impressions,
@@ -129,8 +129,8 @@ public final class FinanceCostReport {
               AND o.kind='ORDER' AND o.source='API'
             LEFT JOIN finance_order_costs c ON c.order_record_id=o.id
             LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=o.id
-            """+FinanceLabelCosts.join("r.organization_id","r.shop_id","r.order_id")+" WHERE "+firstSettlement("r",true)+" AND "+q.where()
-                +" GROUP BY r.shop_id,r.record_date,o.record_date,r.currency,o.currency,o.status",q.args().toArray());
+            """+FinanceLabelCosts.join("r.organization_id","r.shop_id","r.order_id")+" WHERE "+firstSettlement("r",true)+" AND "+part.where()
+                +" GROUP BY r.shop_id,r.record_date,o.record_date,r.currency,o.currency,o.status",part.args().toArray()));
         var sums=new LinkedHashSet<>(FinanceFxDates.LEDGER_SUMS);sums.addAll(COST_SUMS);sums.add("amount_cny");
         return FinanceFxDates.split(facts,FinanceFxDates.costs(repo,scope,filter,"SETTLED_ORDER"),FinanceFxDates.COST_KEYS,new ArrayList<>(sums),"order_count","cost_fx_date");
     }
