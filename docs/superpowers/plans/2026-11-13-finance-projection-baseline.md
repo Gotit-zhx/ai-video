@@ -75,13 +75,13 @@ DELETE FROM finance_query_dirty_days WHERE organization_id=? AND platform_filter
 
 **Produces:** `Activation.VERSION='157'`、`PREVIOUS_VERSION='156'`，固定 `SQL/SQL_SHA/HELPER`；显式 validate/migrate 模式，重复应用失败。
 
-- [ ] 先创建失败工具测试：错误基线/SQL hash、多条待迁移、失效令牌、源码或配置漂移、编译失败、重放、异常恢复均不能越过原保护。
-- [ ] 复用已有 Store/Host/Activation 协议，实现只接受固定 V157 的维护入口；保留原构建失败不重启、已存在维护不接管、只停本任务 helper JVM/连接的边界。
-- [ ] Java helper 在 stdin 读取私有配置，确认旧 156 历史有效、恰好一条待执行 157、前缀逐行保持，执行后确认新列和既有历史；凭据不进参数或输出。
-- [ ] 原始财务/授权/同步表采用固定 SQL 白名单、元数据及有界哨兵摘要保护；不对百万账本做无界 COUNT/整表哈希。迁移校验与原始数据保护只输出摘要。
-- [ ] Python 演练可独立执行：`python3 -m unittest scripts/maintenance/test_finance_projection_baseline_activation.py`。涉及 Maven 的真实 helper 集成必须等协调者串行安排。
-- [ ] helper 测试按历史 156 runtime 复制资源（仅到156），在单文件私有目录放157；避免把新 classpath157与filesystem157重复解析。
-- [ ] 独立审查 spec + quality，向协调者提供 changed files、测试结果、固定 SHA、入口和恢复协议；子任务不访问主机、不暂存/提交共享 Git 状态。
+- [x] 先创建失败工具测试：错误基线/SQL hash、多条待迁移、失效令牌、源码或配置漂移、编译失败、重放、异常恢复均不能越过原保护。
+- [x] 复用已有 Store/Host/Activation 协议，实现只接受固定 V157 的维护入口；保留原构建失败不重启、已存在维护不接管、只停本任务 helper JVM/连接的边界。
+- [x] Java helper 在 stdin 读取私有配置，确认旧 156 历史有效、恰好一条待执行 157、前缀逐行保持，执行后确认新列和既有历史；凭据不进参数或输出。
+- [x] 原始财务/授权/同步表采用固定 SQL 白名单、元数据及有界哨兵摘要保护；不对百万账本做无界 COUNT/整表哈希。迁移校验与原始数据保护只输出摘要。
+- [x] Python 演练可独立执行：`python3 -m unittest scripts/maintenance/test_finance_projection_baseline_activation.py`。涉及 Maven 的真实 helper 集成必须等协调者串行安排。
+- [x] helper 测试按历史 156 runtime 复制资源（仅到156），在单文件私有目录放157；避免把新 classpath157与filesystem157重复解析。
+- [x] 独立审查 spec + quality，向协调者提供 changed files、测试结果、固定 SHA、入口和恢复协议；子任务不访问主机、不暂存/提交共享 Git 状态。
 
 ## Task 3: 查询的有界轻量等待
 
