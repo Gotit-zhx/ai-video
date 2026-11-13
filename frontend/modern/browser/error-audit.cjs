@@ -117,6 +117,7 @@ function createErrorAudit(origin) {
             "NS_BINDING_ABORTED",
             "cancelled",
             "Load cancelled",
+            "Load request cancelled",
           ].includes(event.errorText)
         )
           continue;

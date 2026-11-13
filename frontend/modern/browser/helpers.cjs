@@ -138,16 +138,69 @@ async function go(page, route) {
 }
 async function select(page, label, option) {
   const combo = page.getByRole("combobox", { name: label, exact: true });
-  await combo.click();
-  const listId = await combo.getAttribute("aria-controls");
-  const dropdown = page
-    .locator(".ant-select-dropdown")
-    .filter({ has: page.locator('[id=\"' + listId + '\"]') });
-  await dropdown
-    .locator(".ant-select-item-option")
-    .getByText(option, { exact: true })
-    .click();
-  await expect(combo).toHaveAttribute("aria-expanded", "false");
+  const mapping = [
+    "external_id", "date", "currency", "amount",
+    "order_id", "statement_id", "category",
+  ].includes(label);
+  if (mapping)
+    await combo.evaluate((input) => {
+      const root = input.getRootNode();
+      const events = [];
+      const listen = (event) => {
+        const target = event.target;
+        events.push({
+          type: event.type,
+          target: target.closest(".ant-select-item-option")
+            ? "option"
+            : target === input ? "combobox" : target.tagName,
+          x: event.clientX,
+          y: event.clientY,
+          scrollY: window.scrollY,
+          expanded: input.getAttribute("aria-expanded"),
+        });
+        if (events.length > 12) events.shift();
+      };
+      const types = ["pointerdown", "pointerup", "click"];
+      for (const type of types) root.addEventListener(type, listen, true);
+      input.__selectionTrace = {
+        events,
+        remove: () => {
+          for (const type of types) root.removeEventListener(type, listen, true);
+        },
+      };
+    });
+  try {
+    await combo.click();
+    const listId = await combo.getAttribute("aria-controls");
+    const dropdown = page
+      .locator(".ant-select-dropdown")
+      .filter({ has: page.locator('[id="' + listId + '"]') });
+    // rc-motion preparation can look stable before alignment. A click then scrolls
+    // the portal and its option can move between pointerdown and pointerup.
+    await expect(dropdown).not.toHaveClass(/\bant-slide-up-(?:appear|enter)\b/);
+    await dropdown
+      .locator(".ant-select-item-option")
+      .getByText(option, { exact: true })
+      .click();
+    await expect(combo).toHaveAttribute("aria-expanded", "false");
+    if (mapping) await expect(combo.locator("..")).toHaveText(option);
+  } catch (error) {
+    if (mapping)
+      console.error("mapping selection pointer trace", {
+        label,
+        option,
+        events: await combo
+          .evaluate((input) => input.__selectionTrace?.events)
+          .catch(() => []),
+      });
+    throw error;
+  } finally {
+    if (mapping)
+    await combo.evaluate((input) => {
+      input.__selectionTrace?.remove();
+      delete input.__selectionTrace;
+    }).catch(() => {});
+  }
 }
 async function close(page) {
   await page
@@ -174,6 +227,8 @@ async function call(fixture, method, path, n = 1) {
 async function shadowDialog(page) {
   const dialog = page.getByRole("dialog").last();
   await expect(dialog).toBeVisible();
+  // getAnimations() alone can run before rc-motion attaches its animation.
+  await expect(dialog).not.toHaveClass(/\bant-zoom-(?:appear|enter)\b/);
   await dialog.evaluate(async (n) => {
     await Promise.all(n.getAnimations().map((a) => a.finished.catch(() => {})));
   });

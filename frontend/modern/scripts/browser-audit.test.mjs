@@ -235,3 +235,47 @@ test("retains structured event kind, source, resource, status and page metadata 
     origin + "/?financeUi=modern#finance-overview",
   );
 });
+
+for (const resourceType of ["fetch", "script"]) {
+  test(`retains Linux WebKit ${resourceType} cancellation as a lifecycle event`, async () => {
+    const url = resourceType === "fetch" ? api : chunk;
+    const audit = await run(null, ({ listeners }) =>
+      listeners.requestfailed({
+        ...request(url, "GET", resourceType),
+        failure: () => ({ errorText: "Load request cancelled" }),
+      }),
+    );
+    assert.deepEqual(audit.events.map(({ kind, url, method, resourceType, errorText }) =>
+      ({ kind, url, method, resourceType, errorText })), [{
+      kind: "requestfailed", url, method: "GET", resourceType,
+      errorText: "Load request cancelled",
+    }]);
+  });
+}
+for (const errorText of ["Load request cancelled: network failed", "Load failed", "net::ERR_CONNECTION_RESET"]) {
+  test(`rejects non-cancellation request failure: ${errorText}`, () =>
+    assert.rejects(run(null, ({ listeners }) => listeners.requestfailed({
+      ...request(api), failure: () => ({ errorText }),
+    }))),
+  );
+}
+for (const kind of ["pageerror", "console"]) {
+  test(`does not allow cancellation wording in ${kind}`, () =>
+    assert.rejects(run(null, ({ listeners, consoleError }) =>
+      kind === "pageerror"
+        ? listeners.pageerror(new Error("Load request cancelled"))
+        : consoleError("Load request cancelled"))),
+  );
+}
+test("cancellation does not hide a real network failure or wrong HTTP status", async () => {
+  for (const actualFailure of [
+    ({ listeners }) => listeners.requestfailed(request(api)),
+    ({ response }) => response(api, 500),
+  ]) await assert.rejects(run("http", (events) => {
+    events.listeners.requestfailed({
+      ...request(chunk, "GET", "script"),
+      failure: () => ({ errorText: "Load request cancelled" }),
+    });
+    actualFailure(events);
+  }));
+});
