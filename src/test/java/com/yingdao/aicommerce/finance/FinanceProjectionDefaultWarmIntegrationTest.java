@@ -22,6 +22,7 @@ class FinanceProjectionDefaultWarmIntegrationTest {
     TracedJdbc db;
     FinanceQueryProjectionWorker worker;
     final MutableClock clock=new MutableClock();
+    final java.util.concurrent.atomic.AtomicLong nanos=new java.util.concurrent.atomic.AtomicLong();
     @TempDir Path temp;
     @BeforeAll void schema()throws Exception{
         fixture.migrate();
@@ -32,7 +33,7 @@ class FinanceProjectionDefaultWarmIntegrationTest {
         for(String table:List.of("finance_query_dirty_days","finance_query_partitions","finance_query_events"))fixture.db.update("DELETE FROM "+table);
         db=new TracedJdbc(fixture.db);var repo=new FinanceRepository(db,new ObjectMapper());
         projections=new FinanceQueryProjections(repo,fixture.service,new FinanceAdSpendService(repo,fixture.service));
-        clock.now=Instant.parse("2026-11-12T00:00:00Z");worker=new FinanceQueryProjectionWorker(projections,clock);
+        clock.now=Instant.parse("2026-11-12T00:00:00Z");nanos.set(0);worker=new FinanceQueryProjectionWorker(projections,clock,nanos::get);
     }
     @AfterEach void stop(){if(worker!=null)worker.stop();}
     @Test void createsSixDefaultPartitionsPerVisibleCompanyWithoutHistoricalScanning(){
@@ -101,6 +102,51 @@ class FinanceProjectionDefaultWarmIntegrationTest {
             worker.tickEvents();assertEquals(2,db.warmScans);
         }
     }
+    @Test void aFastBacklogDrainsSeveralCommittedBatchesInOneTick()throws Exception{
+        fixture.connect(fixture.owner,false);projections.drainEvents();enqueue(6001);
+        var gate=gate(temp.resolve("burst-gate"));db.gate=gate;
+        try(var ignored=redirectGate(gate)){
+            worker.tickEvents();
+            assertEquals(0,eventCount(),"Fast committed batches must not each incur another scheduler delay");
+            assertEquals(List.of(2000,2000,2000,1),db.deletedBatches);
+            assertEquals(6,partitionCount());assertEquals(0,gate.activeWorkers());
+        }
+    }
+    @Test void catchUpYieldsWhenItsTimeBudgetIsSpent()throws Exception{
+        fixture.connect(fixture.owner,false);projections.drainEvents();enqueue(4001);
+        db.deletedBatches.clear();db.afterDelete=()->nanos.addAndGet(Duration.ofMillis(300).toNanos());
+        var gate=gate(temp.resolve("budget-gate"));db.gate=gate;
+        try(var ignored=redirectGate(gate)){
+            worker.tickEvents();assertEquals(2001,eventCount(),"A slow batch must yield to foreground queries");
+            assertEquals(List.of(2000),db.deletedBatches);assertEquals(0,gate.activeWorkers());
+        }
+    }
+    @Test void closingMaintenanceGateStopsFurtherBatchesAndDefersWarmup()throws Exception{
+        fixture.connect(fixture.owner,false);projections.drainEvents();enqueue(4001);db.deletedBatches.clear();
+        var marker=temp.resolve("closing-gate");var gate=gate(marker);db.gate=gate;
+        db.afterDelete=()->{try{Files.writeString(marker,"{}");}catch(java.io.IOException failure){throw new java.io.UncheckedIOException(failure);}};
+        try(var ignored=redirectGate(gate)){
+            worker.tickEvents();assertEquals(2001,eventCount());assertEquals(0,partitionCount());
+            assertEquals(List.of(2000),db.deletedBatches);assertEquals(0,gate.activeWorkers());
+            Files.delete(marker);db.afterDelete=()->{};
+            worker.tickEvents();assertEquals(0,eventCount());assertEquals(6,partitionCount());
+        }
+    }
+    @Test void catchUpRemainsBoundedEvenWhenAllBatchesAreFast()throws Exception{
+        fixture.connect(fixture.owner,false);projections.drainEvents();enqueue(16001);
+        var gate=gate(temp.resolve("capped-gate"));db.gate=gate;
+        try(var ignored=redirectGate(gate)){
+            worker.tickEvents();assertEquals(1,eventCount(),"A tick must yield even with an indefinitely growing fast queue");
+            assertEquals(List.of(2000,2000,2000,2000,2000,2000,2000,2000),db.deletedBatches);
+            assertEquals(0,gate.activeWorkers());worker.tickEvents();assertEquals(0,eventCount());
+        }
+    }
+    private void enqueue(int count){
+        db.deletedBatches.clear();var events=new ArrayList<Object[]>();
+        for(int i=0;i<count;i++)events.add(new Object[]{fixture.owner.organizationId()});
+        fixture.db.batchUpdate("INSERT INTO finance_query_events(organization_id,event_scope,record_date,source_table) VALUES(?,'DAY','2026-10-05','qa_backlog')",events);
+    }
+    private int eventCount(){return fixture.db.queryForObject("SELECT COUNT(*) FROM finance_query_events",Integer.class);}
     private int partitionCount(){return fixture.db.queryForObject("SELECT COUNT(*) FROM finance_query_partitions",Integer.class);}
     private static MaintenanceGate gate(Path path)throws Exception{
         var constructor=MaintenanceGate.class.getDeclaredConstructor(Path.class);constructor.setAccessible(true);return constructor.newInstance(path);
@@ -108,6 +154,7 @@ class FinanceProjectionDefaultWarmIntegrationTest {
     /** Redirect only the singleton environment boundary to a real gate with a test-owned marker. */
     private static org.mockito.MockedStatic<MaintenanceGate> redirectGate(MaintenanceGate gate){
         var mocked=mockStatic(MaintenanceGate.class,CALLS_REAL_METHODS);
+        mocked.when(MaintenanceGate::instance).thenReturn(gate);
         mocked.when(()->MaintenanceGate.runIfOpen(any(Runnable.class))).thenAnswer(call->{
             try(var permit=gate.enter(true)){if(permit!=null)call.<Runnable>getArgument(0).run();}return null;
         });return mocked;
@@ -119,7 +166,8 @@ class FinanceProjectionDefaultWarmIntegrationTest {
         @Override public Instant instant(){return now;}
     }
     private static final class TracedJdbc extends JdbcTemplate {
-        final List<List<String>> requests=new ArrayList<>();int warmScans;int failRequest;MaintenanceGate gate;
+        final List<List<String>> requests=new ArrayList<>();final List<Integer> deletedBatches=new ArrayList<>();
+        Runnable afterDelete=()->{};int warmScans;int failRequest;MaintenanceGate gate;
         TracedJdbc(JdbcTemplate db){super(Objects.requireNonNull(db.getDataSource()));}
         @Override public <T>List<T> queryForList(String sql,Class<T> type){
             if(sql.startsWith("SELECT DISTINCT organization_id FROM finance_connections")){warmScans++;checkPermit();}
@@ -134,7 +182,11 @@ class FinanceProjectionDefaultWarmIntegrationTest {
                 checkPermit();requests.add(List.of(text(args[0]),text(args[2]),text(args[1])));
                 if(requests.size()==failRequest)throw new org.springframework.dao.TransientDataAccessResourceException("simulated warmup interruption");
             }
-            return super.update(sql,args);
+            int count=super.update(sql,args);
+            if(sql.startsWith("DELETE FROM finance_query_events WHERE event_id IN")){
+                checkPermit();deletedBatches.add(count);afterDelete.run();
+            }
+            return count;
         }
         private void checkPermit(){if(gate!=null)assertTrue(gate.activeWorkers()>0,"The maintenance permit must cover every prewarm read and write");}
     }
