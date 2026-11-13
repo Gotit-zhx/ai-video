@@ -164,6 +164,27 @@ class FinanceQueryProjectionIntegrationTest {
         assertTrue(rows(snap.facts().get("buckets")).isEmpty());
         assertEquals(1,snap.rawCounts().stream().filter(r->"SETTLED".equals(r.get("basis"))&&"ORDER".equals(r.get("kind"))).mapToLong(r->number(r.get("records"))).sum());
     }
+    @Test void rawFacetBuildUsesTheCompanyDateRangeInsteadOfAnAllHistoryShopPrefix(){
+        for(int day=1;day<=31;day++)for(String kind:List.of("FEE","COST"))fixture.repo.save(fixture.owner,
+            new Entry(shop,"SHOPEE",kind,"facet-plan-"+kind+day,"","","pay_per_sale","SETTLED",LocalDate.of(2026,10,day),"PHP",day%2==0?null:decimal("1"),null,null,null,null,"API",Map.of()));
+        var scans=new java.util.concurrent.atomic.AtomicInteger();
+        var planned=new org.springframework.jdbc.core.JdbcTemplate(fixture.dataSource){
+            @Override public List<Map<String,Object>> queryForList(String sql,Object...args){
+                if(sql.contains("'RECORD' basis")){
+                    var plan=super.queryForList("EXPLAIN "+sql,args).stream().filter(row->"finance_records".equals(row.get("table"))).findFirst().orElseThrow();
+                    assertTrue(number(plan.get("key_len"))>=147,"Raw facets must constrain company and date rather than scan every historical record; key="+plan.get("key")+", prefix="+plan.get("key_len"));
+                    scans.incrementAndGet();
+                }
+                return super.queryForList(sql,args);
+            }
+        };
+        var repo=new FinanceRepository(planned,new tools.jackson.databind.ObjectMapper());
+        projections=new FinanceQueryProjections(repo,fixture.service,new FinanceAdSpendService(repo,fixture.service));
+        build("2026-10-01","2026-10-31","");
+        var facets=projections.find(fixture.owner,filter("2026-10-01","2026-10-31","")).orElseThrow().rawCounts();
+        assertEquals(2,scans.get());assertEquals(62,facets.stream().filter(row->"RECORD".equals(row.get("basis"))).mapToLong(row->number(row.get("records"))).sum());
+        assertEquals(31,facets.stream().filter(row->number(row.get("advertising_fee"))==1).mapToLong(row->number(row.get("records"))).sum());
+    }
     @Test void rawCountFacetsMatchApiOnlyOrdersAndAdvertisingFeePages(){
         var day=LocalDate.of(2026,10,3);
         for(String source:List.of("API","IMPORT"))fixture.repo.save(fixture.owner,new Entry(shop,"TIKTOK_SHOP","ORDER","count-order-"+source,

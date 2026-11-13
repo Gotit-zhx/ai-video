@@ -250,8 +250,10 @@ public class FinanceQueryProjections {
         var counts=new ArrayList<Map<String,Object>>();var query=repo.query(scope,filter);
         // These are raw-page facets: source restrictions and advertising fees are independent of operating exclusions.
         String advertisingFee="CASE WHEN kind='FEE' AND "+FinanceAdvertisingReport.ledgerPredicate("finance_records")+" THEN 1 ELSE 0 END";
+        // Without a date-first hint MySQL can choose a shop/user-prefixed
+        // covering index and scan the company's entire historical ledger.
         counts.addAll(repo.jdbc().queryForList("SELECT shop_id,record_date,kind,currency,source,'RECORD' basis,"+advertisingFee
-            +" advertising_fee,COUNT(*) records FROM finance_records WHERE "+query.where()+" GROUP BY shop_id,record_date,kind,currency,source,advertising_fee",query.args().toArray()));
+            +" advertising_fee,COUNT(*) records FROM finance_records FORCE INDEX(idx_finance_company_dashboard) WHERE "+query.where()+" GROUP BY shop_id,record_date,kind,currency,source,advertising_fee",query.args().toArray()));
         for(String kind:List.of("ORDER","REFUND")){
             var q=repo.query(scope,filter,"r");
             counts.addAll(repo.jdbc().queryForList("SELECT r.shop_id,r.record_date,o.kind,r.currency,'API' source,0 advertising_fee,'SETTLED' basis,COUNT(*) records"
