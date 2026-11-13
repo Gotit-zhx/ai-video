@@ -311,10 +311,10 @@ public class FinanceRepository {
             if(!pair[1].isEmpty()){w+=" AND "+p+pair[0]+"=?";a.add(pair[1]);}
         }
         String record=alias.isEmpty()?"finance_records":alias;
-        // The organization is already fixed above. Materialize the small authorized-shop
-        // set once instead of running a correlated visibility lookup for every ledger row.
-        w+=" AND ("+record+".shop_id='UNASSIGNED' OR "+record+".shop_id IN"
-                +" (SELECT fc.id FROM finance_connections fc WHERE fc.organization_id=? AND fc.status<>'REMOVED'))";
+        // Resolve each ledger shop by its globally unique primary key, then verify company visibility.
+        w+=" AND ("+record+".shop_id='UNASSIGNED' OR EXISTS"
+                +" (SELECT 1 FROM finance_connections fc FORCE INDEX(PRIMARY) WHERE fc.id="+record
+                +".shop_id AND fc.organization_id=? AND fc.status<>'REMOVED'))";
         a.add(s.organizationId());
         if(!f.groupId().isBlank()){
             String group=record+".shop_id IN (SELECT fg.id FROM finance_connections fg WHERE fg.organization_id=? AND fg.status<>'REMOVED' AND ";
