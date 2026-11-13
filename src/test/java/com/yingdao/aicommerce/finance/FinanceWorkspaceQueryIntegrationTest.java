@@ -87,6 +87,23 @@ class FinanceWorkspaceQueryIntegrationTest {
         build();var next=queries.status(fixture.owner,month);assertEquals("READY",next.get("status"));assertNotEquals(first.get("revision"),next.get("revision"));
         assertFalse(next.containsKey("facts"));assertFalse(next.containsKey("items"));
     }
+    @Test void aWriteAfterMetadataSelectionCannotLabelOldFactsAsCurrent(){
+        fee("before-metadata","PHP");build();
+        var racing=spy(projections);
+        doAnswer(call->{var version=call.callRealMethod();fee("during-metadata","PHP");return version;}).when(racing).version(any(),any());
+        queries=new FinanceWorkspaceQueryService(fixture.repo,fixture.service,new FinanceAdSpendService(fixture.repo,fixture.service),racing,mock(FinanceAds.class),null);
+        var result=queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,""));
+        assertEquals(2,number(map(result.get("records")).get("total")));
+        assertEquals("PENDING",map(result.get("readModel")).get("status"));
+    }
+    @Test void metadataCannotSelectAnIncompletePublishedPayload(){
+        fee("missing-payload","PHP");build();
+        fixture.db.update("UPDATE finance_query_partitions SET spend_json=NULL");
+        assertEquals("PENDING",projections.version(fixture.owner,month).get("status"));
+        var result=queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,""));
+        assertEquals("PENDING",map(result.get("readModel")).get("status"));
+        assertEquals(1,number(map(result.get("records")).get("total")));
+    }
 
     @Test void oneResponseUsesOneFrozenFxQuoteForSummaryAndRows(){
         fee("fx","PHP");build();
@@ -109,13 +126,15 @@ class FinanceWorkspaceQueryIntegrationTest {
         try{
             shared.invalidate(companyScope(fixture.owner.organizationId()));
             var guarded=spy(fixture.repo);
-            queries=new FinanceWorkspaceQueryService(guarded,fixture.service,new FinanceAdSpendService(fixture.repo,fixture.service),projections,mock(FinanceAds.class),shared);
+            var guardedProjections=spy(projections);
+            queries=new FinanceWorkspaceQueryService(guarded,fixture.service,new FinanceAdSpendService(fixture.repo,fixture.service),guardedProjections,mock(FinanceAds.class),shared);
             String heartbeatKey="heyi:finance:calculation:{"+fixture.owner.organizationId()+"}:settlements";
             template.opsForValue().set(heartbeatKey,new tools.jackson.databind.ObjectMapper().writeValueAsString(Map.of("heartbeat",System.currentTimeMillis(),"status","RUNNING","shops",List.of(Map.of("shopId",shop,"complete",false,"records",1,"total",5)))));
             var first=queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,""));
             assertEquals("RUNNING",map(first.get("settlementCalculation")).get("status"));
             template.opsForValue().set(heartbeatKey,new tools.jackson.databind.ObjectMapper().writeValueAsString(Map.of("heartbeat",System.currentTimeMillis(),"status","COMPLETE","shops",List.of(Map.of("shopId",shop,"complete",true,"records",5,"total",5)))));
             doThrow(new AssertionError("A warm identical Redis page must not reread raw rows")).when(guarded).details(any(),any(),eq("FEE"),anyInt(),anyInt(),any(),anyBoolean());
+            doThrow(new AssertionError("A warm Redis page must select its revision without reading or decoding financial payloads")).when(guardedProjections).find(any(),any());
             new FinanceFields(fixture.repo).save(fixture.owner,"FEE",List.of("external_id"),List.of("external_id"));
             var cached=queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,""));
             assertEquals("COMPLETE",map(cached.get("settlementCalculation")).get("status"));template.delete(heartbeatKey);
