@@ -20,6 +20,11 @@
   };
   const initialPath=({shopId=state.shopId,groupId=shopId?'':state.groupId}={})=>
     state.tab==='labels'?null:`${needsCatalogue(state.tab)?'/costs':'/costs/context'}?${new URLSearchParams({shopId,groupId})}`;
+  const initialLabelFilters=dates=>{
+    if(state.tab!=='labels')return null;let start=state.start,end=state.end;
+    if(!state.orderContext?.recordId&&dates?.start&&dates?.end){start=dates.start;end=dates.end;}
+    return {...state.labelFilters,start,end};
+  };
   reset();
   const el=(tag,text,parent,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=String(text);if(cls)n.className=cls;parent?.append(n);return n;};
   const action=(parent,text,fn,cls='')=>{const n=el('button',text,parent,cls);n.type='button';n.onclick=async()=>{if(n.disabled)return;n.disabled=true;try{await fn();}catch(e){const feedback=n.closest('dialog')?.querySelector('[role=alert]')||document.querySelector('.fc-feedback');if(feedback)feedback.textContent=e.message||'操作失败，请重试';}finally{n.disabled=false;}};return n;};
@@ -115,6 +120,7 @@
   }
   function mount(root,context={}){
     const preview=context.preview||null,live=preview?.live===true,catalogLoaded=preview?.catalogLoaded!==false,shops=context.shops||[],editable=Boolean(context.canManage),costs=preview?.costs||[],manualCosts=preview?.manualCosts||[],products=preview?.products||[];
+    if(state.tab!=='labels')context.initialLabelPrefetch?.cancel();
     if(context.dates?.start&&context.dates?.end){
       const key=JSON.stringify(context.dates);
       if(!state.orderContext?.recordId&&state.datesKey!==key){state.start=context.dates.start;state.end=context.dates.end;state.orderPage=1;}
@@ -668,7 +674,7 @@
     }
     if(!['orders','labels'].includes(state.tab)&&missingAutomatic())void autoMatch();
   }
-  globalThis.FinanceCosts={mount,reset,candidate,initialScope,initialPath,shopId:()=>state.shopId,groupId:()=>state.groupId,openMapping:selection=>{
+  globalThis.FinanceCosts={mount,reset,candidate,initialScope,initialPath,initialLabelFilters,shopId:()=>state.shopId,groupId:()=>state.groupId,openMapping:selection=>{
     state.mappingReturn=selection.returnToOrders?{shopId:state.shopId,groupId:state.groupId,warehouse:state.warehouse,orderPage:state.orderPage,orderContext:state.orderContext,orderCostStatus:state.orderCostStatus,start:state.start,end:state.end}:null;
     if(state.shopId!==selection.shopId)state.warehouse='';
     state.tab='mapping';state.shopId=selection.shopId;state.collapsedShopId='';state.search=selection.skuId;state.status='';state.page=1;

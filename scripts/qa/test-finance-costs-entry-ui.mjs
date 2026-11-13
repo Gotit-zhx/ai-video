@@ -18,9 +18,10 @@ const labelCosts={
 const catalogue={live:true,catalogLoaded:true,settingsLoaded:true,shopId:'shop-a',groupId:'group-a',groupName:'A 分组',sourceName:'成本.xlsx',
   costs:[{sku:'PACK',warehouse:'菲律宾仓',prices:{'2026-10':2}}],manualCosts:[],products:[{shop_id:'shop-a',product_id:'product',sku_id:'sku',seller_sku:'PACK',name:'测试商品',spec:'单包'}],mappings:{},settings:{},settingsVersion:0,imports:[],shopCatalogs:{'shop-a':{sourceName:'成本.xlsx',costRows:1}},groupCatalogs:{'group-a':{sourceName:'成本.xlsx',costRows:1}}};
 const orderCosts={items:[],total:0,page:1,pageSize:50,productCosts:{total:{pending_count:0,ready_count:0,known_amount_cny:0}}};
+let releaseShops;const shopsGate=new Promise(resolve=>{releaseShops=()=>resolve({data:{items:shops,groups,sync:[]}});});
 w.api=async path=>{
   const u=new URL(path,'https://example.test');requests.push(u);
-  if(u.pathname.endsWith('/shops'))return {data:{items:shops,groups,sync:[]}};
+  if(u.pathname.endsWith('/shops'))return shopsGate;
   if(u.pathname.endsWith('/costs/context'))return {data:{live:true,catalogLoaded:false,settingsLoaded:false,shopId:'shop-a',groupId:'group-a',groupName:'A 分组'}};
   if(u.pathname.endsWith('/label-costs'))return {data:structuredClone(labelCosts)};
   if(u.pathname.endsWith('/costs/orders'))return {data:structuredClone(orderCosts)};
@@ -33,6 +34,10 @@ const waitFor=async predicate=>{for(let i=0;i<100;i++){if(predicate())return;awa
 const button=text=>[...d.querySelectorAll('button')].find(node=>node.textContent.trim()===text||node.textContent.trim().endsWith(text));
 
 w.FinanceWorkspace.enter('costs');
+await waitFor(()=>requests.some(url=>url.pathname==='/api/v1/finance/shops'));
+await new Promise(resolve=>setTimeout(resolve,20));
+assert(requests.some(url=>url.pathname==='/api/v1/finance/workspace/label-costs'),'the default labels request starts while fresh shops are still pending');
+releaseShops();
 await waitFor(()=>d.querySelector('#finance-page').getAttribute('aria-busy')==='false'&&d.body.textContent.includes('10月贴单.xlsx'));
 const paths=requests.map(url=>url.pathname);
 assert.deepEqual(paths.slice(0,2),['/api/v1/finance/shops','/api/v1/finance/workspace/label-costs'],'labels entry starts its real data request immediately after fresh authorized shops');

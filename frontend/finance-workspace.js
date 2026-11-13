@@ -1546,10 +1546,16 @@
     if(!changed)notify(mountedView===view?'正在更新当前数据，请稍候…':'正在查询，请稍候…');
     const selection={...filters},selectedPage=page,numbers=detailNumbers(),spendSelection={search:adSpendSearch,assignment:adSpendAssignment,page:adSpendPage};
     const query=extra=>new URLSearchParams({...selection,...extra}).toString();
+    let initialLabelPrefetch=null,labelPrefetchHandedOff=false;
     try{
       const next=root.cloneNode(false);
       if(view==='costs'||view==='expense-ledger'){
-        const response=await read('/shops');if(run!==generation||!active)return;
+        const shopsRead=read('/shops');
+        if(view==='costs'&&!globalThis.FinanceCostPreviewData&&globalThis.FinanceLabelCosts?.prefetchInitial){
+          const labelFilters=globalThis.FinanceCosts?.initialLabelFilters?.({start:selection.start,end:selection.end});
+          if(labelFilters)initialLabelPrefetch=FinanceLabelCosts.prefetchInitial({filters:labelFilters,signal,request:(path,options)=>request('/workspace'+path,options)});
+        }
+        const response=await shopsRead;if(run!==generation||!active)return;
         const nextData={shops:response.items,groups:response.groups||[],sync:[]};
         if(view==='costs'){
           const shopId=globalThis.FinanceCosts?.shopId?.(),selected=nextData.shops.find(shop=>shop.id===shopId);
@@ -1620,8 +1626,8 @@
       }
       if(view==='costs'){
         const host=root.querySelector('[data-finance-costs]');
-        if(globalThis.FinanceCosts)FinanceCosts.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),preview:data.costs,dates:{start:filters.start,end:filters.end},onDatesChange:dates=>{filters.start=dates.start;filters.end=dates.end;filters.granularity=dateGranularity(dates.start,dates.end);filters.fxSnapshot='';pinnedDates=true;rememberFilters();},openRecord:detailDialog,skuCell,dateTimeCell,numberSearch,downloadOrderCosts,mountOrderCostExports:mountCostExports,isActive:()=>active&&view==='costs',request:(path,options)=>request('/workspace'+path,options)});
-        else el('p','成本管理页面组件暂未加载，请刷新重试。',host,'fi-muted');
+        if(globalThis.FinanceCosts){FinanceCosts.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),preview:data.costs,initialLabelPrefetch,dates:{start:filters.start,end:filters.end},onDatesChange:dates=>{filters.start=dates.start;filters.end=dates.end;filters.granularity=dateGranularity(dates.start,dates.end);filters.fxSnapshot='';pinnedDates=true;rememberFilters();},openRecord:detailDialog,skuCell,dateTimeCell,numberSearch,downloadOrderCosts,mountOrderCostExports:mountCostExports,isActive:()=>active&&view==='costs',request:(path,options)=>request('/workspace'+path,options)});labelPrefetchHandedOff=true;}
+        else{initialLabelPrefetch?.cancel();el('p','成本管理页面组件暂未加载，请刷新重试。',host,'fi-muted');}
       }
       if(view==='expense-ledger'){
         const host=root.querySelector('[data-finance-expenses]');
@@ -1640,7 +1646,7 @@
       const message=temporary?'本次查询连接中断':e.message;
       notify(message+'。已停止自动重试，可点击刷新重新查询。'+(changed?'已隐藏上次筛选的结果。':mountedView===view?'当前显示的是相同条件的上次结果。':''),true);
     }}
-    finally{if(run===generation){activeLoadKey='';clearInterval(waitingTimer);setLoading(false);}}
+    finally{if(!labelPrefetchHandedOff)initialLabelPrefetch?.cancel();if(run===generation){activeLoadKey='';clearInterval(waitingTimer);setLoading(false);}}
   }
   globalThis.FinanceWorkspace={allowed,canManage,enter(route,initialFilters){
     if(!allowed())return;shopeeEpoch++;restoreFilters();const wasLive=view==='live';
