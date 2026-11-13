@@ -73,7 +73,7 @@ jobs:
           node: 'false'
           media: 'false'
       - name: Run source-mode and maintenance safety tests
-        run: mvn -B -ntp -Dtest=DevRevisionControllerTest,DevWebConfigurationTest,MaintenanceGateTest test
+        run: mvn -B -ntp -Dtest=DevRevisionControllerTest,DevWebConfigurationTest,DevWebResourceSecurityTest,MaintenanceGateTest test
 
   required:
     name: Development checks

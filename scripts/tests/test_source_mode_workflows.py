@@ -113,7 +113,7 @@ class DevelopmentWorkflowTest(unittest.TestCase):
         self.assertIn("python3 -m unittest discover -s scripts/tests -p 'test_*.py'", development)
         self.assertIn("node --test frontend/test/dev-live.test.cjs", development)
         self.assertIn("node --test frontend/test/public-assets.cjs", development)
-        self.assertIn("-Dtest=DevRevisionControllerTest,DevWebConfigurationTest,MaintenanceGateTest", development)
+        self.assertIn("-Dtest=DevRevisionControllerTest,DevWebConfigurationTest,DevWebResourceSecurityTest,MaintenanceGateTest", development)
         self.assertIn(" test", development)
 
     def test_formal_core_release_workflows_are_archived_as_history(self):
