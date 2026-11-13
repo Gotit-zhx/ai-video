@@ -50,37 +50,50 @@ final class FinanceAdAutomation {
                 throw bad("广告接口返回了无效或重复店铺标识");
             repo.transaction(()->{
                 if(!owns(s,advertiser,lease))return null;
-                repo.jdbc().update("UPDATE finance_ad_stores SET active=FALSE WHERE organization_id=? AND advertiser_id=?",s.organizationId(),advertiser);
+                var existing=repo.jdbc().queryForList("""
+                    SELECT store_id,store_name,store_code,shop_id,match_status,report_eligible,primary_advertiser_id,gmv_available,active
+                    FROM finance_ad_stores WHERE organization_id=? AND advertiser_id=? FOR UPDATE
+                    """,s.organizationId(),advertiser);
+                var previousById=new HashMap<String,Map<String,Object>>();
+                existing.forEach(row->previousById.put(text(row.get("store_id")),row));
                 boolean rematched=false;
                 for(var store:stores){
                     String storeId=text(store.get("store_id"));
-                    var previous=repo.jdbc().queryForList("SELECT shop_id FROM finance_ad_stores WHERE organization_id=? AND advertiser_id=? AND store_id=?",s.organizationId(),advertiser,storeId);
+                    var previous=previousById.get(storeId);
                     var matches=repo.jdbc().queryForList("SELECT id FROM finance_connections WHERE organization_id=? AND platform='TIKTOK_SHOP' AND external_shop_id=? AND status<>'REMOVED' FOR SHARE",s.organizationId(),storeId);
                     String shop=matches.size()==1?text(matches.getFirst().get("id")):"";
                     boolean removed=shop.isBlank()&&!repo.jdbc().queryForList("SELECT shop_id FROM finance_shop_deletions WHERE organization_id=? AND identity_hash=?",
                             s.organizationId(),FinanceShopDeletion.identity(s.organizationId(),"TIKTOK_SHOP",storeId)).isEmpty();
                     String match=removed?"REMOVED":matches.size()>1?"AMBIGUOUS":shop.isBlank()?"UNMATCHED":"MATCHED";
                     String exclusive=first(store,"exclusive_authorized_advertiser_info.advertiser_id");
+                    String name=bounded(store.get("store_name"),250),code=bounded(store.get("store_code"),100);
+                    String primary=exclusive.matches("\\d{5,30}")?exclusive:"";
+                    Boolean available=store.get("is_gmv_max_available") instanceof Boolean value?value:null;
                     // Current promotion ownership/availability does not prove historical report permission.
                     // Attempt the read for every accessible store; never change exclusive authorization.
                     boolean eligible=!removed;
-                    repo.jdbc().update("""
-                        INSERT INTO finance_ad_stores(organization_id,advertiser_id,store_id,store_name,store_code,shop_id,match_status,report_eligible,primary_advertiser_id,gmv_available)
-                        VALUES(?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE store_name=VALUES(store_name),store_code=VALUES(store_code),
-                          shop_id=VALUES(shop_id),match_status=VALUES(match_status),report_eligible=VALUES(report_eligible),
-                          primary_advertiser_id=VALUES(primary_advertiser_id),gmv_available=VALUES(gmv_available),active=TRUE,observed_at=UTC_TIMESTAMP(6)
-                        """,s.organizationId(),advertiser,storeId,bounded(store.get("store_name"),250),bounded(store.get("store_code"),100),shop,match,eligible,
-                            exclusive.matches("\\d{5,30}")?exclusive:"",store.get("is_gmv_max_available") instanceof Boolean available?available:null);
+                    if(previous==null)repo.jdbc().update("""
+                            INSERT INTO finance_ad_stores(organization_id,advertiser_id,store_id,store_name,store_code,shop_id,match_status,report_eligible,primary_advertiser_id,gmv_available)
+                            VALUES(?,?,?,?,?,?,?,?,?,?)
+                            """,s.organizationId(),advertiser,storeId,name,code,shop,match,eligible,primary,available);
+                    else if(storeChanged(previous,name,code,shop,match,eligible,primary,available))repo.jdbc().update("""
+                            UPDATE finance_ad_stores SET store_name=?,store_code=?,shop_id=?,match_status=?,report_eligible=?,
+                              primary_advertiser_id=?,gmv_available=?,active=TRUE,observed_at=UTC_TIMESTAMP(6)
+                            WHERE organization_id=? AND advertiser_id=? AND store_id=?
+                            """,name,code,shop,match,eligible,primary,available,s.organizationId(),advertiser,storeId);
                     if(eligible&&!removed)for(String channel:GMV_CHANNELS)ensureStream(s,advertiser,channel,storeId);
                     // The stable record identity never includes the matched local shop.
                     // No amount or provider payload changes when a finance shop is connected later.
-                    if(!removed&&!previous.isEmpty()&&!shop.equals(text(previous.getFirst().get("shop_id"))))rematched|=repo.jdbc().update("""
+                    if(!removed&&previous!=null&&!shop.equals(text(previous.get("shop_id"))))rematched|=repo.jdbc().update("""
                         UPDATE finance_records SET shop_id=?,updated_at=UTC_TIMESTAMP(6)
                         WHERE organization_id=? AND kind='AD_GMV' AND source='API'
                           AND JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$.advertiser_id'))=?
                           AND JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$._finance_store_id'))=?
                         """,shop.isBlank()?"UNASSIGNED":shop,s.organizationId(),advertiser,storeId)>0;
                 }
+                for(var previous:existing)if(Boolean.TRUE.equals(previous.get("active"))&&!identities.contains(text(previous.get("store_id"))))
+                    repo.jdbc().update("UPDATE finance_ad_stores SET active=FALSE WHERE organization_id=? AND advertiser_id=? AND store_id=? AND active=TRUE",
+                            s.organizationId(),advertiser,previous.get("store_id"));
                 if(rematched)ads.finance.refreshAfterCommit(s);
                 ensureStream(s,advertiser,"BASIC","");
                 repo.jdbc().update("""
@@ -311,6 +324,14 @@ final class FinanceAdAutomation {
         if(failure instanceof EmptyReportRefresh)return stage+"部分日期返回空报表；已保留上次成功数据和进度，待核对并自动重试。";
         if(failure instanceof FinanceAdFailures.ProviderFailure)return stage+"："+failure.getMessage()+" 系统将自动重试，不影响其他报表。";
         return stage+"暂未完成或返回不完整；已保留进度和上次数据，系统将自动重试。";
+    }
+    private static boolean storeChanged(Map<String,Object> previous,String name,String code,String shop,String match,
+                                        boolean eligible,String primary,Boolean available){
+        return !name.equals(text(previous.get("store_name")))||!code.equals(text(previous.get("store_code")))
+                ||!shop.equals(text(previous.get("shop_id")))||!match.equals(text(previous.get("match_status")))
+                ||Boolean.TRUE.equals(previous.get("report_eligible"))!=eligible
+                ||!primary.equals(text(previous.get("primary_advertiser_id")))
+                ||!Objects.equals(previous.get("gmv_available"),available)||!Boolean.TRUE.equals(previous.get("active"));
     }
     private static String bounded(Object value,int max){String text=text(value);return text.substring(0,Math.min(max,text.length()));}
 }

@@ -14,18 +14,19 @@ class FinanceAdAutomationIntegrationTest extends FinanceConfigurationIntegration
     FinanceAds ads;MarketplaceHttp http;
     final String advertiser="100001",storeA="700001",storeB="700002";
     List<Map<String,Object>> remoteStores=new ArrayList<>();
-    boolean failDiscovery,failGmv,empty,failSecondPage;
+    boolean failDiscovery,failGmv,empty,failSecondPage,revokeDiscoveryLease;
     int pages=1;final List<Map<String,String>> calls=new ArrayList<>();
     @BeforeEach void provider(TestInfo test){
         // CI also runs the inherited finance contracts; keep their original empty-account fixture.
         if(test.getTestMethod().map(method->!method.getName().startsWith("automation")).orElse(true)){ads=null;return;}
-        remoteStores=new ArrayList<>();failDiscovery=false;failGmv=false;empty=false;failSecondPage=false;pages=1;calls.clear();
+        remoteStores=new ArrayList<>();failDiscovery=false;failGmv=false;empty=false;failSecondPage=false;revokeDiscoveryLease=false;pages=1;calls.clear();
         http=mock(MarketplaceHttp.class);ads=new FinanceAds(repo,service,http,cipher);
         ads.connectVerified(owner,advertiser,"","unit-only-ad-access-token","",Map.of("advertiser_id",advertiser,"name","Ads","currency","PHP","timezone","Asia/Manila"));
         when(http.get(any(),anyMap())).thenAnswer(invocation->{
             URI uri=invocation.getArgument(0);var query=params(uri);query.put("path",uri.getPath());calls.add(query);
             assertTrue(uri.toString().startsWith("https://business-api.tiktok.com/open_api/v1.3/"));
             if(uri.getPath().endsWith("/gmv_max/store/list/")){
+                if(revokeDiscoveryLease)db.update("UPDATE finance_ad_accounts SET lease_until=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 SECOND)");
                 if(failDiscovery)return Map.of("code",40001,"message","unit-only-secret");
                 return Map.of("code",0,"data",Map.of("store_list",remoteStores));
             }
@@ -42,6 +43,7 @@ class FinanceAdAutomationIntegrationTest extends FinanceConfigurationIntegration
     @AfterEach void stopAds(){if(ads!=null)ads.stop();}
     Map<String,String> params(URI uri){var values=new HashMap<String,String>();for(String part:uri.getRawQuery().split("&")){var pair=part.split("=",2);values.put(pair[0],URLDecoder.decode(pair[1],StandardCharsets.UTF_8));}return values;}
     Map<String,Object> store(String id){return Map.of("store_id",id,"store_name","Same name","store_code","CODE-"+id,"is_gmv_max_available",true);}
+    Map<String,Object> store(String id,String name,String code,Boolean gmv){var result=new LinkedHashMap<String,Object>();result.put("store_id",id);result.put("store_name",name);result.put("store_code",code);if(gmv!=null)result.put("is_gmv_max_available",gmv);return result;}
     String shop(Scope scope,String external){String id=groupedShop(scope,external,service.saveGroup(scope,null,"Group "+external));db.update("UPDATE finance_connections SET platform='TIKTOK_SHOP',name='Same name' WHERE id=?",id);return id;}
     void tick(){db.update("UPDATE finance_ad_accounts SET next_at=UTC_TIMESTAMP(6)");ads.tick();}
     void discover(){db.update("UPDATE finance_ad_accounts SET discovery_next_at=UTC_TIMESTAMP(6)");tick();}
@@ -51,6 +53,84 @@ class FinanceAdAutomationIntegrationTest extends FinanceConfigurationIntegration
     }
     int count(String sql,Object...args){return db.queryForObject(sql,Integer.class,args);}
     String state(String channel,String store){return db.queryForObject("SELECT status FROM finance_ad_streams WHERE channel=? AND store_id=?",String.class,channel,store);}
+    FinanceQueryProjections projections(){return new FinanceQueryProjections(repo,service,new FinanceAdSpendService(repo,service));}
+    void drain(FinanceQueryProjections projections){for(int i=0;i<20&&projections.drainEvents()>0;i++){}assertEquals(0,count("SELECT COUNT(*) FROM finance_query_events"));}
+    void drainAndBuild(FinanceQueryProjections projections){drain(projections);for(int i=0;i<20&&projections.buildNext();i++){} }
+
+    @Test void automationIdenticalDiscoveryLeavesStoreEventsProjectionAndDurableStateUnchanged(){
+        remoteStores.add(store(storeA));discover();run("GMV",storeA);
+        var projections=projections();projections.request(owner,filter);drainAndBuild(projections);
+        var snapshot=projections.find(owner,filter).orElseThrow();
+        var stores=db.queryForList("SELECT store_id,store_name,store_code,shop_id,match_status,report_eligible,primary_advertiser_id,gmv_available,active,observed_at FROM finance_ad_stores ORDER BY store_id");
+        var checkpoints=db.queryForList("SELECT channel,store_id,checkpoint_json FROM finance_ad_streams ORDER BY channel,store_id");
+        var records=db.queryForList("SELECT id,external_id,amount,raw_json FROM finance_records ORDER BY id");
+        String token=db.queryForObject("SELECT access_token_encrypted FROM finance_ad_accounts",String.class);
+        Instant next=instant(db.queryForObject("SELECT discovery_next_at FROM finance_ad_accounts",Object.class));
+
+        discover();
+
+        assertEquals(0,count("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_stores'"));
+        assertEquals(stores,db.queryForList("SELECT store_id,store_name,store_code,shop_id,match_status,report_eligible,primary_advertiser_id,gmv_available,active,observed_at FROM finance_ad_stores ORDER BY store_id"));
+        assertEquals(checkpoints,db.queryForList("SELECT channel,store_id,checkpoint_json FROM finance_ad_streams ORDER BY channel,store_id"));
+        assertEquals(records,db.queryForList("SELECT id,external_id,amount,raw_json FROM finance_records ORDER BY id"));
+        assertEquals(token,db.queryForObject("SELECT access_token_encrypted FROM finance_ad_accounts",String.class));
+        assertEquals(snapshot.revision(),projections.find(owner,filter).orElseThrow().revision());
+        assertEquals("SUCCESS",db.queryForObject("SELECT discovery_status FROM finance_ad_accounts",String.class));
+        assertTrue(instant(db.queryForObject("SELECT discovery_next_at FROM finance_ad_accounts",Object.class)).isAfter(next));
+    }
+
+    @Test void automationMeaningfulStoreAndNullableGmvChangesInvalidateOncePerState(){
+        remoteStores.add(store(storeA,"Initial","OLD",null));discover();var projections=projections();drain(projections);
+        Object initialObserved=db.queryForObject("SELECT observed_at FROM finance_ad_stores",Object.class);
+
+        remoteStores.set(0,store(storeA,"Renamed","NEW",null));discover();
+        assertEquals(2,count("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_stores'"));
+        assertEquals("Renamed",db.queryForObject("SELECT store_name FROM finance_ad_stores",String.class));
+        Object renamedObserved=db.queryForObject("SELECT observed_at FROM finance_ad_stores",Object.class);assertNotEquals(initialObserved,renamedObserved);drain(projections);
+        discover();assertEquals(0,count("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_stores'"));assertEquals(renamedObserved,db.queryForObject("SELECT observed_at FROM finance_ad_stores",Object.class));
+
+        remoteStores.set(0,store(storeA,"Renamed","NEW",false));discover();
+        assertEquals(2,count("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_stores'"));assertFalse(db.queryForObject("SELECT gmv_available FROM finance_ad_stores",Boolean.class));drain(projections);
+        discover();assertEquals(0,count("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_stores'"));drain(projections);
+
+        remoteStores.set(0,store(storeA,"Renamed","NEW",null));discover();assertNull(db.queryForObject("SELECT gmv_available FROM finance_ad_stores",Boolean.class));drain(projections);
+        remoteStores.set(0,store(storeA,"Renamed","NEW",true));discover();
+        assertEquals(2,count("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_stores'"));assertTrue(db.queryForObject("SELECT gmv_available FROM finance_ad_stores",Boolean.class));drain(projections);
+        Object trueObserved=db.queryForObject("SELECT observed_at FROM finance_ad_stores",Object.class);discover();
+        assertEquals(0,count("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_stores'"));assertEquals(trueObserved,db.queryForObject("SELECT observed_at FROM finance_ad_stores",Object.class));
+    }
+
+    @Test void automationMissingAndEmptyDiscoveryDeactivateOnlyNewlyMissingStores(){
+        remoteStores.addAll(List.of(store(storeA),store(storeB)));discover();var projections=projections();drain(projections);
+        Object observedA=db.queryForObject("SELECT observed_at FROM finance_ad_stores WHERE store_id=?",Object.class,storeA);
+        Object observedB=db.queryForObject("SELECT observed_at FROM finance_ad_stores WHERE store_id=?",Object.class,storeB);
+
+        remoteStores.remove(1);discover();
+        assertEquals(2,count("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_stores'"));
+        assertTrue(db.queryForObject("SELECT active FROM finance_ad_stores WHERE store_id=?",Boolean.class,storeA));
+        assertFalse(db.queryForObject("SELECT active FROM finance_ad_stores WHERE store_id=?",Boolean.class,storeB));
+        assertEquals(observedA,db.queryForObject("SELECT observed_at FROM finance_ad_stores WHERE store_id=?",Object.class,storeA));
+        assertEquals(observedB,db.queryForObject("SELECT observed_at FROM finance_ad_stores WHERE store_id=?",Object.class,storeB));drain(projections);
+        discover();assertEquals(0,count("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_stores'"));assertEquals(observedA,db.queryForObject("SELECT observed_at FROM finance_ad_stores WHERE store_id=?",Object.class,storeA));
+
+        remoteStores.add(store(storeB));discover();assertEquals(2,count("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_stores'"));assertTrue(db.queryForObject("SELECT active FROM finance_ad_stores WHERE store_id=?",Boolean.class,storeB));
+        Object reactivatedB=db.queryForObject("SELECT observed_at FROM finance_ad_stores WHERE store_id=?",Object.class,storeB);assertNotEquals(observedB,reactivatedB);drain(projections);
+        discover();assertEquals(0,count("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_stores'"));assertEquals(reactivatedB,db.queryForObject("SELECT observed_at FROM finance_ad_stores WHERE store_id=?",Object.class,storeB));
+
+        remoteStores.clear();discover();assertEquals(4,count("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_stores'"));assertEquals(0,count("SELECT COUNT(*) FROM finance_ad_stores WHERE active=TRUE"));drain(projections);
+        discover();assertEquals(0,count("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_stores'"));assertEquals("EMPTY",db.queryForObject("SELECT discovery_status FROM finance_ad_accounts",String.class));
+    }
+
+    @Test void automationRejectedOrExpiredDiscoveryCannotPartiallyPublishStores(){
+        remoteStores.add(store(storeA));discover();var projections=projections();drain(projections);
+        var original=db.queryForMap("SELECT * FROM finance_ad_stores WHERE store_id=?",storeA);
+
+        failDiscovery=true;discover();assertEquals("ERROR",db.queryForObject("SELECT discovery_status FROM finance_ad_accounts",String.class));assertEquals(original,db.queryForMap("SELECT * FROM finance_ad_stores WHERE store_id=?",storeA));assertEquals(0,count("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_stores'"));
+        failDiscovery=false;remoteStores.add(store(storeA));discover();assertEquals("ERROR",db.queryForObject("SELECT discovery_status FROM finance_ad_accounts",String.class));assertEquals(original,db.queryForMap("SELECT * FROM finance_ad_stores WHERE store_id=?",storeA));
+        remoteStores.clear();remoteStores.add(store("bad"));discover();assertEquals("ERROR",db.queryForObject("SELECT discovery_status FROM finance_ad_accounts",String.class));assertEquals(original,db.queryForMap("SELECT * FROM finance_ad_stores WHERE store_id=?",storeA));
+        remoteStores.clear();remoteStores.add(store(storeA,"Changed","CHANGED",false));revokeDiscoveryLease=true;discover();
+        assertEquals(original,db.queryForMap("SELECT * FROM finance_ad_stores WHERE store_id=?",storeA));assertEquals(0,count("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_stores'"));
+    }
 
     @Test void automationDiscoversMultipleStoresByOfficialIdWithoutAssigningTheWholeAccount(){
         String a=shop(owner,storeA);shop(other,storeB);shop(owner,"700003");
