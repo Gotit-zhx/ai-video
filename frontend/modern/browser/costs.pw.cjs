@@ -236,3 +236,85 @@ test("pending cost selection and personal cost export use full company scope", a
   for (const key of ["shopId", "groupId", "platform", "currency"])
     expect(body[key]).toBe("");
 });
+
+for (const flagged of [true, false]) {
+  test(`group-only full catalogue preserves confirmed shared-source operations (flags=${flagged})`, async ({
+    page,
+    fixture,
+  }) => {
+    fixture.state.cost = {
+      live: true,
+      shopId: "",
+      groupId: "g0",
+      costs: [
+        {
+          sku: "GROUP-ONLY-SKU",
+          warehouse: "菲律宾",
+          prices: { "2026-10": 12 },
+        },
+      ],
+      manualCosts: [],
+      products: [],
+      imports: [{ id: "f1", source_name: "group-source.csv", row_count: 1 }],
+      shopCatalogs: {},
+      groupCatalogs: { g0: { sourceName: "group-source.csv", costRows: 1 } },
+      ...(flagged ? { catalogLoaded: true, settingsLoaded: true } : {}),
+    };
+    fixture.overrides.set("DELETE /workspace/costs/groups/g0/files/f1", () => ({
+      deleted: true,
+    }));
+    await open(
+      page,
+      fixture,
+      "costs?tab=costs",
+      "lang=zh&financeUi=modern&start=2026-10-01&end=2026-10-31&groupId=g0&shopId=&displayCurrency=CNY",
+    );
+    await expect(
+      page.getByText("GROUP-ONLY-SKU", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "自动匹配 SKU / SPU" }),
+    ).toBeDisabled();
+    await page.getByRole("button", { name: "导入分组成本表" }).click();
+    let d = await shadowDialog(page);
+    await d
+      .getByLabel("选择成本文件")
+      .setInputFiles({
+        name: "group.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from(
+          "sku,warehouse,month,price\nGROUP-ONLY-SKU,PH,2026-10,12",
+        ),
+      });
+    await expect(
+      d.getByRole("button", { name: "确认导入成本文件" }),
+    ).toBeDisabled();
+    await d.getByLabel("已核对分组及来源资料").check();
+    await d.getByRole("button", { name: "确认导入成本文件" }).click();
+    const imported = await call(fixture, "POST", "/workspace/costs/import");
+    expect(imported.form.groupId).toBe("g0");
+    expect(imported.form).not.toHaveProperty("shopId");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await page.getByRole("button", { name: "移除成本文件" }).click();
+    d = await shadowDialog(page);
+    await expect(d.getByRole("button", { name: "确认删除" })).toBeDisabled();
+    await d.getByLabel("我已核对删除影响").check();
+    await d.getByRole("button", { name: "确认删除" }).click();
+    await call(fixture, "DELETE", "/workspace/costs/groups/g0/files/f1");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await activateTab(page, "成本表设置");
+    await expect(
+      page.getByRole("button", { name: "保存成本设置" }),
+    ).toHaveCount(0);
+    await activateTab(page, "SKU 关联");
+    await expect(
+      page.getByRole("button", { name: "核对成本关联" }),
+    ).toHaveCount(0);
+    expect(
+      fixture.requests.some(
+        (c) =>
+          /\/(settings|mapping|auto-match)$/.test(c.path) && c.method !== "GET",
+      ),
+    ).toBe(false);
+  });
+}

@@ -59,8 +59,7 @@ function report(outer: Row, nested: Row, carryOuter = true): Row {
   }
   return result;
 }
-export function completeCostWorkspace(value: unknown): value is Row {
-  const data = record(value);
+function loadedCostCatalogue(data: Row | undefined): data is Row {
   if (!data || data.catalogLoaded === false || data.settingsLoaded === false)
     return false;
   if (
@@ -68,15 +67,38 @@ export function completeCostWorkspace(value: unknown): value is Row {
     (data.catalogLoaded !== true || data.settingsLoaded !== true)
   )
     return false;
-  // Flag-free legacy responses must contain the actual settings and catalogue.
   return (
     Array.isArray(data.costs) &&
     Array.isArray(data.manualCosts) &&
-    Array.isArray(data.products) &&
+    Array.isArray(data.products)
+  );
+}
+/** Shop configuration requires an actual shop and its actual versioned inputs. */
+export function completeCostWorkspace(value: unknown): value is Row {
+  const data = record(value);
+  return (
+    loadedCostCatalogue(data) &&
+    !!text(data.shopId)?.trim() &&
     !!record(data.settings) &&
     !!record(data.mappings) &&
     numeric(data.settingsVersion) !== undefined &&
     numeric(data.settingsVersion)! >= 0
+  );
+}
+/** The full no-shop Java branch is a group catalogue, not shop configuration. */
+export function completeCostCatalogue(value: unknown): value is Row {
+  if (completeCostWorkspace(value)) return true;
+  const data = record(value);
+  return (
+    loadedCostCatalogue(data) &&
+    data.live === true &&
+    data.shopId === "" &&
+    typeof data.groupId === "string" &&
+    Array.isArray(data.imports) &&
+    Array.isArray(data.products) &&
+    data.products.length === 0 &&
+    !!record(data.shopCatalogs) &&
+    !!record(data.groupCatalogs)
   );
 }
 /** One instance per provider/owner lifecycle. Unsupported reads never replay writes. */

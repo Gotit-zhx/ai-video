@@ -11,7 +11,11 @@ import { CostCatalog } from "./CostCatalog";
 import { OrderCosts } from "./OrderCosts";
 import { InputReview } from "./InputReview";
 import { useCostRead } from "./common";
-import { costContextPath, completeCostWorkspace } from "../reads";
+import {
+  costContextPath,
+  completeCostWorkspace,
+  completeCostCatalogue,
+} from "../reads";
 import { costPath, safeInputs } from "./domain";
 export function CostsPage({
   initialTab,
@@ -108,7 +112,8 @@ function CostWorkspace({
     (tab === "input-review" && !!context.data && safeInputs(context.data));
   const query = useCostRead(costPath, scope, 0, needsFull);
   const data = needsFull ? query.data : context.data;
-  const complete = completeCostWorkspace(data);
+  const complete = completeCostCatalogue(data);
+  const shopReady = completeCostWorkspace(data);
   const incomplete = needsFull && !!data && !complete;
   async function reloadWorkspace() {
     if (!owner.isCurrent()) return;
@@ -201,6 +206,12 @@ function CostWorkspace({
               safeInputs(data!) &&
               !refreshBlocked ? (
               <InputReview onChanged={reloadWorkspace} />
+            ) : data &&
+              complete &&
+              !refreshBlocked &&
+              ["settings", "mapping"].includes(key!) &&
+              !shopReady ? (
+              <Alert type="info" title={t("请先选择店铺")} />
             ) : data && complete && !refreshBlocked ? (
               <CostCatalog
                 key={key}
