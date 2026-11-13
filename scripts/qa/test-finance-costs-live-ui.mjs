@@ -62,7 +62,7 @@ assert.equal(mutations.filter(r=>r.path.endsWith('/auto-match')).length,0,'invoi
 await click('商品成本表');
 assert.equal(mutations.filter(r=>r.path.endsWith('/auto-match')).length,1,'same codes are linked automatically without per-SKU clicks');
 assert(!d.body.textContent.includes('待启用'));assert(button('订单成本'));assert(!button('仓库与规则'));
-assert.equal(reads[0],'','initial selection is chosen by persisted cost availability, not the first shop');
+assert.equal(reads[0],'shop','the first catalogue transition uses the first shop in the freshly authorized group without a context request');
 assert.equal(d.querySelector('[aria-label="财务店铺"]').value,'shop');
 await click('订单成本');assert(d.body.textContent.includes('已结算订单已算部分'));assert(d.body.textContent.includes('¥ 5.5'));assert(d.querySelector('tbody').textContent.includes('待补齐'));assert(!d.querySelector('tbody').textContent.includes('¥ 0'));
 assert(d.querySelector('thead').textContent.includes('结算归属日期'));assert.equal(reads.at(-1).kind,'SETTLED_ORDER');assert(d.querySelector('thead').textContent.includes('商品 SKU'));assert(d.querySelector('tbody').textContent.includes('（PACK）*2'));

@@ -7,8 +7,19 @@
   const fresh=()=>({tab:'labels',shopId:'',groupId:'',pendingShopId:'',pendingGroupId:'',collapsedShopId:'',spus:{},warehouse:'',month:'',search:'',status:'',page:1,orderPage:1,orderCostStatus:'ALL',orderNumbers:'',orderContext:null,start:day(29),end:day(0),datesKey:'',mappings:{},settings:{},rules:defaultRules()});
   const reset=()=>{loadSequence++;scopeLoadSequence++;globalThis.FinanceLabelCosts?.reset();state=fresh();document.querySelectorAll('.fc-dialog').forEach(n=>n.remove());};
   const needsCatalogue=tab=>['costs','manual','mapping','rules'].includes(tab);
+  const initialScope=({shops=[],groups=[],shopId=state.shopId,groupId=state.groupId}={})=>{
+    const selectedShop=shops.find(shop=>shop.id===shopId);
+    if(selectedShop)return {shopId:selectedShop.id,groupId:groups.some(group=>group.id===selectedShop.group_id)?selectedShop.group_id:''};
+    const selectedGroup=groups.find(group=>group.id===groupId);
+    if(selectedGroup)return {shopId:shops.find(shop=>shop.group_id===selectedGroup.id)?.id||'',groupId:selectedGroup.id};
+    const firstGroup=groups[0];
+    if(firstGroup)return {shopId:shops.find(shop=>shop.group_id===firstGroup.id)?.id||'',groupId:firstGroup.id};
+    const firstShop=shops[0];
+    if(firstShop)return {shopId:firstShop.id,groupId:groups.some(group=>group.id===firstShop.group_id)?firstShop.group_id:''};
+    return {shopId:'',groupId:''};
+  };
   const initialPath=({shopId=state.shopId,groupId=shopId?'':state.groupId}={})=>
-    `${needsCatalogue(state.tab)?'/costs':'/costs/context'}?${new URLSearchParams({shopId,groupId})}`;
+    state.tab==='labels'?null:`${needsCatalogue(state.tab)?'/costs':'/costs/context'}?${new URLSearchParams({shopId,groupId})}`;
   reset();
   const el=(tag,text,parent,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=String(text);if(cls)n.className=cls;parent?.append(n);return n;};
   const action=(parent,text,fn,cls='')=>{const n=el('button',text,parent,cls);n.type='button';n.onclick=async()=>{if(n.disabled)return;n.disabled=true;try{await fn();}catch(e){const feedback=n.closest('dialog')?.querySelector('[role=alert]')||document.querySelector('.fc-feedback');if(feedback)feedback.textContent=e.message||'操作失败，请重试';}finally{n.disabled=false;}};return n;};
@@ -657,7 +668,7 @@
     }
     if(!['orders','labels'].includes(state.tab)&&missingAutomatic())void autoMatch();
   }
-  globalThis.FinanceCosts={mount,reset,candidate,initialPath,shopId:()=>state.shopId,groupId:()=>state.groupId,openMapping:selection=>{
+  globalThis.FinanceCosts={mount,reset,candidate,initialScope,initialPath,shopId:()=>state.shopId,groupId:()=>state.groupId,openMapping:selection=>{
     state.mappingReturn=selection.returnToOrders?{shopId:state.shopId,groupId:state.groupId,warehouse:state.warehouse,orderPage:state.orderPage,orderContext:state.orderContext,orderCostStatus:state.orderCostStatus,start:state.start,end:state.end}:null;
     if(state.shopId!==selection.shopId)state.warehouse='';
     state.tab='mapping';state.shopId=selection.shopId;state.collapsedShopId='';state.search=selection.skuId;state.status='';state.page=1;

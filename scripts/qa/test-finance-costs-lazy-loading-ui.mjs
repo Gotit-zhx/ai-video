@@ -18,7 +18,21 @@ const settle=()=>new Promise(resolve=>setTimeout(resolve,20));
 const button=text=>[...d.querySelectorAll('button')].find(node=>node.textContent.trim()===text||node.textContent.trim().endsWith(text));
 
 assert.equal(typeof w.FinanceCosts.initialPath,'function','the parent loader needs an explicit initial cost path contract');
-assert.equal(new URL(w.FinanceCosts.initialPath({shopId:'shop',groupId:'group'}),'https://example.test').pathname,'/costs/context');
+assert.equal(w.FinanceCosts.initialPath({shopId:'shop',groupId:'group'}),null,'the default labels tab explicitly skips cost context and catalogue loading');
+const authorizedShops=[
+  {id:'shop-a',name:'A 店',group_id:'group-a',platform:'SHOPEE',region:'PH'},
+  {id:'shop-b',name:'B 店',group_id:'group-a',platform:'TIKTOK_SHOP',region:'TH'},
+  {id:'ungrouped',name:'未分组店',platform:'SHOPEE',region:'PH'}
+];
+const authorizedGroups=[{id:'group-a',name:'A 组'},{id:'empty',name:'空分组'}];
+assert.equal(typeof w.FinanceCosts.initialScope,'function','the workspace needs one authorization-backed navigation scope helper');
+const initialScope=options=>({...w.FinanceCosts.initialScope(options)});
+assert.deepEqual(initialScope({shops:authorizedShops,groups:authorizedGroups,shopId:'shop-b',groupId:'empty'}),{shopId:'shop-b',groupId:'group-a'},'a remembered authorized shop owns the navigation scope');
+assert.deepEqual(initialScope({shops:authorizedShops,groups:authorizedGroups,shopId:'stale',groupId:'group-a'}),{shopId:'shop-a',groupId:'group-a'},'a remembered group selects its first freshly authorized shop');
+assert.deepEqual(initialScope({shops:authorizedShops,groups:authorizedGroups,shopId:'stale',groupId:'empty'}),{shopId:'',groupId:'empty'},'a group with no shops remains selectable without inventing a shop');
+assert.deepEqual(initialScope({shops:[authorizedShops[2]],groups:authorizedGroups,shopId:'stale',groupId:'stale'}),{shopId:'',groupId:'group-a'},'stale shop and group IDs fall back to the first fresh authorized group');
+assert.deepEqual(initialScope({shops:[authorizedShops[2]],groups:[],shopId:'stale',groupId:'stale'}),{shopId:'ungrouped',groupId:''},'an authorized ungrouped shop remains available when no groups exist');
+assert.deepEqual(initialScope({shops:[],groups:authorizedGroups,shopId:'stale',groupId:'stale'}),{shopId:'',groupId:'group-a'},'no authorized shops retain only a real server-supplied group');
 w.FinanceCosts.mount(d.querySelector('#root'),{shops,groups,canManage:true,preview:contextPreview,request});
 assert(d.body.textContent.includes('月度账单已加载'));
 assert.deepEqual(requests,[],'default monthly invoice view must not load the cost catalogue');

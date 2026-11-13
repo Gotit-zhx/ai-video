@@ -1552,11 +1552,14 @@
         const response=await read('/shops');if(run!==generation||!active)return;
         const nextData={shops:response.items,groups:response.groups||[],sync:[]};
         if(view==='costs'){
-          const shopId=globalThis.FinanceCosts?.shopId?.(),selected=nextData.shops.find(s=>s.id===shopId);
-          const wantedGroup=globalThis.FinanceCosts?.groupId?.(),groupId=selected?.group_id||nextData.groups.find(g=>g.id===wantedGroup)?.id||(!nextData.shops.length?nextData.groups[0]?.id:'')||'';
-          const costScope={shopId:selected?.id||'',groupId};
-          const costPath=globalThis.FinanceCosts?.initialPath?.(costScope)||('/costs?'+new URLSearchParams(costScope));
-          nextData.costs=globalThis.FinanceCostPreviewData||await read('/workspace'+costPath);
+          const shopId=globalThis.FinanceCosts?.shopId?.(),selected=nextData.shops.find(shop=>shop.id===shopId);
+          const wantedGroup=globalThis.FinanceCosts?.groupId?.(),groupId=selected?.group_id||nextData.groups.find(group=>group.id===wantedGroup)?.id||(!nextData.shops.length?nextData.groups[0]?.id:'')||'';
+          const costScope=typeof globalThis.FinanceCosts?.initialScope==='function'?FinanceCosts.initialScope(nextData):{shopId:selected?.id||'',groupId};
+          const costPath=typeof globalThis.FinanceCosts?.initialPath==='function'?FinanceCosts.initialPath(costScope):'/costs?'+new URLSearchParams(costScope);
+          if(globalThis.FinanceCostPreviewData)nextData.costs=globalThis.FinanceCostPreviewData;
+          else if(costPath===null)nextData.costs={live:true,catalogLoaded:false,settingsLoaded:false,...costScope,
+            groupName:nextData.groups.find(group=>group.id===costScope.groupId)?.name||''};
+          else nextData.costs=await read('/workspace'+costPath);
           if(run!==generation||!active)return;data=nextData;const host=el('div',null,shell(next));host.dataset.financeCosts='';
         }else{
           data=nextData;const host=el('div',null,shell(next));host.dataset.financeExpenses='';
