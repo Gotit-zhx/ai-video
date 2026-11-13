@@ -32,6 +32,8 @@ npm --prefix frontend/modern run verify:ci
 
 编译输出先写本 worktree 的 `.dev/finance-modern-build`，成功后把完整带哈希文件写到 `frontend/assets/finance-modern`，最后原子替换 `manifest.json`。旧哈希保留供已打开标签页加载；编译失败不替换当前清单。资源及依赖不进 Git，`modern/` 下源码、测试与 `modern-build.mjs` 不对浏览器公开。旧镜像入口仅为独立分发保留，构建阶段编译资源，运行阶段不包含 Node 或现代源码。
 
+`dev` 安全链按 Spring MVC 解析并解码后的应用内路径拒绝现代源码与构建脚本，包括编码字母、context path 和不区分大小写文件系统上的路径变体；已登录用户同样不能读取。`DevWebResourceSecurityTest` 通过真实安全链、默认防火墙和临时目录上的 MVC 静态资源解析验证此边界，并保留公共哈希资源与 API 认证对照。
+
 UI 文案显式调用 `t()`。构建只保留现代页面引用的旧词条，新增短文案位于 `src/shared/messages.json`，按英语、印尼语、泰语、越南语、马来语、菲律宾语排列；缺少的词条沿用源文案回退。Filipino 标准组件文案使用 Ant Design 英语回退，主要财务导航提供 Filipino 译文。不要对 ShadowRoot 运行旧版 DOM 翻译器。
 
 组件实现以 [Ant Design 官方全文](https://ant.design/llms-full.txt) 和锁定的 6.7.0 类型为依据。`ConfigProvider` 包住 `App`，消息与确认框使用 `App.useApp()`；表格采用稳定行键和受控分页；命名表单字段由 `Form` 管理。辅助提示支持悬停、键盘聚焦与触屏点击，重要异常直接显示。弹层使用 `open`、`destroyOnHidden`、`styles` 等当前接口，并核对表单保留语义。库升级或启用全局 Tooltip 行为前，重新验证 ShadowRoot 容器、语言及移动端操作。

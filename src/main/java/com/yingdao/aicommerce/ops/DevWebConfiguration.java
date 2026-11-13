@@ -6,10 +6,13 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.CacheControl;
+import org.springframework.http.server.PathContainer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+import org.springframework.web.servlet.resource.ResourceHandlerUtils;
+import org.springframework.web.util.ServletRequestPathUtils;
 
 /** Source frontend and revision access only; all business routes retain the existing chain. */
 @Configuration(proxyBeanMethods = false)
@@ -26,8 +29,16 @@ public class DevWebConfiguration implements WebMvcConfigurer {
     }
 
     static boolean privateFinanceSource(HttpServletRequest request) {
-        String path = request.getRequestURI();
-        return path.equals("/modern") || path.startsWith("/modern/") || path.equals("/modern-build.mjs");
+        // Use MVC's parsed, decoded path, including context/servlet prefix removal.
+        // Comparing the raw URI lets encoded letters reach the authenticated fallback.
+        StringBuilder decoded = new StringBuilder();
+        for (PathContainer.Element element : ServletRequestPathUtils.parse(request).pathWithinApplication().elements()) {
+            decoded.append(element instanceof PathContainer.PathSegment segment ? segment.valueToMatch() : element.value());
+        }
+        String path = ResourceHandlerUtils.normalizeInputPath(decoded.toString());
+        // Development checkouts can live on case-insensitive filesystems.
+        return path.equalsIgnoreCase("/modern") || path.regionMatches(true, 0, "/modern/", 0, 8)
+                || path.equalsIgnoreCase("/modern-build.mjs");
     }
 
     static boolean publicRequest(HttpServletRequest request) {
