@@ -133,7 +133,14 @@ public class FinanceQueryProjections {
             var records=new LinkedHashMap<String,Set<String>>();
             var statements=new LinkedHashMap<String,Map<String,Set<String>>>();
             for(var event:events){
-                String org=text(event.get("organization_id"));var change=changed.computeIfAbsent(org,key->new Change());
+                String org=text(event.get("organization_id"));var change=changed.computeIfAbsent(org,key->{
+                    var pending=new Change();
+                    // Full invalidation safely covers every historical date, including a
+                    // moved first settlement. Resolve individual dates only for normal bursts.
+                    pending.all=!repo.jdbc().queryForList("SELECT event_id FROM finance_query_events FORCE INDEX(idx_finance_query_events_scope) WHERE organization_id=? ORDER BY event_id LIMIT 1 OFFSET "+EVENT_BATCH,org).isEmpty();
+                    return pending;
+                });
+                if(change.all)continue;
                 if("ALL".equals(event.get("event_scope"))){change.all=true;continue;}
                 if(event.get("record_date")!=null)change.days.add(date(event.get("record_date")));
                 addStatement(statements,org,text(event.get("shop_id")),text(event.get("statement_id")));

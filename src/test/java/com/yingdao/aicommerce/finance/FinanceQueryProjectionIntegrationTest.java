@@ -113,6 +113,28 @@ class FinanceQueryProjectionIntegrationTest {
         while(projections.drainEvents()>0){}assertTrue(projections.buildNext());
         assertTrue(projections.find(fixture.owner,month).isPresent());
     }
+    @Test void catchUpCoalescesToFullRebuildWithoutResolvingEveryHistoricalOrder(){
+        order("coalesced","2026-09-02","100");settle("coalesced","2026-10-06","90");
+        fee("unchanged-month","2026-11-04","7","SHOPEE",shop);build("2026-09-01","2026-11-30","");
+        fixture.repo.save(fixture.owner,new Entry(shop,"TIKTOK_SHOP","SETTLEMENT","coalesced-earlier","coalesced","earlier-bill","ORDER","SETTLED",LocalDate.of(2026,9,6),"PHP",decimal("80"),null,null,null,null,"API",Map.of()));
+        var events=new ArrayList<Object[]>();for(int i=0;i<2000;i++)events.add(new Object[]{fixture.owner.organizationId(),shop});
+        fixture.db.batchUpdate("INSERT INTO finance_query_events(organization_id,event_scope,shop_id,order_id,source_table) VALUES(?,'ORDER',?,'coalesced','finance_order_costs')",events);
+        var db=new org.springframework.jdbc.core.JdbcTemplate(fixture.dataSource){
+            @Override public List<Map<String,Object>> queryForList(String sql,Object...args){
+                if(sql.toLowerCase(Locale.ROOT).contains("from finance_records"))throw new AssertionError("Catch-up must coalesce a full rebuild without historical order/bill lookups");
+                return super.queryForList(sql,args);
+            }
+        };
+        var repo=new FinanceRepository(db,new tools.jackson.databind.ObjectMapper());
+        assertEquals(2000,new FinanceQueryProjections(repo,fixture.service,new FinanceAdSpendService(repo,fixture.service)).drainEvents());
+        assertEquals(1,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_query_events",Integer.class));
+        assertEquals(3,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_query_partitions WHERE full_rebuild=TRUE AND requested_revision>built_revision",Integer.class));
+        drainAndBuild();
+        for(String month:List.of("2026-09","2026-10","2026-11")){
+            var m=YearMonth.parse(month);var f=filter(m.atDay(1).toString(),m.atEndOfMonth().toString(),"");
+            assertEquals(canonical(fixture.service.buildNativeDashboardFacts(fixture.owner,f,false)),canonical(projections.find(fixture.owner,f).orElseThrow().facts()));
+        }
+    }
     @Test void fullAndPartialMonthsRetainCorrectionUnknownsAndExactDecimals(){
         fixture.db.update("UPDATE finance_connections SET platform='TIKTOK_SHOP' WHERE id=?",shop);
         fixture.db.update("INSERT INTO finance_reporting_months(organization_id,shop_id,order_id,statement_id,reporting_month,source,reason,confirmed_by)"
