@@ -47,11 +47,17 @@ def file_hash(path):
 
 
 class Activation:
+    SQL = SQL
+    SQL_SHA = SQL_SHA
+    HELPER = HELPER
+    VERSION = '155'
+    PREVIOUS_VERSION = '154'
+
     def __init__(self, operation, config=CANONICAL_CONFIG, root=CANONICAL_ROOT, helper=None):
         requested_op = Path(operation).absolute()
         if requested_op.is_symlink(): raise RuntimeError('Linked operation directory refused')
         self.op = requested_op.resolve(); self.root = Path(root).absolute(); self.config_path = Path(config).absolute()
-        self.helper = Path(helper) if helper else self.root / 'scripts/qa/java' / HELPER
+        self.helper = Path(helper) if helper else self.root / 'scripts/qa/java' / self.HELPER
         if self.op.is_symlink() or self.op.resolve() != self.op or not self.op.is_dir():
             raise RuntimeError('A real fresh operation directory is required')
         if self.op.stat().st_mode & 0o077 or self.op.stat().st_uid != os.geteuid():
@@ -59,18 +65,19 @@ class Activation:
         self.manifest = read_json(self.op / 'manifest.json'); self.inputs = read_json(self.op / 'inputs.json')
         if not re.fullmatch('[a-f0-9]{32}', self.inputs.get('operationId', '')): raise RuntimeError('Invalid operation identity')
         self.owner = self.inputs['operationId']
-        if not self.manifest or SQL not in self.manifest: raise RuntimeError('V155 and an explicit source manifest are required')
+        if not self.manifest or self.SQL not in self.manifest:
+            raise RuntimeError('V' + self.VERSION + ' and an explicit source manifest are required')
         for name, item in self.manifest.items():
             path = PurePosixPath(name)
             if (path.is_absolute() or '..' in path.parts or str(path) != name
-                    or not (name.startswith('src/main/java/') or name.startswith('frontend/') or name == SQL)):
+                    or not (name.startswith('src/main/java/') or name.startswith('frontend/') or name == self.SQL)):
                 raise RuntimeError('Manifest path outside approved source boundary')
             if set(item) != {'beforeHash', 'targetHash'}: raise RuntimeError('Unexpected manifest fields')
             if item['beforeHash'] is not None and not re.fullmatch('[a-f0-9]{64}', item['beforeHash']): raise RuntimeError('Invalid before hash')
             if not re.fullmatch('[a-f0-9]{64}', item['targetHash']): raise RuntimeError('Invalid target hash')
             self.safe_path(self.root, name); self.safe_path(self.op / 'payload', name)
-        if self.manifest[SQL] != {'beforeHash': None, 'targetHash': SQL_SHA}:
-            raise RuntimeError('Only the fixed additive V155 is accepted')
+        if self.manifest[self.SQL] != {'beforeHash': None, 'targetHash': self.SQL_SHA}:
+            raise RuntimeError('Only the fixed additive V' + self.VERSION + ' is accepted')
         for name in ('runtimeHash', 'helperSha256'):
             if not re.fullmatch('[a-f0-9]{64}', self.inputs.get(name, '')): raise RuntimeError('Missing input hash')
         if not self.inputs.get('appId'): raise RuntimeError('Application identity is required')
@@ -210,8 +217,8 @@ class Activation:
         base = ['docker', 'exec', '-u', app_user, '-i', config['appContainer']]
         subprocess.run(base + ['sh', '-ec', 'umask 077; mkdir "$1"; mkdir "$1/migration"', 'create-owned-helper', directory],
                        check=True, capture_output=True, timeout=15)
-        files = [(directory + '/' + HELPER, self.helper.read_bytes()),
-                 (directory + '/migration/' + Path(SQL).name, (self.op / 'payload' / SQL).read_bytes()),
+        files = [(directory + '/' + self.HELPER, self.helper.read_bytes()),
+                 (directory + '/migration/' + Path(self.SQL).name, (self.op / 'payload' / self.SQL).read_bytes()),
                  (token, json.dumps(owner).encode() + b'\n')]
         for target, data in files:
             subprocess.run(base + ['sh', '-ec', 'umask 077; set -C; cat > "$1"', 'write-owned-helper', target],
@@ -219,7 +226,7 @@ class Activation:
         args = base + ['sh', '-ec', shared_dev.LAUNCH_COMPILER, 'launch-owned-projection-helper', owner, token,
                        config['javaHome'] + '/bin/java', '-D' + OWNER_PROPERTY + '=' + owner, '-Xms16m', '-Xmx192m',
                        '-XX:MaxMetaspaceSize=128m', '-XX:ActiveProcessorCount=2', '--class-path', self.classpath(config),
-                       directory + '/' + HELPER, mode, directory + '/migration', token]
+                       directory + '/' + self.HELPER, mode, directory + '/migration', token]
         env = dict(value.split('=', 1) for value in self.inspect(config)['Config']['Env'])
         values = {key: env[name] for key, name in [('url', 'DB_URL'), ('user', 'DB_USERNAME'), ('password', 'DB_PASSWORD')]}
         values['owner'] = owner
@@ -288,13 +295,13 @@ class Activation:
         for name, item in self.manifest.items():
             if file_hash(self.safe_path(self.root, name)) != item['beforeHash']: raise RuntimeError('CAS baseline changed')
         # SQL is installed first and is never removed after an attempted migration.
-        for name in [SQL] + [name for name in self.manifest if name != SQL]:
+        for name in [self.SQL] + [name for name in self.manifest if name != self.SQL]:
             item = self.manifest[name]
             self.put(name, (self.op / 'payload' / name).read_bytes(), config, item['beforeHash'])
 
     def restore_sources(self, config):
         for name, item in self.manifest.items():
-            if name == SQL: continue
+            if name == self.SQL: continue
             path = self.safe_path(self.root, name); current = file_hash(path)
             if current == item['beforeHash']: continue
             if current != item['targetHash']: raise RuntimeError('Foreign source drift prevents restoration')
@@ -324,6 +331,9 @@ class Activation:
             result = subprocess.check_output(['curl', '--fail', '--silent', '--show-error', '--max-time', '15', '--compressed',
                         '--resolve', 'hoyee.org.cn:443:127.0.0.1', 'https://hoyee.org.cn/' + name.removeprefix('frontend/')], timeout=20)
             if sha(result) != item['targetHash']: raise RuntimeError('Served frontend differs')
+
+    def retain_pre_migration_failure(self, failure):
+        return False
 
     def contain_late_failure(self, config):
         stopped = True
@@ -394,9 +404,9 @@ class Activation:
             result = self.run_java(config, 'migrate')
             after = r.host.sql(HISTORY).splitlines()
             if (len(after) != len(history) + 1 or after[:-1] != history
-                    or after[-1].split('\t')[1:4] != ['155', 'SQL', Path(SQL).name] or after[-1].split('\t')[-1] != '1'):
+                    or after[-1].split('\t')[1:4] != [self.VERSION, 'SQL', Path(self.SQL).name] or after[-1].split('\t')[-1] != '1'):
                 raise RuntimeError('Migration history prefix or target changed')
-            shared_dev.atomic(self.op / 'schema-verified.json', {'addedVersion': '155', 'historyPrefixPreserved': True,
+            shared_dev.atomic(self.op / 'schema-verified.json', {'addedVersion': self.VERSION, 'historyPrefixPreserved': True,
                 'beforeSchemaFingerprint': config['schemaFingerprint'], 'afterSchemaFingerprint': r.host.schema(),
                 'oldRuntimeValidationPassed': result['oldRuntimeValidationPassed']})
             migrated = True
@@ -414,7 +424,7 @@ class Activation:
             if compiled.returncode:
                 self.restore_sources(updated); r._restore(keep_trigger=True)
                 self.state('source-restored', schemaRetained=True, recoveryGateRetained=True, explicitRecoveryRequired=True)
-                raise RuntimeError('Compile failed; V155 and owned recovery gate retained with previous source/classes')
+                raise RuntimeError('Compile failed; V' + self.VERSION + ' and owned recovery gate retained with previous source/classes')
             self.trigger(r); self.state('restarting'); current = r._wait(r.state['contextBefore'])
             if self.inspect(updated)['Id'] != self.inputs['appId']: raise RuntimeError('Application identity changed')
             for name, item in self.manifest.items():
@@ -440,7 +450,7 @@ class Activation:
             if (final['contextId'] != current['contextId'] or final.get('maintenance')
                     or r.host.marker.exists() or not r._healthy()):
                 raise RuntimeError('Final ready context or maintenance changed')
-            receipt = {'phase': 'activated', 'operationId': self.owner, 'schemaVersion': '155', 'schemaFingerprint': r.host.schema(),
+            receipt = {'phase': 'activated', 'operationId': self.owner, 'schemaVersion': self.VERSION, 'schemaFingerprint': r.host.schema(),
                 'contextBefore': r.state['contextBefore'], 'contextAfter': current['contextId'], 'watcherResumed': True,
                 'sourceFiles': {name: item['targetHash'] for name, item in self.manifest.items()},
                 'maintenance': False, 'checkedAt': int(time.time()), 'credentialsRedacted': True}
@@ -454,7 +464,7 @@ class Activation:
             # after_reload may remove its gate before a journal write fails; r.active then remains true.
             if (released or (release_started and not r.active)) and not completed:
                 self.contain_late_failure(r.config); stopped = True; released = True
-            elif attempted:
+            elif attempted or self.retain_pre_migration_failure(failure):
                 self.retain_owned_failure(r)
             elif r.active:
                 r.after_reload(False)
@@ -472,7 +482,7 @@ class Activation:
             if workspace is not None: workspace.__exit__(None, None, None)
 
 
-def main(argv=None):
+def main(argv=None, activation_type=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=('inspect', 'preflight', 'deploy'), nargs='?', default='inspect')
     parser.add_argument('--operation', type=Path, required=True)
@@ -480,11 +490,13 @@ def main(argv=None):
     parser.add_argument('--config', type=Path, default=CANONICAL_CONFIG)
     parser.add_argument('--helper', type=Path)
     args = parser.parse_args(argv)
-    activation = Activation(args.operation, args.config, args.root, args.helper)
+    activation_type = Activation if activation_type is None else activation_type
+    activation = activation_type(args.operation, args.config, args.root, args.helper)
     if args.mode == 'inspect':
         activation.verify_inputs()
         print(json.dumps({'phase': 'local-inputs-verified', 'operationId': activation.owner,
-                          'sourceFiles': len(activation.manifest), 'migrationVersion': '155', 'migrationSha256': SQL_SHA}))
+                          'sourceFiles': len(activation.manifest), 'migrationVersion': activation.VERSION,
+                          'migrationSha256': activation.SQL_SHA}))
         return
     if args.root != CANONICAL_ROOT or args.config != CANONICAL_CONFIG or os.geteuid() != 0:
         raise RuntimeError('Host modes require the canonical on-host source root and runtime configuration')
