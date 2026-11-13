@@ -115,7 +115,7 @@ final class FinanceShopDeletion {
                 yield removed>0?removed:entities("finance_order_costs","order_record_id","ORDER_STANDARD_COST","organization_id=? AND shop_id=?",keys);
             }
             case 4 -> entities("finance_cost_mappings","id","COST_MAPPING","organization_id=? AND shop_id=?",keys);
-            case 5 -> delete("finance_workspace_audit","organization_id=? AND entity_id=? AND entity_type IN ('COST_SETTINGS','COST_AUTO_MATCH','ACTUAL_COST_IMPORT')",keys);
+            case 5 -> delete("finance_workspace_audit","organization_id=? AND entity_id=? AND entity_type IN ('COST_SETTINGS','COST_AUTO_MATCH','COST_POLICY_REBUILD','ACTUAL_COST_IMPORT')",keys);
             case 6 -> delete("finance_cost_settings","organization_id=? AND shop_id=?",keys);
             case 7 -> entities("finance_expenses","id","EXPENSE","organization_id=? AND target_id=? AND scope IN ('shop','order')",keys);
             case 8 -> entities("finance_expense_rules","id","EXPENSE_RULE",

@@ -188,8 +188,16 @@
       state.rules=settings?.rules||defaultRules();mount(root,{...context,preview});
     }
     function missingAutomatic(){
-      return live&&editable&&currentProducts().some(p=>!fixedGift(p)&&warehouses.some(warehouse=>
-        automaticProduct(p,indexFor(warehouse).rows,indexFor(warehouse)).rows.some(c=>!state.mappings[key(p)+':'+c.warehouse])));
+      return live&&editable&&currentProducts().some(p=>!fixedGift(p)&&warehouses.some(warehouse=>{
+        const match=automaticProduct(p,indexFor(warehouse).rows,indexFor(warehouse));
+        if(match.rows.length!==1)return false;
+        const cost=match.rows[0],saved=state.mappings[key(p)+':'+cost.warehouse];
+        if(!saved)return true;
+        if(!automaticMapping(saved)||saved.manualCostId)return false;
+        return saved.code!==cost.sku||saved.groupId!==state.groupId||saved.method==='SPU_CODE'
+          ||(match.matchedBy==='PLATFORM_SKU')!==(saved.method==='PLATFORM_SKU_CODE')
+          ||Number(saved.bundleQuantity||0)!==Number(match.bundleQuantity||0);
+      }));
     }
     async function autoMatch(){
       const run=++loadSequence;toast('正在按商品 SKU、平台 SKU 自动关联成本…');
@@ -468,7 +476,7 @@
                 ['成本月份依据','basis',[['order','下单月份'],['shipment','发货月份（需平台返回发货时间）']]],
                 ['当月缺价时','missing',[['previous','用最近历史月份估算并标记'],['pending','保持待补价，不估算']]]
       ])select(form,label,options,state.rules[key],v=>{state.rules[key]=v;}).disabled=!editable;
-      el('p','商品标准成本 = 商家 SKU 对应单价 × 购买数量 × 组合数量。优先使用完整组合装价格；退款不自动冲回商品成本。修改设置后后台重算并保留记录。',p.n,'fc-inline-note');
+      el('p','标准成本先按商品 SKU、再按平台 SKU 匹配型号，金额 = 型号单价 × 购买数量 × 组合数量。优先使用完整组合装价格；退款不自动冲回商品成本。修改设置后后台重算并保留记录。',p.n,'fc-inline-note');
       if(editable)action(form,live?'保存成本设置':'应用到预览',async()=>{
         if(live){await context.request('/costs/'+encodeURIComponent(state.shopId)+'/settings',{method:'PUT',...json({warehouse:state.warehouse,rules:state.rules,version:preview.settingsVersion||0})});await reload();toast('成本设置已保存。');return;}
         if(!preview)return unavailable();draw();toast('成本设置已应用到预览；正式数据未变更。');

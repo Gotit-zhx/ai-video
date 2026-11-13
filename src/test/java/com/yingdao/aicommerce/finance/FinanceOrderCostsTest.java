@@ -174,6 +174,7 @@ class FinanceOrderCostsTest {
         assertNull(result.get("amountCny"));assertEquals("INCOMPLETE",result.get("status"));
         String issue=text(rows(result.get("lines")).getFirst().get("issue"));
         assertTrue(issue.contains("海外仓-马来"));assertTrue(issue.contains("YUXI-BDiaper-NB"));assertTrue(issue.contains("不能自动使用其他国家成本"));
+        assertTrue(issue.contains("商品 SKU")&&issue.contains("平台 SKU"),"the issue must explain both matching attempts, not just the code in another warehouse");
     }
     @Test void manualConversionsAreScopedToShopAndGroup(){
         var costs=List.of(cost("PACK","海外仓-菲律宾","2026-10","7"),cost("OTHER","海外仓-菲律宾","2026-10","5"));
