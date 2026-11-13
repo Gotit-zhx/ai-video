@@ -75,7 +75,7 @@ public class FinanceWorkspaceQueryService {
         // All mutable financial reads/counts share one MVCC snapshot. Public FX I/O
         // and its append-only public-rate snapshot writes happen after it closes.
         Prepared prepared=repo.readSnapshot(180,()->{
-            var snapshot=expectedRevision==null?null:projections.find(scope,nativeFilter(requested)).orElseThrow(ProjectionChanged::new);
+            var snapshot=expectedRevision==null?null:projections.findForQuery(scope,nativeFilter(requested),primary).orElseThrow(ProjectionChanged::new);
             if(expectedRevision!=null&&!snapshot.revision().equals(expectedRevision))throw new ProjectionChanged();
             var facts=primary||selected.allOrders()?Map.<String,Object>of():snapshot==null?
                 finance.buildNativeDashboardFacts(scope,nativeFilter(requested),false):snapshot.facts();

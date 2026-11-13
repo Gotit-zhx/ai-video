@@ -28,14 +28,23 @@ public class FinanceQueryProjections {
 
     /** Only complete committed facts are returned. The caller keeps its original fallback. */
     public Optional<Snapshot> find(Scope scope,Filter filter){
+        return find(scope,filter,true,true);
+    }
+    /** A page needs either dashboard facts/counts or the independent spend report, never both. */
+    Optional<Snapshot> findForQuery(Scope scope,Filter filter,boolean primaryAdvertising){
+        return find(scope,filter,!primaryAdvertising,primaryAdvertising);
+    }
+    private Optional<Snapshot> find(Scope scope,Filter filter,boolean dashboard,boolean independentSpend){
         return repo.readSnapshot(15,()->{
             var months=months(filter);
             if(hasRelevantEvents(scope,filter))return Optional.empty();
-            var stored=repo.jdbc().queryForList("SELECT * FROM finance_query_partitions WHERE organization_id=? AND platform_filter=? AND partition_month BETWEEN ? AND ? ORDER BY partition_month",
+            String columns="partition_month,schema_version,built_revision,requested_revision,generated_at,CASE WHEN full_month_json IS NOT NULL AND partial_first_day_json IS NOT NULL AND spend_json IS NOT NULL THEN 1 ELSE 0 END payload_present"
+                +(dashboard?",full_month_json,partial_first_day_json":"")+(independentSpend?",spend_json":"");
+            var stored=repo.jdbc().queryForList("SELECT "+columns+" FROM finance_query_partitions WHERE organization_id=? AND platform_filter=? AND partition_month BETWEEN ? AND ? ORDER BY partition_month",
                 scope.organizationId(),filter.platform(),months.getFirst(),months.getLast());
             if(stored.size()!=months.size()||stored.stream().anyMatch(row->number(row.get("schema_version"))!=SCHEMA_VERSION
                     ||number(row.get("built_revision"))==0||number(row.get("built_revision"))!=number(row.get("requested_revision"))
-                    ||row.get("full_month_json")==null||row.get("partial_first_day_json")==null||row.get("spend_json")==null))return Optional.empty();
+                    ||number(row.get("payload_present"))!=1))return Optional.empty();
             var buckets=new ArrayList<Map<String,Object>>();var orders=new ArrayList<Map<String,Object>>();
             var advertising=new ArrayList<Map<String,Object>>();var counts=new ArrayList<Map<String,Object>>();
             var sources=new ArrayList<Map<String,Object>>();var assignments=new ArrayList<Map<String,Object>>();
@@ -43,15 +52,19 @@ public class FinanceQueryProjections {
             for(var row:stored){
                 LocalDate month=date(row.get("partition_month"));
                 boolean full=!filter.start().isAfter(month)&&!filter.end().isBefore(YearMonth.from(month).atEndOfMonth());
-                var data=read(row.get("full_month_json"));var first=read(row.get("partial_first_day_json"));
-                appendRange(buckets,rows(data.get("buckets")),rows(first.get("buckets")),filter,month,full);
-                appendRange(orders,rows(data.get("orders")),rows(first.get("orders")),filter,month,full);
-                appendRange(advertising,rows(data.get("advertising")),rows(first.get("advertising")),filter,month,full);
-                appendRange(counts,rows(data.get("rawCounts")),rows(first.get("rawCounts")),filter,month,full);
-                var ads=read(row.get("spend_json"));
-                sources.addAll(rows(ads.get("sources")).stream().filter(r->inRange(r,filter))
-                    .filter(r->filter.currency().isBlank()||filter.currency().equals(text(r.get("currency")))).toList());
-                assignments.addAll(rows(ads.get("assignments")));
+                if(dashboard){
+                    var data=read(row.get("full_month_json"));var first=read(row.get("partial_first_day_json"));
+                    appendRange(buckets,rows(data.get("buckets")),rows(first.get("buckets")),filter,month,full);
+                    appendRange(orders,rows(data.get("orders")),rows(first.get("orders")),filter,month,full);
+                    appendRange(advertising,rows(data.get("advertising")),rows(first.get("advertising")),filter,month,full);
+                    appendRange(counts,rows(data.get("rawCounts")),rows(first.get("rawCounts")),filter,month,full);
+                }
+                if(independentSpend){
+                    var ads=read(row.get("spend_json"));
+                    sources.addAll(rows(ads.get("sources")).stream().filter(r->inRange(r,filter))
+                        .filter(r->filter.currency().isBlank()||filter.currency().equals(text(r.get("currency")))).toList());
+                    assignments.addAll(rows(ads.get("assignments")));
+                }
                 revisions.add(month+":"+row.get("built_revision"));
                 Instant built=instant(row.get("generated_at"));if(generated==null||built.isBefore(generated))generated=built;
             }
@@ -60,10 +73,10 @@ public class FinanceQueryProjections {
             var selected=selectedShops(shops,filter);
             var nativeFilter=new Filter(filter.start(),filter.end(),filter.shopId(),filter.platform(),"","day",filter.groupId());
             // Platform is already part of the persistent key, so UNASSIGNED remains valid for a named platform.
-            Map<String,Object> facts=new LinkedHashMap<>(Map.of("buckets",buckets.stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
+            Map<String,Object> facts=dashboard?new LinkedHashMap<>(Map.of("buckets",buckets.stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
                 "orders",orders.stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
                 "advertising",advertising.stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
-                "reportingMonths",new FinanceReportingMonths(repo).coverage(scope,nativeFilter)));
+                "reportingMonths",new FinanceReportingMonths(repo).coverage(scope,nativeFilter))):new LinkedHashMap<>();
             counts.removeIf(row->!selected.contains(text(row.get("shop_id")))||!filter.currency().isBlank()&&!filter.currency().equals(text(row.get("currency"))));
             var keys=new HashSet<String>();sources.forEach(row->keys.add(text(row.get("source_key"))));
             assignments.removeIf(row->!keys.contains(text(row.get("source_key"))));

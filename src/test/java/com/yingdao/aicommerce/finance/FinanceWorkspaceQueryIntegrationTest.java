@@ -68,6 +68,36 @@ class FinanceWorkspaceQueryIntegrationTest {
         var result=queries.query(fixture.owner,fixture.owner,month,select("ads","AD",false,1,""));
         assertNotNull(result.get("adSpend"));assertFalse(result.containsKey("records"));assertFalse(result.containsKey("profit"));assertEquals("",map(result.get("filters")).get("currency"));
     }
+    @Test void advertisingColdPageDoesNotReadUnrelatedDashboardPayloads(){
+        fee("unrelated-ledger","PHP");
+        fixture.db.update("INSERT INTO finance_shopee_ad_daily(organization_id,external_shop_id,source_key,record_date,currency,amount,source_json) VALUES(?,'10001',?,'2026-10-03','PHP',9,'{}')",fixture.owner.organizationId(),hash("cold-ad-source"));
+        build();
+        var result=budgetedWorkspace(false,true).query(fixture.owner,fixture.owner,month,select("ads","AD",false,1,""));
+        assertEquals("READY",map(result.get("readModel")).get("status"));
+        var items=rows(map(result.get("adSpend")).get("items"));assertEquals(1,items.size());
+        assertEquals(0,decimal("9").compareTo(decimal(items.getFirst().get("amount"))));
+    }
+    @Test void financialColdPageDoesNotReadTheIndependentAdvertisingPayload(){
+        fee("cold-financial","PHP");build();
+        var result=budgetedWorkspace(true,false).query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,""));
+        assertEquals("READY",map(result.get("readModel")).get("status"));
+        assertEquals(1,number(map(result.get("records")).get("total")));
+        assertEquals(0,decimal("12.123456").compareTo(decimal(rows(map(result.get("records")).get("items")).getFirst().get("amount"))));
+    }
+    private FinanceWorkspaceQueryService budgetedWorkspace(boolean dashboard,boolean advertising){
+        var db=new org.springframework.jdbc.core.JdbcTemplate(fixture.dataSource){
+            @Override public List<Map<String,Object>> queryForList(String sql,Object...args){
+                var result=super.queryForList(sql,args);
+                for(var row:result){
+                    if(!dashboard&&(row.get("full_month_json")!=null||row.get("partial_first_day_json")!=null))throw new AssertionError("An advertising page must not transport or decode unrelated dashboard facts");
+                    if(!advertising&&row.get("spend_json")!=null)throw new AssertionError("A financial page must not transport or decode unrelated independent advertising facts");
+                }
+                return result;
+            }
+        };
+        var repo=new FinanceRepository(db,new tools.jackson.databind.ObjectMapper());var spend=new FinanceAdSpendService(repo,fixture.service);
+        return new FinanceWorkspaceQueryService(repo,fixture.service,spend,new FinanceQueryProjections(repo,fixture.service,spend),mock(FinanceAds.class),null);
+    }
     @Test void reconciliationResolvesBillCurrenciesAndRetainsFirstSettlementCostBasis(){
         fee("php-fee","PHP");
         fixture.repo.save(fixture.owner,new Entry(shop,"SHOPEE","BILL","usd-bill","","usd-bill","","SETTLED",LocalDate.of(2026,10,12),"USD",decimal("20"),null,null,null,null,"API",Map.of()));
@@ -135,6 +165,7 @@ class FinanceWorkspaceQueryIntegrationTest {
             template.opsForValue().set(heartbeatKey,new tools.jackson.databind.ObjectMapper().writeValueAsString(Map.of("heartbeat",System.currentTimeMillis(),"status","COMPLETE","shops",List.of(Map.of("shopId",shop,"complete",true,"records",5,"total",5)))));
             doThrow(new AssertionError("A warm identical Redis page must not reread raw rows")).when(guarded).details(any(),any(),eq("FEE"),anyInt(),anyInt(),any(),anyBoolean());
             doThrow(new AssertionError("A warm Redis page must select its revision without reading or decoding financial payloads")).when(guardedProjections).find(any(),any());
+            doThrow(new AssertionError("A warm Redis page must not read either purpose-specific financial payload")).when(guardedProjections).findForQuery(any(),any(),anyBoolean());
             new FinanceFields(fixture.repo).save(fixture.owner,"FEE",List.of("external_id"),List.of("external_id"));
             var cached=queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,""));
             assertEquals("COMPLETE",map(cached.get("settlementCalculation")).get("status"));template.delete(heartbeatKey);
