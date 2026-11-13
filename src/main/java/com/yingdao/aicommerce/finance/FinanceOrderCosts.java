@@ -5,7 +5,7 @@ import java.time.*;
 import java.util.*;
 import static com.yingdao.aicommerce.finance.FinanceData.*;
 
-/** SKU-first, SPU-fallback standard costs, separate from actual warehouse accounting. */
+/** Merchant-SKU-first, platform-SKU-fallback standard costs, separate from actual warehouse accounting. */
 public final class FinanceOrderCosts {
     final FinanceRepository repo;
     public FinanceOrderCosts(FinanceRepository repo){this.repo=repo;}
@@ -124,7 +124,7 @@ public final class FinanceOrderCosts {
             if(lineWarehouse.isBlank()){line.put("issue","请配置成本仓，无法唯一匹配店铺国家");continue;}
             boolean manual=!saved.isEmpty()&&!FinanceCostWorkspace.automaticMethod(text(saved.get("method")))
                     &&context.groupId().equals(text(saved.get("groupId")));
-            var automatic=FinanceCostWorkspace.matchProduct(seller,product,codes.keySet(),normalized);
+            var automatic=FinanceCostWorkspace.matchProduct(seller,sku,codes.keySet(),normalized);
             String code=manual?text(saved.get("code")):automatic==null?"":automatic.code();
             BigDecimal factor=manual?decimal(saved.get("factor")):automatic!=null&&automatic.bundleQuantity()!=null?BigDecimal.valueOf(automatic.bundleQuantity()):BigDecimal.ONE;
             String manualId=manual?text(saved.get("manualCostId")):"";
@@ -136,14 +136,14 @@ public final class FinanceOrderCosts {
             }else{
                 if(context.costs().isEmpty()){line.put("issue","店铺分组尚未配置成本资料");continue;}
                 if(code.isBlank()){
-                    var elsewhere=FinanceCostWorkspace.matchProduct(seller,product,allCodes,normalized);
+                    var elsewhere=FinanceCostWorkspace.matchProduct(seller,sku,allCodes,normalized);
                     line.put("issue",elsewhere!=null?"成本表缺少 "+lineWarehouse+" 的 "+elsewhere.code()+" 成本，不能自动使用其他国家成本；请人工确认":
-                        "商品 SKU 与平台 SPU 均未匹配到唯一成本型号，请人工确认");continue;
+                        "商品 SKU 与平台 SKU 均未匹配到唯一成本型号，请人工确认");continue;
                 }
                 if(!codes.containsKey(code)){line.put("issue","成本表缺少 "+lineWarehouse+" 的 "+code+" 成本，不能自动使用其他国家成本");continue;}
                 selected=codes.get(code);
             }
-            line.put("matchedBy",manual?"MANUAL":automatic!=null&&automatic.method().equals("SPU_CODE")?"SPU":"SKU");
+            line.put("matchedBy",manual?"MANUAL":automatic!=null&&automatic.method().equals("PLATFORM_SKU_CODE")?"PLATFORM_SKU":"SKU");
             if(factor==null||factor.signum()<=0){line.put("issue","人工关联缺少有效换算数量");continue;}
             var prices=map(selected.get("prices"));String priceMonth=manualId.isBlank()?month:"固定单价";
             BigDecimal price=decimal(manualId.isBlank()?prices.get(month):selected.get("unitPriceCny"));
@@ -174,7 +174,7 @@ public final class FinanceOrderCosts {
         out.put("amountCny",complete?known:null);out.put("knownAmountCny",known);out.put("lineCount",total);
         out.put("matchedLines",matched);out.put("fallbackLines",fallback);
         out.put("note",allExcluded?"全部商品明细未付款或已取消，不计标准成本":complete?(fallback>0?"使用最近历史月份的标准成本估算":
-            lines.stream().anyMatch(l->l.containsKey("manualCostId"))?"按已关联成本计算（含独立手动成本），金额为人民币":"按商品 SKU 优先、平台 SPU 兜底与有效购买数量统计标准成本，取消商品明细不计入"):"成本资料待补齐，不按零成本计算");
+            lines.stream().anyMatch(l->l.containsKey("manualCostId"))?"按已关联成本计算（含独立手动成本），金额为人民币":"按商品 SKU 优先、平台 SKU 兜底与有效购买数量统计标准成本，取消商品明细不计入"):"成本资料待补齐，不按零成本计算");
         return out;
     }
     Context context(String organization,String shopId){
@@ -206,7 +206,7 @@ public final class FinanceOrderCosts {
         if(value instanceof List<?> list)return list.stream().map(FinanceOrderCosts::canonical).toList();
         return value;
     }
-    static String sourceHash(FinanceRepository repo,Map<String,Object> raw,String status){return hash("sku-spu-standard-v1:"+(hasGift(raw)?"gift-zero-v1:":"cancelled-excluded-v2:")+repo.write(canonical(raw))+status);}
+    static String sourceHash(FinanceRepository repo,Map<String,Object> raw,String status){return hash("sku-platform-sku-standard-v1:"+(hasGift(raw)?"gift-zero-v1:":"cancelled-excluded-v2:")+repo.write(canonical(raw))+status);}
     static void enqueue(FinanceRepository repo,Scope s,Entry entry){
         if(!entry.kind().equals("ORDER"))return;
         // INSERT ... SELECT takes shared locks on its source rows in MySQL's
