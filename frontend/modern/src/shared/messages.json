@@ -72,5 +72,10 @@
   "利润额": ["Profit", "Laba", "กำไร", "Lợi nhuận", "Untung", "Tubo"],
   "商品成本": ["Product cost", "Biaya produk", "ต้นทุนสินค้า", "Giá vốn sản phẩm", "Kos produk", "Gastos ng produkto"],
   "刷新任务状态": ["Refresh job status", "Muat ulang status tugas", "รีเฟรชสถานะงาน", "Làm mới trạng thái tác vụ", "Muat semula status tugas", "I-refresh ang katayuan ng gawain"],
-  "创建导出任务": ["Create export job", "Buat tugas ekspor", "สร้างงานส่งออก", "Tạo tác vụ xuất", "Cipta tugas eksport", "Gumawa ng export job"]
+  "创建导出任务": ["Create export job", "Buat tugas ekspor", "สร้างงานส่งออก", "Tạo tác vụ xuất", "Cipta tugas eksport", "Gumawa ng export job"],
+  "财务查询响应不完整，请重新读取": ["Incomplete financial response; reload the data", "Respons keuangan tidak lengkap; muat ulang data", "ข้อมูลการเงินตอบกลับไม่ครบ โปรดโหลดใหม่", "Phản hồi tài chính chưa đầy đủ; hãy tải lại", "Respons kewangan tidak lengkap; muat semula", "Hindi kumpleto ang datos sa pananalapi; i-load muli"],
+  "成本资料不完整，请重新读取": ["Cost data is incomplete; reload it", "Data biaya tidak lengkap; muat ulang", "ข้อมูลต้นทุนไม่ครบ โปรดโหลดใหม่", "Dữ liệu giá vốn chưa đầy đủ; hãy tải lại", "Data kos tidak lengkap; muat semula", "Hindi kumpleto ang datos ng gastos; i-load muli"],
+  "成本正在更新": ["Costs are updating", "Biaya sedang diperbarui", "กำลังอัปเดตต้นทุน", "Đang cập nhật giá vốn", "Kos sedang dikemas kini", "Ina-update ang mga gastos"],
+  "广告账户状态暂时不可用": ["Ad account status is temporarily unavailable", "Status akun iklan sementara tidak tersedia", "สถานะบัญชีโฆษณาไม่พร้อมใช้งานชั่วคราว", "Trạng thái tài khoản quảng cáo tạm thời không khả dụng", "Status akaun iklan tidak tersedia buat sementara", "Pansamantalang hindi makuha ang status ng ad account"],
+  "同步异常": ["Sync issue", "Masalah sinkronisasi", "ปัญหาการซิงค์", "Lỗi đồng bộ", "Masalah penyegerakan", "Problema sa pag-sync"]
 }

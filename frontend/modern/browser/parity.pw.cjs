@@ -67,7 +67,10 @@ test("classic and modern brush and advertising read identical server totals with
     classic.getByText("25.00", { exact: false }).first(),
   ).toBeVisible();
   expect(
-    fixture.requests.filter((r) => r.path.endsWith("/advertising/spend"))
-      .length,
+    fixture.requests.filter(
+      (r) =>
+        r.path.endsWith("/advertising/spend") ||
+        (r.path.endsWith("/workspace/query") && r.query.view === "ads"),
+    ).length,
   ).toBeGreaterThanOrEqual(2);
 });

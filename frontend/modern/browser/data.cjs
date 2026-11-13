@@ -139,6 +139,9 @@ overview.advertising = {
   trend: [],
 };
 const cost = {
+  live: true,
+  catalogLoaded: true,
+  settingsLoaded: true,
   shopId: "s1",
   groupId: "g1",
   costs: [{ sku: "SKU", warehouse: "菲律宾", prices: { "2026-10": 12 } }],
@@ -407,6 +410,95 @@ function createFinanceData() {
     state.calls.push(c);
     const p = c.path;
     if (c.method === "GET") {
+      if (p === "/workspace/costs/context")
+        return {
+          live: true,
+          catalogLoaded: false,
+          settingsLoaded: false,
+          shopId: state.cost.shopId,
+          groupId: state.cost.groupId,
+          groupName: "Fixture Group",
+        };
+      if (p === "/workspace/status")
+        return {
+          status: "READY",
+          revision: "fixture-revision",
+          operations: {
+            sync: [],
+            settlementCalculation: {},
+            costState: { rebuilding: false, hasProductJobs: false },
+            revision: "operations-1",
+            generatedAt: "2026-11-13T01:00:00Z",
+          },
+        };
+      if (p === "/workspace/query") {
+        const selection = c.query;
+        const outer = {
+          ...(!(
+            selection.view === "ads" ||
+            (selection.view === "orders" && selection.orderScope === "ALL")
+          )
+            ? overview
+            : {}),
+          fx: overview.fx,
+          dateBasis: overview.dateBasis,
+          sync: [],
+          filters: {
+            ...overview.filters,
+            ...Object.fromEntries(
+              [
+                "start",
+                "end",
+                "shopId",
+                "groupId",
+                "platform",
+                "currency",
+                "displayCurrency",
+                "granularity",
+              ]
+                .filter((key) => selection[key] !== undefined)
+                .map((key) => [key, selection[key]]),
+            ),
+          },
+          shops: state.shops,
+          groups: state.groups,
+          dateWindows: [],
+          readModel: {
+            status: "READY",
+            revision: "fixture-revision",
+            generatedAt: "2026-11-13T01:00:00Z",
+            coverage: "已入库数据；未同步、待补齐及未知金额不视为零",
+          },
+          updatedAt: "2026-11-13T01:00:00Z",
+        };
+        if (selection.view === "ads")
+          return {
+            ...outer,
+            adSpend: {
+              ...reads["/advertising/spend"],
+              fx: overview.fx,
+              page: Number(selection.spendPage || 1),
+              pageSize: 50,
+            },
+            adAccounts: reads["/ads"],
+          };
+        const source =
+          reads[
+            selection.view === "reconciliation" ? "/reconciliation" : "/records"
+          ];
+        return {
+          ...outer,
+          records: {
+            ...source,
+            page: Number(selection.page || 1),
+            pageSize: 50,
+            fieldSettings: state.fields,
+            ...(selection.view === "ads-support" && selection.kind === "FEE"
+              ? { advertisingOnly: true }
+              : {}),
+          },
+        };
+      }
       if (p === "/shops")
         return {
           items: state.shops,

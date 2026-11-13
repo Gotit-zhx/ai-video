@@ -68,7 +68,14 @@ test("cost mapping, manual price, warehouse settings preserve confirmations and 
 test("staged cost review needs historical acknowledgements and exact version", async ({
   page,
   fixture,
+  audit,
 }) => {
+  // Explicit older server profile: only this optional endpoint is unavailable.
+  fixture.overrides.set("GET /workspace/costs/context", (c) =>
+    audit.injectHttpFailure(c, 404, "Legacy cost context unavailable"),
+  );
+  delete fixture.state.cost.catalogLoaded;
+  delete fixture.state.cost.settingsLoaded;
   fixture.state.cost.inputSafety = { enabled: true };
   await open(page, fixture, "costs?tab=input-review");
   await page.getByRole("button", { name: "查看核对单" }).click();

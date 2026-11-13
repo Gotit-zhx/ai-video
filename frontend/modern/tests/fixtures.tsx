@@ -1,15 +1,26 @@
 import { useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
-import { act, render, within, type RenderResult } from '@testing-library/react';
-import { vi } from 'vitest';
+import { act, cleanup, render, within, type RenderResult } from '@testing-library/react';
+import { afterEach, vi } from 'vitest';
+import { FinanceApiError } from '../src/shared/api';
 
 import { FinanceRootProviders } from '../src/app/providers';
 import { createShadowSurface, type ShadowSurface } from '../src/shared/shadow';
 import type {
   FinanceApi,
   FinanceFilters,
+  FinanceRequestParams,
   FinanceHost,
   FinanceHostSnapshot
 } from '../src/shared/contracts';
+
+// Vitest globals are disabled, so Testing Library cannot auto-register cleanup.
+// Unmount observers/timers and drain queued notifications before jsdom teardown.
+afterEach(async () => {
+  await act(async () => {
+    cleanup();
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+});
 
 export const defaultSession: FinanceHostSnapshot = {
   organizationId: 'org-1',
@@ -46,13 +57,34 @@ export function createFinanceHostFixture(initial: FinanceHostSnapshot = defaultS
   };
 }
 
-export function createFinanceApiFixture(overrides: Partial<FinanceApi> = {}): FinanceApi {
+export function createFinanceApiFixture(
+  overrides: Partial<FinanceApi> = {},
+): FinanceApi {
+  const legacyGet = overrides.get ?? vi.fn(async () => undefined);
   return {
-    get: vi.fn(async () => undefined),
     send: vi.fn(async () => undefined),
     upload: vi.fn(async () => undefined),
     download: vi.fn(async () => undefined),
-    ...overrides
+    ...overrides,
+    // Existing suites model the local legacy backend explicitly. Current DTO
+    // tests supply their own get function after this factory.
+    get: vi.fn(
+      async <T,>(
+        path: string,
+        params?: FinanceRequestParams,
+        signal?: AbortSignal,
+      ) => {
+        if (
+          [
+            "/workspace/query",
+            "/workspace/costs/context",
+            "/workspace/status",
+          ].includes(path)
+        )
+          throw new FinanceApiError("Optional endpoint unavailable", 404);
+        return legacyGet<T>(path, params, signal);
+      },
+    ),
   } as FinanceApi;
 }
 

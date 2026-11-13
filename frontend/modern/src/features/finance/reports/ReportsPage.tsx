@@ -1,3 +1,4 @@
+import { useWorkspaceStatus, OperationalEvidence } from "../operational";
 import { useState } from "react";
 import { Alert, Button, Descriptions, Space, Typography } from "antd";
 import type { Row } from "../../../shared/contracts";
@@ -64,6 +65,7 @@ function OverviewReport({ live }: { live: boolean }) {
     visible = useVisible();
   const [dialog, setDialog] = useState(""),
     [detail, setDetail] = useState("");
+  const operational = useWorkspaceStatus(live ? "live" : "overview", !live);
   const today = businessToday();
   const selected = live
     ? {
@@ -240,13 +242,24 @@ function OverviewReport({ live }: { live: boolean }) {
   return (
     <Space orientation="vertical" className="finance-page-stack" size="medium">
       {!live && <OverviewOperations data={data} />}
+      <OperationalEvidence
+        operations={operational.operations}
+        error={operational.error}
+      />
       <Failure error={query.error} />
       {query.isPending && (
         <Alert type="info" title={t("正在读取财务数据")} />
       )}{" "}
       {data && (
         <>
-          <ScopeEvidence data={data} />
+          <ScopeEvidence
+            data={
+              operational.operations &&
+              Object.hasOwn(operational.operations, "settlementCalculation")
+                ? { ...data, settlementCalculation: undefined }
+                : data
+            }
+          />
           {live && (
             <Panel title={t("实时同步状态")}>
               <StatusTag
@@ -332,9 +345,10 @@ function OverviewReport({ live }: { live: boolean }) {
                 ["label_cost_cny", "贴单成本（人民币）", "money"],
               ]}
             />
-            {Boolean(cost.processing || cost.rebuilding) && (
-              <Alert type="info" title={t("成本计算中，已核算部分保留")} />
-            )}
+            {!record(operational.operations?.costState) &&
+              Boolean(cost.processing || cost.rebuilding) && (
+                <Alert type="info" title={t("成本计算中，已核算部分保留")} />
+              )}
             <Typography.Paragraph>{text(cost.basis)}</Typography.Paragraph>
           </Panel>
           {!live && (

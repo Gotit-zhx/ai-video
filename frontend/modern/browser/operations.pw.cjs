@@ -124,19 +124,27 @@ test("cancelled download aborts its request and navigation discards late reads",
       () => fixture.requests.find((r) => r.path.endsWith("/export"))?.aborted,
     )
     .toBe(true);
-  fixture.overrides.set("GET /records", () => ({
-    items: [{ id: "late", order_id: "LATE-SHOULD-NOT-APPEAR" }],
-    total: 1,
+  fixture.overrides.set("GET /workspace/query", (c) => ({
+    ...fixture.handle(c),
+    records: {
+      items: [{ id: "late", order_id: "LATE-SHOULD-NOT-APPEAR" }],
+      total: 1,
+      page: 1,
+      pageSize: 50,
+      fieldSettings: fixture.state.fields,
+    },
     delay: 1000,
   }));
   await go(page, "orders");
-  await call(fixture, "GET", "/records");
+  await call(fixture, "GET", "/workspace/query");
   await go(page, "shops");
   await expect(page.getByRole("button", { name: "分组管理" })).toBeVisible();
   await expect(page.getByText("LATE-SHOULD-NOT-APPEAR")).toHaveCount(0);
   await expect
     .poll(
-      () => fixture.requests.find((r) => r.path.endsWith("/records"))?.aborted,
+      () =>
+        fixture.requests.find((r) => r.path.endsWith("/workspace/query"))
+          ?.aborted,
     )
     .toBe(true);
 });

@@ -3,9 +3,15 @@ import { Alert, Button, Input, Segmented, Space, Tabs } from "antd";
 import type { FinanceRequestParams, Row } from "../../../shared/contracts";
 import { numeric, record, rows, text } from "../../../shared/rows";
 import { BusinessTable } from "../../../shared/components";
-import { useFinance } from "../context";
+import { useFinance, useFinanceQuery } from "../context";
 import { exactNumbers, responseScope, selectionKey } from "../domain";
-import { Failure, FactTable, ScopeEvidence, useReport } from "../presentation";
+import {
+  Failure,
+  FactTable,
+  ScopeEvidence,
+  useReport,
+  useReportReceipt,
+} from "../presentation";
 import {
   ExportDialog,
   ExportJobs,
@@ -13,6 +19,7 @@ import {
   ImportDialog,
   fieldIds,
 } from "../operations";
+import { useWorkspaceStatus, OperationalEvidence } from "../operational";
 import { RecordDetail, renderField } from "./RecordDetail";
 export interface RecordsPageProps {
   view: string;
@@ -41,7 +48,7 @@ function RecordSession({
   advertisingOnly = false,
   refundContent,
 }: RecordsPageProps) {
-  const { filters, t, session, refresh } = useFinance();
+  const { filters, t, session, refresh, reads } = useFinance();
   const [kind, setKind] = useState(view),
     [scope, setScope] = useState(orderScope),
     [tab, setTab] = useState("records"),
@@ -52,38 +59,34 @@ function RecordSession({
     [detail, setDetail] = useState(""),
     [operation, setOperation] = useState("");
   const reconciliation = view === "RECONCILIATION";
-  const needsOverview =
-    !reconciliation && !(kind === "ORDER" && scope === "ALL");
-  const overview = useReport(
-    "/overview",
-    { ...filters },
-    needsOverview && tab === "records",
-  );
-  const resolved = responseScope(filters, overview.data);
+  const workspaceView =
+    advertisingOnly || ["AD", "AD_GMV"].includes(kind)
+      ? "ads-support"
+      : reconciliation
+        ? "reconciliation"
+        : ["ORDER", "REFUND"].includes(view)
+          ? "orders"
+          : ["FEE", "COST"].includes(view)
+            ? "fees"
+            : "settlements";
+  const operational = useWorkspaceStatus(workspaceView, tab === "records");
   const params = {
-    ...resolved,
-    kind,
+    ...filters,
+    view: workspaceView,
+    kind: reconciliation ? "BILL" : kind,
     page,
     numbers,
     ...(kind === "ORDER" ? { orderScope: scope } : {}),
-    ...(advertisingOnly ? { advertisingOnly: true } : {}),
   };
-  const query = useReport(
-    reconciliation ? "/reconciliation" : "/records",
-    params,
-    tab === "records" && (!needsOverview || !!overview.data),
-  );
+  const result = useFinanceQuery({
+    queryKey: ["/workspace/query", selectionKey(params)],
+    enabled: tab === "records",
+    queryFn: ({ signal }) => reads.records(params, signal),
+  });
+  const query = { ...result, data: result.data?.data };
   const data = query.data;
-  const selection = {
-    ...resolved,
-    ...responseScope(
-      {
-        ...filters,
-        fxSnapshot: text(resolved.fxSnapshot) || filters.fxSnapshot,
-      },
-      data,
-    ),
-  };
+  useReportReceipt(data, params);
+  const selection = responseScope(filters, data);
   const frozen: FinanceRequestParams = {
     ...selection,
     view: reconciliation ? "RECONCILIATION" : kind,
@@ -94,9 +97,9 @@ function RecordSession({
   const fieldQuery = useReport(
     "/fields/" + (reconciliation ? "RECONCILIATION" : kind),
     {},
-    tab === "records",
+    tab === "records" && !!data && !record(data.fieldSettings),
   );
-  const settings = record(fieldQuery.data) || record(data?.fieldSettings),
+  const settings = record(data?.fieldSettings) || record(fieldQuery.data),
     visible = fieldIds(settings?.visible);
   const catalog = rows(settings?.fields);
   const fields = catalog.filter(
@@ -213,13 +216,20 @@ function RecordSession({
                 </Button>
               )}
           </Space>
-          <Failure
-            error={error || query.error || fieldQuery.error || overview.error}
+          <OperationalEvidence
+            operations={operational.operations}
+            error={operational.error}
           />
+          <Failure error={error || query.error || fieldQuery.error} />
           {data && (
             <>
               <ScopeEvidence
-                data={data.fx ? data : { ...data, fx: overview.data?.fx }}
+                data={
+                  operational.operations &&
+                  Object.hasOwn(operational.operations, "settlementCalculation")
+                    ? { ...data, settlementCalculation: undefined }
+                    : data
+                }
               />
               {record(data.productCosts) && (
                 <FactTable
@@ -236,7 +246,7 @@ function RecordSession({
               {view === "FEE" && (
                 <FactTable
                   title="费用构成"
-                  data={overview.data?.fees}
+                  data={data.fees}
                   columns={[
                     ["category", "费用项目"],
                     ["amount", "金额", "money"],

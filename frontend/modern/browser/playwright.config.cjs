@@ -50,7 +50,7 @@ module.exports = defineConfig({
     { name: "webkit", use: { browserName: "webkit" } },
     {
       name: "chromium-mobile",
-      testMatch: /(operations|shops|costs|advertising|lifecycle)\.pw\.cjs$/,
+      testMatch: /(operations|shops|costs|advertising|lifecycle|protocol)\.pw\.cjs$/,
       use: {
         browserName: "chromium",
         viewport: { width: 390, height: 844 },

@@ -29,6 +29,7 @@ import type {
   FinanceWriteMethod,
 } from "../../shared/contracts";
 import { defaultFinanceFilters } from "./domain";
+import { createFinanceReads, type FinanceReads } from "./reads";
 import {
   createFinanceTranslator,
   type FinanceTranslator,
@@ -38,6 +39,7 @@ export interface FinanceContextValue {
   host: FinanceHost;
   session: FinanceHostSnapshot;
   api: FinanceApi;
+  reads: FinanceReads;
   filters: FinanceFilters;
   setFilters: Dispatch<SetStateAction<FinanceFilters>>;
   refresh(): Promise<void>;
@@ -144,6 +146,28 @@ export function FinanceProvider({
     [api],
   );
 
+  const ownerKey = JSON.stringify(identity(session));
+  const ownerRef = useRef(ownerKey);
+  ownerRef.current = ownerKey;
+  // Host renders may replace the HTTP facade on every navigation. Capability
+  // belongs to this owner/provider, while dispatch always uses its latest API.
+  const apiRef = useRef(exposedApi);
+  apiRef.current = exposedApi;
+  const reads = useMemo(
+    () =>
+      createFinanceReads(
+        {
+          get: <T,>(
+            path: string,
+            params?: FinanceRequestParams,
+            signal?: AbortSignal,
+          ) => apiRef.current.get<T>(path, params, signal),
+        },
+        () => activeRef.current && ownerRef.current === ownerKey,
+      ),
+    [host, ownerKey],
+  );
+
   useEffect(() => {
     const nextIdentity = identity(session);
     if (
@@ -181,6 +205,7 @@ export function FinanceProvider({
       host,
       session,
       api: exposedApi,
+      reads,
       filters,
       setFilters,
       refresh,
@@ -189,7 +214,18 @@ export function FinanceProvider({
       navigate,
       t,
     }),
-    [active, exposedApi, filters, host, navigate, refresh, route, session, t],
+    [
+      active,
+      exposedApi,
+      reads,
+      filters,
+      host,
+      navigate,
+      refresh,
+      route,
+      session,
+      t,
+    ],
   );
 
   return (

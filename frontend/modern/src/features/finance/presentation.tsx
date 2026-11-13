@@ -75,6 +75,7 @@ export function ScopeEvidence({ data }: { data: unknown }) {
   const source = record(data),
     fx = record(source?.fx),
     cache = record(source?.cache),
+    readModel = record(source?.readModel),
     calculation = record(source?.settlementCalculation),
     resolved = record(source?.filters);
   return (
@@ -130,6 +131,9 @@ export function ScopeEvidence({ data }: { data: unknown }) {
             }
           />
         )}
+      {text(readModel?.coverage) && (
+        <Typography.Paragraph>{text(readModel?.coverage)}</Typography.Paragraph>
+      )}
       {text(source?.basis) && (
         <Typography.Paragraph>{text(source?.basis)}</Typography.Paragraph>
       )}

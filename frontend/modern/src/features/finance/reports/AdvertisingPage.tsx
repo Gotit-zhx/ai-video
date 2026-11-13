@@ -26,6 +26,7 @@ import {
   changeFinanceFilters,
   fundingFields,
   responseScope,
+  selectionKey,
 } from "../domain";
 import {
   Failure,
@@ -34,7 +35,9 @@ import {
   ScopeEvidence,
   useOwnerFence,
   useReport,
+  useReportReceipt,
 } from "../presentation";
+import { useWorkspaceStatus, OperationalEvidence } from "../operational";
 import { ExportDialog, ImportDialog } from "../operations";
 import { RecordsPage } from "../records/RecordsPage";
 import {
@@ -74,7 +77,7 @@ export function AdvertisingPage({
 }: {
   initialTab?: string;
 }) {
-  const { filters, t, session, setFilters, refresh } = useFinance();
+  const { filters, t, session, setFilters, refresh, reads } = useFinance();
   const [page, setPage] = useState(1),
     [input, setInput] = useState(""),
     [search, setSearch] = useState(""),
@@ -91,17 +94,42 @@ export function AdvertisingPage({
       key: string;
       allocate: boolean;
     } | null>(null);
-  const params = { ...filters, page, search, assignment };
-  const query = useReport("/advertising/spend", params);
+  const ownsStatus = !["AD", "ledger", "AD_GMV"].includes(tab);
+  const operational = useWorkspaceStatus("ads", ownsStatus);
+  const params = { ...filters, spendPage: page, search, assignment };
+  const result = useFinanceQuery({
+    queryKey: ["/workspace/query", selectionKey({ ...params, view: "ads" })],
+    queryFn: ({ signal }) => reads.advertising(params, signal),
+  });
+  const query = { ...result, data: record(result.data?.data.adSpend) };
   const data = query.data;
+  useReportReceipt(data, params);
   const selection = responseScope(filters, data);
-  const overview = useReport("/overview", selection, !!data);
-  const accounts = useReport(
+  const overview = useReport(
+    "/overview",
+    selection,
+    !!data && ["booked", "AD_GMV"].includes(tab),
+  );
+  const legacyAccounts = useReport(
     "/ads",
     { ...selection, start: filters.start, end: filters.end },
-    !!data,
+    !!data && result.data?.legacy === true,
   );
-  const metadata = useReport("/shops", {});
+  const accounts = {
+    ...legacyAccounts,
+    data:
+      operational.operations?.adAccounts ??
+      (result.data?.legacy
+        ? legacyAccounts.data
+        : result.data?.data.adAccounts),
+  };
+  const legacyMetadata = useReport("/shops", {}, result.data?.legacy === true);
+  const metadata = {
+    ...legacyMetadata,
+    data: result.data?.legacy
+      ? legacyMetadata.data
+      : { items: result.data?.data.shops, groups: result.data?.data.groups },
+  };
   const ad = record(overview.data?.advertising) || {};
   const moneyColumns = moneyFields.map((field) => ({
     title: t(labels[field]!),
@@ -158,9 +186,23 @@ export function AdvertisingPage({
         )}
       />
       <Failure error={query.error} />
+      {ownsStatus && (
+        <OperationalEvidence
+          operations={operational.operations}
+          error={operational.error}
+        />
+      )}
       {data && (
         <>
-          <ScopeEvidence data={data} />
+          <ScopeEvidence
+            data={
+              !ownsStatus ||
+              (operational.operations &&
+                Object.hasOwn(operational.operations, "settlementCalculation"))
+                ? { ...data, settlementCalculation: undefined }
+                : data
+            }
+          />
           <Tabs
             activeKey={tab}
             onChange={setTab}
@@ -185,7 +227,12 @@ export function AdvertisingPage({
                   </Button>
                 )}
               </Space>
-              <ShopeeAdsPanel data={record(data.shopeeAds)} compact />
+              <ShopeeAdsPanel
+                data={record(
+                  operational.operations?.shopeeAds ?? data.shopeeAds,
+                )}
+                compact
+              />
               {rows(data.totals).length ? (
                 rows(data.totals).map((total, index) => (
                   <div className="finance-metric-grid" key={index}>
@@ -465,7 +512,7 @@ export function AdvertisingPage({
           )}
           <section hidden={tab !== "accounts" && tab !== "spend"}>
             <Failure error={accounts.error} />
-            {accounts.data && (
+            {!!accounts.data && (
               <AccountCoverage
                 accounts={accounts.data}
                 shops={rows(metadata.data?.items)}

@@ -2,14 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Tabs } from "antd";
 import { useQueryClient } from "@tanstack/react-query";
 import { record, text } from "../../../shared/rows";
-import { useFinance } from "../context";
+import { useFinance, useFinanceQuery } from "../context";
 import { selectionKey } from "../domain";
 import { Failure, useOwnerFence } from "../presentation";
+import { useWorkspaceStatus, OperationalEvidence } from "../operational";
 import { LabelsPage } from "../charges/LabelsPage";
 import { CostCatalog } from "./CostCatalog";
 import { OrderCosts } from "./OrderCosts";
 import { InputReview } from "./InputReview";
 import { useCostRead } from "./common";
+import { costContextPath, completeCostWorkspace } from "../reads";
 import { costPath, safeInputs } from "./domain";
 export function CostsPage({
   initialTab,
@@ -83,17 +85,31 @@ function CostWorkspace({
   setTab: (v: string) => void;
   routeParams: URLSearchParams;
 }) {
-  const { filters, t, setFilters, session } = useFinance();
+  const { filters, t, setFilters, session, reads } = useFinance();
   const queryClient = useQueryClient(),
     owner = useOwnerFence();
   const [refreshBlocked, setRefreshBlocked] = useState(false),
     [refreshError, setRefreshError] = useState<unknown>();
   const refreshGeneration = useRef(0);
-  const query = useCostRead(costPath, {
-    shopId: filters.shopId,
-    groupId: filters.groupId,
+  const operational = useWorkspaceStatus("costs");
+  const scope = { shopId: filters.shopId, groupId: filters.groupId };
+  const management = ["costs", "manual", "mapping", "settings"].includes(tab);
+  const context = useFinanceQuery({
+    queryKey: [costContextPath, selectionKey(scope)],
+    enabled: !management,
+    queryFn: ({ signal }) => reads.costContext(scope, signal),
   });
-  const data = query.data;
+  useEffect(() => {
+    if (tab === "input-review" && context.data && !safeInputs(context.data))
+      setTab("labels");
+  }, [tab, context.data, setTab]);
+  const needsFull =
+    management ||
+    (tab === "input-review" && !!context.data && safeInputs(context.data));
+  const query = useCostRead(costPath, scope, 0, needsFull);
+  const data = needsFull ? query.data : context.data;
+  const complete = completeCostWorkspace(data);
+  const incomplete = needsFull && !!data && !complete;
   async function reloadWorkspace() {
     if (!owner.isCurrent()) return;
     const generation = ++refreshGeneration.current;
@@ -104,17 +120,15 @@ function CostWorkspace({
     // state cannot protect retained data across filter changes or remounts.
     const related = queryClient.invalidateQueries({
       queryKey: ["finance", session.organizationId, session.userId],
-      predicate: (q) => q.queryKey[3] !== costPath,
+      predicate: (q) =>
+        ![costPath, costContextPath].includes(String(q.queryKey[3])),
     });
     try {
       await queryClient.resetQueries(
         {
-          queryKey: [
-            "finance",
-            session.organizationId,
-            session.userId,
-            costPath,
-          ],
+          queryKey: ["finance", session.organizationId, session.userId],
+          predicate: (q) =>
+            [costPath, costContextPath].includes(String(q.queryKey[3])),
         },
         { throwOnError: true },
       );
@@ -137,11 +151,21 @@ function CostWorkspace({
   ];
   return (
     <>
-      <Failure error={refreshError || query.error} />
-      {(refreshBlocked || (query.isError && !data)) && (
+      <OperationalEvidence
+        operations={operational.operations}
+        error={operational.error}
+      />
+      <Failure error={refreshError || query.error || context.error} />
+      {(incomplete ||
+        refreshBlocked ||
+        ((query.isError || context.isError) && !data)) && (
         <Alert
           type="info"
-          title={t("正在重新读取有效成本资料")}
+          title={t(
+            incomplete
+              ? "成本资料不完整，请重新读取"
+              : "正在重新读取有效成本资料",
+          )}
           action={
             <Button onClick={() => void reloadWorkspace()}>
               {t("重试读取有效成本")}
@@ -172,9 +196,12 @@ function CostWorkspace({
                     setFilters((f) => ({ ...f, shopId }));
                 }}
               />
-            ) : key === "input-review" ? (
+            ) : key === "input-review" &&
+              complete &&
+              safeInputs(data!) &&
+              !refreshBlocked ? (
               <InputReview onChanged={reloadWorkspace} />
-            ) : data && !refreshBlocked ? (
+            ) : data && complete && !refreshBlocked ? (
               <CostCatalog
                 key={key}
                 data={data}
