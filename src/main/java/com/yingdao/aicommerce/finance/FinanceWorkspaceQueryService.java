@@ -30,7 +30,8 @@ public class FinanceWorkspaceQueryService {
     public Map<String,Object> query(Scope scope,Scope personal,Filter filter,Selection selection){
         Selection selected=validated(selection);
         Filter nativeFilter=nativeFilter(filter);
-        var version=awaitProjection(scope,nativeFilter,projections.version(scope,nativeFilter));
+        var version=projections.version(scope,nativeFilter);
+        if(!selected.view().equals("ads"))version=awaitProjection(scope,nativeFilter,version);
         Map<String,Object> result;
         if("READY".equals(version.get("status"))){
             String revision=text(version.get("revision"));
@@ -71,6 +72,7 @@ public class FinanceWorkspaceQueryService {
             catch(FinanceQueryProjections.PollDeadlineElapsed expired){requireActiveRequest();return version;}
             catch(org.springframework.dao.QueryTimeoutException timeout){
                 requireActiveRequest();
+                if(nanoTime.getAsLong()-started>=PENDING_WAIT_NANOS)return version;
                 var unavailable=new com.yingdao.aicommerce.common.exception.BusinessException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,"财务投影状态查询超时，请稍后重试");
                 unavailable.initCause(timeout);throw unavailable;
             }
