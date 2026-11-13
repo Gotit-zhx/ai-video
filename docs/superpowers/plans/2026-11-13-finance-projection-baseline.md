@@ -40,11 +40,11 @@ UPDATE finance_query_dirty_days d JOIN finance_query_partitions p
 SET d.requested_revision=p.requested_revision;
 ```
 
-- [ ] 写迁移失败测试：从真实 V156 派生状态开始，保存所有旧字段/载荷/源账本哨兵，调用缺失 V157 文件，验证测试先失败。
-- [ ] 创建迁移，验证旧字段/原始数据不变，现有 full/partial/READY 状态初始化正确；新分区默认全量修订 1、兼容旧写入的脏日默认修订 0。
-- [ ] 公共 fixture 支持并默认迁移到 157；显式 `migrateThrough(154/155/156)` 继续只安装指定版本。
-- [ ] 新增失败回归：计算中 DAY 改变后保留内部基线、同日较大修订保留、后续增量追平；计算中 ALL 改变后下一次仍全量；租约替换/过期不保存；失败回滚不删除脏日。
-- [ ] 记录领取的 R、构建快照开始时间 S；完成后在原保存事务中按原租约身份/期限及 `built_revision<=R` 保存基线。`built_revision=R`，`full_rebuild=(full_rebuild_revision>R)`；请求修订保留当前值。
+- [x] 写迁移失败测试：从真实 V156 派生状态开始，保存所有旧字段/载荷/源账本哨兵，调用缺失 V157 文件，验证测试先失败。
+- [x] 创建迁移，验证旧字段/原始数据不变，现有 full/partial/READY 状态初始化正确；新分区默认全量修订 1、兼容旧写入的脏日默认修订 0。
+- [x] 公共 fixture 支持并默认迁移到 157；显式 `migrateThrough(154/155/156)` 继续只安装指定版本。
+- [x] 新增失败回归：计算中 DAY 改变后保留内部基线、同日较大修订保留、后续增量追平；计算中 ALL 改变后下一次仍全量；租约替换/过期不保存；失败回滚不删除脏日。
+- [x] 记录领取的 R、构建快照开始时间 S；完成后在原保存事务中按原租约身份/期限及 `built_revision<=R` 保存基线。`built_revision=R`，`full_rebuild=(full_rebuild_revision>R)`；请求修订保留当前值。
 
 ```sql
 -- SQL 中的 R 均以同一个领取值绑定。
@@ -59,9 +59,9 @@ DELETE FROM finance_query_dirty_days WHERE organization_id=? AND platform_filter
  AND requested_revision<=?;
 ```
 
-- [ ] 全量失效同时设置 `full_rebuild_revision=requested_revision+1` 和 `requested_revision=requested_revision+1`；逐日失效从已加锁分区读取新修订写入脏日，重复日期取较大修订。
-- [ ] 对外查找仍要求 `built_revision=requested_revision`、原 schema/正文/事件/同快照复核；修改原 CAS 测试的内部保存预期，但保留未追平不返回的断言。
-- [ ] 运行迁移与 baseline 新测试、projection/query/defaultWarm/metadata/cost 相关回归。由独立 reviewer 检查 spec + quality，通过后协调者按文件提交本任务。
+- [x] 全量失效同时设置 `full_rebuild_revision=requested_revision+1` 和 `requested_revision=requested_revision+1`；逐日失效从已加锁分区读取新修订写入脏日，重复日期取较大修订。
+- [x] 对外查找仍要求 `built_revision=requested_revision`、原 schema/正文/事件/同快照复核；修改原 CAS 测试的内部保存预期，但保留未追平不返回的断言。
+- [x] 运行迁移与 baseline 新测试、projection/query/defaultWarm/metadata/cost 相关回归。由独立 reviewer 检查 spec + quality，通过后协调者按文件提交本任务。
 
 ## Task 2: 固定 V157 维护工具与演练
 

@@ -308,7 +308,7 @@ class FinanceQueryProjectionIntegrationTest {
         var f=filter("2026-10-01","2026-10-31","");assertTrue(projections.find(fixture.owner,f).isEmpty());drainAndBuild();
         assertEquals(0,decimal("19").compareTo(decimal(rows(projections.find(fixture.owner,f).orElseThrow().facts().get("orders")).getFirst().get("known_amount_cny"))));
     }
-    @Test void aNewDirtyRevisionDuringBuildCannotBePublishedOrCleared(){
+    @Test void aNewDirtyRevisionDuringBuildKeepsHiddenProgressAndItsDirtyDay(){
         fee("cas","2026-10-01","12","SHOPEE","UNASSIGNED");fee("unchanged","2026-10-02","7","SHOPEE","UNASSIGNED");build("2026-10-01","2026-10-31","");
         var old=fixture.db.queryForMap("SELECT full_month_json,built_revision FROM finance_query_partitions");
         String id=fixture.db.queryForObject("SELECT id FROM finance_records WHERE external_id='cas'",String.class);
@@ -325,7 +325,13 @@ class FinanceQueryProjectionIntegrationTest {
             }
         };
         new FinanceQueryProjections(fixture.repo,racing,new FinanceAdSpendService(fixture.repo,racing)).buildNext();
-        assertTrue(changed.get());assertEquals(old,fixture.db.queryForMap("SELECT full_month_json,built_revision FROM finance_query_partitions"));
+        assertTrue(changed.get());
+        var baseline=fixture.db.queryForMap("SELECT full_month_json,built_revision,requested_revision FROM finance_query_partitions");
+        assertEquals(number(old.get("built_revision"))+1,number(baseline.get("built_revision")));
+        assertNotEquals(old.get("full_month_json"),baseline.get("full_month_json"));
+        assertTrue(number(baseline.get("requested_revision"))>number(baseline.get("built_revision")));
+        var pending=filter("2026-10-01","2026-10-31","");
+        assertTrue(projections.find(fixture.owner,pending).isEmpty());assertEquals("PENDING",projections.version(fixture.owner,pending).get("status"));
         assertTrue(fixture.db.queryForObject("SELECT COUNT(*) FROM finance_query_dirty_days",Long.class)>0);
         drainAndBuild();var f=filter("2026-10-01","2026-10-31","");
         assertEquals(canonical(fixture.service.buildNativeDashboardFacts(fixture.owner,f,false)),canonical(projections.find(fixture.owner,f).orElseThrow().facts()));

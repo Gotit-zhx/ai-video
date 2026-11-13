@@ -19,6 +19,7 @@ public class FinanceQueryProjections {
     public record Snapshot(Map<String,Object> facts,Map<String,Object> spendFacts,List<Map<String,Object>> rawCounts,
                            Instant generatedAt,String revision,boolean refreshing) {}
     private record Key(String organization,String platform,LocalDate month) {}
+    private record Built(Map<String,Object> facts,Instant snapshotStarted) {}
     private record OrderKey(String shop,String order) {}
     private record BillPrefix(String user,String shop,String source) {}
     private static final class Change {boolean all;final Set<LocalDate> days=new TreeSet<>();}
@@ -174,10 +175,10 @@ public class FinanceQueryProjections {
             for(var item:statements.entrySet())if(!changed.get(item.getKey()).all)addBillDates(changed.get(item.getKey()),item.getKey(),item.getValue());
             for(var item:changed.entrySet()){
                 String org=item.getKey();var change=item.getValue();
-                if(change.all){repo.jdbc().update("UPDATE finance_query_partitions SET requested_revision=requested_revision+1,full_rebuild=TRUE,requested_at=UTC_TIMESTAMP(6),next_attempt_at=UTC_TIMESTAMP(6) WHERE organization_id=?",org);continue;}
+                if(change.all){repo.jdbc().update("UPDATE finance_query_partitions SET full_rebuild_revision=requested_revision+1,requested_revision=requested_revision+1,full_rebuild=TRUE,requested_at=UTC_TIMESTAMP(6),next_attempt_at=UTC_TIMESTAMP(6) WHERE organization_id=?",org);continue;}
                 var months=new TreeSet<LocalDate>();change.days.forEach(day->months.add(day.withDayOfMonth(1)));
                 for(LocalDate month:months)repo.jdbc().update("UPDATE finance_query_partitions SET requested_revision=requested_revision+1,requested_at=UTC_TIMESTAMP(6),next_attempt_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND partition_month=?",org,month);
-                for(LocalDate day:change.days)repo.jdbc().update("INSERT IGNORE INTO finance_query_dirty_days(organization_id,platform_filter,partition_month,record_date) SELECT organization_id,platform_filter,partition_month,? FROM finance_query_partitions WHERE organization_id=? AND partition_month=?",day,org,day.withDayOfMonth(1));
+                for(LocalDate day:change.days)repo.jdbc().update("INSERT INTO finance_query_dirty_days(organization_id,platform_filter,partition_month,record_date,requested_revision) SELECT organization_id,platform_filter,partition_month,?,requested_revision FROM finance_query_partitions WHERE organization_id=? AND partition_month=? ON DUPLICATE KEY UPDATE requested_revision=GREATEST(finance_query_dirty_days.requested_revision,VALUES(requested_revision))",day,org,day.withDayOfMonth(1));
             }
             var ids=events.stream().map(row->row.get("event_id")).toList();
             repo.jdbc().update("DELETE FROM finance_query_events WHERE event_id IN ("+String.join(",",Collections.nCopies(ids.size(),"?"))+")",ids.toArray());
@@ -188,8 +189,8 @@ public class FinanceQueryProjections {
     /** One leased month per call; no source/provider requests are made by this worker. */
     boolean buildNext(){
         var claimed=repo.transaction(()->{
-            // During catch-up, source scans compete with the drainer and are repeatedly
-            // discarded by its next revision. A bounded index probe prioritizes that
+            // During catch-up, source scans compete with the drainer while its next
+            // full invalidation may supersede their baseline. A bounded index probe prioritizes that
             // company's invalidations; other companies and small normal bursts still build.
             var ready=repo.jdbc().queryForList("SELECT p.* FROM finance_query_partitions p WHERE p.built_revision<>p.requested_revision AND p.next_attempt_at<=UTC_TIMESTAMP(6) AND (p.lease_until IS NULL OR p.lease_until<UTC_TIMESTAMP(6)) AND NOT EXISTS(SELECT 1 FROM finance_query_events e WHERE e.organization_id=p.organization_id ORDER BY e.event_id LIMIT 1 OFFSET "+EVENT_BATCH+") ORDER BY p.requested_at LIMIT 1 FOR UPDATE SKIP LOCKED");
             if(ready.isEmpty())return Map.<String,Object>of();
@@ -200,12 +201,18 @@ public class FinanceQueryProjections {
         if(claimed.isEmpty())return false;
         var key=new Key(text(claimed.get("organization_id")),text(claimed.get("platform_filter")),date(claimed.get("partition_month")));
         try{
-            var built=repo.readSnapshot(180,()->build(key,claimed));
+            var snapshot=repo.readSnapshot(180,()->{
+                Instant started=Instant.now();
+                return new Built(build(key,claimed),started);
+            });
+            var built=snapshot.facts();long revision=number(claimed.get("requested_revision"));
             String full=json.writeValueAsString(normalize(built.get("full"))),first=json.writeValueAsString(normalize(built.get("first"))),ads=json.writeValueAsString(normalize(built.get("spend")));
             repo.transaction(()->{
-                int published=repo.jdbc().update("UPDATE finance_query_partitions SET full_month_json=?,partial_first_day_json=?,spend_json=?,built_revision=requested_revision,schema_version=?,generated_at=UTC_TIMESTAMP(6),full_rebuild=FALSE,lease_token=NULL,lease_until=NULL,failures=0,error_code=NULL WHERE organization_id=? AND platform_filter=? AND partition_month=? AND lease_token=? AND requested_revision=? AND lease_until>UTC_TIMESTAMP(6)",
-                    full,first,ads,SCHEMA_VERSION,key.organization,key.platform,key.month,claimed.get("lease_token"),claimed.get("requested_revision"));
-                if(published==1)repo.jdbc().update("DELETE FROM finance_query_dirty_days WHERE organization_id=? AND platform_filter=? AND partition_month=?",key.organization,key.platform,key.month);
+                // R is an internal baseline; readers still require built_revision=requested_revision.
+                // A later full invalidation and later dirty days must survive this lease.
+                int published=repo.jdbc().update("UPDATE finance_query_partitions SET full_month_json=?,partial_first_day_json=?,spend_json=?,built_revision=?,schema_version=?,generated_at=?,full_rebuild=(full_rebuild_revision>?),lease_token=NULL,lease_until=NULL,failures=0,error_code=NULL WHERE organization_id=? AND platform_filter=? AND partition_month=? AND lease_token=? AND lease_until>UTC_TIMESTAMP(6) AND requested_revision>=? AND built_revision<=?",
+                    full,first,ads,revision,SCHEMA_VERSION,java.sql.Timestamp.from(snapshot.snapshotStarted()),revision,key.organization,key.platform,key.month,claimed.get("lease_token"),revision,revision);
+                if(published==1)repo.jdbc().update("DELETE FROM finance_query_dirty_days WHERE organization_id=? AND platform_filter=? AND partition_month=? AND requested_revision<=?",key.organization,key.platform,key.month,revision);
                 else repo.jdbc().update("UPDATE finance_query_partitions SET lease_token=NULL,lease_until=NULL WHERE organization_id=? AND platform_filter=? AND partition_month=? AND lease_token=?",key.organization,key.platform,key.month,claimed.get("lease_token"));
                 return null;
             });
