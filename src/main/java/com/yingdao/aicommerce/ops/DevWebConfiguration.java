@@ -36,6 +36,10 @@ public class DevWebConfiguration implements WebMvcConfigurer {
             decoded.append(element instanceof PathContainer.PathSegment segment ? segment.valueToMatch() : element.value());
         }
         String path = ResourceHandlerUtils.normalizeInputPath(decoded.toString());
+        // Filesystem resources can resolve a trailing slash to the same file.
+        while (path.endsWith("/")) {
+            path = path.substring(0, path.length() - 1);
+        }
         // Development checkouts can live on case-insensitive filesystems.
         return path.equalsIgnoreCase("/modern") || path.regionMatches(true, 0, "/modern/", 0, 8)
                 || path.equalsIgnoreCase("/modern-build.mjs");

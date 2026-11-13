@@ -91,6 +91,18 @@ class DevWebResourceSecurityTest {
             HEAD, /modern-build.mjs, /portal
             GET, /%6Dodern/src/app/mount.tsx, /portal
             HEAD, /%6Dodern-build.mjs, /portal
+            GET, /modern-build.mjs/, ''
+            HEAD, /modern-build.mjs/, ''
+            GET, /%6Dodern-build.mjs/, ''
+            HEAD, /%6Dodern-build.mjs/, ''
+            GET, /MODERN-BUILD.MJS/, ''
+            HEAD, /MODERN-BUILD.MJS/, ''
+            GET, /modern-build.mjs/, /portal
+            HEAD, /modern-build.mjs/, /portal
+            GET, /%6Dodern-build.mjs/, /portal
+            HEAD, /%6Dodern-build.mjs/, /portal
+            GET, /MODERN-BUILD.MJS/, /portal
+            HEAD, /MODERN-BUILD.MJS/, /portal
             """)
     void deniesPrivateSourceForAuthenticatedUser(String method, String path, String contextPath) throws Exception {
         MvcResult result = mvc.perform(authenticatedRequest(method, path, contextPath)).andReturn();
@@ -118,10 +130,12 @@ class DevWebResourceSecurityTest {
     }
 
     @Test void keepsDefaultFirewallEncodedSlashAndPeriodRejection() throws Exception {
-        for (String path : List.of("/modern%2Fsrc/app/mount.tsx", "/modern-build%2Emjs")) {
-            MvcResult result = mvc.perform(authenticatedRequest("GET", path, "")).andReturn();
-            assertEquals(400, result.getResponse().getStatus(), path);
-            assertFalse(result.getResponse().getContentAsString().contains(PRIVATE_SOURCE));
+        for (String path : List.of("/modern%2Fsrc/app/mount.tsx", "/modern-build%2Emjs", "/modern-build.mjs%2F", "/%6Dodern-build.mjs%2F")) {
+            for (String method : List.of("GET", "HEAD")) {
+                MvcResult result = mvc.perform(authenticatedRequest(method, path, "")).andReturn();
+                assertEquals(400, result.getResponse().getStatus(), method + " " + path);
+                assertFalse(result.getResponse().getContentAsString().contains(PRIVATE_SOURCE));
+            }
         }
     }
 
