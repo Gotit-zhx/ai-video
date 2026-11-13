@@ -192,7 +192,7 @@ class FinanceConfigurationIntegrationTest {
         assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_expenses",Integer.class));
         assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_authorization_sessions WHERE id='session'",Integer.class));
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_expense_rules",Integer.class),"shared group rule remains");
-        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type<>'COST_POLICY_REBUILD'",Integer.class),"shared cost import audit remains");
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type NOT IN ('COST_POLICY_REBUILD','COST_POLICY_INVALIDATE')",Integer.class),"shared cost import audit remains");
         assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='COST_POLICY_REBUILD' AND entity_id=?",Integer.class,shop),"deleted shop's system scheduling receipt is removed");
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='COST_POLICY_REBUILD' AND entity_id=?",Integer.class,sibling),"another shop's policy checkpoint is preserved");
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_cost_books",Integer.class));

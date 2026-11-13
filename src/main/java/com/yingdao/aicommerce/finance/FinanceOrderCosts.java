@@ -241,10 +241,18 @@ public final class FinanceOrderCosts {
     /** One small durable scheduling receipt per shop/policy, never per-order financial snapshots. */
     void recordPolicyRequest(String organization,String shopId){
         String id=hash("standard-cost-policy:"+POLICY_VERSION+":"+organization+":"+shopId).substring(0,32);
-        repo.jdbc().update("""
+        int added=repo.jdbc().update("""
             INSERT IGNORE INTO finance_workspace_audit(id,organization_id,entity_type,entity_id,after_json,reason,actor_id)
             VALUES(?,?,'COST_POLICY_REBUILD',?,?,?,'SYSTEM')
             """,id,organization,shopId,repo.write(Map.of("policyVersion",POLICY_VERSION,"status","QUEUED")),"标准成本匹配策略已加入有界后台重算");
+        if(added>0&&number(repo.jdbc().queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='finance_query_events'",Long.class))>0){
+            String companyId=hash("standard-cost-policy-invalidation:"+POLICY_VERSION+":"+organization).substring(0,32);
+            int first=repo.jdbc().update("""
+                INSERT IGNORE INTO finance_workspace_audit(id,organization_id,entity_type,entity_id,after_json,reason,actor_id)
+                VALUES(?,?,'COST_POLICY_INVALIDATE',?,?,?,'SYSTEM')
+                """,companyId,organization,organization,repo.write(Map.of("policyVersion",POLICY_VERSION)),"财务投影的旧成本匹配策略已失效");
+            if(first>0)repo.jdbc().update("INSERT INTO finance_query_events(organization_id,event_scope,source_table) VALUES(?,'ALL','finance_cost_policy')",organization);
+        }
     }
     /** Finished old histories need an explicit pass even if no upstream order changes again. */
     void seedPolicyUpgrades(){
