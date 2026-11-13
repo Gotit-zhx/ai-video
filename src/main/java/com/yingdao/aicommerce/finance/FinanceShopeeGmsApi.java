@@ -13,7 +13,7 @@ final class FinanceShopeeGmsApi {
     static final String DAILY="/api/v2/ads/get_product_campaign_daily_performance";
     static final String BASIS="SHOPEE_CPC_MINUS_IDENTIFIED_GMS_V1";
     static final String LABEL="广告消耗（账单参考）";
-    static final String DESCRIPTION="Shopee 账单参考金额 = 全店 CPC 日报消耗 − 已识别 GMS 同日消耗；不是原始扣款流水，缺失日期和金额不补零。";
+    static final String DESCRIPTION="Shopee 账单参考金额 = 全店 CPC 日报消耗 − 已识别 GMS 同日消耗；官方明确未找到 GMS 计划且无已识别历史计划时，所查询日期按 0 统计并提示原因；其他缺失日期和金额不补零。不是原始扣款流水。";
     static final List<String> AUXILIARY=List.of("all_shop_amount","gms_amount");
     private static final DateTimeFormatter DATE=DateTimeFormatter.ofPattern("dd-MM-uuuu").withResolverStyle(ResolverStyle.STRICT);
     private FinanceShopeeGmsApi() {}

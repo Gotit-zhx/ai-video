@@ -11,6 +11,9 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 /** Independent read-only reference facts; shares Ads token leases and pacing, never CPC checkpoints. */
 @Service
 public class FinanceShopeeGms {
+    private static final String NO_CAMPAIGN_CODE="ads_error_product_gms_campaign_not_found";
+    private static final String ZERO_BASIS="SHOPEE_GMS_NO_CAMPAIGN_ZERO_V1",ZERO_REVISION=hash(ZERO_BASIS);
+    private static final String ZERO_NOTE="未找到 GMS 计划，按 0 统计；保留官方返回依据并定期复查";
     private final FinanceRepository repo;
     private final FinanceShopeeAdsSettings settings;
     private final FinanceShopeeAds ads;
@@ -70,10 +73,22 @@ public class FinanceShopeeGms {
         LocalDate requestFrom=from.equals(end)&&!forward?from.minusDays(1):from,requestTo=forward?end.plusDays(1):end;
         if(!"DAILY".equals(cp.get("phase"))){
             // This fixed POST is Shopee's read-only GMS report. Its aggregate expense is never subtracted.
-            String id=FinanceShopeeGmsApi.campaign(app.client().shopPost(FinanceShopeeGmsApi.DISCOVERY,connection,FinanceShopeeAdsApi.query(requestFrom,requestTo)));
+            String discovered;
+            try{discovered=FinanceShopeeGmsApi.campaign(app.client().shopPost(FinanceShopeeGmsApi.DISCOVERY,connection,FinanceShopeeAdsApi.query(requestFrom,requestTo)));}
+            catch(com.yingdao.aicommerce.shop.infrastructure.ShopeeOfficialClient.ApiFailure failure){
+                if(!NO_CAMPAIGN_CODE.equals(failure.errorCode())||failure.hasWarning())throw failure;
+                discovered=null;
+            }
+            String id=discovered;
+            if(id==null&&ids(sync).isEmpty()){
+                // Explicit user rule: a confirmed no-campaign reply is zero for this requested window only.
+                var facts=requestFrom.datesUntil(requestTo.plusDays(1)).map(day->Map.<String,Object>of("record_date",day.toString(),"amount",java.math.BigDecimal.ZERO,"raw",Map.of("basis",ZERO_BASIS,"error_code",NO_CAMPAIGN_CODE,"requested_from",requestFrom.toString(),"requested_until",requestTo.toString()))).toList();
+                publish(app,grant,lease,cp,facts,requestFrom,requestTo,end,until,true);return;
+            }
             repo.transaction(()->{
                 if(!lockPublication(app,grant,lease))return null;
-                var current=lockedSync(org,external);var ids=new TreeSet<>(ids(current));boolean growth=ids.add(id);String revision=hash(String.join("\0",ids));
+                var current=lockedSync(org,external);var ids=new TreeSet<>(ids(current));boolean growth=id!=null&&ids.add(id);String revision=hash(String.join("\0",ids));
+                if(ids.isEmpty())throw bad("GMS 计划范围已变化，等待重新核对");
                 if(growth&&!text(current.get("campaign_revision")).isBlank()){
                     String unavailable=text(cp.get("unavailableBefore"));cp.clear();cp.putAll(historicalPlan(org,external,today));if(!unavailable.isBlank())cp.put("unavailableBefore",unavailable);
                 }
@@ -88,10 +103,19 @@ public class FinanceShopeeGms {
         List<String> ids=ids(sync);
         if(ids.isEmpty()||!ids.equals(stringList(cp.get("campaignIds")))||!text(sync.get("campaign_revision")).equals(cp.get("campaignRevision")))throw bad("GMS 计划范围已变化，等待重新核对");
         var facts=FinanceShopeeGmsApi.daily(app.client().shopGetExact(FinanceShopeeGmsApi.DAILY,connection,FinanceShopeeGmsApi.query(requestFrom,requestTo,ids)),external,ids,requestFrom,requestTo,today);
+        publish(app,grant,lease,cp,facts,requestFrom,requestTo,end,until,false);
+    }
+
+    private void publish(FinanceShopeeAdsSettings.Application app,Map<String,Object> grant,String lease,Map<String,Object> cp,List<Map<String,Object>> facts,LocalDate requestFrom,LocalDate requestTo,LocalDate end,LocalDate until,boolean noCampaign){
+        String org=text(grant.get("organization_id")),external=text(grant.get("external_shop_id"));
         repo.transaction(()->{
             if(!lockPublication(app,grant,lease))return null;
             var current=lockedSync(org,external);String revision=text(current.get("campaign_revision"));
-            if(!revision.equals(cp.get("campaignRevision"))||!ids.equals(ids(current)))return null;
+            if(noCampaign){
+                if(!ids(current).isEmpty()||(!revision.isBlank()&&!ZERO_REVISION.equals(revision))||repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_shopee_gms_daily WHERE organization_id=? AND external_shop_id=? AND (campaign_revision<>? OR amount<>0)",Integer.class,org,external,ZERO_REVISION)>0)throw bad("已识别 GMS 历史范围不能被无计划返回改为零");
+                revision=ZERO_REVISION;
+                repo.jdbc().update("UPDATE finance_shopee_gms_sync SET campaign_ids_json='[]',campaign_revision=? WHERE organization_id=? AND external_shop_id=?",revision,org,external);
+            }else if(!revision.equals(cp.get("campaignRevision"))||!stringList(cp.get("campaignIds")).equals(ids(current)))return null;
             var returned=new HashSet<String>();facts.forEach(row->returned.add(text(row.get("record_date"))));
             var previous=repo.jdbc().queryForList("SELECT record_date,currency FROM finance_shopee_gms_daily WHERE organization_id=? AND external_shop_id=? AND record_date BETWEEN ? AND ? FOR UPDATE",org,external,requestFrom,requestTo);
             if(previous.stream().anyMatch(row->!returned.contains(text(row.get("record_date")))||!text(grant.get("currency")).equals(row.get("currency"))))throw bad("GMS 刷新缺少已有日期或币种变化，保留原费用");
@@ -104,7 +128,9 @@ public class FinanceShopeeGms {
             if(done){var remaining=new ArrayList<>(rows(cp.get("remaining")));String unavailable=text(cp.get("unavailableBefore"));cp.clear();if(!unavailable.isBlank())cp.put("unavailableBefore",unavailable);if(!remaining.isEmpty()){cp.putAll(remaining.removeFirst());if(!remaining.isEmpty())cp.put("remaining",remaining);done=false;}}
             else cp.put("from",end.plusDays(1).toString());
             boolean partial=!text(cp.get("unavailableBefore")).isBlank();
-            repo.jdbc().update("UPDATE finance_shopee_gms_sync SET checkpoint_json=?,status=?,error_message=?,failures=0,next_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL ? SECOND),last_success_at=IF(?,UTC_TIMESTAMP(6),last_success_at) WHERE organization_id=? AND external_shop_id=?",cp.isEmpty()?null:repo.write(cp),done?(partial?"PARTIAL":"SUCCESS"):"SYNCING",partial?"部分 GMS 历史已超出接口范围；未取得日期仍未知，保留旧事实":null,done?3600:5,done,org,external);
+            String note=partial?"部分 GMS 历史已超出接口范围；未取得日期仍未知，保留旧事实":null;
+            if(noCampaign)note=ZERO_NOTE+(note==null?"":"；"+note);
+            repo.jdbc().update("UPDATE finance_shopee_gms_sync SET checkpoint_json=?,status=?,error_message=?,failures=0,next_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL ? SECOND),last_success_at=IF(?,UTC_TIMESTAMP(6),last_success_at) WHERE organization_id=? AND external_shop_id=?",cp.isEmpty()?null:repo.write(cp),done?(partial||noCampaign?"PARTIAL":"SUCCESS"):"SYNCING",note,done?3600:5,done,org,external);
             return null;
         });
     }
@@ -130,10 +156,12 @@ public class FinanceShopeeGms {
         }return cp;
     }
     private void failed(Map<String,Object> grant,String lease,RuntimeException failure){
-        String message=text(failure.getMessage()).toLowerCase(Locale.ROOT);boolean permission=message.contains("403")||message.contains("permission")||message.contains("whitelist");boolean auth=message.contains("token")||message.contains("auth")||message.contains("401");boolean limited=message.contains("429")||message.contains("rate_limit");
-        String status=permission?"NEEDS_PERMISSION":auth?"NEEDS_AUTHORIZATION":limited?"RATE_LIMITED":"ERROR";
-        String safe=permission?"GMS 报表权限或白名单未开通；缺失费用保持未知":auth?"Shopee Ads 独立授权需更新":limited?"GMS 请求限流，保留原窗口等待重试":failure instanceof FinanceShopeeAdsApi.IncompleteReport?failure.getMessage():"GMS 报表未完成或计划/日期范围不完整，保留旧数据与窗口";
-        long delay=permission||auth?86400:Math.min(21600,60L*(1L<<Math.min(8,number(map(grant.get("gms")).get("failures"))+1)));
+        String code=failure instanceof com.yingdao.aicommerce.shop.infrastructure.ShopeeOfficialClient.ApiFailure official?official.errorCode():"";
+        String message=(code.isBlank()?text(failure.getMessage()):code).toLowerCase(Locale.ROOT);boolean permission=message.contains("403")||message.contains("permission")||message.contains("whitelist");boolean auth=message.contains("token")||message.contains("auth")||message.contains("401");boolean limited=message.contains("429")||message.contains("rate_limit");
+        boolean noCampaign=NO_CAMPAIGN_CODE.equals(code);
+        String status=noCampaign?"PARTIAL":permission?"NEEDS_PERMISSION":auth?"NEEDS_AUTHORIZATION":limited?"RATE_LIMITED":"ERROR";
+        String safe=noCampaign?"GMS 无计划回复仍有不完整提示或涉及已识别历史计划；保留原费用及窗口等待核对":permission?"GMS 报表权限或白名单未开通；缺失费用保持未知":auth?"Shopee Ads 独立授权需更新":limited?"GMS 请求限流，保留原窗口等待重试":!code.isBlank()?"GMS 接口返回 "+code+"，保留原数据与窗口等待重试":failure instanceof FinanceShopeeAdsApi.IncompleteReport?failure.getMessage():"GMS 报表未完成或计划/日期范围不完整，保留旧数据与窗口";
+        long delay=noCampaign||permission||auth?86400:Math.min(21600,60L*(1L<<Math.min(8,number(map(grant.get("gms")).get("failures"))+1)));
         if(limited)repo.jdbc().update("UPDATE finance_api_pacing SET next_allowed_at=GREATEST(next_allowed_at,?),throttle_count=throttle_count+1 WHERE platform='SHOPEE_ADS' AND channel='CPC'",Timestamp.from(Instant.now().plusSeconds(delay)));
         repo.jdbc().update("UPDATE finance_shopee_gms_sync s JOIN finance_shopee_ad_grants g USING(organization_id,external_shop_id) SET s.status=?,s.error_message=?,s.failures=s.failures+1,s.next_at=? WHERE s.organization_id=? AND s.external_shop_id=? AND g.lease_token=? AND g.enabled=TRUE",status,safe,Timestamp.from(Instant.now().plusSeconds(delay)),grant.get("organization_id"),grant.get("external_shop_id"),lease);
     }

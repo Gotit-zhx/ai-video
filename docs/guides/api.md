@@ -120,6 +120,8 @@ GET /api/v1/finance/records?kind=ORDER&orderScope=ALL&start=2026-10-01&end=2026-
 
 `shopeeAds.items` 保留 CPC `status/error_message/last_success_at/records`，新增独立 `gms_status/gms_error_message/gms_last_success_at/gms_next_at/gms_records`。`gms_records` 只计当前已识别计划范围版本的事实日数。CPC 成功不能代替 GMS 成功，也不能据日记录数宣称账单完整对账。
 
+GMS 的 `PARTIAL` 同时涵盖历史接口范围受限和官方未找到 GMS 计划；具体原因读取 `gms_error_message`。按用户在 2026-11-13 明确确认的规则，官方精确返回 `ads_error_product_gms_campaign_not_found` 且无已识别历史计划时，仅本次请求日期窗记录有政策依据的 GMS 零值，提示“未找到 GMS 计划，按 0 统计”，主金额相应等于全店 CPC。正常推进该窗检查点并每小时滚动复查；其他异常或未查询日期不补零，已有历史计划继续读真实日报。以后发现真实计划会变更范围并重核历史。
+
 ## 接口变更时的最低核对
 
 修改请求字段、枚举、分页或错误格式时，同步检查前端、插件及桌面客户端调用方。核对未登录 401、无权限 403、跨企业/店铺访问、重复提交及过期结果；需要完整接口清单时从 Controller 和服务端测试维护，避免复制一份不再更新的手写协议。

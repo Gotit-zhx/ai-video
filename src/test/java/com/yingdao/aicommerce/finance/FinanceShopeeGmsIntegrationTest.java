@@ -114,6 +114,98 @@ class FinanceShopeeGmsIntegrationTest {
         when(ads.client.shopPost(anyString(),any(),anyMap())).thenThrow(new com.yingdao.aicommerce.shop.infrastructure.MarketplaceApiException("ads.performance.error_ads_not_whitelisted private-token=synthetic"));
         gms.tick();var sync=ads.fixture.db.queryForMap("SELECT * FROM finance_shopee_gms_sync");assertEquals("NEEDS_PERMISSION",sync.get("status"));assertFalse(text(sync.get("error_message")).contains("synthetic"));assertEquals(checkpoint,sync.get("checkpoint_json"));assertNull(sync.get("last_success_at"));assertEquals(0,ads.fixture.db.queryForObject("SELECT COUNT(*) FROM finance_shopee_gms_daily",Integer.class));
     }
+    void officialFailure(String code,String message){
+        officialFailure(code,message,"");
+    }
+    void officialFailure(String code,String message,String warning){
+        var http=new com.yingdao.aicommerce.shop.infrastructure.MarketplaceHttp(new tools.jackson.databind.ObjectMapper()){
+            @Override public Map<String,Object> postJson(java.net.URI uri,Map<String,String> headers,String body){return Map.of("error",code,"message",message,"warning",warning,"request_id","test-only-request");}
+        };
+        var client=new com.yingdao.aicommerce.shop.infrastructure.ShopeeOfficialClient(http,true,"1234567","test-only-key","https://open.shopee.com","https://partner.shopeemobile.com","SHOP");
+        when(ads.client.shopPost(eq(FinanceShopeeGmsApi.DISCOVERY),any(),anyMap())).thenAnswer(call->client.shopPost(call.getArgument(0),call.getArgument(1),call.getArgument(2)));
+    }
+    @Test void confirmedMissingCampaignPublishesOnlyTheRequestedZeroWindowAndExplainsTheUserRule()throws Exception{
+        ads.fixture.db.update("INSERT INTO finance_shopee_ad_daily(organization_id,external_shop_id,source_key,record_date,currency,amount,source_json) VALUES('org','10001',?,'2026-10-01','PHP',100,'{}')",hash("original-cpc"));
+        officialFailure("ads_error_product_gms_campaign_not_found","Product GMS Campaign cannot be found. access_token=synthetic-secret");
+        gms.tick();var sync=ads.fixture.db.queryForMap("SELECT * FROM finance_shopee_gms_sync");
+        assertEquals("PARTIAL",sync.get("status"));
+        assertTrue(text(sync.get("error_message")).contains("未找到 GMS 计划"));assertTrue(text(sync.get("error_message")).contains("按 0 统计"));assertFalse(text(sync.get("error_message")).contains("synthetic-secret"));
+        assertNull(sync.get("checkpoint_json"));assertNotNull(sync.get("last_success_at"));assertEquals("[]",sync.get("campaign_ids_json"));
+        assertEquals(3,ads.fixture.db.queryForObject("SELECT COUNT(*) FROM finance_shopee_gms_daily",Integer.class));
+        assertEquals(BigDecimal.ZERO,ads.fixture.db.queryForObject("SELECT SUM(amount) FROM finance_shopee_gms_daily",BigDecimal.class).stripTrailingZeros());
+        assertEquals(3,ads.fixture.db.queryForObject("SELECT COUNT(*) FROM finance_query_events WHERE event_scope='DAY'",Integer.class));
+        String evidence=ads.fixture.db.queryForObject("SELECT source_json FROM finance_shopee_gms_daily WHERE record_date='2026-10-01'",String.class);assertTrue(evidence.contains("ads_error_product_gms_campaign_not_found"));assertTrue(evidence.contains("SHOPEE_GMS_NO_CAMPAIGN_ZERO_V1"));
+        var filter=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,1),"","SHOPEE","PHP","day");
+        var spend=new FinanceAdSpendService(ads.fixture.repo,ads.fixture.service);var report=spend.report(ads.fixture.owner,filter,false,"","","");
+        for(String table:List.of("totals","groups","shops","items")){var row=rows(report.get(table)).getFirst();assertEquals(0,new BigDecimal("100").compareTo(decimal(row.get("amount"))));assertEquals(0,decimal(row.get("gms_amount")).signum());}
+        byte[] exported=new FinanceAdSpendController(spend,ads.fixture.controller()).export(Map.of("platform","SHOPEE","currency","PHP","start","2026-10-01","end","2026-10-01"),ads.fixture.principal()).getBody();
+        try(var zip=new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(exported))){
+            int checked=0;
+            for(var entry=zip.getNextEntry();entry!=null;entry=zip.getNextEntry())if(entry.getName().matches("xl/worksheets/sheet[123]\\.xml")){
+                var doc=javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(new java.io.ByteArrayInputStream(zip.readAllBytes()));
+                var cells=((org.w3c.dom.Element)doc.getElementsByTagName("row").item(1)).getElementsByTagName("c");
+                int amount=entry.getName().endsWith("sheet1.xml")?6:entry.getName().endsWith("sheet2.xml")?7:18;
+                int gms=entry.getName().endsWith("sheet1.xml")?10:entry.getName().endsWith("sheet2.xml")?11:30;
+                assertEquals(0,new BigDecimal("100").compareTo(new BigDecimal(cells.item(amount).getTextContent())));
+                assertEquals(0,new BigDecimal(cells.item(gms).getTextContent()).signum());checked++;
+            }
+            assertEquals(3,checked);
+        }
+        assertEquals(new BigDecimal("100.000000"),ads.fixture.db.queryForObject("SELECT SUM(amount) FROM finance_shopee_ad_daily",BigDecimal.class));
+        assertNull(ads.fixture.db.queryForObject("SELECT lease_token FROM finance_shopee_ad_grants",String.class));assertNull(ads.fixture.db.queryForObject("SELECT lease_token FROM finance_shopee_ad_groups",String.class));
+        when(ads.client.shopPost(eq(FinanceShopeeGmsApi.DISCOVERY),any(),anyMap())).thenReturn(Map.of("response",Map.of("campaign_id",9001,"report",Map.of("expense",0))));
+        due();gms.tick();assertNotEquals(sync.get("campaign_revision"),ads.fixture.db.queryForObject("SELECT campaign_revision FROM finance_shopee_gms_sync",String.class));
+        assertNull(rows(spend.report(ads.fixture.owner,filter,false,"","","").get("shops")).getFirst().get("amount"));
+        for(int i=0;i<12&&!"SUCCESS".equals(ads.fixture.db.queryForObject("SELECT status FROM finance_shopee_gms_sync",String.class));i++){due();gms.tick();}
+        assertEquals("SUCCESS",ads.fixture.db.queryForObject("SELECT status FROM finance_shopee_gms_sync",String.class));
+        assertNull(ads.fixture.db.queryForObject("SELECT error_message FROM finance_shopee_gms_sync",String.class));
+        assertEquals(new BigDecimal("5.000000"),ads.fixture.db.queryForObject("SELECT SUM(amount) FROM finance_shopee_gms_daily",BigDecimal.class));
+    }
+    @Test void noCampaignZeroWindowKeepsBothEdgesOfAThirtyOneDayMonth(){
+        ads.fixture.db.update("UPDATE finance_shopee_gms_sync SET checkpoint_json=?",ads.fixture.repo.write(Map.of("from","2026-10-01","until","2026-10-31")));
+        officialFailure("ads_error_product_gms_campaign_not_found","Product GMS Campaign cannot be found");gms.tick();due();gms.tick();
+        assertEquals(31,ads.fixture.db.queryForObject("SELECT COUNT(*) FROM finance_shopee_gms_daily",Integer.class));
+        assertEquals("2026-10-01",ads.fixture.db.queryForObject("SELECT CAST(MIN(record_date) AS CHAR) FROM finance_shopee_gms_daily",String.class));
+        assertEquals("2026-10-31",ads.fixture.db.queryForObject("SELECT CAST(MAX(record_date) AS CHAR) FROM finance_shopee_gms_daily",String.class));
+        assertEquals(0,ads.fixture.db.queryForObject("SELECT SUM(amount) FROM finance_shopee_gms_daily",BigDecimal.class).signum());
+    }
+    @Test void missingCurrentCampaignNeverOverwritesAPreviouslyIdentifiedHistoricalCampaign(){
+        gms.tick();due();gms.tick();String revision=ads.fixture.db.queryForObject("SELECT campaign_revision FROM finance_shopee_gms_sync",String.class);
+        ads.fixture.db.update("UPDATE finance_shopee_gms_sync SET checkpoint_json=?",ads.fixture.repo.write(Map.of("from","2026-10-01","until","2026-10-03")));
+        officialFailure("ads_error_product_gms_campaign_not_found","Product GMS Campaign cannot be found");due();gms.tick();
+        assertEquals("DAILY",ads.fixture.repo.read(ads.fixture.db.queryForObject("SELECT checkpoint_json FROM finance_shopee_gms_sync",String.class)).get("phase"));
+        due();gms.tick();assertEquals(revision,ads.fixture.db.queryForObject("SELECT campaign_revision FROM finance_shopee_gms_sync",String.class));
+        assertEquals(new BigDecimal("5.000000"),ads.fixture.db.queryForObject("SELECT SUM(amount) FROM finance_shopee_gms_daily",BigDecimal.class));
+    }
+    @Test void pauseDuringANoCampaignReplyCannotPublishPolicyZeros(){
+        String checkpoint=ads.fixture.db.queryForObject("SELECT checkpoint_json FROM finance_shopee_gms_sync",String.class);
+        when(ads.client.shopPost(eq(FinanceShopeeGmsApi.DISCOVERY),any(),anyMap())).thenAnswer(call->{ads.service.pause(ads.fixture.owner,"10001",false);throw com.yingdao.aicommerce.shop.infrastructure.ShopeeApiFailureFixture.failure(FinanceShopeeGmsApi.DISCOVERY,"ads_error_product_gms_campaign_not_found","Product GMS Campaign cannot be found");});
+        gms.tick();assertEquals(0,ads.fixture.db.queryForObject("SELECT COUNT(*) FROM finance_shopee_gms_daily",Integer.class));
+        assertEquals(checkpoint,ads.fixture.db.queryForObject("SELECT checkpoint_json FROM finance_shopee_gms_sync",String.class));
+    }
+    @Test void noCampaignErrorWithAnIncompleteWarningCannotPublishPolicyZeros(){
+        String checkpoint=ads.fixture.db.queryForObject("SELECT checkpoint_json FROM finance_shopee_gms_sync",String.class);
+        officialFailure("ads_error_product_gms_campaign_not_found","Product GMS Campaign cannot be found","partial report");gms.tick();
+        assertEquals(0,ads.fixture.db.queryForObject("SELECT COUNT(*) FROM finance_shopee_gms_daily",Integer.class));
+        assertEquals(checkpoint,ads.fixture.db.queryForObject("SELECT checkpoint_json FROM finance_shopee_gms_sync",String.class));
+        assertNull(ads.fixture.db.queryForObject("SELECT last_success_at FROM finance_shopee_gms_sync",java.sql.Timestamp.class));
+    }
+    @Test void structuredPermissionCodeIsRecognizedEvenWhenTheProviderMessageOmitsIt(){
+        officialFailure("ads_error_not_whitelisted_for_product_gms","Report unavailable. access_token=synthetic-secret");gms.tick();
+        var sync=ads.fixture.db.queryForMap("SELECT status,error_message FROM finance_shopee_gms_sync");
+        assertEquals("NEEDS_PERMISSION",sync.get("status"));assertFalse(text(sync.get("error_message")).contains("synthetic-secret"));
+    }
+    @Test void providerMessageCannotPretendAnUnknownFailureIsAMissingCampaign(){
+        officialFailure("error_server","ads_error_product_gms_campaign_not_found access_token=synthetic-secret");gms.tick();
+        var sync=ads.fixture.db.queryForMap("SELECT status,error_message FROM finance_shopee_gms_sync");
+        assertEquals("ERROR",sync.get("status"));assertTrue(text(sync.get("error_message")).contains("error_server"));
+        assertFalse(text(sync.get("error_message")).contains("synthetic-secret"));
+    }
+    @Test void malformedProviderErrorCodeIsNeverStoredAsDisplayableCredentialText(){
+        officialFailure("partner_key:synthetic-secret","Report unavailable");gms.tick();
+        var sync=ads.fixture.db.queryForMap("SELECT status,error_message FROM finance_shopee_gms_sync");
+        assertEquals("ERROR",sync.get("status"));assertFalse(text(sync.get("error_message")).contains("synthetic-secret"));
+    }
     @Test void discoveringTheHundredAndFirstCampaignInvalidatesOlderIncompleteScopeBeforeRejectingIt(){
         var ids=java.util.stream.IntStream.rangeClosed(1,100).mapToObj(Integer::toString).sorted().toList();String old=hash(String.join("\0",ids));
         ads.fixture.db.update("UPDATE finance_shopee_gms_sync SET campaign_ids_json=?,campaign_revision=?",ads.fixture.repo.write(ids),old);
