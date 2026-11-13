@@ -76,6 +76,43 @@ class FinanceQueryProjectionIntegrationTest {
         assertEquals(0,projections.drainEvents());
         assertEquals(1,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_query_dirty_days WHERE record_date='2026-10-05'",Integer.class));
     }
+    @Test void aLargeCommittedBacklogDefersRebuildUntilItsInvalidationsAreResolved(){
+        fee("catch-up","2026-10-05","12","SHOPEE",shop);
+        while(projections.drainEvents()>0){}
+        projections.request(fixture.owner,filter("2026-10-01","2026-10-31",""));
+        var events=new ArrayList<Object[]>();
+        for(int i=0;i<2001;i++)events.add(new Object[]{fixture.owner.organizationId()});
+        fixture.db.batchUpdate("INSERT INTO finance_query_events(organization_id,event_scope,record_date,source_table) VALUES(?,'DAY','2026-10-05','finance_records')",events);
+        assertFalse(projections.buildNext(),"A large unresolved burst must not repeatedly rebuild facts that cannot yet be read");
+        assertEquals(2001,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_query_events",Integer.class));
+        while(projections.drainEvents()>0){}
+        assertTrue(projections.buildNext());
+        var ready=projections.find(fixture.owner,filter("2026-10-01","2026-10-31","")).orElseThrow();
+        assertEquals(0,decimal("12").compareTo(decimal(rows(ready.facts().get("buckets")).getFirst().get("amount"))));
+    }
+    @Test void anotherCompanyCanBuildWhileOneCompanyIsCatchingUp(){
+        fixture.connect(fixture.other,false);while(projections.drainEvents()>0){}
+        var month=filter("2026-10-01","2026-10-31","");
+        projections.request(fixture.owner,month);projections.request(fixture.other,month);
+        var events=new ArrayList<Object[]>();
+        for(int i=0;i<2001;i++)events.add(new Object[]{fixture.owner.organizationId()});
+        fixture.db.batchUpdate("INSERT INTO finance_query_events(organization_id,event_scope,record_date,source_table) VALUES(?,'DAY','2026-10-05','finance_records')",events);
+        assertTrue(projections.buildNext());
+        assertTrue(projections.find(fixture.other,month).isPresent(),"A different company's empty queue must remain eligible");
+        assertEquals(0,fixture.db.queryForObject("SELECT built_revision FROM finance_query_partitions WHERE organization_id=?",Integer.class,fixture.owner.organizationId()));
+        assertEquals(2001,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_query_events",Integer.class));
+    }
+    @Test void oneNormalBatchRemainsEligibleButPendingEventsStillFenceItsFacts(){
+        fee("normal-burst","2026-10-05","12","SHOPEE",shop);while(projections.drainEvents()>0){}
+        var month=filter("2026-10-01","2026-10-31","");projections.request(fixture.owner,month);
+        var events=new ArrayList<Object[]>();for(int i=0;i<2000;i++)events.add(new Object[]{fixture.owner.organizationId()});
+        fixture.db.batchUpdate("INSERT INTO finance_query_events(organization_id,event_scope,record_date,source_table) VALUES(?,'DAY','2026-10-05','finance_records')",events);
+        assertTrue(projections.buildNext(),"Exactly one batch must retain normal build scheduling");
+        assertTrue(projections.find(fixture.owner,month).isEmpty(),"Scheduling never replaces relevant-event correctness checks");
+        assertEquals(2000,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_query_events",Integer.class));
+        while(projections.drainEvents()>0){}assertTrue(projections.buildNext());
+        assertTrue(projections.find(fixture.owner,month).isPresent());
+    }
     @Test void fullAndPartialMonthsRetainCorrectionUnknownsAndExactDecimals(){
         fixture.db.update("UPDATE finance_connections SET platform='TIKTOK_SHOP' WHERE id=?",shop);
         fixture.db.update("INSERT INTO finance_reporting_months(organization_id,shop_id,order_id,statement_id,reporting_month,source,reason,confirmed_by)"

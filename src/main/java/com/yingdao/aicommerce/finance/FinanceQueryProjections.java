@@ -168,7 +168,10 @@ public class FinanceQueryProjections {
     /** One leased month per call; no source/provider requests are made by this worker. */
     boolean buildNext(){
         var claimed=repo.transaction(()->{
-            var ready=repo.jdbc().queryForList("SELECT * FROM finance_query_partitions WHERE built_revision<>requested_revision AND next_attempt_at<=UTC_TIMESTAMP(6) AND (lease_until IS NULL OR lease_until<UTC_TIMESTAMP(6)) ORDER BY requested_at LIMIT 1 FOR UPDATE SKIP LOCKED");
+            // During catch-up, source scans compete with the drainer and are repeatedly
+            // discarded by its next revision. A bounded index probe prioritizes that
+            // company's invalidations; other companies and small normal bursts still build.
+            var ready=repo.jdbc().queryForList("SELECT p.* FROM finance_query_partitions p WHERE p.built_revision<>p.requested_revision AND p.next_attempt_at<=UTC_TIMESTAMP(6) AND (p.lease_until IS NULL OR p.lease_until<UTC_TIMESTAMP(6)) AND NOT EXISTS(SELECT 1 FROM finance_query_events e WHERE e.organization_id=p.organization_id ORDER BY e.event_id LIMIT 1 OFFSET "+EVENT_BATCH+") ORDER BY p.requested_at LIMIT 1 FOR UPDATE SKIP LOCKED");
             if(ready.isEmpty())return Map.<String,Object>of();
             var row=new LinkedHashMap<>(ready.getFirst());String token=UUID.randomUUID().toString();
             repo.jdbc().update("UPDATE finance_query_partitions SET lease_token=?,lease_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 5 MINUTE) WHERE organization_id=? AND platform_filter=? AND partition_month=?",token,row.get("organization_id"),row.get("platform_filter"),row.get("partition_month"));
