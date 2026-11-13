@@ -19,7 +19,7 @@ import static org.mockito.Mockito.*;
 class FinanceShopeeAdsIntegrationTest {
     final FinanceConfigurationIntegrationTest fixture=new FinanceConfigurationIntegrationTest();
     FinanceShopeeAds service;ShopeeOfficialClient client;FinanceShopeeAdsSettings config;String shop,lastState;
-    @BeforeAll void migrate()throws Exception{fixture.migrate();fixture.migration("V150__finance_ad_spend_workspace.sql");}
+    @BeforeAll void migrate()throws Exception{fixture.migrate();}
     @AfterAll void close(){fixture.closeDataSource();}
     @BeforeEach void setup(){
         fixture.setup();client=mock(ShopeeOfficialClient.class);config=mock(FinanceShopeeAdsSettings.class);
@@ -45,12 +45,18 @@ class FinanceShopeeAdsIntegrationTest {
     }
     void completeReports(Map<String,Object> expenses){doAnswer(call->completeReport(call.getArgument(2),expenses)).when(client).shopGetExact(anyString(),any(),anyMap());}
     void window(){fixture.db.update("UPDATE finance_api_pacing SET next_allowed_at=UTC_TIMESTAMP(6) WHERE platform='SHOPEE_ADS'");fixture.db.update("UPDATE finance_shopee_ad_grants SET checkpoint_json=?,next_at=UTC_TIMESTAMP(6)",fixture.repo.write(Map.of("from","2026-10-01","until","2026-10-07")));}
+    void explicitZeroGmsFixture(){
+        String revision=hash("synthetic-known-zero-GMS");
+        fixture.db.update("INSERT INTO finance_shopee_gms_sync(organization_id,external_shop_id,campaign_revision) VALUES('org','10001',?) ON DUPLICATE KEY UPDATE campaign_revision=VALUES(campaign_revision)",revision);
+        fixture.db.update("INSERT INTO finance_shopee_gms_daily(organization_id,external_shop_id,record_date,currency,amount,campaign_revision,source_json) SELECT organization_id,external_shop_id,record_date,currency,0,?,'{\"fixture\":\"explicit zero GMS\"}' FROM finance_shopee_ad_daily",revision);
+    }
     @Test void independentGrantProducesShopAndGroupFactsWithoutChangingErpOrProfitLedger()throws Exception{
         String erp=fixture.db.queryForObject("SELECT access_token_encrypted FROM finance_connections WHERE id=?",String.class,shop);
         authorize();window();completeReports(Map.of("2026-10-01","12.340001"));service.tick();
         assertEquals(7,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_shopee_ad_daily",Integer.class));
         assertEquals(erp,fixture.db.queryForObject("SELECT access_token_encrypted FROM finance_connections WHERE id=?",String.class,shop));
         assertEquals(0,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_records",Integer.class));
+        explicitZeroGmsFixture();
         var filter=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,31),"","SHOPEE","PHP","day");
         var spend=new FinanceAdSpendService(fixture.repo,fixture.service);var report=spend.report(fixture.owner,filter,false,"","","");
         for(String key:List.of("groups","shops","totals")){var row=rows(report.get(key)).getFirst();assertEquals(0,new BigDecimal("12.340001").compareTo(decimal(row.get("amount"))));assertNull(row.get("cash_amount"));assertNull(row.get("net_amount"));}
@@ -124,6 +130,7 @@ class FinanceShopeeAdsIntegrationTest {
         assertEquals(new BigDecimal("496.000000"),fixture.db.queryForObject("SELECT SUM(amount) FROM finance_shopee_ad_daily",BigDecimal.class));
         assertEquals(new BigDecimal("1.000000"),fixture.db.queryForObject("SELECT amount FROM finance_shopee_ad_daily WHERE record_date='2026-10-01'",BigDecimal.class));
         assertEquals(new BigDecimal("31.000000"),fixture.db.queryForObject("SELECT amount FROM finance_shopee_ad_daily WHERE record_date='2026-10-31'",BigDecimal.class));
+        explicitZeroGmsFixture();
         var spend=new FinanceAdSpendService(fixture.repo,fixture.service);
         var month=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,31),"","SHOPEE","PHP","day");
         var report=spend.report(fixture.owner,month,false,"","","");

@@ -28,7 +28,7 @@ try{
  const main=root.querySelector('[data-ad-spend-workspace]');assert(main,'three primary spending tables are mounted');
  assert.deepEqual([...main.querySelectorAll('h3')].map(n=>n.textContent),['分组广告消耗','店铺广告消耗','店铺消耗明细']);
  for(const t of main.querySelectorAll('table'))for(const label of ['现金消耗','信用额度消耗','广告费用赠款消耗'])assert([...t.querySelectorAll('th')].some(n=>n.textContent.includes(label)),label);
- assert.deepEqual([...main.querySelectorAll('table')][2].querySelector('thead tr')&&[...[...main.querySelectorAll('table')][2].querySelectorAll('thead th')].slice(0,8).map(n=>n.textContent),['日期','平台','店铺','展示币种','现金消耗','信用额度消耗','广告费用赠款消耗','广告消耗（投放报表）'],'the first visible detail columns prioritize ownership and spending');
+ assert.deepEqual([...main.querySelectorAll('table')][2].querySelector('thead tr')&&[...[...main.querySelectorAll('table')][2].querySelectorAll('thead th')].slice(0,8).map(n=>n.textContent),['日期','平台','店铺','展示币种','现金消耗','信用额度消耗','广告费用赠款消耗','广告消耗（投放 / 账单参考）'],'the first visible detail columns prioritize ownership and spending');
  assert([...main.querySelectorAll(':scope > .fi-card table')].slice(0,3).every(t=>t.textContent.includes('净广告消耗')));assert(main.querySelector('details[data-ad-funding]'));assert(!main.querySelector('details[data-ad-funding]').open);assert(main.textContent.includes('账户日报核对'));assert(main.textContent.includes('接口未拆分'));
  assert(main.textContent.includes('Shopee'));assert(main.textContent.includes('TikTok'));assert(main.textContent.includes('未提供'));assert(main.textContent.includes('待分配店铺'));assert(main.textContent.includes('9012345678901234'));
  assert(!main.querySelector('[data-ad-spend-allocate]'),'read-only viewer has no assignment action');
@@ -58,6 +58,16 @@ try{
  w.FinanceWorkspace.leave();w.currentUser={...w.currentUser,organizationId:'another-company'};w.FinanceWorkspace.enter('ads');await ready();assert.equal(reads.filter(r=>r.endpoint==='/advertising/spend').at(-1).q.search,'','spending search does not leak into the next company');assert.equal(reads.filter(r=>r.endpoint==='/advertising/spend').at(-1).q.page,'1');
  [...root.querySelectorAll('button')].find(b=>b.textContent==='导入消耗报表').click();await wait(()=>d.querySelector('dialog [aria-label="平台"]'));const platform=d.querySelector('dialog [aria-label="平台"]');platform.value='SHOPEE';platform.dispatchEvent(new w.Event('change'));
  const source=d.querySelector('dialog [aria-label="已有投放来源（可选）"]');assert(source,'Shopee has a shop source selector');source.value='SHOP_123';source.dispatchEvent(new w.Event('change'));assert.equal(d.querySelector('dialog input').value,'SHOP_123');assert(![...source.options].some(n=>n.value==='100001'),'TikTok accounts are not offered as Shopee source shops');d.querySelector('dialog').close();
+ const referenceBasis='SHOPEE_CPC_MINUS_IDENTIFIED_GMS_V1';
+ const referenceSummary={platform:'SHOPEE',group_id:'clothes',group_name:'服装组',currency:'CNY',amount:12.5,all_shop_amount:15,gms_amount:2.5,reference_basis:referenceBasis,reference_records:1,records:1,shop_count:1,pending_records:0};
+ spend.totals=[referenceSummary];spend.groups=[referenceSummary];spend.shops=[{...referenceSummary,shop_id:'b',shop_name:'演示泰国店'}];spend.items=[{...referenceSummary,source_key:'reference-day',shop_id:'b',shop_name:'演示泰国店',source:'API_SHOPEE_CPC',record_date:'2026-10-01',source_currency:'PHP',original_amount:100,original_all_shop_amount:120,original_gms_amount:20,assignment_status:'OFFICIAL'}];
+ w.FinanceWorkspace.enter('ads');await ready();
+ assert.equal(root.querySelector('[data-ad-amount="amount"] strong').textContent,'12.50');assert.equal(root.querySelector('[data-ad-amount="all_shop_amount"] strong').textContent,'15.00');assert.equal(root.querySelector('[data-ad-amount="gms_amount"] strong').textContent,'2.50');
+ let primary=root.querySelector('[data-ad-spend-workspace]');assert(primary.textContent.includes('不是原始扣款流水'));assert(primary.textContent.includes('120.00'));assert(primary.textContent.includes('20.00'));
+ for(const table of primary.querySelectorAll('table'))for(const row of table.tBodies[0]?.rows||[])assert.equal(row.cells.length,table.tHead.rows[0].cells.length,'money columns stay aligned in every table');
+ spend.totals=[{...referenceSummary,amount:null,known_amount:1,partial_amount:12.5,reason_amount:'GMS 日报待补齐',reference_records:2}];
+ spend.items=[{...spend.items[0],amount:null,original_amount:null,original_gms_amount:null,gms_amount:null,reason_amount:'GMS 日报待补齐',reason_gms_amount:'GMS 日报待补齐'}];
+ w.FinanceWorkspace.enter('ads');await ready();assert.equal(root.querySelector('[data-ad-amount="amount"] strong').textContent,'12.50（已知部分）','missing GMS cannot restore the 15.00 CPC total');assert(root.querySelector('[data-ad-spend-workspace]').textContent.includes('GMS 日报待补齐'));
  failSpend=true;w.FinanceWorkspace.enter('ads');await ready();assert(root.textContent.includes('店铺消耗读取失败'));assert(!root.querySelector('[data-ad-spend-workspace]'),'failed reads must not display stale primary amounts');
  console.log('Finance advertising spending workspace UI passed');
 }finally{w.FinanceWorkspace.leave();dom.window.close();}

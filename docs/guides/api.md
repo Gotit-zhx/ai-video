@@ -101,6 +101,25 @@ GET /api/v1/finance/records?kind=ORDER&orderScope=ALL&start=2026-10-01&end=2026-
 
 官方回调 `GET /api/v1/shop-authorizations/callback/shopee_ads` 以一次性 state 识别公司和应用，不依赖管理员浏览器继续登录。原 ERP 财务店铺授权不变。日报仅进入 `/advertising/spend` 的三张投放表及导出，不改变已入账费用与利润。完整范围、缺失值和上线前置条件见[广告说明](../business/finance/advertising.md#shopee-官方店铺-cpc-日报)。
 
+### Shopee 广告账单参考 DTO（2026-11-13）
+
+`/advertising/spend` 及现代财务 `workspace/query?view=ads` 的 `adSpend` 使用同一计算合同：
+
+| 字段 | 含义 |
+| --- | --- |
+| `amount` | Shopee 原生店日来源为全店 CPC 减已识别 GMS 同日费用；其他来源沿用原义。缺少任一必要金额则未知。 |
+| `all_shop_amount` / `gms_amount` | Shopee 全店原额及已扣除 GMS，均为展示币种；辅助核对，不再加到主金额。 |
+| `original_amount` / `original_all_shop_amount` / `original_gms_amount` | 明细的原币金额；`source_currency` 为原币，`currency` 为展示币种。 |
+| `reference_basis` | 适用行及含适用行汇总为 `SHOPEE_CPC_MINUS_IDENTIFIED_GMS_V1`。来源代码继续为 `API_SHOPEE_CPC`。 |
+| `reference_records` | 汇总中适用该公式的 Shopee 来源行数（包括旧来源待补齐的行）。辅助字段完整性分母用该值，不能把 TikTok 行算作缺失 GMS。 |
+| `known_*` / `partial_*` / `reason_*` | 与现有主金额一致，表示已知行数、已知部分之和和缺口原因；`null` 不能回退为全店原额或零。 |
+
+仅有 Shopee 旧 API/导入而无原生 CPC 的行，主 `amount` 为未知，原来源金额在 `source_reported_amount` 中按原币单列辅助核对；归属分配与原来源保留。
+
+顶层 `referenceBasis` / `referenceDescription` 提供公式版本及中文边界。人民币使用同一业务日历史率分别换算三项；例：原币全店 120、GMS 20、主金额 100，率 0.125 后为 15、2.5、12.5，所有 `original_*` 保持原币。
+
+`shopeeAds.items` 保留 CPC `status/error_message/last_success_at/records`，新增独立 `gms_status/gms_error_message/gms_last_success_at/gms_next_at/gms_records`。`gms_records` 只计当前已识别计划范围版本的事实日数。CPC 成功不能代替 GMS 成功，也不能据日记录数宣称账单完整对账。
+
 ## 接口变更时的最低核对
 
 修改请求字段、枚举、分页或错误格式时，同步检查前端、插件及桌面客户端调用方。核对未登录 401、无权限 403、跨企业/店铺访问、重复提交及过期结果；需要完整接口清单时从 Controller 和服务端测试维护，避免复制一份不再更新的手写协议。
