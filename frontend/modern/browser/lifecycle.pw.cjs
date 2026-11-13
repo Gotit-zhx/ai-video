@@ -187,3 +187,50 @@ test("actual classic experience click creates a new tab; bookmark and independen
     ),
   ).toHaveLength(0);
 });
+
+test("return to classic aborts the pending status signal before document teardown", async ({
+  page,
+  fixture,
+}) => {
+  await page.addInitScript(() => {
+    const nativeFetch = window.fetch.bind(window);
+    let hiding = false;
+    window.addEventListener("pagehide", () => {
+      hiding = true;
+    });
+    window.fetch = (input, init) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (new URL(url, location.href).pathname.endsWith("/workspace/status")) {
+        init?.signal?.addEventListener(
+          "abort",
+          () =>
+            sessionStorage.setItem(
+              "finance-status-cancelled-before-hide",
+              String(!hiding),
+            ),
+          { once: true },
+        );
+      }
+      return nativeFetch(input, init);
+    };
+  });
+  fixture.overrides.set("GET /workspace/status", (c) => ({
+    ...fixture.handle(c),
+    delay: 2000,
+  }));
+  await open(page, fixture);
+  await call(fixture, "GET", "/workspace/status");
+  await page.getByRole("link", { name: "返回旧版", exact: true }).click();
+  await expect(page.locator("#finance-page .fi-head")).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("financeUi")).toBe("legacy");
+  expect(
+    await page.evaluate(() =>
+      sessionStorage.getItem("finance-status-cancelled-before-hide"),
+    ),
+  ).toBe("true");
+});

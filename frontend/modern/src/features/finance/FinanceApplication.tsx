@@ -90,6 +90,7 @@ function Workspace({ pages }: { pages: FinancePageExtensions }) {
     filters,
     setFilters,
     refresh,
+    suspendForNavigation,
   } = useFinance();
   const [authorizationNotice, setAuthorizationNotice] = useState(() => host.consumeAuthorizationNotice?.() || null);
   const route = normalizeFinanceRoute(hostRoute),
@@ -130,7 +131,15 @@ function Workspace({ pages }: { pages: FinancePageExtensions }) {
           <Typography.Title level={2}>{t("新版财务 BI")}</Typography.Title>
           <StatusTag status="processing">{t("正式数据")}</StatusTag>
         </div>
-        <a className="finance-return-link" href={host.getLegacyUrl?.(filters) || "?financeUi=legacy#finance-overview"}><ArrowLeft size={16} aria-hidden="true" />{t("返回旧版")}</a>
+        <a
+          className="finance-return-link"
+          href={host.getLegacyUrl?.(filters) || "?financeUi=legacy#finance-overview"}
+          onClick={(event) => {
+            if (!event.defaultPrevented && event.button === 0 &&
+              !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey)
+              suspendForNavigation();
+          }}
+        ><ArrowLeft size={16} aria-hidden="true" />{t("返回旧版")}</a>
       </header>
       {authorizationNotice && <Alert type={authorizationNotice.status === "success" ? "success" : "error"} showIcon title={authorizationNotice.message} closable={{onClose:() => setAuthorizationNotice(null)}} />}
       <nav aria-label={t("财务导航")} className="finance-navigation">

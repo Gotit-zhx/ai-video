@@ -43,6 +43,7 @@ export interface FinanceContextValue {
   filters: FinanceFilters;
   setFilters: Dispatch<SetStateAction<FinanceFilters>>;
   refresh(): Promise<void>;
+  suspendForNavigation(): void;
   active: boolean;
   route: string;
   navigate(route: string): void;
@@ -119,13 +120,15 @@ export interface FinanceProviderProps {
 }
 
 export function FinanceProvider({
-  active,
+  active: hostActive,
   api,
   children,
   host,
   initialFilters,
   route,
 }: FinanceProviderProps) {
+  const [navigating, setNavigating] = useState(false);
+  const active = hostActive && !navigating;
   const queryClient = useQueryClient();
   const session = useSyncExternalStore(
     useCallback((notify) => host.subscribe(() => notify()), [host]),
@@ -145,6 +148,28 @@ export function FinanceProvider({
     () => guardedFinanceApi(api, () => activeRef.current),
     [api],
   );
+
+  const suspendForNavigation = useCallback(() => {
+    // A lazy page can commit passive effects during document navigation. Close
+    // dispatch synchronously, before the browser follows the return link.
+    activeRef.current = false;
+    setNavigating(true);
+    void queryClient.cancelQueries({ queryKey: queryScope(session) });
+  }, [queryClient, session.organizationId, session.userId]);
+  useEffect(() => {
+    if (!hostActive) setNavigating(false);
+  }, [hostActive]);
+  useEffect(() => {
+    const resume = (event: PageTransitionEvent) => {
+      if (event.persisted) setNavigating(false);
+    };
+    window.addEventListener("pagehide", suspendForNavigation);
+    window.addEventListener("pageshow", resume);
+    return () => {
+      window.removeEventListener("pagehide", suspendForNavigation);
+      window.removeEventListener("pageshow", resume);
+    };
+  }, [suspendForNavigation]);
 
   const ownerKey = JSON.stringify(identity(session));
   const ownerRef = useRef(ownerKey);
@@ -209,6 +234,7 @@ export function FinanceProvider({
       filters,
       setFilters,
       refresh,
+      suspendForNavigation,
       active,
       route,
       navigate,
@@ -222,6 +248,7 @@ export function FinanceProvider({
       host,
       navigate,
       refresh,
+      suspendForNavigation,
       route,
       session,
       t,
