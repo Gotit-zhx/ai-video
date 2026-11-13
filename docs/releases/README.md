@@ -8,6 +8,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [finance-workspace-performance-20261113.md](finance/finance-workspace-performance-20261113.md) | 财务专页后端分阶段生效、真实只读对照及尚未完成的前端/5秒验收 |
 | [finance-shopee-ads-reconciliation-20261113.md](finance/finance-shopee-ads-reconciliation-20261113.md) | Shopee 两店金额核对、首次回补缺日保护及验证边界 |
 | [finance-tiktok-metadata-20261113.md](finance/finance-tiktok-metadata-20261113.md) | V156 源码生效、原广告资料摘要保护、实际页面及商家重授边界 |
 | [finance-tiktok-metadata-20261112.md](finance/finance-tiktok-metadata-20261112.md) | TikTok 系列资料首次实现和本地验证记录 |
