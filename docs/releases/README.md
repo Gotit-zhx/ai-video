@@ -8,6 +8,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [finance-shopee-ads-reconciliation-20261113.md](finance/finance-shopee-ads-reconciliation-20261113.md) | Shopee 两店金额核对、首次回补缺日保护及验证边界 |
 | [finance-tiktok-metadata-20261113.md](finance/finance-tiktok-metadata-20261113.md) | V156 源码生效、原广告资料摘要保护、实际页面及商家重授边界 |
 | [finance-tiktok-metadata-20261112.md](finance/finance-tiktok-metadata-20261112.md) | TikTok 系列资料首次实现和本地验证记录 |
 | [pr60-62-integration-20261112.md](finance/pr60-62-integration-20261112.md) | #60–#62 合并复核、成本仓提示与广告过期检查点恢复；#63 保留草稿 |

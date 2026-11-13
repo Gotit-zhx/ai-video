@@ -55,4 +55,20 @@ class FinanceShopeeAdsApiTest {
         assertEquals(today.minusDays(6),FinanceShopeeAdsApi.start(today,today));
         assertEquals(today.minusDays(30),FinanceShopeeAdsApi.start(today,today.minusDays(1)));
     }
+    @Test void closedWindowCannotPassWithMissingFirstLastOrMiddleDay(){
+        LocalDate end=from.plusDays(2),today=end.plusDays(1);
+        for(String missing:List.of(from.toString(),from.plusDays(1).toString(),end.toString())){
+            var facts=new ArrayList<Map<String,Object>>();
+            from.datesUntil(end.plusDays(1)).filter(day->!day.toString().equals(missing)).forEach(day->facts.add(Map.of("record_date",day.toString(),"amount",BigDecimal.ZERO)));
+            var failure=assertThrows(FinanceShopeeAdsApi.IncompleteReport.class,()->FinanceShopeeAdsApi.requireClosedDays(facts,from,end,today));
+            assertTrue(failure.getMessage().contains(missing));
+        }
+        assertThrows(FinanceShopeeAdsApi.IncompleteReport.class,()->FinanceShopeeAdsApi.requireClosedDays(List.of(),from,end,today));
+        assertDoesNotThrow(()->FinanceShopeeAdsApi.requireClosedDays(from.datesUntil(end.plusDays(1)).map(day->Map.<String,Object>of("record_date",day.toString(),"amount",BigDecimal.ZERO)).toList(),from,end,today));
+    }
+    @Test void unfinishedTodayMayBeAbsentButYesterdayStillMustBeReturned(){
+        LocalDate today=from.plusDays(1);
+        assertDoesNotThrow(()->FinanceShopeeAdsApi.requireClosedDays(List.of(Map.of("record_date",from.toString())),from,today,today));
+        assertThrows(FinanceShopeeAdsApi.IncompleteReport.class,()->FinanceShopeeAdsApi.requireClosedDays(List.of(Map.of("record_date",today.toString())),from,today,today));
+    }
 }
