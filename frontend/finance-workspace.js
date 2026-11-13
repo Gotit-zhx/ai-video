@@ -10,7 +10,7 @@
   const orderStates={UNPAID:'待付款',ON_HOLD:'订单暂挂',CANCELLED:'已取消',CANCELED:'已取消',IN_CANCEL:'取消处理中',COMPLETED:'已完成',DELIVERED:'已送达',AWAITING_SHIPMENT:'待发货',AWAITING_COLLECTION:'待揽收',PARTIALLY_SHIPPING:'部分发货',PARTIALLY_SHIPPED:'部分发货',IN_TRANSIT:'运输中',READY_TO_SHIP:'待发货',PROCESSED:'已处理',RETRY_SHIP:'待重新发货',SHIPPED:'已发货',TO_CONFIRM_RECEIVE:'待确认收货',TO_RETURN:'待退货'};
   const refundStates={INITIATED:'已发起申请',REFUND_OR_RETURN_REQUESTED:'已申请退货退款',RETURN_OR_REFUND_REQUEST_PENDING:'退货退款待处理',RETURN_OR_REFUND_REQUEST_REJECT:'退货退款已拒绝',RETURN_OR_REFUND_REQUEST_REJECTED:'退货退款已拒绝',RETURN_OR_REFUND_REQUEST_APPROVED:'退货退款已同意',REFUND_OR_RETURN_REQUEST_REJECT:'退货退款已拒绝',RETURN_OR_REFUND_REQUEST_REVIEWING:'退货退款审核中',RETURN_OR_REFUND_REQUEST_REVIEWING_APPEAL:'退货退款申诉审核中',RETURN_OR_REFUND_REQUEST_APPROVED_APPEAL:'退货退款申诉已通过',RETURN_OR_REFUND_REQUEST_REJECTED_APPEAL:'退货退款申诉已拒绝',RETURN_OR_REFUND_REQUEST_PENDING_BUYER_RETURN:'待买家退货',RETURN_OR_REFUND_REQUEST_BUYER_RETURNING:'买家退货中',RETURN_OR_REFUND_REQUEST_PENDING_RECEIVE:'待卖家收货',RETURN_OR_REFUND_REQUEST_RECEIVED:'退货已收到',REPLACEMENT_REQUEST_REFUND_SUCCESS:'换货退款已完成',REPLACEMENT_REQUEST_COMPLETE:'换货已完成',REPLACEMENT_REQUEST_CANCEL:'换货已取消',REJECTED:'已拒绝',APPROVED:'已同意',REFUNDED:'已退款',REFUNDING:'退款中'};
   const paths={chart:'M4 19h16M7 15v-4m5 4V5m5 10V8',download:'M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4',refresh:'M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-2l2 3M18 17a7 7 0 0 1-12 2l-2-3',shop:'M3 10h18l-2-7H5zM5 10v11h14V10M9 21v-7h6v7',wallet:'M3 6h18v15H3zM3 6V3h15v3M16 12h5v5h-5z',arrow:'M7 17 17 7M7 7h10v10',refund:'m9 6-5 5 5 5M4 11h10a5 5 0 0 1 0 10',ad:'m3 11 15-6v14L3 14zM6 15v6h4v-5M21 9v6',fee:'M7 3h10l4 4v14H3V7zM8 9h8M8 13h8M8 17h5',info:'M12 11v6M12 7v1M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',plus:'M12 4v16M4 12h16',check:'m5 12 4 4 10-10'};
-  let callbackNotice='';const callbackParams=new URLSearchParams(location.search);if(callbackParams.has('financeAuth')){callbackNotice=callbackParams.get('financeMessage')||(callbackParams.get('financeAuth')==='success'?'财务店铺已连接':'财务授权未完成');callbackParams.delete('financeAuth');callbackParams.delete('financeMessage');history.replaceState(null,'',location.pathname+(callbackParams.size?'?'+callbackParams:'')+location.hash);}
+  let callbackNotice=globalThis.HoyeeFinanceAuthNotice?.message||'';delete globalThis.HoyeeFinanceAuthNotice;const callbackParams=new URLSearchParams(location.search);if(callbackParams.has('financeAuth')){callbackNotice=callbackParams.get('financeMessage')||(callbackParams.get('financeAuth')==='success'?'财务店铺已连接':'财务授权未完成');callbackParams.delete('financeAuth');callbackParams.delete('financeMessage');history.replaceState(null,'',location.pathname+(callbackParams.size?'?'+callbackParams:'')+location.hash);}
   let adSupportExpanded=false;
   let active=false,generation=0,mountedGeneration=0,view='overview',data=null,chartPromise,charts=[],observer,themeObserver,refreshTimer=null,clockTimer=null,page=1,selectedKind='ORDER',mountedView='',loadController=null,mountedSelection='';
   let adSpendSearch='',adSpendAssignment='',adSpendPage=1,shopeeEpoch=0;
@@ -307,6 +307,7 @@
     el('span','FINANCE / ANALYTICS',copy,'fi-eyebrow');el('h1',routes[view],copy,'fi-title');
     el('p',view==='shops'?'统一管理财务店铺、广告账户与数据同步。':view==='costs'?'管理商品成本、SKU 关系与订单核算口径。':view==='ads'?'按店铺与分组核对广告资金消耗，追溯每笔归属。':'看清每一笔收入、每一项费用，与每家店铺的经营表现。',copy,'fi-subtitle');
     const actions=el('div',null,head,'fi-actions');
+    if(view==='overview')globalThis.FinanceEntry?.addExperienceLink(actions,location,filters,globalThis.FinanceEntry.enabled);
     loadingIndicator(actions);
     if(view!=='shops')action('财务店铺管理','shop',actions,()=>navigate('shops'));
     action('刷新','refresh',actions,()=>{filters.fxSnapshot='';return load();});
@@ -1638,8 +1639,9 @@
     }}
     finally{if(run===generation){activeLoadKey='';clearInterval(waitingTimer);setLoading(false);}}
   }
-  globalThis.FinanceWorkspace={allowed,canManage,enter(route){
+  globalThis.FinanceWorkspace={allowed,canManage,enter(route,initialFilters){
     if(!allowed())return;shopeeEpoch++;restoreFilters();const wasLive=view==='live';
+    if(initialFilters&&globalThis.FinanceEntry){const seed=globalThis.FinanceEntry.cleanFilters(initialFilters);Object.assign(filters,seed);if(seed.start||seed.end){pinnedDates=true;filters.granularity=dateGranularity(filters.start,filters.end);}filters.fxSnapshot='';}
     view=route==='fees'?'fee-records':routes[route]?route:'overview';
     if(view!=='costs')leaveCostExports();
     if(route==='fees')selectedKind='FEE';
