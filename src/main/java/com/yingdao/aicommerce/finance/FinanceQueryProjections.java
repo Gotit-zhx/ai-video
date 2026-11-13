@@ -23,6 +23,8 @@ public class FinanceQueryProjections {
     private record OrderKey(String shop,String order) {}
     private record BillPrefix(String user,String shop,String source) {}
     private static final class Change {boolean all;final Set<LocalDate> days=new TreeSet<>();}
+    static final class PollDeadlineElapsed extends RuntimeException {}
+    @FunctionalInterface private interface MetadataQuery {List<Map<String,Object>> read(String sql,Object...args);}
     public FinanceQueryProjections(FinanceRepository repo,FinanceService finance,FinanceAdSpendService spend){
         this.repo=repo;this.finance=finance;this.spend=spend;
     }
@@ -89,15 +91,50 @@ public class FinanceQueryProjections {
 
     /** Revision polling reads only partition metadata, never financial JSON payloads. */
     public Map<String,Object> version(Scope scope,Filter filter){
-        return repo.readSnapshot(15,()->{
-            var months=months(filter);
-            var partitions=repo.jdbc().queryForList("SELECT partition_month,schema_version,built_revision,requested_revision,CASE WHEN full_month_json IS NOT NULL AND partial_first_day_json IS NOT NULL AND spend_json IS NOT NULL THEN 1 ELSE 0 END payload_present FROM finance_query_partitions WHERE organization_id=? AND platform_filter=? AND partition_month BETWEEN ? AND ? ORDER BY partition_month",
-                scope.organizationId(),filter.platform(),months.getFirst(),months.getLast());
-            boolean ready=partitions.size()==months.size()&&partitions.stream().allMatch(row->number(row.get("schema_version"))==SCHEMA_VERSION
-                &&number(row.get("built_revision"))>0&&number(row.get("built_revision"))==number(row.get("requested_revision"))&&number(row.get("payload_present"))==1)&&!hasRelevantEvents(scope,filter);
-            var revisions=partitions.stream().map(row->date(row.get("partition_month"))+":"+row.get("built_revision")).toList();
-            return Map.of("status",ready?"READY":"PENDING","revision",hash(scope.organizationId()+"|"+filter.platform()+"|"+String.join(",",revisions)));
-        });
+        return repo.readSnapshot(15,()->version(scope,filter,repo.jdbc()::queryForList));
+    }
+    /** A pending page poll uses the caller's remaining budget without changing the public status timeout. */
+    Map<String,Object> version(Scope scope,Filter filter,long timeoutMillis){
+        if(timeoutMillis<=0)throw new PollDeadlineElapsed();
+        long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        int seconds=(int)Math.max(1,Math.min(Integer.MAX_VALUE,(timeoutMillis+999L)/1000L));
+        return repo.readSnapshot(seconds,()->version(scope,filter,(sql,args)->boundedMetadata(sql,args,deadline)));
+    }
+    private Map<String,Object> version(Scope scope,Filter filter,MetadataQuery metadata){
+        var months=months(filter);
+        var partitions=metadata.read("SELECT partition_month,schema_version,built_revision,requested_revision,CASE WHEN full_month_json IS NOT NULL AND partial_first_day_json IS NOT NULL AND spend_json IS NOT NULL THEN 1 ELSE 0 END payload_present FROM finance_query_partitions WHERE organization_id=? AND platform_filter=? AND partition_month BETWEEN ? AND ? ORDER BY partition_month",
+            scope.organizationId(),filter.platform(),months.getFirst(),months.getLast());
+        boolean ready=partitions.size()==months.size()&&partitions.stream().allMatch(row->number(row.get("schema_version"))==SCHEMA_VERSION
+            &&number(row.get("built_revision"))>0&&number(row.get("built_revision"))==number(row.get("requested_revision"))&&number(row.get("payload_present"))==1)&&!hasRelevantEvents(scope,filter,metadata);
+        var revisions=partitions.stream().map(row->date(row.get("partition_month"))+":"+row.get("built_revision")).toList();
+        return Map.of("status",ready?"READY":"PENDING","revision",hash(scope.organizationId()+"|"+filter.platform()+"|"+String.join(",",revisions)));
+    }
+    private List<Map<String,Object>> boundedMetadata(String sql,Object[] args,long deadline){
+        long remaining=deadline-System.nanoTime();
+        if(remaining<=0)throw new PollDeadlineElapsed();
+        long timeoutMillis=Math.max(1,(remaining+999_999L)/1_000_000L);
+        var setter=new org.springframework.jdbc.core.ArgumentPreparedStatementSetter(args);
+        try{return repo.jdbc().query(sql,statement->{
+            setter.setValues(statement);
+            setMetadataTimeout(statement,timeoutMillis);
+        },new org.springframework.jdbc.core.ColumnMapRowMapper());}
+        finally{setter.cleanupParameters();}
+    }
+    @SuppressWarnings({"rawtypes","unchecked"})
+    private static void setMetadataTimeout(java.sql.PreparedStatement statement,long timeoutMillis)throws java.sql.SQLException{
+        statement.setQueryTimeout((int)Math.max(1,Math.min(Integer.MAX_VALUE,(timeoutMillis+999L)/1000L)));
+        try{
+            Class type=Class.forName("com.mysql.cj.jdbc.JdbcStatement");
+            if(type.isInstance(statement)||statement.isWrapperFor(type)){
+                Object mysql=type.isInstance(statement)?statement:statement.unwrap(type);
+                Object query=type.getMethod("getQuery").invoke(mysql);
+                query.getClass().getMethod("setTimeoutInMillis",long.class).invoke(query,timeoutMillis);
+            }
+        }catch(ClassNotFoundException ignored){
+            // Portable JDBC retains the rounded-up seconds timeout when Connector/J is absent.
+        }catch(ReflectiveOperationException failure){
+            throw new java.sql.SQLException("Cannot apply Connector/J millisecond query timeout",failure);
+        }
     }
 
     /** Enqueue only absent partitions; normal reads never rewrite a clean revision. */
@@ -270,10 +307,13 @@ public class FinanceQueryProjections {
     }
 
     private boolean hasRelevantEvents(Scope scope,Filter filter){
-        if(repo.jdbc().queryForList("SELECT event_id FROM finance_query_events WHERE organization_id=? LIMIT 1",scope.organizationId()).isEmpty())return false;
+        return hasRelevantEvents(scope,filter,repo.jdbc()::queryForList);
+    }
+    private boolean hasRelevantEvents(Scope scope,Filter filter,MetadataQuery metadata){
+        if(metadata.read("SELECT event_id FROM finance_query_events WHERE organization_id=? LIMIT 1",scope.organizationId()).isEmpty())return false;
         LocalDate start=filter.start().withDayOfMonth(1),end=YearMonth.from(filter.end()).atEndOfMonth();
-        if(!repo.jdbc().queryForList("SELECT event_id FROM finance_query_events WHERE organization_id=? AND (event_scope='ALL' OR record_date BETWEEN ? AND ?) LIMIT 1",scope.organizationId(),start,end).isEmpty())return true;
-        var prefixes=billPrefixes(scope.organizationId());
+        if(!metadata.read("SELECT event_id FROM finance_query_events WHERE organization_id=? AND (event_scope='ALL' OR record_date BETWEEN ? AND ?) LIMIT 1",scope.organizationId(),start,end).isEmpty())return true;
+        var prefixes=billPrefixes(scope.organizationId(),metadata);
         var pairs=prefixes.stream().map(p->List.of(p.user,p.source)).distinct().toList();
         // A pathological owner/source history is conservatively pending, never silently omitted.
         if(pairs.size()>128)return true;
@@ -283,7 +323,7 @@ public class FinanceQueryProjections {
         String related="(r.record_date BETWEEN ? AND ? OR (r.kind='SETTLEMENT' AND ";
         args.add(start);args.add(end);String firstRelated=related+billExists("r",pairs,start,end,args)+"))";
         args.add(start);args.add(end);String secondRelated=related+billExists("r",pairs,start,end,args)+"))";
-        return !repo.jdbc().queryForList("SELECT e.event_id FROM finance_query_events e WHERE e.organization_id=? AND ("
+        return !metadata.read("SELECT e.event_id FROM finance_query_events e WHERE e.organization_id=? AND ("
             +" (e.statement_id IS NOT NULL AND e.statement_id<>'' AND "+eventBill+") OR (e.event_scope='ORDER' AND ("
             +" EXISTS(SELECT 1 FROM finance_records r FORCE INDEX(idx_finance_marketing_order) WHERE r.organization_id=e.organization_id AND r.shop_id=e.shop_id AND r.order_id=e.order_id AND "+firstRelated+")"
             +" OR (COALESCE(e.order_id,'')='' AND e.record_id IS NOT NULL AND (NOT EXISTS(SELECT 1 FROM finance_records o WHERE o.id=e.record_id AND o.organization_id=e.organization_id)"
@@ -295,8 +335,9 @@ public class FinanceQueryProjections {
         if(!shop.isBlank()&&!statement.isBlank())statements.computeIfAbsent(org,k->new LinkedHashMap<>()).computeIfAbsent(shop,k->new LinkedHashSet<>()).add(statement);
     }
     /** Enumerate real historical owners/sources using a covering loose-index scan, including removed owners. */
-    private List<BillPrefix> billPrefixes(String org){
-        return repo.jdbc().queryForList("SELECT organization_id,user_id,shop_id,kind,source FROM finance_records FORCE INDEX(idx_finance_reconcile_bill) WHERE organization_id=? GROUP BY organization_id,user_id,shop_id,kind,source",org).stream()
+    private List<BillPrefix> billPrefixes(String org){return billPrefixes(org,repo.jdbc()::queryForList);}
+    private List<BillPrefix> billPrefixes(String org,MetadataQuery metadata){
+        return metadata.read("SELECT organization_id,user_id,shop_id,kind,source FROM finance_records FORCE INDEX(idx_finance_reconcile_bill) WHERE organization_id=? GROUP BY organization_id,user_id,shop_id,kind,source",org).stream()
             .filter(row->"BILL".equals(row.get("kind"))).map(row->new BillPrefix(text(row.get("user_id")),text(row.get("shop_id")),text(row.get("source")))).toList();
     }
     private static String billExists(String owner,List<List<String>> pairs,LocalDate start,LocalDate end,List<Object> args){

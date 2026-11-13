@@ -46,6 +46,153 @@ class FinanceWorkspaceQueryIntegrationTest {
         build();var searched=queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,"after"));
         assertEquals(1,number(map(searched.get("records")).get("total")));
     }
+    @Test void pendingProjectionWaitsForThePublishedRevisionInsteadOfStartingTheNativeFallback(){
+        fee("published","PHP");build();
+        fixture.db.update("UPDATE finance_query_partitions SET requested_revision=requested_revision+1 WHERE organization_id=?",fixture.owner.organizationId());
+        assertEquals("PENDING",projections.version(fixture.owner,month).get("status"));
+        var published=spy(projections);var checks=new java.util.concurrent.atomic.AtomicInteger();
+        doAnswer(call->{
+            var version=call.callRealMethod();
+            if(checks.getAndIncrement()==0)fixture.db.update("UPDATE finance_query_partitions SET built_revision=requested_revision WHERE organization_id=?",fixture.owner.organizationId());
+            return version;
+        }).when(published).version(any(),any());
+        var nativeFallback=new FinanceService(fixture.repo,mock(com.yingdao.aicommerce.saas.application.OrganizationAccessPolicy.class),fixture.auth,fixture.fx){
+            @Override Map<String,Object> buildNativeDashboardFacts(Scope scope,Filter filter,boolean live){
+                throw new AssertionError("A projection published inside the wait budget must avoid the authoritative native fallback");
+            }
+        };
+        queries=new FinanceWorkspaceQueryService(fixture.repo,nativeFallback,new FinanceAdSpendService(fixture.repo,nativeFallback),published,mock(FinanceAds.class),null);
+
+        var result=queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,""));
+
+        assertEquals("READY",map(result.get("readModel")).get("status"));
+        assertEquals(1,number(map(result.get("records")).get("total")));
+        assertEquals(1,checks.get());
+        verify(published,atLeastOnce()).version(eq(fixture.owner),eq(month),anyLong());
+    }
+    @Test void pendingProjectionStopsAtTheTwoSecondMonotonicBudgetAndKeepsTenantScope(){
+        fee("owner-only","PHP");build();
+        projections.request(fixture.other,month);for(int i=0;i<12&&projections.buildNext();i++){}
+        assertEquals("READY",projections.version(fixture.other,month).get("status"));
+        fixture.db.update("UPDATE finance_query_partitions SET requested_revision=requested_revision+1 WHERE organization_id=?",fixture.owner.organizationId());
+        var elapsed=new java.util.concurrent.atomic.AtomicLong();var waits=new java.util.concurrent.atomic.AtomicInteger();
+        var spend=new FinanceAdSpendService(fixture.repo,fixture.service);
+        var scoped=spy(projections);
+        queries=new FinanceWorkspaceQueryService(fixture.repo,fixture.service,spend,scoped,mock(FinanceAds.class),null,elapsed::get,nanos->{
+            assertEquals(java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(100),nanos);
+            waits.incrementAndGet();elapsed.addAndGet(nanos);
+        });
+
+        var result=queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,""));
+
+        assertEquals(java.util.concurrent.TimeUnit.SECONDS.toNanos(2),elapsed.get());assertEquals(20,waits.get());
+        assertEquals("PENDING",map(result.get("readModel")).get("status"));
+        assertEquals(1,number(map(result.get("records")).get("total")));
+        verify(scoped,times(1)).version(eq(fixture.owner),eq(month));
+        verify(scoped,times(19)).version(eq(fixture.owner),eq(month),anyLong());
+        verify(scoped,never()).version(eq(fixture.other),any());
+        verify(scoped,never()).version(eq(fixture.other),any(),anyLong());
+    }
+    @Test void interruptedProjectionWaitRestoresTheFlagAndNeverRunsTheNativeFallback(){
+        fee("interrupted","PHP");build();
+        fixture.db.update("UPDATE finance_query_partitions SET requested_revision=requested_revision+1 WHERE organization_id=?",fixture.owner.organizationId());
+        var nativeFallback=new FinanceService(fixture.repo,mock(com.yingdao.aicommerce.saas.application.OrganizationAccessPolicy.class),fixture.auth,fixture.fx){
+            @Override Map<String,Object> buildNativeDashboardFacts(Scope scope,Filter filter,boolean live){
+                throw new AssertionError("An interrupted wait must exit before the authoritative native fallback");
+            }
+        };
+        var spend=new FinanceAdSpendService(fixture.repo,nativeFallback);
+        queries=new FinanceWorkspaceQueryService(fixture.repo,nativeFallback,spend,projections,mock(FinanceAds.class),null,System::nanoTime,nanos->{
+            throw new InterruptedException("request cancelled");
+        });
+
+        try{
+            var failure=assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,
+                ()->queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,"")));
+            assertEquals(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,failure.getStatus());
+            assertTrue(Thread.currentThread().isInterrupted());
+        }finally{Thread.interrupted();}
+    }
+    @Test void interruptionObservedAfterMetadataPollingExitsBeforeTheNativeFallback(){
+        fee("metadata-interrupted","PHP");build();
+        fixture.db.update("UPDATE finance_query_partitions SET requested_revision=requested_revision+1 WHERE organization_id=?",fixture.owner.organizationId());
+        var interrupted=spy(projections);
+        doAnswer(call->{
+            var version=call.callRealMethod();
+            Thread.currentThread().interrupt();
+            return version;
+        }).when(interrupted).version(any(),any(),anyLong());
+        var nativeFallback=new FinanceService(fixture.repo,mock(com.yingdao.aicommerce.saas.application.OrganizationAccessPolicy.class),fixture.auth,fixture.fx){
+            @Override Map<String,Object> buildNativeDashboardFacts(Scope scope,Filter filter,boolean live){
+                throw new AssertionError("A cancellation observed after metadata polling must exit before native fallback");
+            }
+        };
+        var elapsed=new java.util.concurrent.atomic.AtomicLong();var spend=new FinanceAdSpendService(fixture.repo,nativeFallback);
+        queries=new FinanceWorkspaceQueryService(fixture.repo,nativeFallback,spend,interrupted,mock(FinanceAds.class),null,elapsed::get,elapsed::addAndGet);
+
+        try{
+            var failure=assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,
+                ()->queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,"")));
+            assertEquals(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,failure.getStatus());
+            assertTrue(Thread.currentThread().isInterrupted());
+        }finally{Thread.interrupted();}
+    }
+    @Test void readyMetadataReturnedAfterTheDeadlineIsDiscardedBeforePayloadLoading(){
+        fee("late-ready","PHP");build();var ready=projections.version(fixture.owner,month);
+        fixture.db.update("UPDATE finance_query_partitions SET requested_revision=requested_revision+1 WHERE organization_id=?",fixture.owner.organizationId());
+        var elapsed=new java.util.concurrent.atomic.AtomicLong();var timeout=new java.util.concurrent.atomic.AtomicLong();var late=spy(projections);
+        doAnswer(call->{
+            timeout.set(call.getArgument(2));
+            elapsed.addAndGet(java.util.concurrent.TimeUnit.SECONDS.toNanos(5));return ready;
+        }).when(late).version(any(),any(),anyLong());
+        doThrow(new AssertionError("Metadata returned after the wait deadline must not start projection payload loading"))
+            .when(late).findForQuery(any(),any(),anyBoolean());
+        var spend=new FinanceAdSpendService(fixture.repo,fixture.service);
+        queries=new FinanceWorkspaceQueryService(fixture.repo,fixture.service,spend,late,mock(FinanceAds.class),null,elapsed::get,elapsed::addAndGet);
+
+        var result=queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,""));
+
+        assertEquals("PENDING",map(result.get("readModel")).get("status"));
+        assertEquals(1,number(map(result.get("records")).get("total")));
+        assertEquals(1900,timeout.get());
+    }
+    @Test void logicalMetadataDeadlineUsesTheOriginalAuthoritativeFallback(){
+        fee("logical-deadline","PHP");build();
+        fixture.db.update("UPDATE finance_query_partitions SET requested_revision=requested_revision+1 WHERE organization_id=?",fixture.owner.organizationId());
+        var expired=spy(projections);
+        doThrow(new FinanceQueryProjections.PollDeadlineElapsed())
+            .when(expired).version(any(),any(),anyLong());
+        var elapsed=new java.util.concurrent.atomic.AtomicLong();var spend=new FinanceAdSpendService(fixture.repo,fixture.service);
+        queries=new FinanceWorkspaceQueryService(fixture.repo,fixture.service,spend,expired,mock(FinanceAds.class),null,elapsed::get,elapsed::addAndGet);
+
+        var result=queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,""));
+
+        assertEquals("PENDING",map(result.get("readModel")).get("status"));
+        assertEquals(1,number(map(result.get("records")).get("total")));
+    }
+    @Test void interruptionWinsWhenTheLogicalMetadataDeadlineSignalArrives(){
+        fee("deadline-interrupted","PHP");build();
+        fixture.db.update("UPDATE finance_query_partitions SET requested_revision=requested_revision+1 WHERE organization_id=?",fixture.owner.organizationId());
+        var expired=spy(projections);
+        doAnswer(call->{
+            Thread.currentThread().interrupt();
+            throw new FinanceQueryProjections.PollDeadlineElapsed();
+        }).when(expired).version(any(),any(),anyLong());
+        var nativeFallback=new FinanceService(fixture.repo,mock(com.yingdao.aicommerce.saas.application.OrganizationAccessPolicy.class),fixture.auth,fixture.fx){
+            @Override Map<String,Object> buildNativeDashboardFacts(Scope scope,Filter filter,boolean live){
+                throw new AssertionError("Interrupted logical deadline must exit before native fallback");
+            }
+        };
+        var elapsed=new java.util.concurrent.atomic.AtomicLong();var spend=new FinanceAdSpendService(fixture.repo,nativeFallback);
+        queries=new FinanceWorkspaceQueryService(fixture.repo,nativeFallback,spend,expired,mock(FinanceAds.class),null,elapsed::get,elapsed::addAndGet);
+
+        try{
+            var failure=assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,
+                ()->queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,"")));
+            assertEquals(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,failure.getStatus());
+            assertTrue(Thread.currentThread().isInterrupted());
+        }finally{Thread.interrupted();}
+    }
     @Test void rawOrdersRetainApiOnlyAndCrossDateSearch(){
         var past=LocalDate.of(2026,9,2);
         for(String source:List.of("API","IMPORT"))fixture.repo.save(fixture.owner,new Entry(shop,"SHOPEE","ORDER","order-"+source,"exact-order","","","COMPLETED",past,"PHP",decimal("10"),null,null,null,null,source,Map.of()));
@@ -116,6 +263,34 @@ class FinanceWorkspaceQueryIntegrationTest {
         build();var next=queries.status(fixture.owner,month);assertEquals("READY",next.get("status"));assertNotEquals(first.get("revision"),next.get("revision"));
         assertFalse(next.containsKey("facts"));assertFalse(next.containsKey("items"));
     }
+    @Test void realJdbcMetadataTimeoutReturns503WithoutStartingTheNativeFallback()throws Exception{
+        projections.request(fixture.owner,month);
+        try(var connection=fixture.dataSource.getConnection();var lock=connection.createStatement()){
+            connection.setAutoCommit(false);
+            lock.execute("LOCK TABLES finance_query_partitions WRITE, finance_query_events WRITE");
+            var bounded=spy(projections);
+            doReturn(Map.of("status","PENDING","revision","")).when(bounded).version(any(),any());
+            doNothing().when(bounded).request(any(),any());
+            var nativeFallback=new FinanceService(fixture.repo,mock(com.yingdao.aicommerce.saas.application.OrganizationAccessPolicy.class),fixture.auth,fixture.fx){
+                @Override Map<String,Object> buildNativeDashboardFacts(Scope scope,Filter filter,boolean live){
+                    throw new AssertionError("A real JDBC metadata timeout must not start native fallback");
+                }
+            };
+            var elapsedBudget=new java.util.concurrent.atomic.AtomicLong();var spend=new FinanceAdSpendService(fixture.repo,nativeFallback);
+            queries=new FinanceWorkspaceQueryService(fixture.repo,nativeFallback,spend,bounded,mock(FinanceAds.class),null,elapsedBudget::get,
+                nanos->elapsedBudget.set(java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(1850)));
+            long started=System.nanoTime();
+            try{
+                var failure=assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,
+                    ()->queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,"")));
+                assertEquals(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,failure.getStatus());
+                assertInstanceOf(org.springframework.dao.QueryTimeoutException.class,failure.getCause());
+                long elapsed=java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-started);
+                System.out.println("boundedMetadataCancelMillis="+elapsed);
+                assertTrue(elapsed<1000,"Blocked metadata exceeded its 150 ms JDBC deadline: "+elapsed+" ms");
+            }finally{lock.execute("UNLOCK TABLES");}
+        }
+    }
     @Test void aWriteAfterMetadataSelectionCannotLabelOldFactsAsCurrent(){
         fee("before-metadata","PHP");build();
         var racing=spy(projections);
@@ -156,7 +331,9 @@ class FinanceWorkspaceQueryIntegrationTest {
             shared.invalidate(companyScope(fixture.owner.organizationId()));
             var guarded=spy(fixture.repo);
             var guardedProjections=spy(projections);
-            queries=new FinanceWorkspaceQueryService(guarded,fixture.service,new FinanceAdSpendService(fixture.repo,fixture.service),guardedProjections,mock(FinanceAds.class),shared);
+            queries=new FinanceWorkspaceQueryService(guarded,fixture.service,new FinanceAdSpendService(fixture.repo,fixture.service),guardedProjections,mock(FinanceAds.class),shared,System::nanoTime,nanos->{
+                throw new AssertionError("An already READY Redis page must not enter the PENDING wait path");
+            });
             String heartbeatKey="heyi:finance:calculation:{"+fixture.owner.organizationId()+"}:settlements";
             template.opsForValue().set(heartbeatKey,new tools.jackson.databind.ObjectMapper().writeValueAsString(Map.of("heartbeat",System.currentTimeMillis(),"status","RUNNING","shops",List.of(Map.of("shopId",shop,"complete",false,"records",1,"total",5)))));
             var first=queries.query(fixture.owner,fixture.owner,month,select("fees","FEE",false,1,""));

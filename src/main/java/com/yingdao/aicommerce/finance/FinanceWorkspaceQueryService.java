@@ -7,19 +7,30 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 /** A single, scope-consistent response for each financial workspace. */
 @Service
 public class FinanceWorkspaceQueryService {
+    private static final long PENDING_WAIT_NANOS=java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+    private static final long PENDING_POLL_NANOS=java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(100);
+    @FunctionalInterface interface PendingWait {void await(long nanos)throws InterruptedException;}
     public record Selection(String view,String kind,boolean allOrders,boolean cny,String fxSnapshot,
                             int page,int spendPage,String numbers,String search,String assignment){}
     final FinanceRepository repo;final FinanceService finance;final FinanceAdSpendService spend;
     final FinanceQueryProjections projections;final FinanceAds ads;final FinanceReadCache cache;
+    final java.util.function.LongSupplier nanoTime;final PendingWait pendingWait;
     @org.springframework.beans.factory.annotation.Autowired(required=false) private FinanceShopeeAds shopeeAds;
+    @org.springframework.beans.factory.annotation.Autowired
     public FinanceWorkspaceQueryService(FinanceRepository repo,FinanceService finance,FinanceAdSpendService spend,
             FinanceQueryProjections projections,FinanceAds ads,FinanceReadCache cache){
+        this(repo,finance,spend,projections,ads,cache,System::nanoTime,java.util.concurrent.TimeUnit.NANOSECONDS::sleep);
+    }
+    FinanceWorkspaceQueryService(FinanceRepository repo,FinanceService finance,FinanceAdSpendService spend,
+            FinanceQueryProjections projections,FinanceAds ads,FinanceReadCache cache,
+            java.util.function.LongSupplier nanoTime,PendingWait pendingWait){
         this.repo=repo;this.finance=finance;this.spend=spend;this.projections=projections;this.ads=ads;this.cache=cache;
+        this.nanoTime=nanoTime;this.pendingWait=pendingWait;
     }
     public Map<String,Object> query(Scope scope,Scope personal,Filter filter,Selection selection){
         Selection selected=validated(selection);
         Filter nativeFilter=nativeFilter(filter);
-        var version=projections.version(scope,nativeFilter);
+        var version=awaitProjection(scope,nativeFilter,projections.version(scope,nativeFilter));
         Map<String,Object> result;
         if("READY".equals(version.get("status"))){
             String revision=text(version.get("revision"));
@@ -38,6 +49,41 @@ public class FinanceWorkspaceQueryService {
             copy.put("records",records);
         }
         return copy;
+    }
+    private Map<String,Object> awaitProjection(Scope scope,Filter filter,Map<String,Object> version){
+        if(!"PENDING".equals(version.get("status")))return version;
+        requireActiveRequest();
+        long started=nanoTime.getAsLong();
+        while("PENDING".equals(version.get("status"))){
+            long remaining=PENDING_WAIT_NANOS-(nanoTime.getAsLong()-started);
+            if(remaining<=0){requireActiveRequest();return version;}
+            try{pendingWait.await(Math.min(PENDING_POLL_NANOS,remaining));}
+            catch(InterruptedException interrupted){
+                Thread.currentThread().interrupt();
+                requireActiveRequest();
+            }
+            requireActiveRequest();
+            long elapsed=nanoTime.getAsLong()-started;
+            if(elapsed>=PENDING_WAIT_NANOS){requireActiveRequest();return version;}
+            long pollRemaining=PENDING_WAIT_NANOS-elapsed;
+            Map<String,Object> polled;
+            try{polled=projections.version(scope,filter,Math.max(1,(pollRemaining+999_999L)/1_000_000L));}
+            catch(FinanceQueryProjections.PollDeadlineElapsed expired){requireActiveRequest();return version;}
+            catch(org.springframework.dao.QueryTimeoutException timeout){
+                requireActiveRequest();
+                var unavailable=new com.yingdao.aicommerce.common.exception.BusinessException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,"财务投影状态查询超时，请稍后重试");
+                unavailable.initCause(timeout);throw unavailable;
+            }
+            requireActiveRequest();
+            if(nanoTime.getAsLong()-started>=PENDING_WAIT_NANOS){requireActiveRequest();return version;}
+            version=polled;
+        }
+        requireActiveRequest();
+        return version;
+    }
+    private static void requireActiveRequest(){
+        if(Thread.currentThread().isInterrupted())
+            throw new com.yingdao.aicommerce.common.exception.BusinessException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,"财务查询等待已中断");
     }
     public Map<String,Object> status(Scope scope,Filter filter){return status(scope,filter,"");}
     public Map<String,Object> status(Scope scope,Filter filter,String view){
