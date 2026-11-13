@@ -15,8 +15,7 @@ class FinanceWorkspaceQueryIntegrationTest {
     FinanceQueryProjections projections;FinanceWorkspaceQueryService queries;String shop;
     final Filter month=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,31),"","","","day");
     @BeforeAll void schema()throws Exception{
-        fixture.migrate();fixture.migration("V150__finance_ad_spend_workspace.sql");
-        fixture.db.execute("DROP INDEX idx_finance_page ON finance_records");fixture.migration("V155__finance_query_projections.sql");
+        fixture.migrate();
     }
     @AfterAll void close(){fixture.closeDataSource();}
     @BeforeEach void setup(){
@@ -149,7 +148,7 @@ class FinanceWorkspaceQueryIntegrationTest {
 
     @Test void actualRedisReusesPageAmountsWhilePersonalPreferencesRemainCurrent(){
         fee("redis","PHP");build();
-        var factory=new org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory("127.0.0.1",Integer.parseInt(System.getenv("HEYI_DESIGN_HTTP_REDIS_PORT")));
+        var factory=redisFactory();
         factory.afterPropertiesSet();factory.start();
         var template=new org.springframework.data.redis.core.StringRedisTemplate(factory);template.afterPropertiesSet();
         var shared=new FinanceReadCache(template,new tools.jackson.databind.ObjectMapper());
@@ -183,7 +182,7 @@ class FinanceWorkspaceQueryIntegrationTest {
         for(String external:List.of("10001","10002"))for(int day=1;day<=31;day++)fixture.db.update("INSERT INTO finance_shopee_ad_daily(organization_id,external_shop_id,source_key,record_date,currency,amount,source_json) VALUES(?,?,?,?,'PHP',1,'{}')",
             fixture.owner.organizationId(),external,hash(external+"/"+day),LocalDate.of(2026,10,day));
         build();
-        var factory=new org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory("127.0.0.1",Integer.parseInt(System.getenv("HEYI_DESIGN_HTTP_REDIS_PORT")));factory.afterPropertiesSet();factory.start();
+        var factory=redisFactory();factory.afterPropertiesSet();factory.start();
         var template=new org.springframework.data.redis.core.StringRedisTemplate(factory);template.afterPropertiesSet();
         var shared=new FinanceReadCache(template,new tools.jackson.databind.ObjectMapper());
         try{
@@ -209,6 +208,13 @@ class FinanceWorkspaceQueryIntegrationTest {
         assertEquals(false,map(map(idle.get("operations")).get("costState")).get("rebuilding"));
         assertNotEquals(map(running.get("operations")).get("revision"),map(idle.get("operations")).get("revision"));
         assertFalse(idle.containsKey("facts"));assertFalse(idle.containsKey("items"));
+    }
+
+    private static org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory redisFactory(){
+        var config=new org.springframework.data.redis.connection.RedisStandaloneConfiguration("127.0.0.1",Integer.parseInt(System.getenv("HEYI_DESIGN_HTTP_REDIS_PORT")));
+        String password=System.getenv("HEYI_DESIGN_HTTP_REDIS_PASSWORD");
+        if(password!=null&&!password.isBlank())config.setPassword(org.springframework.data.redis.connection.RedisPassword.of(password));
+        return new org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory(config);
     }
 
 }

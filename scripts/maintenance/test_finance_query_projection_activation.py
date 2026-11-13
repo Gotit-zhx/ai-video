@@ -10,6 +10,7 @@ import sys
 import tempfile
 import types
 import unittest
+from io import StringIO
 from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
@@ -89,6 +90,37 @@ class ActivationDrills(unittest.TestCase):
         self.a.inspect = lambda c: {'Id': 'app'}
         self.a.runtime = lambda c: self.r
 
+    def test_fixed_v155_defaults_are_class_properties(self):
+        self.assertEqual(self.m.SQL, self.a.SQL)
+        self.assertEqual(self.m.SQL_SHA, self.a.SQL_SHA)
+        self.assertEqual(self.m.HELPER, self.a.HELPER)
+        self.assertEqual('155', self.a.VERSION)
+        self.assertEqual('154', self.a.PREVIOUS_VERSION)
+
+    def test_main_accepts_an_explicit_activation_type_without_freezing_default(self):
+        created = []
+        class ExplicitActivation:
+            VERSION = '999'
+            SQL_SHA = 'f' * 64
+            def __init__(self, operation, config, root, helper):
+                created.append((operation, config, root, helper))
+                self.owner = 'b' * 32
+                self.manifest = {'only': {}}
+            def verify_inputs(self): created.append('verified')
+        output = StringIO()
+        with patch.object(self.m, 'Activation', ExplicitActivation), patch('sys.stdout', output):
+            self.m.main(['inspect', '--operation', str(self.op), '--root', str(self.root),
+                         '--config', str(self.config_path), '--helper', str(self.a.helper)])
+        self.assertEqual('verified', created[-1])
+        self.assertEqual('999', json.loads(output.getvalue())['migrationVersion'])
+        output = StringIO()
+        with patch('sys.stdout', output):
+            self.m.main(['inspect', '--operation', str(self.op), '--root', str(self.root),
+                         '--config', str(self.config_path), '--helper', str(self.a.helper)],
+                        activation_type=ExplicitActivation)
+        self.assertEqual('verified', created[-1])
+        self.assertEqual('999', json.loads(output.getvalue())['migrationVersion'])
+
     def test_stop_occurs_outside_store_lock_and_after_reservation(self):
         self.a.reserve_idle_watcher(self.r, self.config)
         def stop(args, **kwargs):
@@ -157,6 +189,14 @@ class ActivationDrills(unittest.TestCase):
         self.assertNotIn('compile', self.events); self.assertNotIn('start', self.events)
         with self.assertRaises(RuntimeError): self.a.deploy()
         self.assertEqual(1, self.events.count('migrate'))
+
+    def test_v155_pre_migration_backup_failure_keeps_existing_release_policy(self):
+        self.setup_execution()
+        self.a.save_before = lambda: (_ for _ in ()).throw(RuntimeError('Synthetic V155 backup failure'))
+        with self.assertRaises(RuntimeError): self.a.deploy()
+        self.assertFalse(self.host.marker.exists())
+        self.assertEqual(['stop', 'start'], self.events)
+        self.assertFalse(json.loads((self.op / 'state.json').read_text())['migrationAttempted'])
 
     def test_compile_failure_restores_classes_without_trigger_and_keeps_sql(self):
         self.setup_execution('compile')

@@ -131,7 +131,7 @@ final class FinanceShopDeletion {
             case 11 -> {
                 int removed=0;
                 // Only an explicitly dedicated account belongs to this deletion; shared credential jobs remain.
-                for(String table:List.of("finance_ad_bc_stage","finance_ad_bc_costs")){
+                for(String table:List.of("finance_ad_bc_stage","finance_ad_bc_costs","finance_ad_campaign_jobs","finance_ad_campaign_metadata")){
                     removed=delete(table,"organization_id=? AND EXISTS (SELECT 1 FROM finance_ad_accounts a WHERE a.organization_id="+table+".organization_id AND a.advertiser_id="+table+".advertiser_id AND a.shop_id=?)",org,shop);
                     if(removed>0)break;
                 }

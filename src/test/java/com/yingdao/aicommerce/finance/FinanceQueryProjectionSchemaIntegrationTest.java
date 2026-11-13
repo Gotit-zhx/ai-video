@@ -21,7 +21,7 @@ class FinanceQueryProjectionSchemaIntegrationTest {
         temporary=temporary.toRealPath();
         var fixture=new FinanceConfigurationIntegrationTest();
         try{
-            fixture.migrate();fixture.migration("V150__finance_ad_spend_workspace.sql");fixture.setup();
+            fixture.migrateThrough(154);fixture.setup();
             String shop=fixture.connect(fixture.owner,false);
             fixture.repo.save(fixture.owner,new Entry(shop,"SHOPEE","FEE","before155","","","commission_fee","SETTLED",LocalDate.of(2026,10,3),"PHP",decimal("12.123456"),null,null,null,null,"API",Map.of("protected",true)));
             var before=fixture.db.queryForList("SELECT * FROM finance_records ORDER BY id");

@@ -24,8 +24,7 @@ class FinanceProjectionDefaultWarmIntegrationTest {
     final MutableClock clock=new MutableClock();
     @TempDir Path temp;
     @BeforeAll void schema()throws Exception{
-        fixture.migrate();fixture.migration("V150__finance_ad_spend_workspace.sql");
-        fixture.migration("V155__finance_query_projections.sql");
+        fixture.migrate();
     }
     @AfterAll void close(){fixture.closeDataSource();}
     @BeforeEach void setup(){

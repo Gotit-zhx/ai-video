@@ -18,10 +18,6 @@ class FinanceQueryProjectionIntegrationTest {
     String shop;
     @BeforeAll void schema()throws Exception{
         fixture.migrate();
-        fixture.migration("V150__finance_ad_spend_workspace.sql");
-        fixture.db.execute("DROP INDEX idx_finance_page ON finance_records");
-        var path=Path.of("src/main/resources/db/migration/V155__finance_query_projections.sql");
-        if(Files.exists(path))fixture.migration(path.getFileName().toString());
     }
     @AfterAll void close(){fixture.closeDataSource();}
     @BeforeEach void setup(){

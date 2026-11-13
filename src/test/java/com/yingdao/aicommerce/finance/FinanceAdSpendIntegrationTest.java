@@ -15,7 +15,7 @@ class FinanceAdSpendIntegrationTest {
     FinanceAdSpendService spend;String shop;
     final Filter filter=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,31),"","","USD","day");
     final List<List<String>> file=List.of(List.of("日期","推广系列ID","现金消耗","信用额度消耗","广告费用赠款消耗","金额","币种"),List.of("2026-10-02","9012345678901234","0","-6.60","-1.21","-7.81","USD"));
-    @BeforeAll void initialize()throws Exception{fixture.migrate();fixture.migration("V150__finance_ad_spend_workspace.sql");}
+    @BeforeAll void initialize()throws Exception{fixture.migrate();}
     @AfterAll void close(){fixture.closeDataSource();}
     @BeforeEach void setup(){
         fixture.setup();for(String t:List.of("finance_ad_spend_allocations","finance_ad_spend_allocation_sets","finance_ad_spend_imports"))fixture.db.update("DELETE FROM "+t);

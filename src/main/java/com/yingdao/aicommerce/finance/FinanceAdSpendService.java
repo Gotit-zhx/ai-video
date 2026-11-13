@@ -8,6 +8,7 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 public class FinanceAdSpendService {
     static final int MAX_RECORDS=50000;
     final FinanceRepository repo;final FinanceService finance;
+    @org.springframework.beans.factory.annotation.Autowired(required=false) private FinanceAdMetadataSync metadataSync;
     @org.springframework.beans.factory.annotation.Autowired(required=false) private FinanceShopeeAds shopeeAds;
     public FinanceAdSpendService(FinanceRepository repo,FinanceService finance){this.repo=repo;this.finance=finance;}
     List<Map<String,Object>> sources(Scope s,Filter f){
@@ -25,7 +26,7 @@ public class FinanceAdSpendService {
         }
         result.addAll(FinanceAdBcFunding.sources(repo,s,f));
         result.addAll(FinanceShopeeAds.sources(repo,s,f));
-        if(result.size()>MAX_RECORDS)throw bad("广告消耗超过 50,000 条，请缩小日期范围；没有发布截断汇总");return result;
+        if(result.size()>MAX_RECORDS)throw bad("广告消耗超过 50,000 条，请缩小日期范围；没有发布截断汇总");return FinanceAdMetadataSync.enrich(repo,s,result);
     }
     static Object[] append(List<Object> values,Object extra){var all=new ArrayList<>(values);all.add(extra);return all.toArray();}
     List<Map<String,Object>> assignments(Scope s,Collection<String> sourceKeys){
@@ -52,6 +53,10 @@ public class FinanceAdSpendService {
     }
     Map<String,Object> reportFromNative(Scope s,Map<String,Object> snapshot,Filter f,boolean cny,String fxSnapshot,String search,String status){
         var sources=rows(snapshot.get("sources"));
+        if(metadataSync!=null)metadataSync.request(s,sources.stream()
+            .filter(row->"TIKTOK_SHOP".equals(row.get("platform")))
+            .map(row->Map.<String,Object>of("account_id",text(row.get("account_id")),"campaign_id",text(row.get("campaign_id")),"is_gmv","API_GMV".equals(row.get("source"))))
+            .toList());
         var quote=cny?finance.exchangeRates().historical(fxSnapshot,sources.stream().map(FinanceFx::businessDate).filter(Objects::nonNull).toList()):null;
         var result=FinanceAdSpendReport.build(sources,rows(snapshot.get("assignments")),rows(snapshot.get("shops")),f,quote,search,status);
         result.put("currencies",sources.stream().map(r->text(r.get("currency"))).filter(v->!v.isBlank()).distinct().sorted().toList());
@@ -80,6 +85,7 @@ public class FinanceAdSpendService {
                 repo.jdbc().queryForList("SELECT source_key,currency,amount,cash_amount,credit_amount,grant_amount FROM finance_ad_spend_imports WHERE organization_id=? AND source_key IN ("+String.join(",",Collections.nCopies(batch.size(),"?"))+")",keys.toArray()).forEach(r->saved.put(text(r.get("source_key")),r));
                 for(var r:batch){var existing=saved.get(text(r.get("source_key")));if(existing==null||!FinanceAdSpendReport.fingerprint(existing).equals(FinanceAdSpendReport.fingerprint(r)))throw bad("导入记录与已保存的同日同账户同系列金额冲突，整份文件未生效");}
             }
+            FinanceAdMetadataSync.enqueue(repo,s,entries);
             return Map.of("inserted",inserted,"duplicateRows",entries.size()-inserted,"rows",entries.size());
         });
     }
@@ -90,7 +96,7 @@ public class FinanceAdSpendService {
         if(records.isEmpty())throw bad("没有找到本公司的广告消耗记录");var r=records.getFirst();return FinanceAdSpendReport.api(r,repo.read(text(r.get("raw_json"))));
     }
     Map<String,Object> sourceDetails(Scope s,String key){
-        var r=source(s,key,false);r.put("fingerprint",FinanceAdSpendReport.fingerprint(r));r.put("allocations",assignments(s,List.of(key)));return r;
+        var r=FinanceAdMetadataSync.enrich(repo,s,List.of(source(s,key,false))).getFirst();r.put("fingerprint",FinanceAdSpendReport.fingerprint(r));r.put("allocations",assignments(s,List.of(key)));return r;
     }
     void assign(Scope s,String actor,String key,String fingerprint,List<Map<String,Object>> splits){
         if(key==null||!key.matches("[a-f0-9]{64}")||splits==null||splits.size()>100)throw bad("分配记录不正确");
