@@ -36,13 +36,21 @@
     table(stores.n,['平台','店铺','分组','币种',...headers,'记录数','归属状态'],(report.shops||[]).map(r=>[
       ctx.platformBadge(r.platform),r.shop_id==='UNASSIGNED'?r.shop_name:button(r.shop_name,null,()=>ctx.selectFilters({shopId:r.shop_id}),'fi-action-link'),r.group_name||'未分组',r.currency,...values(r),numeric(r.records),r.source_review_records?'来源待核对':r.pending_records?'待分配':r.records?'已归属':'尚未取得数据']));
     const detail=card(main,'店铺消耗明细','汇总覆盖全部查询页；下方系列查询及归属筛选只影响此明细表',12);
+    const metadataStates={READY:'系列资料等待补齐',SYNCING:'系列资料同步中',PAUSED:'系列资料已暂停',NEEDS_AUTHORIZATION:'系列资料需更新广告授权',ERROR:'系列资料暂未完成',EMPTY:'接口未返回系列资料'};
+    const metadataProblems=new Set((report.items||[]).map(r=>r.metadata_status).filter(s=>['NEEDS_AUTHORIZATION','ERROR'].includes(s)));
+    for(const state of metadataProblems){const message=el('p',metadataStates[state]+'；已取得的消耗继续保留，未取得的资金分项不代表零。',detail.n,'fi-feedback');message.dataset.adMetadataStatus=state;}
     const search=el('form',null,detail.n,'fi-actions');const input=el('input',null,search);input.placeholder='系列名称 / ID / 账户 / 店铺';input.setAttribute('aria-label','消耗系列或账户查询');input.value=ctx.search||'';
     const assignment=el('select',null,search);assignment.setAttribute('aria-label','消耗归属状态');for(const [v,l]of [['','全部归属状态'],['PENDING','待分配（含余款及待复核）'],['CONFIRMED','已核实分配'],['OFFICIAL','来源已归店']]){const n=el('option',l,assignment);n.value=v;}assignment.value=ctx.assignment||'';
     const submit=el('button','查询',search);submit.type='submit';search.onsubmit=e=>{e.preventDefault();ctx.query(input.value,assignment.value);};
-    table(detail.n,['日期','平台','店铺','展示币种',...headers,'归属状态','账户 / 来源店铺 ID','推广系列 / 广告名称及 ID','分组','投放类型','原币','原币合计','来源','金额口径','操作'],(report.items||[]).map(r=>{
+    table(detail.n,['日期','平台','店铺','展示币种',...headers,'归属状态','账户 / 来源店铺 ID','推广系列 / 广告名称及 ID','官方推广目标店铺','推广目标','分组','原始投放类型','原币','原币合计','来源','金额口径','操作'],(report.items||[]).map(r=>{
       const account=el('span',null),campaign=el('span',null),basis=el('span',r.source==='API_GMV'?'官方总额及净额':r.source==='API_BASIC'?'账户日报':r.source==='IMPORT_FUNDING'?'资金分项报表':'以来源字段为准');basis.title=r.funding_basis||'仅展示来源明确提供的金额';el('span',r.account_name||'账户未提供',account);el('small',r.account_id||'ID 未提供',account);el('span',r.campaign_name||'名称未提供',campaign);el('small',r.campaign_id||'账户汇总（未提供系列 ID）',campaign);
+      const target=el('span',null);target.dataset.adTargetShops='';const targetIds=Array.isArray(r.official_store_ids)?r.official_store_ids:[];
+      for(const id of targetIds){const matches=(ctx.shops||[]).filter(s=>s.platform===r.platform&&String(s.external_shop_id)===String(id));el('div',matches.length===1?(matches[0].display_name||matches[0].name)+' · '+id:String(id),target);}
+      if(!targetIds.length)el('span',r.campaign_id?(metadataStates[r.metadata_status]||'接口未提供目标店铺'):'账户汇总未拆店',target);
+      target.title='官方当前推广目标，仅作关系核对，不代表历史资金已按店铺拆分。'+(r.metadata_observed_at?' 查询时间：'+r.metadata_observed_at:'');
+      campaign.title=[metadataStates[r.metadata_status]||'',r.metadata_error||'',r.metadata_endpoint||'',r.metadata_observed_at||''].filter(Boolean).join(' · ');
       const operation=ctx.canManage()&&!['OFFICIAL','SOURCE_REVIEW'].includes(r.assignment_status)&&(r.shop_id==='UNASSIGNED'||r.source==='IMPORT_FUNDING')?button('分配 / 核实',null,()=>allocate(ctx,r.source_key),'fi-action-link'):'—';if(operation instanceof Node)operation.dataset.adSpendAllocate='';
-      return [r.record_date,ctx.platformBadge(r.platform),r.shop_name,r.currency,...values(r),states[r.assignment_status]||r.assignment_status,account,campaign,r.group_name||'未分组',r.report_type||'未提供',r.source_currency,moneyText(r.original_amount),sources[r.source]||r.source,basis,operation];
+      return [r.record_date,ctx.platformBadge(r.platform),r.shop_name,r.currency,...values(r),states[r.assignment_status]||r.assignment_status,account,campaign,target,r.campaign_objective||'未提供',r.group_name||'未分组',r.report_type||'未提供',r.source_currency,moneyText(r.original_amount),sources[r.source]||r.source,basis,operation];
     }));
     const pager=el('div',null,detail.n,'fi-pagebar');el('span','共 '+numeric(report.total)+' 条 · 第 '+numeric(report.page)+' 页 · 每页 50 条',pager);const buttons=el('div',null,pager,'fi-actions');
     button('上一页',buttons,()=>ctx.page(-1)).disabled=report.page<=1;const next=button('下一页',buttons,()=>ctx.page(1));next.dataset.adSpendNext='';next.disabled=report.page*report.pageSize>=report.total;
@@ -56,11 +64,11 @@
     for(const t of main.querySelectorAll('table'))[...t.querySelectorAll('thead th')].forEach((th,i)=>{if(/消耗|合计/.test(th.textContent))for(const row of t.rows)if(row.cells[i])row.cells[i].dataset.adMoney='';});
   }
   function fundingDiagnostics(parent,ctx){
-    const statuses={NEEDS_PERMISSION:'资金权限待补齐',NEEDS_FINANCE_ROLE:'BC财务角色待配置',NEEDS_BC_ACCESS:'BC访问关系待确认',NEEDS_AUTHORIZATION:'资金授权待更新',ERROR:'资金同步异常',PAUSED:'资金同步已暂停',READY:'资金等待同步',SYNCING:'资金同步中',SUCCESS:'资金同步已完成'};
+    const statuses={NEEDS_PERMISSION:'资金权限待补齐',NEEDS_FINANCE_ROLE:'BC财务角色待配置',NEEDS_BC_ACCESS:'BC访问关系待确认',NEEDS_AUTHORIZATION:'资金授权待更新',PARTIAL_ACCESS:'部分 BC 财务范围可读',NO_DATA:'当前范围未取得资金记录',ERROR:'资金同步异常',PAUSED:'资金同步已暂停',READY:'资金等待同步',SYNCING:'资金同步中',SUCCESS:'已完成本轮资金查询'};
     for(const account of ctx.fundingAccounts||ctx.accounts||[]){
       const state=account.funding;if(!state)continue;
       const status=String(state.status||'');
-      if(!state.permissionRequired&&!state.error_message&&!status.startsWith('NEEDS_')&&!['ERROR','PAUSED'].includes(status))continue;
+      if(!state.permissionRequired&&!state.error_message&&!status.startsWith('NEEDS_')&&!['ERROR','PAUSED','PARTIAL_ACCESS','NO_DATA'].includes(status))continue;
       const row=ctx.el('p',null,parent,'fi-muted');row.dataset.bcFundingStatus=account.advertiser_id;row.dataset.updateKey='bc-funding-status:'+account.advertiser_id;
       ctx.el('strong',(account.name||account.advertiser_id)+' · '+(statuses[status]||'资金状态待核对'),row);
       if(state.error_message)ctx.el('span',' · '+state.error_message,row);

@@ -32,6 +32,11 @@ w.api=async(path,options={})=>{
   }
   if(url.pathname==='/api/v1/finance/shops')return {data:{items:shops,groups,sync:[]}};
   if(url.pathname==='/api/v1/finance/workspace/costs/orders'){reads.push(Object.fromEntries(url.searchParams));return {data:{items:[{id:'order-1',shop_id:'shop',order_id:'ORDER-1',order_type_label:'商家承担的免费样品单',product_skus:'PACK\n（PACK）*2',record_date:'2026-08-28',order_created_time:'2026-08-28T05:27:54Z',first_settlement_date:'2026-10-23',amount:99,settlement_goods_amount:129,settlement_net_amount:80,settlement_currency:'PHP',product_cost_cny:null,product_cost_state:'待补齐'}],total:1,page:1,pageSize:50,productCosts:{total:{pending_count:1,ready_count:0,estimated_count:0,known_amount_cny:5.5,amount_cny:null}}}};}
+  if(url.pathname==='/api/v1/finance/workspace/costs/context'){
+    reads.push(url.searchParams.get('shopId'));
+    const other=url.searchParams.get('shopId')==='other'||url.searchParams.get('groupId')==='other-group';
+    return {data:{live:true,catalogLoaded:false,settingsLoaded:false,shopId:other?'other':'shop',groupId:other?'other-group':'group',groupName:other?'其他组':'母婴组'}};
+  }
   if(url.pathname==='/api/v1/finance/workspace/costs'){
     reads.push(url.searchParams.get('shopId'));
     if(url.searchParams.get('shopId')==='other'||url.searchParams.get('groupId')==='other-group'){

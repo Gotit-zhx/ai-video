@@ -26,6 +26,15 @@ w.api=async path=>{
   if(url.pathname.endsWith('/overview'))return {data:context};
   if(url.pathname.includes('/records/'))return {data:{id:'cancel',shop_id:'s',kind:'ORDER',order_id:'CANCELLED-1',status:'CANCELLED',record_date:'2026-10-09',first_settlement_date:null,order_date_basis:'CREATED'}};
   if(url.pathname.includes('/fields/'))return {data:settings};
+  if(url.pathname.endsWith('/workspace/query')){
+    if(delayed){const gate=delayed;delayed=null;await new Promise(resolve=>gate.release=resolve);}
+    const recordPage={items:q.orderScope==='ALL'?[
+      {id:'cancel',shop_id:'s',order_id:'CANCELLED-1',status:'CANCELLED',record_date:'2026-10-09',first_settlement_date:null,order_date_basis:'CREATED'},
+      {id:'nov',shop_id:'s',order_id:'NOVEMBER-1',status:'COMPLETED',record_date:'2026-10-25',first_settlement_date:'2026-11-01',order_date_basis:'CREATED'}
+    ]:[{id:'settled',shop_id:'s',order_id:'OCTOBER-1',status:'COMPLETED',record_date:'2026-10-29'}],
+      total:101,page:Number(q.page),pageSize:50,fieldSettings:settings};
+    return {data:{...context,records:recordPage}};
+  }
   if(url.pathname.endsWith('/records')){
     if(delayed){const gate=delayed;delayed=null;await new Promise(resolve=>gate.release=resolve);}
     return {data:{...context,items:q.orderScope==='ALL'?[

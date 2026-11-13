@@ -213,8 +213,14 @@ public class FinanceService {
     Map<String,Object> buildDashboard(Scope s,Filter requested,boolean cny,String snapshotId,boolean live){
         // SQL facts are daily and currency-neutral. Display granularity is applied below.
         Filter all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"","day",requested.groupId());
+        return dashboardFromFacts(s,requested,cny,snapshotId,live,loadDashboardFacts(s,all,live));
+    }
+    /** Same financial presentation algorithm, with facts supplied by a verified read model. */
+    Map<String,Object> dashboardFromFacts(Scope s,Filter requested,boolean cny,String snapshotId,boolean live,Map<String,Object> facts){
+        return dashboardFromFacts(s,requested,cny,snapshotId,live,facts,null);
+    }
+    Map<String,Object> dashboardFromFacts(Scope s,Filter requested,boolean cny,String snapshotId,boolean live,Map<String,Object> facts,FinanceFx.Quote resolvedQuote){
         var costReport=new FinanceCostReport(repo);
-        var facts=loadDashboardFacts(s,all,live);
         var reportingMonths=rows(facts.get("reportingMonths"));
         String trendGranularity=reportingMonths.stream().anyMatch(r->Boolean.TRUE.equals(r.get("included")))?"month":requested.granularity();
         var buckets=rows(facts.get("buckets"));
@@ -225,7 +231,7 @@ public class FinanceService {
         Filter f=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),currency,requested.granularity(),requested.groupId());
         var ranking=allRanking.stream().filter(r->currency.isBlank()||currency.equals(text(r.get("currency")))).toList();
         List<Map<String,Object>> totals=nativeTotals(ranking);
-        FinanceFx.Quote quote=cny?fx.historical(snapshotId,requested.start(),requested.end()):null;
+        FinanceFx.Quote quote=cny?(resolvedQuote==null?fx.historical(snapshotId,requested.start(),requested.end()):resolvedQuote):null;
         if(cny)totals=FinanceFx.groups(buckets.stream().filter(r->currency.isBlank()||currency.equals(text(r.get("currency")))).toList(),quote,"kind");
         LinkedHashMap<String,Map<String,Object>> points=new LinkedHashMap<>();
         for(LocalDate d=f.start();!live&&!d.isAfter(f.end());d=d.plusDays(1)){
@@ -284,7 +290,6 @@ public class FinanceService {
         return out;
     }
     private Map<String,Object> loadDashboardFacts(Scope s,Filter all,boolean live){
-        var costReport=new FinanceCostReport(repo);
         var factsKey=new FinanceSnapshotCache.Key(s,all,false,"",live);
         var companyKey=new FinanceSnapshotCache.Key(s,new Filter(all.start(),all.end(),"","","","day"),false,"",live);
         // A shop-first visit stays a shop query. A previously loaded company snapshot can
@@ -296,7 +301,15 @@ public class FinanceService {
                 .anyMatch(row->"UNASSIGNED".equals(text(row.get("shop_id")))))wider=null;
         // The bounded cold read contains multiple queries; a per-query-sized total
         // transaction deadline previously discarded complete month computations.
-        java.util.function.Supplier<Map<String,Object>> read=()->repo.readSnapshot(180,()->{
+        java.util.function.Supplier<Map<String,Object>> read=()->buildNativeDashboardFacts(s,all,live);
+        var facts=wider==null?(sharedSnapshots==null?dashboardFacts.get(factsKey,read):sharedSnapshots.facts(factsKey,read)):
+                narrowDashboardFacts(wider,all,shops(s),live?List.of():new FinanceReportingMonths(repo).coverage(s,all));
+        return facts;
+    }
+    /** Original currency-neutral algorithm. Projection workers share its surrounding MVCC transaction. */
+    Map<String,Object> buildNativeDashboardFacts(Scope s,Filter all,boolean live){
+        var costReport=new FinanceCostReport(repo);
+        return repo.readSnapshot(180,()->{
             var advertising=new ArrayList<Map<String,Object>>();
             var buckets=new ArrayList<>(repo.dashboardBuckets(s,all,live,live?null:advertising));
             var orders=costReport.dashboardFacts(s,all);
@@ -308,9 +321,6 @@ public class FinanceService {
             return Map.of("buckets",dailyFactRows(buckets),"orders",dailyFactRows(orders),"advertising",dailyFactRows(advertising),
                     "reportingMonths",live?List.of():new FinanceReportingMonths(repo).coverage(s,all));
         });
-        var facts=wider==null?(sharedSnapshots==null?dashboardFacts.get(factsKey,read):sharedSnapshots.facts(factsKey,read)):
-                narrowDashboardFacts(wider,all,shops(s),live?List.of():new FinanceReportingMonths(repo).coverage(s,all));
-        return facts;
     }
     Map<String,Object> feeExportFacts(Scope s,Filter requested){
         Filter all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"","day",requested.groupId());

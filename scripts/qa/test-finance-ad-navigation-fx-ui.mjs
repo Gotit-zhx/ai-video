@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import {createAdvertisingFixture} from './fixtures/finance-advertising.mjs';
+import {advertisingWorkspaceResponse,createAdvertisingFixture} from './fixtures/finance-advertising.mjs';
 const {JSDOM}=await import(process.env.JSDOM_MODULE||'jsdom');
 const dom=new JSDOM('<main id="finance-page"></main>',{url:'https://example.test/#finance-overview',runScripts:'outside-only',pretendToBeVisual:true});
 const w=dom.window,d=w.document,root=d.querySelector('main'),fixture=createAdvertisingFixture(),reads=[];
@@ -16,6 +16,10 @@ w.api=async(path,options={})=>{
  if(endpoint==='/overview'){const data=fixture.overview(q);data.fx={id:'history-fixed',mode:'HISTORICAL',basis:'按业务日期历史汇率',provider:'Historical QA'};return {data};}
  if(endpoint==='/records')return {data:fixture.records(q)};
  if(endpoint==='/ads')return {data:fixture.accounts};
+ if(endpoint==='/workspace/query'){
+   const result=spend(q);if(slowSpend){slowSpend=false;await new Promise(r=>releaseSpend=r);}
+   return {data:advertisingWorkspaceResponse(fixture,q,{adAccounts:fixture.accounts,adSpend:result})};
+ }
  if(endpoint==='/advertising/spend'){const result=spend(q);if(slowSpend){slowSpend=false;await new Promise(r=>releaseSpend=r);}return {data:result};}
  if(endpoint==='/fx/market'){const result=structuredClone(market);if(holdMarket){holdMarket=false;await new Promise(r=>releaseMarket=r);}if(failMarket)throw Error('rate provider unavailable');return {data:result};}
  throw Error('Unexpected API '+endpoint);

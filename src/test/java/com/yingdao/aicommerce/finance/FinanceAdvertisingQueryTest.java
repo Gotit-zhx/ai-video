@@ -43,7 +43,9 @@ class FinanceAdvertisingQueryTest {
         when(db.queryForList(anyString(),any(Object[].class))).thenAnswer(call->{
             queries.add(call.getArgument(0));args.add(Arrays.asList(Arrays.copyOfRange(call.getArguments(),1,call.getArguments().length)));return List.of();
         });
-        var repo=new FinanceRepository(db,new ObjectMapper());
+        var repo=spy(new FinanceRepository(db,new ObjectMapper()));
+        // The real MVCC lifecycle is covered by isolated MySQL paging tests.
+        doAnswer(call->((java.util.function.Supplier<?>)call.getArgument(1)).get()).when(repo).readSnapshot(anyInt(),any());
         var f=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,31),"shop-a","SHOPEE","PHP","day","baby");
         var result=repo.advertisingFeeDetails(new Scope("company-a","reader"),f,2,50,"00123456789012345678");
         assertEquals(51L,result.get("total"));assertEquals(2,result.get("page"));assertEquals(2,queries.size());
@@ -55,7 +57,8 @@ class FinanceAdvertisingQueryTest {
             assertTrue(args.get(i).containsAll(List.of("company-a","shop-a","SHOPEE","PHP","baby","FEE","00123456789012345678")));
             assertTrue(args.get(i).contains(java.sql.Date.valueOf(f.start())));assertTrue(args.get(i).contains(java.sql.Date.valueOf(f.end())));
         }
-        assertTrue(queries.get(1).contains("LIMIT ? OFFSET ?"));assertEquals(50L,args.get(1).getLast());
+        int pageQuery=queries.getFirst().contains("LIMIT ? OFFSET ?")?0:1;
+        assertTrue(queries.get(pageQuery).contains("LIMIT ? OFFSET ?"));assertEquals(50L,args.get(pageQuery).getLast());
     }
     @Test void sourceSelectionCannotTurnOtherExportsIntoUnrestrictedFeeExports(){
         assertTrue(FinanceController.advertisingOnly(Map.of("advertisingOnly","true"),"FEE"));

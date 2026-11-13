@@ -1,6 +1,6 @@
 # 广告费用统计与广告分析
 
-更新日期：2026-11-12。本页记录当前源码的广告业务口径与采集边界，接口权限、历史回补及实际运行状态另查对应现场回执。历史数据质量核对见[修复记录](../../releases/finance/finance-ad-data-quality-20261110.md)，既有统计与广告通道记录分别见[统计记录](../../releases/finance/finance-advertising-20261106.md)、[连接记录](../../releases/finance/finance-ad-connection-acceptance-20261107.md)；历史结论不能替代本轮权限及运行核对。
+更新日期：2026-11-13。本页记录当前源码的广告业务口径与采集边界，接口权限、历史回补及实际运行状态另查对应现场回执。历史数据质量核对见[修复记录](../../releases/finance/finance-ad-data-quality-20261110.md)，既有统计与广告通道记录分别见[统计记录](../../releases/finance/finance-advertising-20261106.md)、[连接记录](../../releases/finance/finance-ad-connection-acceptance-20261107.md)；历史结论不能替代本轮权限及运行核对。
 
 ## 费用口径
 
@@ -95,6 +95,8 @@ Shopee 独立投放已于 2026-11-12 启用独立 Ads Service CPC 日报采集�
 
 2026-11-11 本轮只读现场探测：28 个启用账户按实际令牌去重后为 1 组授权，`/bc/get/` 返回 `40001`，未取得可核对的 BC 资金明细。该结果不能解释为账户消费为零；现有 BASIC/GMV Max 数据继续保留，后续需要管理员补齐对应 BC 访问权限及财务角色并核对重新授权。
 
+2026-11-13 新授权只读核查：BC 发现成功，可见 3 个中心；其中 2 个未返回财务角色，其费用读取明确被财务权限拒绝，另 1 个具有 Finance Manager 角色，但抽查费用及发票为空。新广告授权已生效，不能再笼统归因旧令牌或网络。可见 BC 不等于该账户的实际付款 BC；当前资产读取也未获权，不能猜测付款关系。应先核对实际付款 BC，并由其管理员为授权用户配置 Finance Analyst（财务只读）或 Finance Manager。仅重复广告授权不能替代 BC 成员财务角色。软件修复与验证边界见[资金重授权回补记录](../../releases/finance/finance-ad-funding-reauthorization-20261113.md)。
+
 BC 发现使用公开 `/bc/get/`，令牌置于 `Access-Token` header；`page=1&page_size=50` 是完整合法的发现请求，不需要补传 `app_id`、`secret` 或广告账户 ID。费用使用 `/bc/account/cost/get/`，传入 BC ID 与相同 `filtering.start_date`、`filtering.end_date`，按广告账户时区取得一天的费用；`cost_list.advertiser_id` 只与本公司已连接账户做精确匹配，BC 汇总 `transaction_summary` 不复制给账户或店铺。
 
 `amount`、`cash_amount`、`grant_amount`、`tax_amount` 按账户原币主单位读取，不擅自除以 100 或其他倍数。负数扣费转为正数消耗，正数退款转为负数冲减；金额按精确十进制读取、暂存与保存，缺失字段保留未知。税额是单独的预估税额，不能当作额外广告消耗。该接口没有独立授信消耗或净额字段，不能用现金、赠款、税额之间的差额补造 `credit_amount` 或 `net_amount`。
@@ -107,14 +109,45 @@ BC 发现使用公开 `/bc/get/`，令牌置于 `Access-Token` header；`page=1&
 | Ad Account Balance and Transaction，三级 scope `152` | 用于 `/bc/account/cost/get/`；相应父级权限 `15` 或 `1` 可以覆盖。应用已申请权限不等于现有令牌已经获授，增加权限后需核对令牌并重新授权。 |
 | BC 财务角色 | 发现结果必须明确返回 Finance Manager（`MANAGER`）或 Finance Analyst（`ANALYST`）；普通 BC `ADMIN` 不替代财务角色。只采集已明确财务角色的 BC，其他 BC 仍提示缺口。 |
 | `NEEDS_PERMISSION` | 发现或费用操作被权限拒绝；提示对应权限，降为每日重试，重新授权后自动重新发现。`40001` 不表示没有 BC、没有消耗或永久无法接入。 |
-| `NEEDS_FINANCE_ROLE` / `NEEDS_BC_ACCESS` | 分别表示尚未确认财务角色、发现未返回可访问 BC；需核对角色或访问关系，不能补零。 |
+| `NEEDS_FINANCE_ROLE` / `NEEDS_BC_ACCESS` | 分别表示尚未确认财务角色、发现未返回可访问 BC；需核对角色或访问关系，不能补零。每小时自动重新发现，无需为触发检查反复授权。 |
+| `PARTIAL_ACCESS` | 本轮已完成可读范围查询，但部分可见 BC 缺财务角色；不表示这些 BC 一定是该广告账户的付款方。 |
+| `NO_DATA` | 本轮可读范围查询完成，但当前筛选内没有该账户的资金费用记录；不是零消耗，也不是资金分项齐全。 |
 | `NEEDS_AUTHORIZATION` | 凭据不可读、失效或不匹配；核对原有加密配置或使用原应用重新授权，不混配应用与令牌。 |
 | `ERROR` / `PAUSED` | 分别表示本资金来源暂未完成、手动暂停；保留已保存费用与进度。暂停及重授撤销旧租约，旧请求不能发布。 |
 | `READY` / `SYNCING` / `SUCCESS` | 资金任务等待、执行或完成当前窗口的状态；不证明金额分项齐全、全部 BC 已获权或跨来源对账完成。 |
 
 BC 采集与 BASIC、GMV Max 各自执行、保存状态及退避，资金权限失败不阻塞媒体报表。相同公司、相同令牌的账户合并查询；单日全部已确认财务角色的 BC 及全部分页完成后，才事务发布该日费用。事实按公司、广告账户、业务日、币种唯一，BC 或令牌变化不增加金额；不同 BC 返回同一账户的金额不一致时保留旧数据并完整重查。分页不完整、费用行缺失或刷新为空时不擦除已有事实；明确返回的真实零值可以更新。
 
-首次回补近 90 天，之后每小时近 7 天、每日近 31 天回查；当前日及近期费用仍可能延迟。`funding.returned_days` 只统计已返回账户费用记录的不同日期，`records` 只统计已保存记录数；它们不是请求成功覆盖天数，更不能证明现金、授信、赠款均已完整或没有记录的日期费用为零。财务店铺管理与账户核对区可展示独立资金状态；专属店铺永久删除会有界清理对应账户的 BC 暂存及费用，其他账户与共享令牌任务保留。
+首次回补近 90 天，之后每小时近 7 天、每日近 31 天回查；当前日及近期费用仍可能延迟。重新授权（包括相同令牌增权）或发现新获财务读取权的 BC 时，自动重新回补近 90 天；较早的未完成起点保留，终点至少扩展至当前账户业务日，历史成功时间仍保留供核对。旧版已完成任务在安全的单日分页边界重新发现后，也会自动执行一次历史回补，无需手工清队列或再次授权。部分 BC 缺角色时每小时检查角色变化，全范围可读时保持每 6 小时发现；不会中断正在处理的单日分页。
+
+`funding.sync_status` 表示工作器请求状态，`funding.status` 另外表达部分访问和空记录；`readable_bc_count`、`missing_finance_role_bc_count` 只描述当前令牌可见的 BC 范围，不宣称已经确认账户付款关系。`coverage_status` 区分已取得记录和未取得记录。`funding.returned_days` 只统计已返回账户费用记录的不同日期，`records` 只统计已保存记录数；它们不是请求成功覆盖天数，更不能证明现金、授信、赠款均已完整或没有记录的日期费用为零。财务店铺管理与账户核对区可展示独立资金状态；专属店铺永久删除会有界清理对应账户的 BC 暂存及费用，其他账户与共享令牌任务保留。
+
+## TikTok 系列资料与目标店铺补齐
+
+系列资料使用已连接广告账户的真实授权自动查询。GMV Max 消耗发布及资金报表导入会按账户、系列去重排队。已有记录由广告分析查询投递公司、账户、系列 ID 及 GMV 类型引用：事务提交后才进入有界内存队列，回滚不投递；查询快照只读，不写任务表或调用 TikTok。后台在维护门控允许时，重新核对当前账户及暂停状态后持久化任务，每轮最多处理一个接口页，分页完成后发布店铺目标集合。进程重启前未持久化的查询引用可由后续查询重新投递，已持久化任务沿用原检查点。
+
+| 展示字段 | 官方来源 | 使用边界 |
+| --- | --- | --- |
+| 系列名称、系列 ID | 普通 `/campaign/get/`；GMV Max `/campaign/gmv_max/info/` | 按公司、广告账户及系列 ID 对应；财务来源已有名称时保留原名称。 |
+| 推广目标、系列结构、自动化方式 | `/campaign/get/` 的 `objective_type`、`campaign_type`、`campaign_automation_type` | 广告配置字段不替代资金表的 Auction 等原始投放类型。 |
+| 官方推广目标店铺 | GMV Max 详情顶层 `store_id`；普通 `/adgroup/get/` 的顶层 `store_id` | 广告组仅在官方支持的 Shop Ads 场景返回。身份资产里的店铺不作为目标；多个目标全部保留。当前目标不证明历史三项资金已逐店拆分，不写成费用的 `shop_id` 或「来源已归店」。 |
+| 资料状态、查询时间、来源 | 本地任务及最后成功快照 | 区分等待、同步、暂停、授权待更新、失败及接口未返回；失败保留旧资料及金额。 |
+
+详情可选增加 `campaign_objective`、`campaign_structure`、`campaign_automation_type`、`official_store_ids`、`metadata_status`、`metadata_error`、`metadata_endpoint`、`metadata_observed_at` 及 `target_shop_evidence`。证据含官方目标 ID、状态、时间、来源，并标明 `historical_allocation_verified=false`；既有金额、来源键、指纹及归属字段含义保持。明细导出附加同样的追溯字段，长编号保持文本。
+
+普通系列对删除状态单独查询；两次均未返回时按相同账户和系列 ID 尝试 GMV Max 详情，补充普通列表未覆盖的 Shop 创建系列。只有该接口实际返回匹配系列后，才记住后续使用 GMV 专用查询。广告组普通/删除分页分别核对页码、总数及重复 ID，最多 10,000 个广告组，不发布截断关系。平台拒绝及传输失败保留当前页；分页范围变化时重新查询该系列。暂停、重授及店铺删除使旧租约失效，迟到结果不能覆盖新状态。权限拒绝退避一天，更新商家授权后自动唤醒；其他错误逐步退避。资料每日复核，原财务报表同步独立运行。
+
+V156 新增独立资料/任务表，依赖性能任务的 V155 事件表。内容或错误状态变化只为该系列涉及的财务日期写入精简 `DAY` 事件，供持久查询投影更新；不保存凭据及整份业务响应。同内容复核不重复发送内容变更事件。真实 V155/V156 集成回归覆盖授权失败及成功资料的日期事件、期间投影修订和页面缓存键变化；财务金额、指纹、归属及其他月份保持不变。迁移及运行状态以[源码生效与验收](../../releases/finance/finance-tiktok-metadata-20261113.md)为准，不能独立于 V155 部署。
+
+### 新获批权限与资金字段
+
+2026-11-12 现场已确认 Read Campaigns（200）、Read Ad Groups（210）、Invoice Management（7078191955347259394）获批。该次旧商家令牌对系列/广告组仍返回 `40001`；账户管理员需使用新链接重授，不能把应用获批当作令牌已经获授或把拒绝当零。
+
+现金、授信、赠款仍按真实资金来源填充：账户级 `cash_spend`/`voucher_spend` 及 BC `cash_amount`/`grant_amount` 只在账户核对，不复制到每个系列或多家店。预算、余额、授信占用、发票总额及当前推广目标不用于补造逐系列授信消耗。
+
+公开 `/bc/invoice/task/create/` 的 `BILLING_REPORT` 需要真实 `bc_id`、`invoice_id`，返回详细交易 Excel；公开文档未列明其是否完整提供原表九列及跨店三项资金拆分。权限目录另有 `/bc/invoice/billing_report/get/`，其参数和文件契约待官方工单 **4552134** 确认。本轮未把未核实发票内容发布为消耗事实；原资金导入保留作必要时的补充。
+
+官方契约：[系列查询](https://business-api.tiktok.com/portal/docs?id=1739315828649986)、[广告组查询](https://business-api.tiktok.com/portal/docs?id=1739314558673922)、[GMV Max 详情](https://business-api.tiktok.com/portal/docs?id=1822000968821762)、[异步发票报表任务](https://business-api.tiktok.com/portal/docs/create-an-asynchronous-download-task/v1.3)。
 
 ## Shopee 官方店铺 CPC 日报
 
