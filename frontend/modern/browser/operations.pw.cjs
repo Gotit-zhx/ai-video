@@ -114,7 +114,8 @@ test("cancelled download aborts its request and navigation discards late reads",
   }));
   await open(page, fixture);
   await page.getByRole("button", { name: "导出财务报表" }).click();
-  await page.getByRole("button", { name: "开始导出" }).click();
+  const exportDialog = await shadowDialog(page);
+  await exportDialog.getByRole("button", { name: "开始导出" }).click();
   await call(fixture, "GET", "/export");
   await page.getByRole("button", { name: "取消导出" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);

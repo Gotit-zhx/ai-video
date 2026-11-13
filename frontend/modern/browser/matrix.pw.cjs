@@ -1,4 +1,4 @@
-const { test, expect, open, seed } = require("./helpers.cjs");
+const { test, expect, open, seed, shadowDialog } = require("./helpers.cjs");
 const messages = require("../src/shared/messages.json"),
   catalog = require("../../i18n/catalog.json");
 const locales = ["zh", "en", "id", "th", "vi", "ms", "fil"],
@@ -47,7 +47,7 @@ for (let i = 0; i < 14; i++) {
     });
     await button.scrollIntoViewIfNeeded();
     await button.click();
-    const dialog = page.getByRole("dialog");
+    const dialog = await shadowDialog(page);
     await expect(dialog).toBeVisible();
     expect(
       await dialog.evaluate((n) => n.getRootNode() instanceof ShadowRoot),

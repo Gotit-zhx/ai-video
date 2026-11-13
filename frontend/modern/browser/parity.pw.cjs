@@ -1,4 +1,4 @@
-const { test, expect, open, go, call } = require("./helpers.cjs");
+const { test, expect, open, go, call, shadowDialog } = require("./helpers.cjs");
 test("classic and modern binary exports freeze the same query and historical FX receipt", async ({
   page,
   context,
@@ -6,8 +6,9 @@ test("classic and modern binary exports freeze the same query and historical FX 
 }) => {
   await open(page, fixture, "overview", "lang=zh&financeUi=modern");
   await page.getByRole("button", { name: "导出财务报表" }).click();
+  const exportDialog = await shadowDialog(page);
   let download = page.waitForEvent("download");
-  await page.getByRole("button", { name: "开始导出" }).click();
+  await exportDialog.getByRole("button", { name: "开始导出" }).click();
   await download;
   const modern = (await call(fixture, "GET", "/export")).query;
   const classic = await context.newPage();

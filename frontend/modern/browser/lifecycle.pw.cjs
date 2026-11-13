@@ -21,7 +21,8 @@ test("reader has fields and evidence but no management actions", async ({
   await open(page, fixture);
   await expect(page.getByRole("button", { name: "导入账单" })).toHaveCount(0);
   await page.getByRole("button", { name: "字段设置", exact: true }).click();
-  await page.getByRole("button", { name: "保存字段" }).click();
+  const fields = await shadowDialog(page);
+  await fields.getByRole("button", { name: "保存字段" }).click();
   await call(fixture, "PUT", "/fields/ALL");
   await go(page, "shops");
   await expect(
@@ -115,7 +116,8 @@ test("same-company user change discards a late authorization without replay", as
   }));
   await open(page, fixture, "shops");
   await page.getByRole("button", { name: "生成 Shopee 广告授权链接" }).click();
-  await page.getByRole("button", { name: "生成授权链接" }).click();
+  const authorization = await shadowDialog(page);
+  await authorization.getByRole("button", { name: "生成授权链接" }).click();
   await call(fixture, "POST", "/shopee-ads/authorize");
   await page.evaluate(() => {
     currentUser = { ...currentUser, userId: "fixture-second-user" };
@@ -123,6 +125,7 @@ test("same-company user change discards a late authorization without replay", as
   });
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.getByRole("button", { name: "生成 Shopee 广告授权链接" }).click();
+  await shadowDialog(page);
   await expect(page.getByLabel("Shopee 官方授权链接")).toHaveCount(0);
   await page.waitForTimeout(900);
   await expect(page.getByLabel("Shopee 官方授权链接")).toHaveCount(0);
