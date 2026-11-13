@@ -19,14 +19,14 @@ public class FinanceWorkspaceQueryService {
     public Map<String,Object> query(Scope scope,Scope personal,Filter filter,Selection selection){
         Selection selected=validated(selection);
         Filter nativeFilter=nativeFilter(filter);
-        var available=projections.find(scope,nativeFilter);
+        var version=projections.version(scope,nativeFilter);
         Map<String,Object> result;
-        if(available.isPresent()){
-            var snapshot=available.get();
-            java.util.function.Supplier<Map<String,Object>> load=()->build(scope,filter,selected,snapshot);
+        if("READY".equals(version.get("status"))){
+            String revision=text(version.get("revision"));
+            java.util.function.Supplier<Map<String,Object>> load=()->build(scope,filter,selected,revision);
             try{
                 result=cache==null?load.get():cache.getPage(new FinanceSnapshotCache.Key(companyScope(scope.organizationId()),filter,
-                    selected.cny(),text(selected.fxSnapshot()),false),selected.view(),snapshot.revision(),selectionKey(selected),load);
+                    selected.cny(),text(selected.fxSnapshot()),false),selected.view(),revision,selectionKey(selected),load);
             }catch(ProjectionChanged changed){result=fallback(scope,filter,selected);}
         }else result=fallback(scope,filter,selected);
         // Personal field preferences are read after the shared financial cache.
@@ -70,13 +70,13 @@ public class FinanceWorkspaceQueryService {
     }
     private record Prepared(FinanceQueryProjections.Snapshot snapshot,Map<String,Object> facts,
                             Map<String,Object> nativeSpend,Filter filter,Map<String,Object> records){}
-    private Map<String,Object> build(Scope scope,Filter requested,Selection selected,FinanceQueryProjections.Snapshot expected){
+    private Map<String,Object> build(Scope scope,Filter requested,Selection selected,String expectedRevision){
         boolean primary=selected.view().equals("ads");
         // All mutable financial reads/counts share one MVCC snapshot. Public FX I/O
         // and its append-only public-rate snapshot writes happen after it closes.
         Prepared prepared=repo.readSnapshot(180,()->{
-            var snapshot=expected==null?null:projections.find(scope,nativeFilter(requested)).orElseThrow(ProjectionChanged::new);
-            if(expected!=null&&!snapshot.revision().equals(expected.revision()))throw new ProjectionChanged();
+            var snapshot=expectedRevision==null?null:projections.find(scope,nativeFilter(requested)).orElseThrow(ProjectionChanged::new);
+            if(expectedRevision!=null&&!snapshot.revision().equals(expectedRevision))throw new ProjectionChanged();
             var facts=primary||selected.allOrders()?Map.<String,Object>of():snapshot==null?
                 finance.buildNativeDashboardFacts(scope,nativeFilter(requested),false):snapshot.facts();
             String currency=requested.currency();

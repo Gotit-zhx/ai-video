@@ -77,10 +77,10 @@ public class FinanceQueryProjections {
     public Map<String,Object> version(Scope scope,Filter filter){
         return repo.readSnapshot(15,()->{
             var months=months(filter);
-            var partitions=repo.jdbc().queryForList("SELECT partition_month,schema_version,built_revision,requested_revision FROM finance_query_partitions WHERE organization_id=? AND platform_filter=? AND partition_month BETWEEN ? AND ? ORDER BY partition_month",
+            var partitions=repo.jdbc().queryForList("SELECT partition_month,schema_version,built_revision,requested_revision,CASE WHEN full_month_json IS NOT NULL AND partial_first_day_json IS NOT NULL AND spend_json IS NOT NULL THEN 1 ELSE 0 END payload_present FROM finance_query_partitions WHERE organization_id=? AND platform_filter=? AND partition_month BETWEEN ? AND ? ORDER BY partition_month",
                 scope.organizationId(),filter.platform(),months.getFirst(),months.getLast());
             boolean ready=partitions.size()==months.size()&&partitions.stream().allMatch(row->number(row.get("schema_version"))==SCHEMA_VERSION
-                &&number(row.get("built_revision"))>0&&number(row.get("built_revision"))==number(row.get("requested_revision")))&&!hasRelevantEvents(scope,filter);
+                &&number(row.get("built_revision"))>0&&number(row.get("built_revision"))==number(row.get("requested_revision"))&&number(row.get("payload_present"))==1)&&!hasRelevantEvents(scope,filter);
             var revisions=partitions.stream().map(row->date(row.get("partition_month"))+":"+row.get("built_revision")).toList();
             return Map.of("status",ready?"READY":"PENDING","revision",hash(scope.organizationId()+"|"+filter.platform()+"|"+String.join(",",revisions)));
         });
