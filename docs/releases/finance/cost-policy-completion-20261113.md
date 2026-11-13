@@ -1,6 +1,6 @@
 # 商品成本匹配完整性修复
 
-日期：2026-11-13。接续平台 SKU 兜底规则，修复用户截图中仍出现旧 SPU 错误及历史结果未自动更新的问题。
+日期：2026-11-13。接续平台 SKU 兜底规则，修复用户截图中仍出现旧 SPU 错误及历史结果未自动更新的问题。实现提交 `4aea19f8`、`76ae8be9`（PR #66）已完成共享服务器激活和实际报告/队列验收。
 
 ## 根因与处理
 
@@ -23,6 +23,15 @@
 
 ## 服务器范围
 
-本次无数据库迁移、依赖或环境配置变更。五个生产文件按当前现场三方合并：`FinanceOrderCosts.java`、`FinanceCostWorkspace.java`、`FinanceCostReport.java`、`FinanceShopDeletion.java`、`frontend/finance-costs.js`。保留其他会话源码，服务器维护与历史重算实际进度在生效后补录。
+本次无数据库迁移、依赖或环境配置变更。五个生产文件按当前现场三方合并：`FinanceOrderCosts.java`、`FinanceCostWorkspace.java`、`FinanceCostReport.java`、`FinanceShopDeletion.java`、`frontend/finance-costs.js`。保留其他会话源码，包括成本轻入口及刚生效的性能缓存修改。
+
+- 广告会话在 V156 尚未写主机时明确交出短窗口；本任务在共享双锁内逐文件 CAS、保存旧文件后原子替换，既有 watcher 受控编译和重载成功。验收上下文 `3a83c9b6-6821-4207-835f-d42b678ffba5`，健康、`ready`、`maintenance=false`，后台恢复。
+- 验收时 schema/history 指纹仍为 `f7c5316953faf1970318f29fe1749be0f959a23ddf2d30302b21feb997703434`，运行配置摘要 `c4ae5422fc452f04eb5188ce1a325462494d5992fd407bdcbbf7982a0c9355ab`。容器及其他源码保持，五文件编译标识和外部前端哈希吻合；匿名财务接口仍返回 401。
+- 使用实际运行 classpath 和只读数据库连接调用已部署的 `FinanceCostReport.orders`，两个真实样本都显示准确的平台 SKU 和“后台按商品 SKU、平台 SKU 重新计算”，未再将旧 SPU 说明当作当前错误。没有更改原始订单或通过验收请求入队；诊断只输出必要状态字段。
+- 已验证自动回填持续推进。UTC 02:57 时点，67 个有效策略店铺中 6 个扫描完成、61 个继续扫描，队列 4,614 笔；已有实际结果保存新 `policyVersion`。较前次采样扫描完成数增加、游标推进。扫描完成不等于队列消费完，不能宣称全部历史成本或财务投影已核对完成；真实缺失资料继续待补齐。
+- 当前会话没有可用的浏览器控制工具，因此以已部署的真实报告调用、正式 HTTPS 静态内容和页面自动化回归作为验证证据，不宣称本轮完成了新的图形浏览器验收。
+- 验收后明确把维护窗口交回广告会话继续其 V156 任务，并向性能会话交接五文件完整哈希、队列进度和前端自动刷新逻辑。后续迁移可正常暂停并恢复本轮后台扫描；必须保留游标、队列及新的策略回执。
+
+服务器小型回执及本次旧源码副本：`/opt/heyi/dev/operations/cost-policy-completion-20261113-76ae8be9/receipt.json`（`accepted`，`maintenanceWindowReleased=true`）；同目录 `live-report-probe.json`、`progress-accepted.json` 记录有界只读验收。所有指纹和进度均为本次验收时点，不代替后续独立 V156 的现场核对。
 
 本地小型验证记录：`/tmp/finance-cost-policy-completion-20261113/`。
