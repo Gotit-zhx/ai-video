@@ -64,11 +64,11 @@
     for(const t of main.querySelectorAll('table'))[...t.querySelectorAll('thead th')].forEach((th,i)=>{if(/消耗|合计/.test(th.textContent))for(const row of t.rows)if(row.cells[i])row.cells[i].dataset.adMoney='';});
   }
   function fundingDiagnostics(parent,ctx){
-    const statuses={NEEDS_PERMISSION:'资金权限待补齐',NEEDS_FINANCE_ROLE:'BC财务角色待配置',NEEDS_BC_ACCESS:'BC访问关系待确认',NEEDS_AUTHORIZATION:'资金授权待更新',ERROR:'资金同步异常',PAUSED:'资金同步已暂停',READY:'资金等待同步',SYNCING:'资金同步中',SUCCESS:'资金同步已完成'};
+    const statuses={NEEDS_PERMISSION:'资金权限待补齐',NEEDS_FINANCE_ROLE:'BC财务角色待配置',NEEDS_BC_ACCESS:'BC访问关系待确认',NEEDS_AUTHORIZATION:'资金授权待更新',PARTIAL_ACCESS:'部分 BC 财务范围可读',NO_DATA:'当前范围未取得资金记录',ERROR:'资金同步异常',PAUSED:'资金同步已暂停',READY:'资金等待同步',SYNCING:'资金同步中',SUCCESS:'已完成本轮资金查询'};
     for(const account of ctx.fundingAccounts||ctx.accounts||[]){
       const state=account.funding;if(!state)continue;
       const status=String(state.status||'');
-      if(!state.permissionRequired&&!state.error_message&&!status.startsWith('NEEDS_')&&!['ERROR','PAUSED'].includes(status))continue;
+      if(!state.permissionRequired&&!state.error_message&&!status.startsWith('NEEDS_')&&!['ERROR','PAUSED','PARTIAL_ACCESS','NO_DATA'].includes(status))continue;
       const row=ctx.el('p',null,parent,'fi-muted');row.dataset.bcFundingStatus=account.advertiser_id;row.dataset.updateKey='bc-funding-status:'+account.advertiser_id;
       ctx.el('strong',(account.name||account.advertiser_id)+' · '+(statuses[status]||'资金状态待核对'),row);
       if(state.error_message)ctx.el('span',' · '+state.error_message,row);

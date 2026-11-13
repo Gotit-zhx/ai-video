@@ -16,12 +16,13 @@ import static org.mockito.Mockito.*;
 class FinanceAdBcFundingIntegrationTest {
     final FinanceConfigurationIntegrationTest fixture=new FinanceConfigurationIntegrationTest();
     final LocalDate day=LocalDate.of(2026,10,1);
-    FinanceAds ads;MarketplaceHttp http;boolean denied,noFinanceRole,failSecondPage,twoBcs,conflictingBc,emptyCost;
+    FinanceAds ads;MarketplaceHttp http;boolean denied,noFinanceRole,partialFinanceRole,failSecondPage,twoBcs,conflictingBc,emptyCost;
     int pages;String costAmount;final List<String> paths=new ArrayList<>();
+    final List<LocalDate> queriedDays=new ArrayList<>();
     @BeforeAll void schema()throws Exception{fixture.migrate();}
     @AfterAll void close(){fixture.closeDataSource();}
     @BeforeEach void setup(){
-        fixture.setup();denied=false;noFinanceRole=false;failSecondPage=false;twoBcs=false;conflictingBc=false;emptyCost=false;pages=1;costAmount="-7";paths.clear();
+        fixture.setup();denied=false;noFinanceRole=false;partialFinanceRole=false;failSecondPage=false;twoBcs=false;conflictingBc=false;emptyCost=false;pages=1;costAmount="-7";paths.clear();queriedDays.clear();
         http=mock(MarketplaceHttp.class);ads=new FinanceAds(fixture.repo,fixture.service,http,fixture.cipher);
         for(String id:List.of("100001","100002"))connect(id,"same-unit-ad-token");
         when(http.getExact(any(),anyMap())).thenAnswer(i->response(i.getArgument(0)));
@@ -34,10 +35,11 @@ class FinanceAdBcFundingIntegrationTest {
         if(denied)return Map.of("code",40001,"message","unit-secret-must-not-persist");
         if(uri.getPath().endsWith("/bc/get/")){
             var bcs=new ArrayList<Map<String,Object>>();
-            for(String bc:twoBcs?List.of("700001","700002"):List.of("700001"))bcs.add(Map.of("bc_info",Map.of("bc_id",bc),"user_role","ADMIN","ext_user_role",Map.of("finance_role",noFinanceRole?"":"ANALYST")));
+            for(String bc:twoBcs?List.of("700001","700002"):List.of("700001"))bcs.add(Map.of("bc_info",Map.of("bc_id",bc),"user_role","ADMIN","ext_user_role",Map.of("finance_role",noFinanceRole||partialFinanceRole&&bc.equals("700002")?"":"ANALYST")));
             return Map.of("code",0,"data",Map.of("list",bcs,"page_info",Map.of("page",1,"total_page",1,"total_number",bcs.size())));
         }
         assertTrue(uri.getPath().endsWith("/bc/account/cost/get/"));assertFalse(q.get("filtering").contains("keyword"));
+        queriedDays.add(LocalDate.parse(text(fixture.repo.read(q.get("filtering")).get("start_date"))));
         if(emptyCost)return Map.of("code",0,"data",Map.of("cost_list",List.of(),"page_info",Map.of("page",1,"total_page",0,"total_number",0)));
         int page=Integer.parseInt(q.get("page"));if(failSecondPage&&page==2)return Map.of("code",40002,"message","unit-secret-must-not-persist");
         var list=new ArrayList<Map<String,Object>>();
@@ -67,6 +69,61 @@ class FinanceAdBcFundingIntegrationTest {
     @Test void basicAdminRoleDoesNotSubstituteForFinanceRole(){
         noFinanceRole=true;ads.funding.tick();assertEquals("NEEDS_FINANCE_ROLE",state());assertEquals(0,count("finance_ad_bc_costs"));
         var account=ads.list(fixture.owner).getFirst();assertTrue(Boolean.TRUE.equals(map(account.get("funding")).get("permissionRequired")));
+    }
+    @Test void sameTokenPermissionRefreshRechecksNinetyDaysWithoutDiscardingKnownCosts(){
+        discover();run();
+        connect("100001","same-unit-ad-token");run();run();
+        assertEquals(LocalDate.now(ZoneId.of("Asia/Manila")).minusDays(89),queriedDays.getLast(),"an existing success must not narrow an expanded authorization to seven days");
+        assertEquals(2,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_ad_bc_costs WHERE record_date='2026-10-01'",Integer.class));
+        assertNotNull(fixture.db.queryForObject("SELECT last_success_at FROM finance_ad_bc_sync",java.sql.Timestamp.class));
+    }
+    @Test void sameTokenRefreshPreservesAnOlderUnfinishedRangeAndExtendsThroughToday(){
+        discover();
+        var today=LocalDate.now(ZoneId.of("Asia/Manila"));
+        fixture.db.update("UPDATE finance_ad_bc_sync SET last_success_at=UTC_TIMESTAMP(6),checkpoint_json=?",fixture.repo.write(Map.of("from",today.minusDays(120).toString(),"until",today.minusDays(100).toString(),"run","obsolete","page",2)));
+        connect("100001","same-unit-ad-token");run();run();
+        assertEquals(today.minusDays(120),queriedDays.getLast());
+        var checkpoint=fixture.repo.read(fixture.db.queryForObject("SELECT checkpoint_json FROM finance_ad_bc_sync",String.class));
+        assertEquals(today.toString(),checkpoint.get("until"),"permission refresh must include recent dates while preserving older unfinished work");
+    }
+    @Test void aNewlyReadableBusinessCenterAutomaticallyRechecksHistoricalCosts(){
+        discover();run();twoBcs=true;
+        fixture.db.update("UPDATE finance_ad_bc_sync SET discovery_next_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 HOUR)");
+        run();run();
+        assertEquals(LocalDate.now(ZoneId.of("Asia/Manila")).minusDays(89),queriedDays.getLast(),"a newly readable BC can contain older costs absent from the former scope");
+    }
+    @Test void preFixCompletedJobsAutomaticallyRecheckHistoryWithoutAnotherAuthorization(){
+        discover();run();
+        var discovery=fixture.repo.read(fixture.db.queryForObject("SELECT bc_json FROM finance_ad_bc_sync",String.class));
+        discovery.remove("history_version");
+        fixture.db.update("UPDATE finance_ad_bc_sync SET bc_json=?",fixture.repo.write(discovery));
+        run();assertTrue(paths.getLast().endsWith("/bc/get/"));run();
+        assertEquals(LocalDate.now(ZoneId.of("Asia/Manila")).minusDays(89),queriedDays.getLast());
+    }
+    @Test void aCompletedPartialFinancialScopeIsNotReportedAsCompleteAccountFunding(){
+        twoBcs=true;partialFinanceRole=true;discover();run();
+        assertEquals("SUCCESS",state(),"the scheduler may complete its readable request scope");
+        var funding=map(ads.list(fixture.owner).getFirst().get("funding"));
+        assertEquals("PARTIAL_ACCESS",funding.get("status"));
+        assertEquals("SUCCESS",funding.get("sync_status"));
+        assertEquals(1L,number(funding.get("readable_bc_count")));
+        assertEquals(1L,number(funding.get("missing_finance_role_bc_count")));
+        assertEquals("HAS_RECORDS",funding.get("coverage_status"));
+    }
+    @Test void anEmptySuccessfulQueryRemainsUnknownRatherThanCompleteOrZeroFunding(){
+        emptyCost=true;discover();run();
+        assertEquals("SUCCESS",state());
+        var funding=map(ads.list(fixture.owner).getFirst().get("funding"));
+        assertEquals("NO_DATA",funding.get("status"));
+        assertEquals("SUCCESS",funding.get("sync_status"));
+        assertEquals("NO_RECORDS",funding.get("coverage_status"));
+        assertEquals(0L,number(funding.get("records")));
+        assertFalse(Boolean.TRUE.equals(funding.get("permissionRequired")));
+    }
+    @Test void missingFinanceRolesAreRediscoveredWithinAnHourWithoutReauthorization(){
+        noFinanceRole=true;ads.funding.tick();
+        assertEquals("NEEDS_FINANCE_ROLE",state());
+        assertTrue(fixture.db.queryForObject("SELECT next_at<=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 61 MINUTE) AND discovery_next_at<=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 61 MINUTE) FROM finance_ad_bc_sync",Boolean.class));
     }
     @Test void lateResponseCannotPublishAfterPauseAndResumeRevokesItsFundingLease(){
         discover();doAnswer(i->{ads.pause(fixture.owner,"100001",false);ads.pause(fixture.owner,"100001",true);return response(i.getArgument(0));}).when(http).getExact(any(),anyMap());
