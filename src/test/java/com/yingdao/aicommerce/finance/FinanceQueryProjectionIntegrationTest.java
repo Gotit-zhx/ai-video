@@ -42,6 +42,40 @@ class FinanceQueryProjectionIntegrationTest {
         assertEquals(11,fixture.db.queryForObject("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='finance_records' AND index_name='idx_finance_page'",Integer.class));
         assertEquals(16,fixture.db.queryForObject("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='finance_records' AND index_name='idx_finance_company_kind_date'",Integer.class));
     }
+    @Test void eventBatchResolvesHistoricalBillOwnersAndSourcesWithoutPerOrderReads(){
+        for(int i=0;i<80;i++){
+            order("batch-"+i,"2026-05-02","9");
+            fixture.repo.save(fixture.owner,new Entry(shop,"TIKTOK_SHOP","SETTLEMENT","batch-settlement-"+i,"batch-"+i,"batch-statement-"+i,"ORDER","SETTLED",LocalDate.of(2026,6,3),"PHP",decimal("8"),null,null,null,null,"API",Map.of()));
+            fixture.db.update("INSERT INTO finance_records(id,organization_id,user_id,shop_id,platform,kind,external_id,record_date,currency,amount,source,raw_json) VALUES(?,?,?,?,?,'BILL',?,'2026-10-04','PHP',8,?,'{}')",
+                hash("historical-bill-"+i),fixture.owner.organizationId(),"previous-owner",shop,"TIKTOK_SHOP","batch-statement-"+i,"LEGACY_FEED");
+        }
+        build("2026-05-01","2026-10-31","");
+        for(int i=0;i<80;i++)for(int duplicate=0;duplicate<3;duplicate++)fixture.db.update("INSERT INTO finance_query_events(organization_id,event_scope,shop_id,order_id,source_table) VALUES(?,'ORDER',?,?,'finance_order_costs')",fixture.owner.organizationId(),shop,"batch-"+i);
+        assertTrue(projections.find(fixture.owner,filter("2026-10-01","2026-10-31","")).isEmpty(),"The previous user's nonstandard-source bill date must fence the historical month");
+        var reads=new java.util.concurrent.atomic.AtomicInteger();
+        var counted=new org.springframework.jdbc.core.JdbcTemplate(fixture.dataSource){
+            @Override public List<Map<String,Object>> queryForList(String sql,Object...args){reads.incrementAndGet();return super.queryForList(sql,args);}
+            @Override public <T>List<T> queryForList(String sql,Class<T> type,Object...args){reads.incrementAndGet();return super.queryForList(sql,type,args);}
+        };
+        var repo=new FinanceRepository(counted,new tools.jackson.databind.ObjectMapper());
+        var batched=new FinanceQueryProjections(repo,fixture.service,new FinanceAdSpendService(repo,fixture.service));
+        assertEquals(240,batched.drainEvents());
+        assertTrue(reads.get()<=12,"One shop's 80 orders must resolve in a bounded batch, actual SELECTs="+reads.get());
+        assertEquals(List.of(java.sql.Date.valueOf("2026-05-02"),java.sql.Date.valueOf("2026-06-03"),java.sql.Date.valueOf("2026-10-04")),fixture.db.queryForList("SELECT DISTINCT record_date FROM finance_query_dirty_days ORDER BY record_date",java.sql.Date.class));
+        assertEquals(0,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_query_events",Integer.class));
+    }
+    @Test void aLargeBurstMakesProgressInBoundedTransactionsWithoutDroppingTheTail(){
+        projections.request(fixture.owner,filter("2026-10-01","2026-10-31",""));
+        while(projections.drainEvents()>0){}
+        var events=new ArrayList<Object[]>();
+        for(int i=0;i<2001;i++)events.add(new Object[]{fixture.owner.organizationId()});
+        fixture.db.batchUpdate("INSERT INTO finance_query_events(organization_id,event_scope,record_date,source_table) VALUES(?,'DAY','2026-10-05','finance_records')",events);
+        assertEquals(2000,projections.drainEvents(),"A backlog must advance by 2,000 visible identities without exceeding the bounded transaction");
+        assertEquals(1,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_query_events",Integer.class));
+        assertEquals(1,projections.drainEvents());
+        assertEquals(0,projections.drainEvents());
+        assertEquals(1,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_query_dirty_days WHERE record_date='2026-10-05'",Integer.class));
+    }
     @Test void fullAndPartialMonthsRetainCorrectionUnknownsAndExactDecimals(){
         fixture.db.update("UPDATE finance_connections SET platform='TIKTOK_SHOP' WHERE id=?",shop);
         fixture.db.update("INSERT INTO finance_reporting_months(organization_id,shop_id,order_id,statement_id,reporting_month,source,reason,confirmed_by)"
