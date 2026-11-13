@@ -1,0 +1,45 @@
+{
+  "name": "@heyi/finance-modern",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build": "node ../modern-build.mjs",
+    "dev": "node ../modern-build.mjs --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint:antd": "node scripts/antd-gate.mjs",
+    "test:browser": "node ../../scripts/ci/qa/node_modules/@playwright/test/cli.js test -c browser/playwright.config.cjs",
+    "check:bundle": "node scripts/bundle-budget.mjs",
+    "verify:ci": "npm run typecheck && npm test && npm run test:source && npm run lint:antd && npm run build && node tests/build-smoke.mjs && npm run check:bundle && npm run test:browser",
+    "test:source": "node --test scripts/*.test.mjs"
+  },
+  "dependencies": {
+    "@ant-design/cssinjs": "2.1.2",
+    "@tanstack/react-query": "5.107.1",
+    "antd": "6.7.0",
+    "echarts": "6.1.0",
+    "lucide-react": "1.72.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@ant-design/cli": "6.7.0",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.9",
+    "@types/node": "22.19.10",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "jsdom": "26.1.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.8",
+    "vitest": "5.1.0"
+  }
+}

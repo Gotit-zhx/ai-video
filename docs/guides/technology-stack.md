@@ -1,6 +1,6 @@
 # 项目技术栈
 
-主体清单核对日期：2026-11-11。版本取自仓库声明、锁文件及 vendored 资源；共享服务器实际版本以现场源码运行回执为准。带 `^` 或范围的依赖保留原声明；实际安装版本应由对应锁文件确定。
+主体清单核对日期：2026-11-11；新版财务前端补充核对日期：2026-11-12。版本取自仓库声明、锁文件及 vendored 资源；共享服务器实际版本以现场源码运行回执为准。带 `^` 或范围的依赖保留原声明；实际安装版本应由对应锁文件确定。
 
 ## 主系统与基础设施
 
@@ -9,13 +9,17 @@
 | 后端语言 / 框架 | Java 21、Spring Boot 4.1.0、Maven 3.9.11；dev profile `spring-boot:run` | [pom.xml](../../pom.xml)、[开发指南](development.md) |
 | HTTP / 权限 | Spring MVC、Spring Security、Bean Validation、Spring Session Redis、BCrypt | [后端清单](../../pom.xml)、`auth/`、`config/` |
 | 数据访问 | MyBatis-Plus 3.5.17、JdbcTemplate、MySQL Connector/J | [后端清单](../../pom.xml) |
-| 数据库 / 迁移 | MySQL 8.4、Flyway；最高现存迁移 V150，V149 缺号 | [开发 Compose](../../compose.dev.yaml)、[迁移](../../src/main/resources/db/migration/) |
+| 数据库 / 迁移 | MySQL 8.4、Flyway；仓库历史见迁移目录，已应用版本以现场 Flyway 历史为准 | [开发 Compose](../../compose.dev.yaml)、[迁移](../../src/main/resources/db/migration/)、[现场状态](source-runtime-status.md) |
 | 缓存 / 会话 / 队列 | Redis 8、Redis Session、Redis Stream 与业务持久任务表 | [开发 Compose](../../compose.dev.yaml)、`workflow/`、`finance/` |
-| Web | 原生 HTML / JavaScript / CSS；没有 React/Vue 构建工程 | [前端](../../frontend/) |
+| 既有 Web | 原生 HTML / JavaScript / CSS；旧财务及其他业务沿用现有入口 | [前端](../../frontend/) |
+| 新版财务 Web | React 19.3.1、TypeScript 7.0.2、Vite 8.3.8；Ant Design 6.7.0、CSS-in-JS 2.1.2、Lucide 1.72.0、TanStack Query 5.107.1；Shadow DOM 隔离、按需 ESM | [清单](../../frontend/modern/package.json)、[锁文件](../../frontend/modern/package-lock.json)、[双界面说明](finance-modern-ui.md) |
+| 财务前端工程验证 | Node 22.21.1（CI）、Vitest 5.1.0、Testing Library React 16.3.3、Playwright 1.65.0、AntD CLI 6.7.0 | [现代工程](../../frontend/modern/)、[QA 清单](../../scripts/ci/qa/package.json)、[验收矩阵](finance-modern-acceptance.md) |
 | 图表 / 3D | Apache ECharts 6.1.0、Three.js r170（0.170.0） | [本地第三方资源](../../frontend/vendor/) |
 | Web 运行 | 本地 Spring 从 `frontend/` 提供同源 UI/API；共享服务器 Nginx bind `frontend/`，保留 TLS、主应用 API 和独立服务代理 | [开发指南](development.md)、[服务器交接](server-handoff.md) |
 | 图像 / 媒体 | FFmpeg、Java ImageIO/WebP；图片传输与模型运行时另有实现 | [后端 Dockerfile](../../Dockerfile)、[Runtime](../../services/pi-runtime/Dockerfile) |
 | 文件 | Aliyun OSS SDK 3.18.4、Dayan/S3 兼容对象存储、Docker 持久卷 | [后端清单](../../pom.xml)、[存储说明](../business/storage/dayan-object-storage.md) |
+
+新版财务的两个滚动传递依赖 `compute-scroll-into-view` / `scroll-into-view-if-needed` 3.2.0 声明 Node ≥26；在当前 CI 的 Node 22.21.1 安装时会出现引擎提示。本轮类型、构建、组件和三引擎浏览器检查在 22.21.1 通过；开启 `engine-strict` 的环境需单独核对工具链。依赖升级时重新核对上游声明，不以任意传递版本覆盖消除提示。浏览器运行不依赖服务器 Node 服务。
 
 ## 独立服务
 

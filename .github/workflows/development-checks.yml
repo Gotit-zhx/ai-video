@@ -35,16 +35,26 @@ jobs:
   frontend:
     name: Frontend source checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '22.21.1'
       - name: Check application JavaScript syntax
         run: find frontend -maxdepth 2 -type f -name '*.js' ! -path 'frontend/vendor/*' -print0 | xargs -0 -n 1 node --check
+      - name: Install frontend verification dependencies
+        run: |
+          npm --prefix scripts/ci/qa ci --ignore-scripts
+          npm --prefix frontend/modern ci --ignore-scripts
+      - name: Verify modern financial application
+        run: |
+          node scripts/ci/qa/node_modules/playwright/cli.js install --with-deps chromium firefox webkit
+          npm --prefix frontend/modern run verify:ci
+      - name: Verify finance entry, isolation and immutable asset publication
+        run: node --test frontend/test/finance-modern-entry.test.cjs frontend/test/finance-modern-host.test.cjs frontend/test/finance-modern-publish.test.mjs frontend/test/nginx-html-cache.test.cjs
       - name: Verify frontend source references
         run: node --test frontend/test/public-assets.cjs
       - name: Verify development live reload contract
@@ -63,7 +73,7 @@ jobs:
           node: 'false'
           media: 'false'
       - name: Run source-mode and maintenance safety tests
-        run: mvn -B -ntp -Dtest=DevRevisionControllerTest,DevWebConfigurationTest,MaintenanceGateTest test
+        run: mvn -B -ntp -Dtest=DevRevisionControllerTest,DevWebConfigurationTest,DevWebResourceSecurityTest,MaintenanceGateTest test
 
   required:
     name: Development checks

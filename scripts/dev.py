@@ -109,6 +109,35 @@ def toolchain(env):
     return [maven, '-B', '-ntp', '-s', str(ROOT / 'maven-settings.xml'), '-Dmaven.repo.local=' + str(repository), '-Pdev']
 
 
+def ensure_modern_frontend(root, env):
+    """Compile optional React sources before launch; no Node server runs in production."""
+    root = Path(root)
+    modern = root / 'frontend/modern'
+    if not (modern / 'package.json').is_file():
+        return False
+    state = root / '.dev'
+    state.mkdir(parents=True, exist_ok=True)
+    lock_hash = hashlib.sha256((modern / 'package-lock.json').read_bytes()).hexdigest()
+    installed = state / 'finance-modern-deps.sha256'
+    source_state = state / 'finance-modern-source.sha256'
+    if not (modern / 'node_modules/vite/package.json').is_file() or not installed.is_file() or installed.read_text() != lock_hash:
+        subprocess.run(['npm', '--prefix', str(modern), 'ci', '--ignore-scripts'], cwd=root, env=env, check=True)
+        installed.write_text(lock_hash)
+    candidates = list(modern.glob('*')) + list((modern / 'src').rglob('*'))
+    sources = {str(path.relative_to(modern)): hashlib.sha256(path.read_bytes()).hexdigest()
+               for path in sorted(candidates) if path.is_file() and not path.is_symlink()
+               and not any(part.startswith('.') for part in path.relative_to(modern).parts)}
+    for path in (root / 'frontend/modern-build.mjs', root / 'frontend/i18n/catalog.json'):
+        if path.is_file():
+            sources[str(path.relative_to(root))] = hashlib.sha256(path.read_bytes()).hexdigest()
+    revision = hashlib.sha256(json.dumps(sources, sort_keys=True).encode()).hexdigest()
+    if source_state.is_file() and source_state.read_text() == revision and (root / 'frontend/assets/finance-modern/manifest.json').is_file():
+        return False
+    subprocess.run(['npm', '--prefix', str(modern), 'run', 'build'], cwd=root, env=env, check=True)
+    source_state.write_text(revision)
+    return True
+
+
 class SourceWatcher:
     """One owner watches source; callbacks provide optional shared-host safe points."""
     debounce_seconds = .7
@@ -135,11 +164,24 @@ class SourceWatcher:
         found = {}
         if not directory.exists():
             return found
-        for path in sorted(directory.rglob('*')):
+        candidates = []
+        for folder, children, names in os.walk(directory, followlinks=False):
+            parent = Path(folder)
+            children[:] = sorted(name for name in children
+                if not name.startswith('.') and name not in ('node_modules', 'test', 'tests', '__pycache__')
+                and not (parent / name).is_symlink()
+                and not (frontend and ((parent / name).relative_to(directory).parts[0] == 'modern'
+                    or (parent / name).relative_to(directory).parts[:2] == ('assets', 'finance-modern'))))
+            candidates.extend(parent / name for name in sorted(names))
+        for path in candidates:
             relative = path.relative_to(directory)
             if path.is_symlink() or not path.is_file() or any(part.startswith('.') or part in ('node_modules', 'test', 'tests', '__pycache__') for part in relative.parts):
                 continue
             if frontend and path.suffix.lower() not in PUBLIC_EXTENSIONS:
+                continue
+            # React assets are published atomically and picked up on the next visit.
+            # Rebuilding this optional UI must not reload tabs with financial drafts.
+            if frontend and (relative.parts[0] == 'modern' or relative.parts[:2] == ('assets', 'finance-modern')):
                 continue
             stat = path.stat()
             stamp = (stat.st_mtime_ns, stat.st_size)
@@ -372,6 +414,7 @@ def main(argv=None):
     prior = signal.signal(signal.SIGTERM, interrupted)
     try:
         with workspace_lock(ROOT):
+            ensure_modern_frontend(ROOT, env)
             # Keep this baseline before any initial compilation or child startup. Saves made
             # while Maven starts are then coalesced by step() after owned readiness.
             watcher = SourceWatcher(ROOT, compile_action)

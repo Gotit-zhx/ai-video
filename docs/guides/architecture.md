@@ -1,6 +1,6 @@
 # 架构与代码导航
 
-主体架构核对日期：2026-11-11。版本依据为根目录 `pom.xml`、源码开发配置、Nginx、各模块源码和迁移。
+主体架构核对日期：2026-11-11；财务双界面补充核对日期：2026-11-12。版本依据为根目录 `pom.xml`、源码开发配置、Nginx、各模块源码和迁移。
 
 仓库目录树及模块组织图见[项目组织结构](project-structure.md)，版本及清单来源见[技术栈](technology-stack.md)。
 
@@ -59,12 +59,29 @@ Java 包根目录为 [`src/main/java/com/yingdao/aicommerce/`](../../src/main/ja
 | `recruitment/` | 招聘 AI 的 Java 入口；招聘主体业务另在 Python |
 | `frontend/app.js`、`frontend/index.html` | 页面入口、状态与公共导航；其他功能按脚本拆分 |
 | `frontend/finance-*.js`、`frontend/commerce-*.js`、`frontend/hr-*.js` | 财务、电商及招聘工作区与专用交互 |
+| `frontend/finance-entry.js`、`frontend/finance-host.js` | 财务模式、资源和生命周期门面，以及既有会话/导航适配 |
+| `frontend/modern/src/{app,shared,features/finance}/` | 新版财务挂载与公共基础、财务业务；类型、组件和浏览器测试独立维护 |
 | `services/pi-runtime/src/server.js` 及同目录模块 | 模型传输、分析、生图、进度、图片操作持久化 |
 | `services/recruitment/connector.py` 及同目录模块 | 招聘平台业务、数据存储、桌面配对、人才/入职/BI |
 | `apps/hr-desktop/`、`apps/hr-desktop/client-workbench/` | 招聘桌面壳与 Ai boss 工作台；须按目标系统构建 |
 | `apps/automation-agent/`、`apps/browser-extension/` | 通用桌面执行程序与商品采集扩展，分别发布 |
 
-前端没有 React/Vue 工程或根目录 npm 构建链。源码模式直接读取 `frontend/`；修改 JS/CSS 后检查 `index.html` 引用、缓存行为和相关页面测试，无需构建 gzip、静态包或镜像。历史 Dockerfile COPY 清单只在明确恢复旧镜像时检查。
+既有页面直接读取 `frontend/` 的原生 JS/CSS；新版财务单独使用 `frontend/modern` 的 React/TypeScript/Vite 工程。它只消费既有财务 API，不重算账务或另建授权流程。普通旧版与其他模块首访不加载新版资源；当前标签页 URL 决定财务模式，互不修改其他标签页的模式、筛选与草稿。
+
+```mermaid
+flowchart LR
+    Portal[既有登录与全局导航] --> Classic[原生 JS 旧财务：默认]
+    Portal --> Adapter[财务入口与宿主适配]
+    Classic -->|体验链接：新标签页| Adapter
+    Adapter --> Modern[Shadow DOM 内的 React 财务业务]
+    Modern --> Shared[公共 UI / 请求 / 会话契约]
+    Classic --> API[既有财务 API]
+    Shared --> API
+    Build[Vite 编译] --> Assets[哈希 ESM / 单 CSS / 原子清单]
+    Assets -. 按需加载 .-> Modern
+```
+
+新版源码与测试不对浏览器发布，哈希资源通过 `modern-build.mjs` 在成功编译后按清单发布，保留旧哈希供已打开标签页使用。公共基础不导入财务业务或旧宿主；后续整站迁移替换宿主适配即可保留业务页面。运行时没有额外 Node 服务；现有普通 JS/CSS 修改无需应用镜像。编译、AntD 版本知识、弹层容器和验收边界见[财务双界面开发](finance-modern-ui.md)及[验收矩阵](finance-modern-acceptance.md)。历史 Dockerfile COPY 清单只在明确恢复旧镜像时检查。
 
 ## 主要数据流
 

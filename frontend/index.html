@@ -5,9 +5,40 @@
   <script>
     // Credentials and other secrets must never remain in a browser URL.
     if (window.location.search) {
-      const language = new URLSearchParams(window.location.search).get("lang");
-      const safeQuery = ["zh", "en", "ms", "id", "th", "vi", "fil"].includes(language) ? `?lang=${language}` : "";
-      const safeHash = new URLSearchParams(window.location.search).get("view") === "finance" && !window.location.hash ? "#finance-shops" : window.location.hash;
+      const incoming = new URLSearchParams(window.location.search);
+      const clean = new URLSearchParams();
+      const language = incoming.get("lang");
+      if (["zh", "en", "ms", "id", "th", "vi", "fil"].includes(language)) clean.set("lang", language);
+      const mode = incoming.get("financeUi");
+      if (mode === "modern" || mode === "legacy") {
+        clean.set("financeUi", mode);
+        for (const key of ["start", "end", "shopId", "groupId", "platform", "currency", "displayCurrency"]) {
+          const value = incoming.get(key);
+          if (value === null) continue;
+          if (key === "start" || key === "end") {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) continue;
+            const day = new Date(value + "T12:00:00Z");
+            if (Number.isFinite(day.getTime()) && day.toISOString().slice(0, 10) === value) clean.set(key, value);
+          } else if ((key === "shopId" || key === "groupId") && /^[A-Za-z0-9_-]{0,128}$/.test(value)) clean.set(key, value);
+          else if (key === "platform" && ["", "SHOPEE", "TIKTOK_SHOP"].includes(value)) clean.set(key, value);
+          else if (key === "currency" && /^(?:[A-Z]{3})?$/.test(value)) clean.set(key, value);
+          else if (key === "displayCurrency" && ["CNY", "ORIGINAL"].includes(value)) clean.set(key, value);
+        }
+        if (clean.get("start") && clean.get("end") && clean.get("start") > clean.get("end")) {
+          clean.delete("start"); clean.delete("end");
+        }
+      }
+      const authStatus = incoming.get("financeAuth");
+      if (authStatus === "success" || authStatus === "error") {
+        const message = incoming.get("financeMessage") || "";
+        const safeMessage = message.length <= 300 && !/[\u0000-\u001f]|https?:\/\/|token|auth[_-]?code|password|cookie|secret|\b(?:oauth[_-]?)?state\b(?:\\?["'])?\s*[=:]|bearer\s+/i.test(message);
+        window.HoyeeFinanceAuthNotice = {
+          status: authStatus,
+          message: safeMessage && message ? message : (authStatus === "success" ? "财务授权已完成" : "财务授权未完成，请查看账户连接状态")
+        };
+      }
+      const safeQuery = clean.size ? "?" + clean.toString() : "";
+      const safeHash = incoming.get("view") === "finance" && !window.location.hash ? "#finance-shops" : window.location.hash;
       window.history.replaceState(null, document.title, window.location.pathname + safeQuery + safeHash);
     }
 
@@ -49,7 +80,7 @@
   <link rel="stylesheet" href="/product-bulk-history.css?v=20260910-bulk-history-2">
   <link rel="stylesheet" href="/product-main-image-styles.css?v=20261019-detail-1">
   <link rel="stylesheet" href="/knowledge-workspace.css?v=20260923-3">
-    <link rel="stylesheet" href="/finance-workspace.css?v=20261111-shopee-ads-1">
+    <link rel="stylesheet" href="/finance-workspace.css?v=20261112-modern-host-1">
     <link rel="stylesheet" href="/finance-costs.css?v=20261104-amount-2">
     <link rel="stylesheet" href="/finance-expenses-design.css?v=20261022-cost-shops-2">
     <link rel="stylesheet" href="/hr-workspace.css?v=20261012-progress-compact-3">
@@ -100,7 +131,7 @@
           <label for="organization-code">公司代码</label>
           <div class="field">
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 21V7l8-4 8 4v14M8 10h2m4 0h2M8 14h2m4 0h2M9 21v-3h6v3"/></svg>
-            <input id="organization-code" name="organizationCode" autocomplete="organization" maxlength="40" pattern="[A-Za-z0-9_-]{2,40}" value="heyi" placeholder="例如：heyi" required>
+            <input id="organization-code" name="organizationCode" autocomplete="organization" maxlength="40" pattern="[A-Za-z0-9_\-]{2,40}" value="heyi" placeholder="例如：heyi" required>
           </div>
 
           <label for="username">手机号</label>
@@ -1694,7 +1725,7 @@
       </div>
       <div class="form-grid">
         <label>角色名称<input name="name" required maxlength="100" placeholder="例如：商品运营"></label>
-        <label>角色编码<input name="code" required pattern="[A-Za-z0-9_-]{2,60}" placeholder="例如：PRODUCT_OPERATOR"></label>
+        <label>角色编码<input name="code" required pattern="[A-Za-z0-9_\-]{2,60}" placeholder="例如：PRODUCT_OPERATOR"></label>
         <label>数据范围<select name="dataScope" required>
           <option value="SELF">仅本人</option>
           <option value="DEPARTMENT">本部门</option>
@@ -1719,7 +1750,7 @@
       </div>
       <div class="form-grid">
         <label>部门名称<input name="name" required maxlength="120" placeholder="例如：内容运营部"></label>
-        <label>部门编码<input name="code" required pattern="[A-Za-z0-9_-]{2,60}" placeholder="例如：CONTENT"></label>
+        <label>部门编码<input name="code" required pattern="[A-Za-z0-9_\-]{2,60}" placeholder="例如：CONTENT"></label>
         <label class="full-field">上级部门<select name="parentId" id="parent-department"><option value="">无上级部门</option></select></label>
       </div>
       <div id="department-form-error" class="form-error" hidden></div>
@@ -1753,7 +1784,7 @@
       </div>
       <div class="form-grid">
         <label>公司名称<input name="name" required maxlength="120" placeholder="例如：华南内容中心"></label>
-        <label>公司代码<input name="code" required maxlength="40" pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,39}" placeholder="例如：south_content"></label>
+        <label>公司代码<input name="code" required maxlength="40" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{1,39}" placeholder="例如：south_content"></label>
         <label class="full-field">公司简介<textarea name="description" maxlength="1000" rows="3" placeholder="说明该工作空间服务的业务范围"></textarea></label>
       </div>
       <p class="form-help">公司代码用于登录，创建后不可重复；建议使用简短英文或拼音。</p>
@@ -2027,19 +2058,21 @@
   <script src="/incremental-dom.js?v=20261021-2" defer></script>
   <script src="/incremental-charts.js?v=20261021-1" defer></script>
   <script src="/video-direct-downloads.js?v=20261102-direct-download-1" defer></script>
+  <script src="/finance-entry.js?v=20261112-modern-1" defer></script>
+  <script src="/finance-host.js?v=20261112-modern-1" defer></script>
   <script src="/app.js?v=20261111-finance-nav-1" defer></script>
   <script src="/product-main-image-styles.js?v=20261021-incremental-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261019-94383ea9f5cb" defer></script>
   <script src="/hr-onboarding.js?v=20261021-incremental-1" defer></script>
-  <script src="/finance-label-costs.js?v=20261104-group-shops" defer></script>
-  <script src="/finance-qianyi.js?v=20261105-report-basis-receipt" defer></script>
-  <script src="/finance-costs.js?v=20261105-gift-zero" defer></script>
-  <script src="/finance-expenses-design.js?v=20261023-profit-overview-1" defer></script>
-  <script src="/finance-charges.js?v=20261106-brush-column-totals" defer></script>
-  <script src="/finance-fee-exports.js?v=20261104-fee-export-native" defer></script>
-  <script src="/finance-shopee-ads.js?v=20261111-shopee-ads-1" defer></script>
-  <script src="/finance-ad-spend.js?v=20261111-shopee-ads-1" defer></script>
-  <script src="/finance-workspace.js?v=20261111-shopee-ads-1" defer></script>
+  <script type="application/x-finance-legacy" data-finance-legacy-src="/finance-label-costs.js?v=20261104-group-shops"></script>
+  <script type="application/x-finance-legacy" data-finance-legacy-src="/finance-qianyi.js?v=20261105-report-basis-receipt"></script>
+  <script type="application/x-finance-legacy" data-finance-legacy-src="/finance-costs.js?v=20261105-gift-zero"></script>
+  <script type="application/x-finance-legacy" data-finance-legacy-src="/finance-expenses-design.js?v=20261023-profit-overview-1"></script>
+  <script type="application/x-finance-legacy" data-finance-legacy-src="/finance-charges.js?v=20261106-brush-column-totals"></script>
+  <script type="application/x-finance-legacy" data-finance-legacy-src="/finance-fee-exports.js?v=20261104-fee-export-native"></script>
+  <script type="application/x-finance-legacy" data-finance-legacy-src="/finance-shopee-ads.js?v=20261111-shopee-ads-1"></script>
+  <script type="application/x-finance-legacy" data-finance-legacy-src="/finance-ad-spend.js?v=20261111-shopee-ads-1"></script>
+  <script type="application/x-finance-legacy" data-finance-legacy-src="/finance-workspace.js?v=20261112-modern-1"></script>
   <script src="/hr-bi.js?v=20261021-incremental-1" defer></script>
   <script src="/hr-pool.js?v=20261012-boss-chat-019" defer></script>
   <script src="/hr-demands.js?v=20261021-incremental-1" defer></script>

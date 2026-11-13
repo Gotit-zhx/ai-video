@@ -32,7 +32,8 @@
 | --- | --- |
 | Java 后端 | Java 21、Spring Boot 4.1.0、MyBatis-Plus 3.5.17、Maven |
 | 数据层 | MySQL 8.4、Flyway、Redis 8、Spring Session |
-| Web 前端 | 原生 HTML / JavaScript / CSS；本地 Spring 直接读取源码，服务器 Nginx bind `frontend/` 并保留 TLS/代理，无独立 npm 构建步骤 |
+| 既有 Web | 原生 HTML / JavaScript / CSS；本地 Spring 同源提供，服务器 Nginx bind `frontend/` 并保留 TLS/代理 |
+| 新版财务 BI | `frontend/modern/`：React + TypeScript + Vite、Ant Design、Lucide、TanStack Query、ECharts；按需加载，旧财务继续默认使用 |
 | 模型运行时 | Node.js 22、Pi Agent SDK，位于 `services/pi-runtime/` |
 | 本机执行 | Electron 自动化助手、招聘助手及浏览器扩展，各自独立构建 |
 | 文件 | Docker 持久卷及按环境配置的 OSS；数据库备份不包含全部素材 |
@@ -65,7 +66,7 @@ python3 scripts/dev.py run
 curl -fsS http://localhost:8080/actuator/health
 ```
 
-Java 以 Maven dev profile 的 `spring-boot:run` 启动。watcher 在保存后仅增量编译到 `target/classes`，成功后再触发 DevTools 重启；Java 修改需要编译和上下文重建的数秒时间，不能承诺零延迟。HTML/JS/CSS 直接从 `frontend/` 读取，无 npm 打包、gzip 或镜像构建；开发专用浏览器轮询刷新可选。`pom.xml` 依赖变化由 watcher 受控重启 app；Flyway 迁移、环境配置与运行工具本身变化须显式维护并单独验证。
+Java 以 Maven dev profile 的 `spring-boot:run` 启动。watcher 在保存后仅增量编译到 `target/classes`，成功后再触发 DevTools 重启；Java 修改需要编译和上下文重建的数秒时间，不能承诺零延迟。既有 HTML/JS/CSS 直接从 `frontend/` 读取；新版财务由 Vite 编译到 `frontend/assets/finance-modern/`，首次源码启动按需安装和编译，独立编辑使用 `npm --prefix frontend/modern run dev`。浏览器普通首访不加载新版 React 资源，不增加 Node 运行服务或应用镜像。双入口、样式隔离和验收边界见[财务双界面开发](docs/guides/finance-modern-ui.md)。`pom.xml` 依赖变化由 watcher 受控重启 app；Flyway 迁移、环境配置与运行工具本身变化须显式维护并单独验证。
 
 需要单独开发 Pi Runtime 时运行：
 

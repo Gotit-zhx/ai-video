@@ -12,6 +12,8 @@
 | 语言、框架及依赖版本 | [技术栈清单](guides/technology-stack.md) |
 | 服务与数据流、代码位置 | [架构说明](guides/architecture.md) |
 | 本地环境、配置、调试与测试 | [开发指南](guides/development.md) |
+| 财务 BI 双入口、现代前端和资源编译 | [财务 BI 双界面开发](guides/finance-modern-ui.md) |
+| 财务新版隔离浏览器验收、动作矩阵与预算 | [现代界面验收矩阵](guides/finance-modern-acceptance.md) |
 | 登录、权限及接口查找 | [接口导航](guides/api.md) |
 | 共享服务器源码运行、恢复、备份和排障 | [运维指南](guides/operations.md) |
 | 源码模式下的 CI、旧自动发布和网络传输边界 | [CI/CD 与统一运维](guides/cicd.md)、[CI/CD 加速历史边界](guides/cicd-acceleration.md) |
