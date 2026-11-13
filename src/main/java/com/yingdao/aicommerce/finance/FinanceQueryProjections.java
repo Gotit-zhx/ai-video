@@ -248,9 +248,13 @@ public class FinanceQueryProjections {
             repo.transaction(()->{
                 // R is an internal baseline; readers still require built_revision=requested_revision.
                 // A later full invalidation and later dirty days must survive this lease.
-                int published=repo.jdbc().update("UPDATE finance_query_partitions SET full_month_json=?,partial_first_day_json=?,spend_json=?,built_revision=?,schema_version=?,generated_at=?,full_rebuild=(full_rebuild_revision>?),lease_token=NULL,lease_until=NULL,failures=0,error_code=NULL WHERE organization_id=? AND platform_filter=? AND partition_month=? AND lease_token=? AND lease_until>UTC_TIMESTAMP(6) AND requested_revision>=? AND built_revision<=?",
-                    full,first,ads,revision,SCHEMA_VERSION,java.sql.Timestamp.from(snapshot.snapshotStarted()),revision,key.organization,key.platform,key.month,claimed.get("lease_token"),revision,revision);
-                if(published==1)repo.jdbc().update("DELETE FROM finance_query_dirty_days WHERE organization_id=? AND platform_filter=? AND partition_month=? AND requested_revision<=?",key.organization,key.platform,key.month,revision);
+                int published=repo.jdbc().update("UPDATE finance_query_partitions SET full_month_json=?,built_revision=?,schema_version=?,generated_at=?,full_rebuild=(full_rebuild_revision>?),lease_token=NULL,lease_until=NULL,failures=0,error_code=NULL WHERE organization_id=? AND platform_filter=? AND partition_month=? AND lease_token=? AND lease_until>UTC_TIMESTAMP(6) AND requested_revision>=? AND built_revision<=?",
+                    full,revision,SCHEMA_VERSION,java.sql.Timestamp.from(snapshot.snapshotStarted()),revision,key.organization,key.platform,key.month,claimed.get("lease_token"),revision,revision);
+                if(published==1){
+                    repo.jdbc().update("UPDATE finance_query_partitions SET partial_first_day_json=? WHERE organization_id=? AND platform_filter=? AND partition_month=?",first,key.organization,key.platform,key.month);
+                    repo.jdbc().update("UPDATE finance_query_partitions SET spend_json=? WHERE organization_id=? AND platform_filter=? AND partition_month=?",ads,key.organization,key.platform,key.month);
+                    repo.jdbc().update("DELETE FROM finance_query_dirty_days WHERE organization_id=? AND platform_filter=? AND partition_month=? AND requested_revision<=?",key.organization,key.platform,key.month,revision);
+                }
                 else repo.jdbc().update("UPDATE finance_query_partitions SET lease_token=NULL,lease_until=NULL WHERE organization_id=? AND platform_filter=? AND partition_month=? AND lease_token=?",key.organization,key.platform,key.month,claimed.get("lease_token"));
                 return null;
             });
