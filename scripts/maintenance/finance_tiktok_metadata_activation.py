@@ -2,6 +2,7 @@
 """Explicit fixed V156 TikTok metadata maintenance with protected ad-data guards."""
 import hashlib
 import json
+import datetime
 from pathlib import Path
 import re
 import signal
@@ -23,6 +24,7 @@ class Activation(fixed155.Activation):
     PREVIOUS_VERSION = '155'
     ROW_LIMIT = 100000
     COMPANY_LIMIT = 1000
+    DATE_LIMIT = 4096
     QUERY_TIMEOUT_MS = 5000
     SNAPSHOT = 'protected-ad-data-before.json'
     AFTER_SNAPSHOT = 'protected-ad-data-after.json'
@@ -104,6 +106,21 @@ class Activation(fixed155.Activation):
             raise RuntimeError('Protected ad-account company result is malformed')
         return companies
 
+    def _record_dates(self, host, company, kind):
+        query = (f"SELECT /*+ MAX_EXECUTION_TIME({self.QUERY_TIMEOUT_MS}) */ DISTINCT record_date "
+                 "FROM `finance_records` FORCE INDEX (`idx_finance_page`) "
+                 f"WHERE organization_id=CONVERT(0x{company} USING utf8mb4) AND kind='{kind}' "
+                 f"ORDER BY record_date DESC LIMIT {self.DATE_LIMIT + 1}")
+        dates = self._lines(host.sql(query))
+        if len(dates) > self.DATE_LIMIT: raise RuntimeError('Protected finance_records date limit exceeded')
+        valid = True
+        for value in dates:
+            try: valid = valid and datetime.date.fromisoformat(value).isoformat() == value
+            except ValueError: valid = False
+        if not valid or dates != sorted(set(dates), reverse=True):
+            raise RuntimeError('Protected finance_records date result is malformed')
+        return dates
+
     def _finance_records_snapshot(self, host, columns, primary):
         encoded = ["COALESCE(HEX(CAST(`" + column[1] + "` AS BINARY)),'-')" for column in columns]
         row_hash = "SHA2(CONCAT_WS(CHAR(31)," + ','.join(encoded) + "),256)"
@@ -111,16 +128,17 @@ class Activation(fixed155.Activation):
         hashes = []
         for company in self._companies(host):
             for kind in ('AD', 'AD_GMV'):
-                remaining = self.ROW_LIMIT - len(hashes)
-                query = (f"SELECT /*+ MAX_EXECUTION_TIME({self.QUERY_TIMEOUT_MS}) */ {row_hash} "
-                         "FROM `finance_records` FORCE INDEX (`idx_finance_page`) "
-                         f"WHERE organization_id=CONVERT(0x{company} USING utf8mb4) AND kind='{kind}' "
-                         f"ORDER BY {order} LIMIT {remaining + 1}")
-                rows = self._lines(host.sql(query))
-                if len(rows) > remaining: raise RuntimeError('Protected table row limit exceeded: finance_records')
-                if any(not re.fullmatch('[a-f0-9]{64}', value) for value in rows):
-                    raise RuntimeError('Protected table digest result is malformed: finance_records')
-                hashes.extend(rows)
+                for record_date in self._record_dates(host, company, kind):
+                    remaining = self.ROW_LIMIT - len(hashes)
+                    query = (f"SELECT /*+ MAX_EXECUTION_TIME({self.QUERY_TIMEOUT_MS}) */ {row_hash} "
+                             "FROM `finance_records` FORCE INDEX (`idx_finance_page`) "
+                             f"WHERE organization_id=CONVERT(0x{company} USING utf8mb4) AND kind='{kind}' "
+                             f"AND record_date='{record_date}' ORDER BY {order} LIMIT {remaining + 1}")
+                    rows = self._lines(host.sql(query))
+                    if len(rows) > remaining: raise RuntimeError('Protected table row limit exceeded: finance_records')
+                    if any(not re.fullmatch('[a-f0-9]{64}', value) for value in rows):
+                        raise RuntimeError('Protected table digest result is malformed: finance_records')
+                    hashes.extend(rows)
         return self._digest(hashes)
 
     def _table_snapshot(self, host, table, columns, primary):
@@ -141,7 +159,7 @@ class Activation(fixed155.Activation):
         metadata, metadata_hash = self._metadata(host)
         tables = {name: self._table_snapshot(host, name, metadata['columns'][name], metadata['primary'][name])
                   for name in self.TABLES}
-        return {'version': 1, 'metadataSha256': metadata_hash, 'tables': tables}
+        return {'version': 2, 'metadataSha256': metadata_hash, 'tables': tables}
 
     def save_before(self):
         super().save_before()

@@ -26,8 +26,12 @@ class GuardHost:
         self.schema_changed = False
         self.overflow = False
         self.timeout = False
+        self.malformed_date = False
+        self.missing_date = False
+        self.date_overflow = False
         self.queries = []
         self.limit = 0
+        self.date_limit = 0
 
     def sql(self, query):
         self.queries.append(query)
@@ -54,6 +58,11 @@ class GuardHost:
             return '\n'.join(primary + page)
         if 'DISTINCT HEX(organization_id)' in query:
             return '6F7267\n6F726732'
+        if 'DISTINCT record_date' in query:
+            if self.date_overflow: return '\n'.join('2026-10-02' for _ in range(self.date_limit + 1))
+            if self.missing_date: return '2026-10-02\n\n2026-10-01'
+            if self.malformed_date: return '2026-02-30'
+            return '2026-10-02\n2026-10-01' if "kind='AD'" in query else '2026-09-30'
         table = next(name for name in (
             'finance_records', 'finance_ad_accounts', 'finance_ad_stores', 'finance_ad_streams',
             'finance_ad_coverage', 'finance_ad_bc_sync', 'finance_ad_bc_costs',
@@ -101,6 +110,7 @@ class V156ActivationDrills(unittest.TestCase):
         self.activation = self.m.Activation(self.op, self.config_path, self.root, helper)
         self.store = Store(); self.host = DeploymentHost(self.root)
         self.host.limit = self.activation.ROW_LIMIT
+        self.host.date_limit = getattr(self.activation, 'DATE_LIMIT', 100)
         self.coordinator = shared_dev.ReloadCoordinator(config, self.store, self.host)
         self.coordinator.state_file.parent.mkdir()
         shared_dev.atomic(self.coordinator.state_file, {'phase': 'ready', 'owner': 'previous'})
@@ -117,17 +127,43 @@ class V156ActivationDrills(unittest.TestCase):
         self.activation.save_before()
         receipt = json.loads((self.op / 'protected-ad-data-before.json').read_text())
         self.assertEqual({'version', 'metadataSha256', 'tables'}, set(receipt))
+        self.assertEqual(2, receipt['version'])
         self.assertEqual({'rows', 'sha256'}, set(receipt['tables']['finance_ad_accounts']))
         self.assertNotIn('organization_id', json.dumps(receipt))
         self.activation.check_static()
-        record_queries = [query for query in self.host.queries if 'FROM `finance_records`' in query]
-        self.assertEqual(8, len(record_queries))
-        for query in record_queries:
+        date_queries = [query for query in self.host.queries if 'DISTINCT record_date' in query]
+        record_queries = [query for query in self.host.queries if 'FROM `finance_records`' in query and 'SHA2(' in query]
+        self.assertEqual(8, len(date_queries))
+        self.assertEqual(12, len(record_queries))
+        for query in date_queries + record_queries:
             self.assertIn('FORCE INDEX (`idx_finance_page`)', query)
             self.assertRegex(query, "organization_id=CONVERT\\(0x[0-9A-F]+ USING utf8mb4\\)")
             self.assertRegex(query, "kind='AD(?:_GMV)?'")
+        for query in record_queries:
+            self.assertRegex(query, "record_date='2026-[0-9]{2}-[0-9]{2}'")
             self.assertIn('ORDER BY `id`', query)
         self.assertFalse(any('SELECT DISTINCT organization_id FROM' in query for query in record_queries))
+
+    def test_finance_records_snapshot_covers_all_dates_in_deterministic_order(self):
+        snapshot = self.activation.protected_snapshot()
+        self.assertEqual(12, snapshot['tables']['finance_records']['rows'])
+        date_queries = [query for query in self.host.queries if 'DISTINCT record_date' in query]
+        self.assertEqual(4, len(date_queries))
+        hashes = [query for query in self.host.queries if 'FROM `finance_records`' in query and 'SHA2(' in query]
+        self.assertEqual(['2026-10-02','2026-10-01','2026-09-30'] * 2,
+            [query.split("record_date='")[1].split("'",1)[0] for query in hashes])
+
+    def test_finance_records_row_budget_is_global_across_dates_and_ranges(self):
+        self.activation.ROW_LIMIT = 3
+        with self.assertRaisesRegex(RuntimeError, 'finance_records'):
+            self.activation.protected_snapshot()
+
+    def test_record_date_enumeration_rejects_malformed_missing_and_overflow(self):
+        for fault in ('malformed_date', 'missing_date', 'date_overflow'):
+            with self.subTest(fault=fault):
+                setattr(self.host, fault, True)
+                with self.assertRaises(RuntimeError): self.activation.protected_snapshot()
+                setattr(self.host, fault, False)
 
     def test_guard_retains_gate_on_data_schema_or_row_limit_drift(self):
         self.activation.save_before()

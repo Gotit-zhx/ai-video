@@ -44,7 +44,9 @@ class FinanceTikTokMetadataSchemaIntegrationTest {
             fixture.db.update("""
                 INSERT INTO finance_records(id,organization_id,user_id,shop_id,platform,kind,external_id,record_date,currency,amount,source,raw_json) VALUES
                 ('ad-row','org','u','','TIKTOK_SHOP','AD','external','2026-10-01','PHP',5,'API','{\"advertiser_id\":\"adv\"}'),
+                ('ad-row-old','org','u','','TIKTOK_SHOP','AD','external-old','2026-09-30','PHP',4,'API','{\"advertiser_id\":\"adv\"}'),
                 ('gmv-row','org','u','','TIKTOK_SHOP','AD_GMV','gmv','2026-10-01','PHP',7,'API','{\"advertiser_id\":\"adv\"}'),
+                ('gmv-row-next','org','u','','TIKTOK_SHOP','AD_GMV','gmv-next','2026-10-02','PHP',6,'API','{\"advertiser_id\":\"adv\"}'),
                 ('order-row','org','u','','TIKTOK_SHOP','ORDER','order','2026-10-01','PHP',99,'API','{}'),
                 ('ad-row-2','org2','u2','','TIKTOK_SHOP','AD','external-2','2026-10-01','PHP',8,'API','{\"advertiser_id\":\"adv2\"}'),
                 ('unowned-ad','unknown','u3','','TIKTOK_SHOP','AD','external-3','2026-10-01','PHP',9,'API','{\"advertiser_id\":\"unknown\"}')
@@ -58,13 +60,19 @@ class FinanceTikTokMetadataSchemaIntegrationTest {
             var bridgeClasses=compileSnapshotBridge();
             var snapshotConfig=temporary.resolve("snapshot-config.json");Files.writeString(snapshotConfig,"{}");
             var snapshotBefore=pythonSnapshot(snapshotConfig,bridgeClasses,"before");
-            assertEquals(3,tableSnapshot(snapshotBefore,"finance_records").get("rows"),"Only AD/AD_GMV for companies owning ad accounts are guarded");
-            var recordQueries=queries(snapshotBefore).stream().filter(q->q.contains("FROM `finance_records`")).toList();
-            assertEquals(4,recordQueries.size());
+            assertEquals(2,snapshotBefore.get("version"));
+            assertEquals(5,tableSnapshot(snapshotBefore,"finance_records").get("rows"),"Every date of AD/AD_GMV for companies owning ad accounts is guarded");
+            var dateQueries=queries(snapshotBefore).stream().filter(q->q.contains("DISTINCT record_date")).toList();
+            var recordQueries=queries(snapshotBefore).stream().filter(q->q.contains("FROM `finance_records`")&&q.contains("SHA2(")).toList();
+            assertEquals(4,dateQueries.size());assertEquals(5,recordQueries.size());
+            assertTrue(recordQueries.stream().allMatch(q->q.matches("(?s).*kind='AD(?:_GMV)?'.*record_date='2026-[0-9]{2}-[0-9]{2}'.*ORDER BY `id`.*")));
             String explain=fixture.db.queryForObject("EXPLAIN FORMAT=JSON "+recordQueries.stream().filter(q->q.contains("kind='AD'")).findFirst().orElseThrow(),String.class);
-            assertTrue(explain.contains("idx_finance_page"));
-            assertTrue(explain.contains("\"access_type\": \"ref\"")||explain.contains("\"access_type\": \"range\""));
+            var planTable=planTable(new ObjectMapper().readValue(explain,Map.class));
             System.out.println("Task2 finance_records guard plan: "+explain);
+            assertEquals("idx_finance_page",planTable.get("key"));
+            assertEquals(List.of("organization_id","kind","record_date"),planTable.get("used_key_parts"));
+            assertTrue(Set.of("ref","range").contains(planTable.get("access_type")));
+            assertFalse(explain.contains("\"using_filesort\": true"));
             fixture.db.update("UPDATE finance_ad_spend_imports SET amount=7 WHERE organization_id='org' AND source_key='import-source'");
             var rowDrift=pythonSnapshot(snapshotConfig,bridgeClasses,"row-drift");
             assertNotEquals(tableSnapshot(snapshotBefore,"finance_ad_spend_imports"),tableSnapshot(rowDrift,"finance_ad_spend_imports"));
@@ -184,4 +192,11 @@ class FinanceTikTokMetadataSchemaIntegrationTest {
         return (Map<String,Object>)((Map<String,Object>)snapshot.get("tables")).get(table);
     }
     @SuppressWarnings("unchecked") private List<String> queries(Map<String,Object> snapshot){return (List<String>)snapshot.get("queries");}
+    @SuppressWarnings("unchecked") private Map<String,Object> planTable(Object value){
+        if(value instanceof Map<?,?> map){
+            if("finance_records".equals(map.get("table_name")))return (Map<String,Object>)map;
+            for(Object nested:map.values()){var found=planTable(nested);if(found!=null)return found;}
+        }else if(value instanceof List<?> list)for(Object nested:list){var found=planTable(nested);if(found!=null)return found;}
+        return null;
+    }
 }
