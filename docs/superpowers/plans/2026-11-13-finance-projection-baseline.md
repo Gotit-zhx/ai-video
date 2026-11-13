@@ -108,8 +108,8 @@ DELETE FROM finance_query_dirty_days WHERE organization_id=? AND platform_filter
 
 **Files:** `frontend/finance-workspace.js`、`frontend/finance-costs.js`；更新常驻说明和 `docs/releases/finance/finance-workspace-performance-20261113.md`。
 
-- [ ] 重新下载两前端当前源码；与已验证私有三方候选及本地文件逐字节核对，保留 V156、最新成本策略和 Shopee 资料。
-- [ ] 41 项财务 UI 回归在最终候选运行通过，再在维护窗口 CAS 两文件，核对实际 HTTP hash/no-store、前端 revision 与原后端上下文。
+- [x] 重新核对两前端当前源码字节；与已验证私有三方候选及本地文件核对哈希，保留 V156、最新成本策略和 Shopee 资料。
+- [x] 41 项财务 UI 回归在最终候选运行通过，再在维护窗口 CAS 两文件，核对实际 HTTP hash/no-store、前端 revision 与原后端上下文。
 - [ ] 真实浏览器核心页面/子页每类至少30个主表与关键汇总完成样本；覆盖首次/重复、9/10/本月、币种、全部/组/店、分页和正常同步。记录 P50/P95/P99/max、错误、范围与金额版本，不以空壳或均值替代。
 - [ ] 超过5秒继续按实际阶段定位；完成后更新测试/上线/未验证边界，独立整体评审。
 - [ ] 通过 feature PR65 整合，保留历史；告知现代前端会话最终 context、schema/runtime、两JS/Java/dev.py 哈希、回执和窗口交接。
@@ -138,5 +138,5 @@ Task 4 正常同步取证捕获到 `finance_ad_stores` 八条 ALL；实际同批
 
 - [x] 用实际 MySQL 计划与隔离矩阵写失败回归，覆盖公司、活跃/已移除店铺、未分配记录及别名、分组、币种、平台、日期条件。
 - [x] 只改 query() 中同一可见性条件的访问方式，保持条件、参数顺序、单语句权限边界和所有财务规则；不预取或缓存店铺 ID，不增加 DDL。
-- [ ] 运行中央查询相关回归并独立审查，受控 CAS 生效后核对当前配置、其他源码及实际响应。
+- [x] 运行中央查询相关回归并独立审查，受控 CAS 生效后核对当前配置、其他源码及实际响应。
 - [ ] 根据真实加载与查询样本继续验收，不能将单条计数改善等同全页五秒通过。
