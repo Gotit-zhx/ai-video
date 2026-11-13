@@ -369,12 +369,12 @@ public class FinanceCostWorkspace {
         code=matchingCostCode(bundle.group(1),codes,normalized);
         return code.isBlank()?null:new CostCodeMatch(code,"BUNDLE_CODE",Integer.valueOf(bundle.group(2)));
     }
-    static boolean automaticMethod(String method){return Set.of("EXACT_CODE","NORMALIZED_CODE","BUNDLE_CODE","SPU_CODE").contains(method);}
-    static CostCodeMatch matchProduct(String sellerCode,String productId,Set<String> codes,Map<String,Set<String>> normalized){
+    static boolean automaticMethod(String method){return Set.of("EXACT_CODE","NORMALIZED_CODE","BUNDLE_CODE","SPU_CODE","PLATFORM_SKU_CODE").contains(method);}
+    static CostCodeMatch matchProduct(String sellerCode,String platformSkuId,Set<String> codes,Map<String,Set<String>> normalized){
         var sku=matchSku(sellerCode,codes,normalized);
         if(sku!=null)return sku;
-        String spu=matchingCostCode(productId,codes,normalized);
-        return spu.isBlank()?null:new CostCodeMatch(spu,"SPU_CODE",null);
+        String platformSku=matchingCostCode(platformSkuId,codes,normalized);
+        return platformSku.isBlank()?null:new CostCodeMatch(platformSku,"PLATFORM_SKU_CODE",null);
     }
     @Transactional public Map<String,Object> autoMatch(Scope s,String actor,String shopId,Map<String,Object> body){
         repo.requireShopWrite(s,shopId);
@@ -389,23 +389,39 @@ public class FinanceCostWorkspace {
             String productId=text(product.get("product_id")),skuId=text(product.get("sku_id"));
             for(var available:byWarehouse.entrySet()){
             String warehouse=available.getKey();
-            var match=matchProduct(text(product.get("seller_sku")),productId,available.getValue(),normalized);
+            var match=matchProduct(text(product.get("seller_sku")),skuId,available.getValue(),normalized);
             if(match==null)continue;
             String code=match.code();
-            if(existing.containsKey(shopId+":"+productId+":"+skuId+":"+warehouse))continue;
+            var previous=map(existing.get(shopId+":"+productId+":"+skuId+":"+warehouse));
+            if(!previous.isEmpty()){
+                if(!automaticMethod(text(previous.get("method")))||!text(previous.get("manualCostId")).isBlank())continue;
+                if(code.equals(previous.get("code"))&&match.method().equals(previous.get("method"))
+                    &&text(data.get("groupId")).equals(text(previous.get("groupId")))
+                    &&Objects.equals(match.bundleQuantity(),previous.get("bundleQuantity")==null?null:(int)number(previous.get("bundleQuantity"))))continue;
+            }
             String id=hash(s.organizationId()+"\0"+shopId+"\0"+productId+"\0"+skuId+"\0"+warehouse);
             var saved=new LinkedHashMap<String,Object>();saved.put("code",code);saved.put("warehouse",warehouse);saved.put("groupId",data.get("groupId"));
             saved.put("method",match.method());saved.put("factor",null);saved.put("unitConfirmed",false);
             if(match.bundleQuantity()!=null)saved.put("bundleQuantity",match.bundleQuantity());
             // Preserve manual decisions, including a decision saved concurrently with this batch.
-            repo.jdbc().update("""
+            int changed;
+            if(previous.isEmpty())changed=repo.jdbc().update("""
                 INSERT INTO finance_cost_mappings(id,organization_id,shop_id,product_id,sku_id,warehouse,data_json,updated_by)
                 VALUES(?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id=id
                 """,id,s.organizationId(),shopId,productId,skuId,warehouse,repo.write(saved),actor);
-            candidates++;
+            else changed=repo.jdbc().update("""
+                UPDATE finance_cost_mappings SET data_json=?,version=version+1,updated_by=?,updated_at=UTC_TIMESTAMP(6)
+                WHERE organization_id=? AND shop_id=? AND id=? AND version=?
+                  AND JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.method')) IN ('EXACT_CODE','NORMALIZED_CODE','BUNDLE_CODE','SPU_CODE','PLATFORM_SKU_CODE')
+                  AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.manualCostId')),'')=''
+                """,repo.write(saved),actor,s.organizationId(),shopId,id,number(previous.get("version")));
+            if(changed>0)candidates++;
             }
         }
-        if(candidates>0)audit(s,actor,"COST_AUTO_MATCH",shopId,null,Map.of("candidateCount",candidates),"按商品 SKU 优先、平台 SPU 兜底自动关联各成本仓；保留已有人工确认关系");
+        if(candidates>0){
+            audit(s,actor,"COST_AUTO_MATCH",shopId,null,Map.of("candidateCount",candidates),"按商品 SKU 优先、平台 SKU 兜底自动关联各成本仓；保留已有人工确认关系");
+            new FinanceOrderCosts(repo).requestShop(s.organizationId(),shopId);service.invalidateAfterCommit(s);
+        }
         return costs(s,shopId);
     }
     public Map<String,Object> expenses(Scope s,Map<String,String> query){
