@@ -369,12 +369,12 @@ public class FinanceCostWorkspace {
         code=matchingCostCode(bundle.group(1),codes,normalized);
         return code.isBlank()?null:new CostCodeMatch(code,"BUNDLE_CODE",Integer.valueOf(bundle.group(2)));
     }
-    static boolean automaticMethod(String method){return Set.of("EXACT_CODE","NORMALIZED_CODE","BUNDLE_CODE","SPU_CODE").contains(method);}
-    static CostCodeMatch matchProduct(String sellerCode,String productId,Set<String> codes,Map<String,Set<String>> normalized){
+    static boolean automaticMethod(String method){return Set.of("EXACT_CODE","NORMALIZED_CODE","BUNDLE_CODE","SPU_CODE","PLATFORM_SKU_CODE").contains(method);}
+    static CostCodeMatch matchProduct(String sellerCode,String platformSkuId,Set<String> codes,Map<String,Set<String>> normalized){
         var sku=matchSku(sellerCode,codes,normalized);
         if(sku!=null)return sku;
-        String spu=matchingCostCode(productId,codes,normalized);
-        return spu.isBlank()?null:new CostCodeMatch(spu,"SPU_CODE",null);
+        String platformSku=matchingCostCode(platformSkuId,codes,normalized);
+        return platformSku.isBlank()?null:new CostCodeMatch(platformSku,"PLATFORM_SKU_CODE",null);
     }
     @Transactional public Map<String,Object> autoMatch(Scope s,String actor,String shopId,Map<String,Object> body){
         repo.requireShopWrite(s,shopId);
@@ -389,7 +389,7 @@ public class FinanceCostWorkspace {
             String productId=text(product.get("product_id")),skuId=text(product.get("sku_id"));
             for(var available:byWarehouse.entrySet()){
             String warehouse=available.getKey();
-            var match=matchProduct(text(product.get("seller_sku")),productId,available.getValue(),normalized);
+            var match=matchProduct(text(product.get("seller_sku")),skuId,available.getValue(),normalized);
             if(match==null)continue;
             String code=match.code();
             if(existing.containsKey(shopId+":"+productId+":"+skuId+":"+warehouse))continue;
@@ -405,7 +405,7 @@ public class FinanceCostWorkspace {
             candidates++;
             }
         }
-        if(candidates>0)audit(s,actor,"COST_AUTO_MATCH",shopId,null,Map.of("candidateCount",candidates),"按商品 SKU 优先、平台 SPU 兜底自动关联各成本仓；保留已有人工确认关系");
+        if(candidates>0)audit(s,actor,"COST_AUTO_MATCH",shopId,null,Map.of("candidateCount",candidates),"按商品 SKU 优先、平台 SKU 兜底自动关联各成本仓；保留已有人工确认关系");
         return costs(s,shopId);
     }
     public Map<String,Object> expenses(Scope s,Map<String,String> query){
