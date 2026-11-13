@@ -178,6 +178,7 @@ public class FinanceLabelCosts {
             }
         }
         var selection=FinanceRecordSearch.orders(new FinanceRepository.Query(where,args),"r.order_id",query.get("numbers"));
+        String countSource="finance_label_invoice_rows r"+("1=1".equals(selection.where())?" FORCE INDEX(uk_label_file_event)":"");
         var fileArgs=new ArrayList<Object>();fileArgs.add(scope.organizationId());
         String fileWhere="organization_id=? AND status NOT IN ('REMOVED','EXPIRED')";
         if(!file.isBlank()){fileWhere+=" AND id=?";fileArgs.add(file);}
@@ -188,7 +189,7 @@ public class FinanceLabelCosts {
         for(var source:sources){
             var rowArgs=new ArrayList<Object>();rowArgs.add(source.get("id"));rowArgs.addAll(selection.args());
             String rowWhere="r.import_id=? AND "+selection.where();
-            long size=number(repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_label_invoice_rows r WHERE "+rowWhere,Long.class,rowArgs.toArray()));
+            long size=number(repo.jdbc().queryForObject("SELECT COUNT(*) FROM "+countSource+" WHERE "+rowWhere,Long.class,rowArgs.toArray()));
             count+=size;
             if(offset>=size){offset-=size;continue;}
             if(records.size()>=50)continue;
