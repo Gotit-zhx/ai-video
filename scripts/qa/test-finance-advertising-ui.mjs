@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import {createAdvertisingFixture} from './fixtures/finance-advertising.mjs';
+import {advertisingWorkspaceResponse,createAdvertisingFixture} from './fixtures/finance-advertising.mjs';
 const {JSDOM}=await import(process.env.JSDOM_MODULE||'jsdom');
 const dom=new JSDOM('<main id="finance-page"></main>',{url:'https://example.test/#finance-overview',runScripts:'outside-only',pretendToBeVisual:true});
 const w=dom.window,d=w.document,root=d.querySelector('main'),fixture=createAdvertisingFixture(),reads=[],exports=[],charts=[];
@@ -19,6 +19,10 @@ w.api=async(path,options={})=>{
     const result=fixture.overview(q,partial);
     if(heldShop&&q.shopId===heldShop)await new Promise(resolve=>{releaseHeld=resolve;});
     return {data:result};
+  }
+  if(endpoint==='/workspace/query'){
+    if(heldShop&&q.shopId===heldShop)await new Promise(resolve=>{releaseHeld=resolve;});
+    return {data:advertisingWorkspaceResponse(fixture,q,{partial,adAccounts:failAccounts?[]:fixture.accounts,adAccountError:failAccounts})};
   }
   if(endpoint==='/records')return {data:fixture.records(q,partial)};
   if(endpoint.startsWith('/fields/'))return {data:fixture.records({kind:endpoint.split('/').at(-1)}).fieldSettings};
@@ -71,16 +75,16 @@ try{
   assert(card('投放概览').textContent.includes('10%'));assert(card('GMV Max 专项分析').textContent.includes('99.9'));
   assert(!button('导入账单'));assert(!button('复制广告授权链接'));
   await click('普通独立广告消耗明细');const before=metric('total');await click('下一页');
-  assert.equal(reads.filter(x=>x.endpoint==='/records').at(-1).q.page,'2');assert.equal(metric('total'),before);
+  assert.equal(reads.filter(x=>x.endpoint==='/workspace/query').at(-1).q.page,'2');assert.equal(metric('total'),before);
   await click('平台账单广告费明细');
-  let query=reads.filter(x=>x.endpoint==='/records').at(-1).q;assert.equal(query.kind,'FEE');assert.equal(query.advertisingOnly,'true');assert.equal(query.page,'1');
+  let query=reads.filter(x=>x.endpoint==='/workspace/query').at(-1).q;assert.equal(query.kind,'FEE');assert.equal(query.page,'1');
   const search=d.querySelector('.fi-number-search textarea');search.value='ledger-a';search.closest('form').dispatchEvent(new w.Event('submit',{cancelable:true}));await ready();
-  assert.equal(reads.filter(x=>x.endpoint==='/records').at(-1).q.numbers,'ledger-a');assert.equal(metric('total'),'17.5');
+  assert.equal(reads.filter(x=>x.endpoint==='/workspace/query').at(-1).q.numbers,'ledger-a');assert.equal(metric('total'),'17.5');
   await click('导出 Excel',card('平台账单广告费明细'));const dialog=d.querySelector('dialog');
   button('下载报表',dialog).click();await wait(()=>exports.length===1&&!dialog.isConnected);
   query=Object.fromEntries(exports[0].searchParams);assert.equal(query.view,'FEE');assert.equal(query.advertisingOnly,'true');assert.equal(query.numbers,'ledger-a');assert(!('page' in query));
   assert.equal(query.start,'2026-10-01');assert.equal(query.end,'2026-10-31');assert.equal(query.fxSnapshot,'test-fixed');
-  await click('GMV Max 分析明细');query=reads.filter(x=>x.endpoint==='/records').at(-1).q;assert.equal(query.kind,'AD_GMV');assert(!query.advertisingOnly);assert.equal(metric('total'),'17.5');
+  await click('GMV Max 分析明细');query=reads.filter(x=>x.endpoint==='/workspace/query').at(-1).q;assert.equal(query.kind,'AD_GMV');assert.equal(metric('total'),'17.5');
   await select('店铺分组','clothes');assert.equal(metric('total'),'4');assert.equal(metric('independent'),'—');
   assert(root.querySelector('[data-ad-metric="independent"]').textContent.includes('暂无记录'));
   assert(!card('广告数据同步').textContent.includes('演示广告账户'));
@@ -118,11 +122,11 @@ try{
   await click('刷新');
   root.querySelector('[data-metric="AD"]').click();assert.equal(w.location.hash,'#finance-ads');
   w.FinanceWorkspace.enter('ads');await ready();
-  assert.equal(reads.filter(x=>x.endpoint==='/records').at(-1).q.kind,'FEE','a ledger-funded ad card must open its populated source instead of an empty ordinary report');
+  assert.equal(reads.filter(x=>x.endpoint==='/workspace/query').at(-1).q.kind,'FEE','a ledger-funded ad card must open its populated source instead of an empty ordinary report');
   fixture.facts.splice(0,fixture.facts.length,...allFacts.filter(row=>row.kind==='AD_GMV'));
   w.FinanceWorkspace.enter('overview');await ready();
   root.querySelector('[data-metric="AD"]').click();w.FinanceWorkspace.enter('ads');await ready();
-  assert.equal(reads.filter(x=>x.endpoint==='/records').at(-1).q.kind,'AD_GMV','a GMV-only card must open its separate report without changing booked totals');
+  assert.equal(reads.filter(x=>x.endpoint==='/workspace/query').at(-1).q.kind,'AD_GMV','a GMV-only card must open its separate report without changing booked totals');
   fixture.facts.splice(0,fixture.facts.length,...allFacts);
   w.FinanceWorkspace.enter('overview');await ready();
   await select('开始日期','2026-08-01');await select('结束日期','2026-08-31');

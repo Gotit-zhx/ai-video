@@ -12,6 +12,7 @@ const reads=[];
 w.api=async path=>{
  const u=new URL(path,'https://example.test');reads.push(u);
  if(u.pathname.endsWith('/shops'))return {data:{items:[{id:'shop',name:'测试店铺',group_id:'group',platform:'SHOPEE',region:'TH'}],groups:[],sync:[]}};
+ if(u.pathname.endsWith('/costs/context'))return {data:{live:true,catalogLoaded:false,settingsLoaded:false,shopId:'shop',groupId:'group',groupName:'测试组'}};
  if(u.pathname.endsWith('/costs'))return {data:structuredClone(preview)};
  if(u.pathname.endsWith('/costs/orders'))return {data:{items:[structuredClone(row)],total:55,page:Number(u.searchParams.get('page')),pageSize:50,productCosts:{total:{pending_count:55,ready_count:0,known_amount_cny:0}}}};
  if(u.pathname.endsWith('/records/record'))return {data:{...structuredClone(row),productCost:{warehouse:'海外仓-泰国',note:'待补齐',lines:[{lineId:'different-source-line-id',productId:identity.productId,skuId:identity.skuId,sellerSku:'',quantity:2,issue:'平台未返回商家 SKU'}]}}};

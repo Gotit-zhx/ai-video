@@ -57,6 +57,27 @@ public class FinanceCostWorkspace {
         if(result.isEmpty())return Map.of();
         var row=result.getFirst();var resultData=new LinkedHashMap<>(decode(row.get("data_json")));resultData.put("currency","CNY");resultData.put("bookId",row.get("id"));resultData.put("sourceName",row.get("source_name"));return resultData;
     }
+    /** Lightweight navigation context. Cost books, settings, mappings and order JSON stay lazy. */
+    public Map<String,Object> context(Scope s,String shopId,String requestedGroup){
+        var shops=service.shops(s);
+        if(!text(requestedGroup).isBlank())new FinanceGroups(repo).require(s,requestedGroup,false);
+        if(text(shopId).isBlank()){
+            shopId=shops.stream().filter(item->text(requestedGroup).isBlank()||requestedGroup.equals(text(item.get("group_id"))))
+                    .map(item->text(item.get("id"))).findFirst().orElse("");
+        }
+        String selectedShopId=shopId;
+        var shop=shops.stream().filter(item->selectedShopId.equals(text(item.get("id")))).findFirst();
+        if(shop.isEmpty()){
+            if(!selectedShopId.isBlank())throw bad("没有找到本公司的财务店铺");
+            String group=text(requestedGroup);
+            return new LinkedHashMap<>(Map.of("live",true,"catalogLoaded",false,"settingsLoaded",false,
+                    "shopId","","groupId",group,"groupName",""));
+        }
+        String group=text(shop.get().get("group_id"));
+        if(!text(requestedGroup).isBlank()&&!requestedGroup.equals(group))throw bad("店铺不属于所选分组");
+        return new LinkedHashMap<>(Map.of("live",true,"catalogLoaded",false,"settingsLoaded",false,
+                "shopId",selectedShopId,"groupId",group,"groupName",text(shop.get().get("group_name"))));
+    }
     public Map<String,Object> costs(Scope s,String shopId){return costs(s,shopId,"");}
     public Map<String,Object> costs(Scope s,String shopId,String requestedGroup){
         var shops=service.shops(s);
@@ -81,7 +102,7 @@ public class FinanceCostWorkspace {
             if(selected.isEmpty()){
                 String group=text(requestedGroup);
                 var empty=new LinkedHashMap<>(book(s,group));empty.putIfAbsent("costs",List.of());empty.putIfAbsent("manualCosts",List.of());
-                empty.putAll(Map.of("live",true,"shopId","","groupId",group,"products",List.of(),"shopCatalogs",shopCatalogs,"groupCatalogs",catalogs));
+                empty.putAll(Map.of("live",true,"catalogLoaded",true,"settingsLoaded",true,"shopId","","groupId",group,"products",List.of(),"shopCatalogs",shopCatalogs,"groupCatalogs",catalogs));
                 empty.put("imports",new FinanceCostSources(repo).sources(s,group));
                 return empty;
             }
@@ -94,6 +115,7 @@ public class FinanceCostWorkspace {
         var result=new LinkedHashMap<>(book(s,group));result.putIfAbsent("costs",List.of());
         result.putIfAbsent("manualCosts",List.of());
         result.put("shopId",shopId);result.put("groupId",group);result.put("groupName",text(shop.get("group_name")));result.put("live",true);
+        result.put("catalogLoaded",true);result.put("settingsLoaded",true);
         result.put("shopCatalogs",shopCatalogs);
         result.put("groupCatalogs",catalogs);
         var settings=repo.jdbc().queryForList("SELECT data_json,version FROM finance_cost_settings WHERE organization_id=? AND shop_id=?",s.organizationId(),shopId);

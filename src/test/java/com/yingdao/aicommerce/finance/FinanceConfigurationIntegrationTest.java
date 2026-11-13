@@ -32,7 +32,10 @@ class FinanceConfigurationIntegrationTest {
     final ShopCredentialCipher cipher=new ShopCredentialCipher("finance-test-key-not-a-production-secret-12345");
     final Filter filter=new Filter(LocalDate.of(2026,10,21),LocalDate.of(2026,10,21),"","","PHP","day");
     PlatformPrincipal principal(){return new PlatformPrincipal("u","org","heyi","admin","admin","",true,List.of("ADMIN"),List.of());}
-    @BeforeAll void migrate()throws Exception{
+    int migratedThrough;
+    @BeforeAll void migrate()throws Exception{migrateThrough(156);}
+    void migrateThrough(int version)throws Exception{
+        assertTrue(Set.of(154,155,156).contains(version));migratedThrough=version;
         assertTrue(System.getenv("FINANCE_QA_JDBC").matches("jdbc:mysql://[^/]+/finance_qa_[a-f0-9]+\\?.*"),"Only disposable finance_qa schemas are permitted");
         var ds=new com.zaxxer.hikari.HikariDataSource();dataSource=ds;
         ds.setJdbcUrl(System.getenv("FINANCE_QA_JDBC"));ds.setUsername(System.getenv("FINANCE_QA_USER"));ds.setPassword(System.getenv("FINANCE_QA_PASSWORD"));
@@ -70,6 +73,7 @@ class FinanceConfigurationIntegrationTest {
         migration("V139__finance_label_arrival_queue.sql");
         migration("V140__finance_qianyi_company_configuration.sql");
         migration("V141__finance_cost_date_covering.sql");
+        db.execute("CREATE INDEX idx_finance_page ON finance_records(organization_id,kind,record_date DESC,id,shop_id,platform,currency,source,status,category,order_id)");
         migration("V142__finance_sync_priority.sql");
         migration("V143__finance_calendar_month_completion.sql");
         migration("V144__qianyi_receipt_qualification.sql");
@@ -77,9 +81,8 @@ class FinanceConfigurationIntegrationTest {
         migration("V150__finance_ad_spend_workspace.sql");
         migration("V152__finance_ad_bc_funding.sql");
         migration("V154__finance_shopee_ads.sql");
-        // Minimal V155 event contract; full projection/trigger migration has its own suite.
-        db.execute("CREATE TABLE finance_query_events(event_id BIGINT AUTO_INCREMENT PRIMARY KEY,organization_id CHAR(36) NOT NULL,event_scope VARCHAR(8) NOT NULL,record_date DATE NULL,shop_id CHAR(36) NULL,order_id VARCHAR(255) NULL,record_id CHAR(64) NULL,source_table VARCHAR(64) NOT NULL,statement_id VARCHAR(255) NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6))");
-        migration("V156__finance_ad_campaign_metadata.sql");
+        if(version>=155)migration("V155__finance_query_projections.sql");
+        if(version>=156)migration("V156__finance_ad_campaign_metadata.sql");
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_cost_sources",Integer.class));
         assertEquals(1,db.queryForObject("SELECT legacy_merged FROM finance_cost_sources WHERE id='old2'",Integer.class));
         assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_cost_books",Integer.class),"legacy snapshots remain for audit");
@@ -94,7 +97,7 @@ class FinanceConfigurationIntegrationTest {
         for(String statement:sql.split(";"))if(!statement.isBlank())db.execute(statement);
     }
     @BeforeEach void setup(){
-        for(String table:List.of("finance_ad_campaign_metadata","finance_ad_campaign_jobs","finance_query_events"))db.update("DELETE FROM "+table);
+        if(migratedThrough>=156)for(String table:List.of("finance_ad_campaign_metadata","finance_ad_campaign_jobs"))db.update("DELETE FROM "+table);
         for(String table:List.of("finance_shopee_ad_daily","finance_shopee_ad_grants","finance_shopee_ad_groups"))db.update("DELETE FROM "+table);
         for(String table:List.of("finance_ad_bc_stage","finance_ad_bc_costs","finance_ad_bc_sync"))db.update("DELETE FROM "+table);
         for(String table:List.of("finance_ad_report_stage","finance_ad_coverage","finance_ad_streams","finance_ad_stores"))db.update("DELETE FROM "+table);
@@ -113,6 +116,7 @@ class FinanceConfigurationIntegrationTest {
         doReturn(fixedQuote).when(fx).historical(any(),any(LocalDate.class),any(LocalDate.class));
         doReturn(fixedQuote).when(fx).historical(any(),anyCollection());
         service=FinanceTest.classProxy(new FinanceService(FinanceTest.classProxy(repo),policy,FinanceTest.classProxy(auth),fx));
+        if(migratedThrough>=155)for(String table:List.of("finance_query_dirty_days","finance_query_partitions","finance_query_events"))db.update("DELETE FROM "+table);
     }
     MarketplaceAccess.TokenSet tokens(boolean expired){return new MarketplaceAccess.TokenSet("finance-access","finance-refresh",Instant.now().plusSeconds(expired?-1:3600),Instant.now().plusSeconds(86400),List.of("order","finance"));}
     String connect(Scope s,boolean expired){

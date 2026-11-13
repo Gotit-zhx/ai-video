@@ -6,6 +6,7 @@ import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.*;
+import org.springframework.test.util.ReflectionTestUtils;
 import static com.yingdao.aicommerce.finance.FinanceData.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -35,6 +36,38 @@ class FinanceAdMetadataSyncIntegrationTest extends FinanceConfigurationIntegrati
     @AfterEach void stopMetadata(){if(sync!=null)sync.stop();if(ads!=null)ads.stop();sync=null;ads=null;}
     void runMetadata(){db.update("UPDATE finance_ad_campaign_jobs SET next_at=UTC_TIMESTAMP(6)");sync.tick();}
     Map<String,Object> saved(){return repo.read(db.queryForObject("SELECT data_json FROM finance_ad_campaign_metadata WHERE organization_id='org'",String.class));}
+    @Test void metadataReportDefersMinimalRequestUntilReadOnlyCommitAndDropsRollback(){
+        repo.save(owner,new Entry("UNASSIGNED","TIKTOK_SHOP","AD_GMV","deferred-ad","","","GMV","SUCCESS",LocalDate.of(2026,10,1),"USD",decimal("12.34"),null,null,null,null,"API",Map.of("advertiser_id","100001","dimensions",Map.of("campaign_id","800001"),"private_funding_payload","must-not-be-queued")));
+        var queryOnly=new FinanceAdSpendService(repo,service);
+        var scope=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,31),"","","USD","day");
+        var snapshot=queryOnly.buildNativeSpendFacts(owner,scope);
+        assertDoesNotThrow(()->repo.readSnapshot(()->{
+            queryOnly.reportFromNative(owner,snapshot,scope,false,"","","");
+            assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_ad_campaign_jobs",Integer.class));
+            assertTrue(paths.isEmpty());return null;
+        }));
+        var spend=new FinanceAdSpendService(repo,service);ReflectionTestUtils.setField(spend,"metadataSync",sync);
+        assertDoesNotThrow(()->repo.readSnapshot(()->{
+            spend.reportFromNative(owner,snapshot,scope,false,"","","");
+            assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_ad_campaign_jobs",Integer.class));
+            assertTrue(paths.isEmpty());return null;
+        }));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_ad_campaign_jobs",Integer.class));
+        assertTrue(paths.isEmpty());
+        sync.tick();
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_ad_campaign_jobs",Integer.class));
+        assertEquals(1,paths.size());
+
+        repo.save(owner,new Entry("UNASSIGNED","TIKTOK_SHOP","AD_GMV","rolled-back-ad","","","GMV","SUCCESS",LocalDate.of(2026,10,2),"USD",decimal("9.87"),null,null,null,null,"API",Map.of("advertiser_id","100001","dimensions",Map.of("campaign_id","800002"))));
+        var rollbackSnapshot=spend.buildNativeSpendFacts(owner,scope);
+        assertThrows(IllegalStateException.class,()->repo.transaction(()->{
+            spend.reportFromNative(owner,rollbackSnapshot,scope,false,"","","");
+            throw new IllegalStateException("rollback");
+        }));
+        sync.tick();
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_ad_campaign_jobs WHERE campaign_id='800002'",Integer.class));
+        assertEquals(1,paths.size());
+    }
     @Test void metadataGmvPublishesNamesAndTargetsWithoutChangingFinancialFacts(){
         repo.save(owner,new Entry("UNASSIGNED","TIKTOK_SHOP","AD_GMV","original-ad","","","GMV","SUCCESS",LocalDate.of(2026,10,1),"USD",decimal("12.34"),null,null,null,null,"API",Map.of("advertiser_id","100001","dimensions",Map.of("campaign_id","800001"))));
         String before=db.queryForObject("SELECT raw_json FROM finance_records WHERE external_id='original-ad'",String.class);
@@ -45,7 +78,9 @@ class FinanceAdMetadataSyncIntegrationTest extends FinanceConfigurationIntegrati
         assertEquals(before,db.queryForObject("SELECT raw_json FROM finance_records WHERE external_id='original-ad'",String.class));assertEquals(1,paths.size());
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_query_events WHERE event_scope='DAY' AND record_date='2026-10-01' AND source_table='finance_ad_campaign_metadata'",Integer.class));
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_campaign_jobs'",Integer.class));
-        runMetadata();assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_query_events",Integer.class),"unchanged daily metadata refresh must not invalidate cached amounts again");
+        runMetadata();
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_campaign_metadata'",Integer.class),"unchanged metadata must not invalidate cached amounts again");
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_campaign_jobs'",Integer.class),"unchanged status must not invalidate cached amounts again");
     }
     @Test void metadataOrdinaryStagesAllAdgroupPagesAndDeletedTargetsBeforePublishing(){
         twoPages=true;FinanceAdMetadataSync.enqueue(repo,owner,List.of(source(false)));runMetadata();
@@ -124,8 +159,8 @@ class FinanceAdMetadataSyncIntegrationTest extends FinanceConfigurationIntegrati
     }
     @Test void metadataFullReportQueuesWithoutCallingProviderAndRetainsAuthorizationStatus(){
         repo.save(owner,new Entry("UNASSIGNED","TIKTOK_SHOP","AD_GMV","ad-source","","","GMV","SUCCESS",LocalDate.of(2026,10,1),"USD",decimal("12.34"),null,null,null,null,"API",Map.of("advertiser_id","100001","dimensions",Map.of("campaign_id","800001"))));
-        var spend=new FinanceAdSpendService(repo,service);var scope=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,31),"","","USD","day");
-        spend.report(owner,scope,false,"","","");assertEquals(0,paths.size());assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_ad_campaign_jobs",Integer.class));
+        var spend=new FinanceAdSpendService(repo,service);ReflectionTestUtils.setField(spend,"metadataSync",sync);var scope=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,31),"","","USD","day");
+        spend.report(owner,scope,false,"","","");assertEquals(0,paths.size());assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_ad_campaign_jobs",Integer.class));
         denied=true;runMetadata();var row=rows(spend.report(owner,scope,false,"","","").get("items")).getFirst();
         assertEquals("NEEDS_AUTHORIZATION",row.get("metadata_status"));assertTrue(text(row.get("metadata_error")).contains("40001"));
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_query_events WHERE source_table='finance_ad_campaign_jobs' AND event_scope='DAY' AND record_date='2026-10-01'",Integer.class));

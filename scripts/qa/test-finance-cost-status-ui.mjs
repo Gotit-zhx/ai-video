@@ -6,19 +6,22 @@ const w=dom.window,d=w.document;
 w.currentUser={roles:['STAFF'],permissions:['finance:view']};
 w.matchMedia=()=>({matches:false});w.ResizeObserver=class{observe(){}disconnect(){}};
 w.echarts={init:()=>({setOption(){},resize(){},dispose(){}})};
-let totals={known_amount_cny:0,amount_cny:null,ready_count:0,pending_count:1414,estimated_count:0,excluded_count:0};
+let totals={known_amount_cny:0,amount_cny:null,ready_count:0,pending_count:1414,estimated_count:0,excluded_count:0},reads=0;
 w.api=async path=>{
   const u=new URL(path,'https://example.test');
-  assert(u.pathname.endsWith('/records')||u.pathname.endsWith('/overview'));
+  assert(u.pathname.endsWith('/workspace/query'));
+  reads++;
   return {data:{filters:{...Object.fromEntries(u.searchParams),currency:'PHP',displayCurrency:'PHP'},
     groups:[],shops:[],sync:[],currencies:['PHP'],totals:[],ranking:[],statuses:[],fees:[],trend:[],items:[],total:0,page:1,pageSize:50,
-    fieldSettings:{fields:[],visible:[],exported:[]},productCosts:{scope:'SETTLED_ORDER',basis:'商品成本按首次结算日期归属，仅计一次。',total:{...totals},shops:[]}}};
+    records:{items:[],total:0,page:1,pageSize:50,fieldSettings:{fields:[],visible:[],exported:[]}},
+    fieldSettings:{fields:[],visible:[],exported:[]},
+    productCosts:{scope:'SETTLED_ORDER',basis:'商品成本按首次结算日期归属，仅计一次。',total:{...totals},shops:[]}}};
 };
 for(const f of ['incremental-dom.js','incremental-charts.js','finance-workspace.js'])w.eval(await fs.readFile(new URL('../../frontend/'+f,import.meta.url),'utf8'));
-async function ready(){for(let i=0;i<100;i++){await new Promise(r=>setTimeout(r,5));if(d.querySelector('#finance-page').getAttribute('aria-busy')==='false')return;}throw Error('UI timeout');}
-const refresh=async()=>{[...d.querySelectorAll('button')].find(n=>n.textContent==='刷新').click();await ready();};
+async function ready(previousReads=0){for(let i=0;i<100;i++){await new Promise(r=>setTimeout(r,5));if(reads>previousReads&&d.querySelector('#finance-page').getAttribute('aria-busy')==='false')return;}throw Error('UI timeout');}
+const refresh=async()=>{const before=reads;[...d.querySelectorAll('button')].find(n=>n.textContent==='刷新').click();await ready(before);};
 w.FinanceWorkspace.enter('orders');await ready();
-const scope=d.querySelector('[aria-label="订单范围"]');scope.value='SETTLED';scope.dispatchEvent(new w.Event('change'));await ready();
+const beforeScope=reads,scope=d.querySelector('[aria-label="订单范围"]');scope.value='SETTLED';scope.dispatchEvent(new w.Event('change'));await ready(beforeScope);
 let summary=d.querySelector('.fi-product-cost-summary');
 assert.equal(summary.querySelector('strong').textContent,'待补齐');
 assert(summary.textContent.includes('尚无可确认成本，不能按零成本计算'));

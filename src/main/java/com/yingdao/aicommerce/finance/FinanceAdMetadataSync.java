@@ -11,9 +11,12 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 /** One metadata request per lease, outside financial queries and report/profit streams. */
 @Component
 final class FinanceAdMetadataSync {
+    private static final int MAX_PENDING_REFERENCES=50000;
     private final FinanceRepository repo;private final FinanceAds ads;
     private final java.util.concurrent.ScheduledExecutorService worker=java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"finance-ad-metadata");t.setDaemon(true);return t;});
     private final java.util.concurrent.atomic.AtomicBoolean unavailable=new java.util.concurrent.atomic.AtomicBoolean();
+    private final LinkedHashMap<String,Reference> pending=new LinkedHashMap<>();
+    private record Reference(String organization,String advertiser,String campaign,boolean gmv) {}
     private static final class MetadataChanged extends RuntimeException {}
     FinanceAdMetadataSync(FinanceRepository repo,FinanceAds ads){this.repo=repo;this.ads=ads;}
     @PostConstruct void start(){worker.scheduleWithFixedDelay(()->{
@@ -21,6 +24,44 @@ final class FinanceAdMetadataSync {
         catch(RuntimeException failure){if(unavailable.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance ad metadata temporarily unavailable");}
     },90,30,java.util.concurrent.TimeUnit.SECONDS);}
     @PreDestroy void stop(){worker.shutdownNow();}
+
+    void request(Scope s,List<Map<String,Object>> references){
+        var safe=new LinkedHashMap<String,Reference>();
+        for(var row:references){
+            String advertiser=text(row.get("account_id")),campaign=text(row.get("campaign_id"));
+            if(!FinanceAdCampaignMetadata.id(advertiser)||!FinanceAdCampaignMetadata.id(campaign))continue;
+            var reference=new Reference(s.organizationId(),advertiser,campaign,Boolean.TRUE.equals(row.get("is_gmv")));
+            safe.merge(key(reference),reference,(old,next)->old.gmv()?old:next);
+        }
+        if(safe.isEmpty())return;var work=List.copyOf(safe.values());
+        Runnable dispatch=()->addPending(work);
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()
+                &&org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive())
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){
+                @Override public void afterCommit(){dispatch.run();}
+            });
+        else dispatch.run();
+    }
+    private void addPending(Collection<Reference> references){
+        synchronized(pending){for(var reference:references){
+            String key=key(reference);var old=pending.get(key);
+            if(old!=null){if(!old.gmv()&&reference.gmv())pending.put(key,reference);continue;}
+            if(pending.size()<MAX_PENDING_REFERENCES)pending.put(key,reference);
+        }}
+    }
+    private void flushRequests(){
+        List<Reference> batch;
+        synchronized(pending){if(pending.isEmpty())return;batch=new ArrayList<>(pending.values());pending.clear();}
+        try{
+            var organizations=new LinkedHashMap<String,List<Map<String,Object>>>();
+            for(var reference:batch)organizations.computeIfAbsent(reference.organization(),ignored->new ArrayList<>()).add(Map.of(
+                "platform","TIKTOK_SHOP","account_id",reference.advertiser(),"campaign_id",reference.campaign(),"source",reference.gmv()?"API_GMV":"API_CAMPAIGN"));
+            organizations.forEach((organization,rows)->enqueue(repo,new Scope(organization,""),rows));
+        }catch(RuntimeException failure){
+            synchronized(pending){var newer=new ArrayList<>(pending.values());pending.clear();addPending(batch);addPending(newer);}
+            throw failure;
+        }
+    }
 
     static void enqueue(FinanceRepository repo,Scope s,List<Map<String,Object>> sources){
         var connected=new HashMap<String,Boolean>();repo.jdbc().queryForList("SELECT advertiser_id,enabled FROM finance_ad_accounts a WHERE organization_id=? AND "+FinanceAds.visibleAccount(),s.organizationId()).forEach(a->connected.put(text(a.get("advertiser_id")),Boolean.TRUE.equals(a.get("enabled"))||number(a.get("enabled"))==1));
@@ -56,6 +97,7 @@ final class FinanceAdMetadataSync {
         repo.jdbc().update("UPDATE finance_ad_campaign_jobs SET lease_token=NULL,lease_until=NULL,status=?,next_at=GREATEST(next_at,UTC_TIMESTAMP(6)) WHERE organization_id=? AND advertiser_id=?",enabled?"READY":"PAUSED",s.organizationId(),advertiser);
     }
     void tick(){
+        flushRequests();
         var due=repo.jdbc().queryForList("""
             SELECT j.*,a.user_id,a.access_token_encrypted FROM finance_ad_campaign_jobs j
             JOIN finance_ad_accounts a ON a.organization_id=j.organization_id AND a.advertiser_id=j.advertiser_id
@@ -131,4 +173,5 @@ final class FinanceAdMetadataSync {
         Object[] keys=keys(job);repo.jdbc().update("UPDATE finance_ad_campaign_jobs SET status=?,error_message=?,checkpoint_json=?,next_at=?,lease_token=NULL,lease_until=NULL,last_success_at=CASE WHEN ? THEN UTC_TIMESTAMP(6) ELSE last_success_at END,failures=CASE WHEN ? THEN 0 ELSE failures END WHERE organization_id=? AND advertiser_id=? AND campaign_id=? AND lease_token=?",status,message,cp==null?null:repo.write(cp),Timestamp.from(Instant.now().plusSeconds(delay)),success,success,keys[0],keys[1],keys[2],lease);
     }
     private static Object[] keys(Map<String,Object> job){return new Object[]{job.get("organization_id"),job.get("advertiser_id"),job.get("campaign_id")};}
+    private static String key(Reference reference){return reference.organization()+"\0"+reference.advertiser()+"\0"+reference.campaign();}
 }
