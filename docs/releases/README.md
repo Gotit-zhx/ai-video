@@ -8,6 +8,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [finance-shopee-ads-reconciliation-20261113.md](finance/finance-shopee-ads-reconciliation-20261113.md) | Shopee 两店金额核对、首次回补缺日保护及验证边界 |
 | [pr60-62-integration-20261112.md](finance/pr60-62-integration-20261112.md) | #60–#62 合并复核、成本仓提示与广告过期检查点恢复；#63 保留草稿 |
 | [finance-shopee-ads-activation-20261112.md](finance/finance-shopee-ads-activation-20261112.md) | Shopee Ads 正式配置、V154 和源码激活；店铺授权及真实回补待验证 |
 | [finance-ad-automation-20261109.md](finance/finance-ad-automation-20261109.md) | v2026.11.9 广告自动化发布准备、V148 独立维护及验收顺序 |

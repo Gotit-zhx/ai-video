@@ -36,6 +36,18 @@ final class FinanceShopeeAdsApi {
         }
         return result;
     }
+    static void requireClosedDays(List<Map<String,Object>> facts,LocalDate from,LocalDate to,LocalDate today){
+        LocalDate closedEnd=to.isBefore(today)?to:today.minusDays(1);
+        var returned=new HashSet<String>();facts.forEach(row->returned.add(text(row.get("record_date"))));
+        var missing=new ArrayList<LocalDate>();
+        for(LocalDate day=from;!day.isAfter(closedEnd);day=day.plusDays(1))if(!returned.contains(day.toString()))missing.add(day);
+        if(!missing.isEmpty())throw new IncompleteReport(missing);
+    }
+    static final class IncompleteReport extends IllegalArgumentException {
+        IncompleteReport(List<LocalDate> missing){
+            super("Shopee 日报缺少 "+missing.size()+" 个已结束日期（"+missing.stream().map(LocalDate::toString).reduce((a,b)->a+"、"+b).orElse("")+"）；本窗口未发布，保留原数据和检查点等待重试");
+        }
+    }
     static Map<String,Object> plan(LocalDate today,LocalDate lastSuccess){
         var plan=new LinkedHashMap<String,Object>();LocalDate oldest=start(today,lastSuccess);
         if(lastSuccess==null){

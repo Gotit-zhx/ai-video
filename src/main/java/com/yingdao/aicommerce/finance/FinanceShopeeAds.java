@@ -66,14 +66,17 @@ public class FinanceShopeeAds {
         var rows=repo.jdbc().queryForList("""
             SELECT g.external_shop_id,g.partner_id,g.name,g.currency,g.enabled,g.status,g.error_message,g.last_success_at,g.next_at,
               c.id shop_id,c.group_id,c.display_name shop_alias,c.name shop_name,
+              IF(g.enabled,COALESCE(s.status,'READY'),'PAUSED') gms_status,s.error_message gms_error_message,s.last_success_at gms_last_success_at,s.next_at gms_next_at,
+              (SELECT COUNT(*) FROM finance_shopee_gms_daily m WHERE m.organization_id=g.organization_id AND m.external_shop_id=g.external_shop_id AND m.campaign_revision=s.campaign_revision) gms_records,
               (SELECT COUNT(*) FROM finance_shopee_ad_daily d WHERE d.organization_id=g.organization_id AND d.external_shop_id=g.external_shop_id) records
             FROM finance_shopee_ad_grants g LEFT JOIN finance_connections c ON c.organization_id=g.organization_id AND c.platform='SHOPEE' AND c.external_shop_id=g.external_shop_id AND c.status<>'REMOVED'
               AND NOT EXISTS(SELECT 1 FROM finance_connections other WHERE other.organization_id=c.organization_id AND other.platform=c.platform AND other.external_shop_id=c.external_shop_id AND other.id<>c.id AND other.status<>'REMOVED')
+            LEFT JOIN finance_shopee_gms_sync s ON s.organization_id=g.organization_id AND s.external_shop_id=g.external_shop_id
             WHERE g.organization_id=? AND g.status<>'REMOVED' ORDER BY g.external_shop_id LIMIT 501
             """,scope.organizationId());
         if(rows.size()>500)throw bad("Shopee 广告授权店铺超过展示范围");
-        for(var row:rows){if(configured&&!partner.equals(row.remove("partner_id"))){row.put("status","NEEDS_AUTHORIZATION");row.put("error_message","独立广告应用已变化，请重新授权；历史费用继续保留");}else row.remove("partner_id");}
-        return Map.of("configured",configured,"configurationError",configurationError,"callbackUrl",callback(),"coverageBasis","官方店铺 CPC 日报 expense；尚未核实 GMS 与 CPC 的覆盖关系，不叠加 GMS。现金、授信、赠款和净额接口未拆分。","items",rows);
+        for(var row:rows){if(configured&&!partner.equals(row.remove("partner_id"))){row.put("status","NEEDS_AUTHORIZATION");row.put("gms_status","NEEDS_AUTHORIZATION");row.put("error_message","独立广告应用已变化，请重新授权；历史费用继续保留");}else row.remove("partner_id");}
+        return Map.of("configured",configured,"configurationError",configurationError,"callbackUrl",callback(),"coverageBasis",FinanceShopeeGmsApi.DESCRIPTION+"现金、授信、赠款和净额接口未拆分。","items",rows);
     }
     void pause(Scope scope,String external,boolean enabled){
         if(repo.jdbc().update("UPDATE finance_shopee_ad_grants SET enabled=?,status=?,lease_token=NULL,lease_until=NULL WHERE organization_id=? AND external_shop_id=?",enabled,enabled?"READY":"PAUSED",scope.organizationId(),external)!=1)throw bad("未找到本公司的 Shopee 广告授权");
@@ -102,15 +105,22 @@ public class FinanceShopeeAds {
             try{collect(app,claimed,lease);}catch(RuntimeException failure){failed(claimed,lease,failure);}finally{repo.jdbc().update("UPDATE finance_shopee_ad_groups SET lease_token=NULL,lease_until=NULL WHERE organization_id=? AND token_group_id=? AND lease_token=?",org,claimed.get("token_group_id"),lease);}return;
         }
     }
-    private void collect(FinanceShopeeAdsSettings.Application app,Map<String,Object> grant,String lease){
+    MarketplaceAccess.Connection connection(FinanceShopeeAdsSettings.Application app,Map<String,Object> grant,String lease){
         String org=text(grant.get("organization_id")),external=text(grant.get("external_shop_id"));Scope storage=new Scope(org,text(grant.get("user_id")));
         var tokens=new MarketplaceAccess.TokenSet(decrypt(storage,external,grant.get("access_token_encrypted")),decrypt(storage,external,grant.get("refresh_token_encrypted")),grant.get("access_token_expires_at")==null?null:instant(grant.get("access_token_expires_at")),null,List.of());
         var shop=new FinanceShopAuthorization.FinanceShop(Map.of("organization_id",org,"user_id",storage.userId(),"id",external,"platform","SHOPEE","external_shop_id",external,"name",text(grant.get("name")),"authorization_subject_type",grant.get("authorization_subject_type"),"authorization_subject_id",grant.get("authorization_subject_id")));
         if(tokens.accessTokenExpiresAt()==null||!tokens.accessTokenExpiresAt().isAfter(Instant.now().plusSeconds(300))){
             var refreshed=app.client().refresh(tokens,shop);if(refreshed==null||text(refreshed.accessToken()).isBlank()||text(refreshed.refreshToken()).isBlank())throw bad("广告授权刷新不完整");
-            if(!saveRefreshed(app,grant,lease,refreshed))return;
+            if(!saveRefreshed(app,grant,lease,refreshed))return null;
             tokens=refreshed;
         }
+        var current=settings.current();
+        if(current==null||!app.revision().equals(current.revision())||repo.jdbc().queryForList("SELECT external_shop_id FROM finance_shopee_ad_grants WHERE organization_id=? AND external_shop_id=? AND enabled=TRUE AND partner_id=? AND token_group_id=? AND lease_token=? AND lease_until>UTC_TIMESTAMP(6)",org,external,app.partnerId(),grant.get("token_group_id"),lease).isEmpty())return null;
+        return new MarketplaceAccess.Connection(shop,tokens);
+    }
+    private void collect(FinanceShopeeAdsSettings.Application app,Map<String,Object> grant,String lease){
+        String org=text(grant.get("organization_id")),external=text(grant.get("external_shop_id"));
+        var connection=connection(app,grant,lease);if(connection==null)return;
         ZoneId zone=ZoneId.of(text(grant.get("timezone")));LocalDate today=LocalDate.now(zone);
         var cp=grant.get("checkpoint_json")==null?new LinkedHashMap<String,Object>():new LinkedHashMap<>(repo.read(text(grant.get("checkpoint_json"))));
         if(!cp.containsKey("from"))cp.putAll(FinanceShopeeAdsApi.plan(today,grant.get("last_success_at")==null?null:instant(grant.get("last_success_at")).atZone(zone).toLocalDate()));
@@ -123,7 +133,8 @@ public class FinanceShopeeAds {
         boolean forward=from.equals(to)&&from.equals(today.minusMonths(6));
         LocalDate requestFrom=from.equals(to)&&!forward?from.minusDays(1):from,requestTo=forward?to.plusDays(1):to;final LocalDate end=to;
         int saved=repo.jdbc().update("UPDATE finance_shopee_ad_grants SET checkpoint_json=? WHERE organization_id=? AND external_shop_id=? AND lease_token=?",repo.write(cp),org,external,lease);if(saved!=1)return;
-        var response=app.client().shopGetExact(FinanceShopeeAdsApi.PATH,new MarketplaceAccess.Connection(shop,tokens),FinanceShopeeAdsApi.query(requestFrom,requestTo));var facts=FinanceShopeeAdsApi.daily(response,requestFrom,requestTo);
+        var response=app.client().shopGetExact(FinanceShopeeAdsApi.PATH,connection,FinanceShopeeAdsApi.query(requestFrom,requestTo));var facts=FinanceShopeeAdsApi.daily(response,requestFrom,requestTo);
+        FinanceShopeeAdsApi.requireClosedDays(facts,requestFrom,requestTo,today);
         repo.transaction(()->{
             // Shop deletion also locks the connection before the grant.
             var connected=repo.jdbc().queryForList("SELECT id FROM finance_connections WHERE organization_id=? AND external_shop_id=? AND platform='SHOPEE' AND status='ACTIVE' AND enabled=TRUE FOR SHARE",org,external);
@@ -165,7 +176,7 @@ public class FinanceShopeeAds {
     private void failed(Map<String,Object> grant,String lease,RuntimeException failure){
         String message=text(failure.getMessage()).toLowerCase(Locale.ROOT);boolean permission=message.contains("403")||message.contains("error_api_permission");boolean auth=message.contains("token")||message.contains("auth")||message.contains("401");boolean limited=message.contains("429")||message.contains("rate_limit");
         String status=permission?"NEEDS_PERMISSION":auth?"NEEDS_AUTHORIZATION":limited?"RATE_LIMITED":"ERROR";
-        String safe=permission?"Shopee Ads 报表权限未开通；检查独立正式应用及重新授权":auth?"Shopee Ads 独立授权需更新":limited?"Shopee Ads 请求限流，保留原窗口等待重试":"Shopee Ads 报表未完成或刷新不完整，保留旧数据与窗口";
+        String safe=permission?"Shopee Ads 报表权限未开通；检查独立正式应用及重新授权":auth?"Shopee Ads 独立授权需更新":limited?"Shopee Ads 请求限流，保留原窗口等待重试":failure instanceof FinanceShopeeAdsApi.IncompleteReport?failure.getMessage():"Shopee Ads 报表未完成或刷新不完整，保留旧数据与窗口";
         long delay=permission||auth?86400:Math.min(21600,60L*(1L<<Math.min(8,number(grant.get("failures"))+1)));
         if(limited)repo.jdbc().update("UPDATE finance_api_pacing SET next_allowed_at=GREATEST(next_allowed_at,?),throttle_count=throttle_count+1 WHERE platform='SHOPEE_ADS' AND channel='CPC'",Timestamp.from(Instant.now().plusSeconds(delay)));
         repo.jdbc().update("UPDATE finance_shopee_ad_grants SET status=?,error_message=?,failures=failures+1,next_at=?,lease_token=NULL,lease_until=NULL WHERE organization_id=? AND external_shop_id=? AND lease_token=?",status,safe,Timestamp.from(Instant.now().plusSeconds(delay)),grant.get("organization_id"),grant.get("external_shop_id"),lease);
@@ -175,12 +186,15 @@ public class FinanceShopeeAds {
         var args=new ArrayList<Object>(List.of(scope.organizationId(),filter.start(),filter.end()));String currency="";
         if(!filter.currency().isBlank()){currency=" AND d.currency=?";args.add(filter.currency());}
         var result=repo.jdbc().queryForList("""
-            SELECT d.source_key,d.external_shop_id account_id,d.record_date,d.currency,d.amount,c.id shop_id,c.name account_name
+            SELECT d.source_key,d.external_shop_id account_id,d.record_date,d.currency,d.amount,d.amount all_shop_amount,c.id shop_id,c.name account_name,
+              g.amount gms_amount,g.currency gms_currency,g.campaign_revision gms_revision,g.observed_at gms_observed_at
             FROM finance_shopee_ad_daily d JOIN finance_connections c ON c.organization_id=d.organization_id AND c.platform='SHOPEE' AND c.external_shop_id=d.external_shop_id AND c.status<>'REMOVED'
               AND NOT EXISTS(SELECT 1 FROM finance_connections other WHERE other.organization_id=c.organization_id AND other.platform=c.platform AND other.external_shop_id=c.external_shop_id AND other.id<>c.id AND other.status<>'REMOVED')
+            LEFT JOIN finance_shopee_gms_sync s ON s.organization_id=d.organization_id AND s.external_shop_id=d.external_shop_id
+            LEFT JOIN finance_shopee_gms_daily g ON g.organization_id=d.organization_id AND g.external_shop_id=d.external_shop_id AND g.record_date=d.record_date AND g.campaign_revision=s.campaign_revision
             WHERE d.organization_id=? AND d.record_date BETWEEN ? AND ?
             """+currency+" LIMIT 50001",args.toArray());
-        for(var row:result){row.put("record_date",text(row.get("record_date")));row.put("platform","SHOPEE");row.put("source","API_SHOPEE_CPC");row.put("campaign_id","");row.put("campaign_name","店铺 CPC 日报（未提供系列粒度）");row.put("report_type","CPC 店铺日报");row.put("funding_basis","官方 CPC 店铺日总消耗 expense；不叠加 GMS，未拆现金、授信、赠款或净额");FinanceAdFunding.completeNet(row);}return result;
+        for(var row:result){row.put("record_date",text(row.get("record_date")));row.put("platform","SHOPEE");row.put("source","API_SHOPEE_CPC");row.put("campaign_id","");row.put("campaign_name","店铺账单参考（日粒度）");row.put("report_type","CPC − 已识别 GMS 日报");row.put("funding_basis",FinanceShopeeGmsApi.DESCRIPTION);FinanceAdFunding.completeNet(row);}return result;
     }
     private String encrypt(Scope owner,String external,String token){return cipher.encrypt(token,owner.organizationId(),"finance-shopee-ads:"+owner.userId()+":"+external);}
     private String decrypt(Scope owner,String external,Object token){return cipher.decrypt(text(token),owner.organizationId(),"finance-shopee-ads:"+owner.userId()+":"+external);}
