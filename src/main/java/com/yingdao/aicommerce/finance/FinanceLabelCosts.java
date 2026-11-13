@@ -216,15 +216,21 @@ public class FinanceLabelCosts {
             WHERE organization_id=? AND status<>'REMOVED' ORDER BY created_at DESC,id LIMIT 200
             """,scope.organizationId());
         var q=repo.query(scope,filter,"r");
+        var periodArgs=new ArrayList<Object>();periodArgs.add(scope.organizationId());periodArgs.addAll(q.args());
         var period=repo.jdbc().queryForMap("""
             SELECT COUNT(*) orders,COALESCE(SUM(lc.amount_cny),0) amount_cny,
               COALESCE(SUM(lc.pending_count),0) conflicts,COALESCE(SUM(lc.shipment_count),0) shipments
             FROM finance_label_state ls JOIN finance_label_order_totals lc
               ON lc.organization_id=ls.organization_id AND lc.generation=ls.active_generation
-            JOIN finance_records r FORCE INDEX(idx_finance_settled_order)
-              ON r.organization_id=lc.organization_id AND r.shop_id=lc.shop_id AND r.order_id=lc.order_id
-            WHERE
-            """+FinanceCostReport.firstSettlement("r",true)+" AND "+q.where(),q.args().toArray());
+            JOIN LATERAL (
+              SELECT r0.id,r0.organization_id,r0.shop_id,r0.order_id,r0.kind,r0.source,r0.status,
+                r0.record_date,r0.platform,r0.category,r0.currency
+              FROM finance_records r0 FORCE INDEX(idx_finance_settled_order)
+              WHERE r0.organization_id=lc.organization_id AND r0.shop_id=lc.shop_id AND r0.order_id=lc.order_id
+                AND
+            """+FinanceCostReport.confirmed("r0")+" AND (r0.platform<>'TIKTOK_SHOP' OR r0.category='ORDER')"
+              +" ORDER BY r0.record_date,r0.id LIMIT 1) r ON TRUE WHERE ls.organization_id=? AND "
+              +FinanceOrderCharges.normalOrder("r")+" AND "+q.where(),periodArgs.toArray());
         var states=repo.jdbc().queryForList("SELECT requested_revision,applied_revision,error_message FROM finance_label_state WHERE organization_id=?",scope.organizationId());
         var state=states.isEmpty()?Map.<String,Object>of():states.getFirst();
         var result=new LinkedHashMap<String,Object>(details);
