@@ -229,7 +229,8 @@ public class FinanceQueryProjections {
             // During catch-up, source scans compete with the drainer while its next
             // full invalidation may supersede their baseline. A bounded index probe prioritizes that
             // company's invalidations; other companies and small normal bursts still build.
-            var ready=repo.jdbc().queryForList("SELECT p.* FROM finance_query_partitions p WHERE p.built_revision<>p.requested_revision AND p.next_attempt_at<=UTC_TIMESTAMP(6) AND (p.lease_until IS NULL OR p.lease_until<UTC_TIMESTAMP(6)) AND NOT EXISTS(SELECT 1 FROM finance_query_events e WHERE e.organization_id=p.organization_id ORDER BY e.event_id LIMIT 1 OFFSET "+EVENT_BATCH+") ORDER BY p.requested_at LIMIT 1 FOR UPDATE SKIP LOCKED");
+            // Missing baselines lead; saved snapshots then take fair turns by oldest snapshot start.
+            var ready=repo.jdbc().queryForList("SELECT p.* FROM finance_query_partitions p WHERE p.built_revision<>p.requested_revision AND p.next_attempt_at<=UTC_TIMESTAMP(6) AND (p.lease_until IS NULL OR p.lease_until<UTC_TIMESTAMP(6)) AND NOT EXISTS(SELECT 1 FROM finance_query_events e WHERE e.organization_id=p.organization_id ORDER BY e.event_id LIMIT 1 OFFSET "+EVENT_BATCH+") ORDER BY (p.built_revision>0),p.generated_at,p.requested_at,p.organization_id,p.partition_month,p.platform_filter LIMIT 1 FOR UPDATE SKIP LOCKED");
             if(ready.isEmpty())return Map.<String,Object>of();
             var row=new LinkedHashMap<>(ready.getFirst());String token=UUID.randomUUID().toString();
             repo.jdbc().update("UPDATE finance_query_partitions SET lease_token=?,lease_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 5 MINUTE) WHERE organization_id=? AND platform_filter=? AND partition_month=?",token,row.get("organization_id"),row.get("platform_filter"),row.get("partition_month"));

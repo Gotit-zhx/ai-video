@@ -39,6 +39,45 @@ class FinanceProjectionBaselineIntegrationTest {
         assertEquals(0,decimal("11.123456").compareTo(storedAmount("2026-10-01")));
         assertTrue(projections.buildNext());assertReadyAndNative();assertEquals(0,dirtyCount());
     }
+    @Test void oldestSavedSnapshotBuildsBeforeAnEarlierRequestWithARecentSnapshot(){
+        var september=new Filter(LocalDate.of(2026,9,1),LocalDate.of(2026,9,30),"","","","day");
+        projections.request(f.owner,september);assertTrue(projections.buildNext());assertTrue(projections.buildNext());
+        f.db.update("UPDATE finance_query_partitions SET requested_revision=built_revision+1,full_rebuild=TRUE,generated_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 DAY),requested_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 10 MINUTE),next_attempt_at=UTC_TIMESTAMP(6) WHERE partition_month='2026-10-01'");
+        f.db.update("UPDATE finance_query_partitions SET requested_revision=built_revision+1,full_rebuild=TRUE,generated_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 30 DAY),requested_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 MINUTE),next_attempt_at=UTC_TIMESTAMP(6) WHERE partition_month='2026-09-01'");
+
+        assertTrue(projections.buildNext());
+
+        assertEquals(0,pending("2026-09-01"),"The stalest saved snapshot gets the next lease");
+        assertEquals(1,pending("2026-10-01"),"An older request with a recent snapshot waits its fair turn");
+    }
+    @Test void hiddenBaselineMadeDirtyDuringItsBuildYieldsToAnOlderPendingSnapshot(){
+        var september=new Filter(LocalDate.of(2026,9,1),LocalDate.of(2026,9,30),"","","","day");
+        projections.request(f.owner,september);assertTrue(projections.buildNext());assertTrue(projections.buildNext());
+        change("first","15");drain();
+        race(()->{change("first","21");drain();});
+        assertEquals(1,pending("2026-10-01"),"The concurrent DAY event keeps the completed baseline hidden");
+        f.db.update("UPDATE finance_query_partitions SET requested_revision=built_revision+1,full_rebuild=TRUE,generated_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 30 DAY),requested_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 MINUTE),next_attempt_at=UTC_TIMESTAMP(6) WHERE partition_month='2026-09-01'");
+
+        assertTrue(projections.buildNext());
+
+        assertEquals(0,pending("2026-09-01"),"The older snapshot gets a turn after the hidden baseline advances");
+        assertEquals(1,pending("2026-10-01"),"New arrivals cannot immediately reclaim the worker");
+    }
+    @Test void missingBaselinesPrecedeSavedSnapshotsAndUseTheFullPartitionIdentityForTies(){
+        assertTrue(projections.buildNext());
+        f.db.update("UPDATE finance_query_partitions SET requested_revision=built_revision+1,full_rebuild=TRUE,generated_at='2026-01-01 00:00:00',requested_at='2026-01-01 00:00:00',next_attempt_at=UTC_TIMESTAMP(6)");
+        f.db.batchUpdate("INSERT INTO finance_query_partitions(organization_id,platform_filter,partition_month,requested_at,next_attempt_at) VALUES(?,?,?,'2026-11-13 01:00:00','2026-01-01 00:00:00')",List.of(
+            new Object[]{"z-org","",LocalDate.of(2026,8,1)},
+            new Object[]{"a-org","",LocalDate.of(2026,10,1)},
+            new Object[]{"a-org","SHOPEE",LocalDate.of(2026,9,1)},
+            new Object[]{"a-org","",LocalDate.of(2026,9,1)}));
+
+        assertTrue(projections.buildNext());
+
+        assertEquals(1,f.db.queryForObject("SELECT built_revision FROM finance_query_partitions WHERE organization_id='a-org' AND platform_filter='' AND partition_month='2026-09-01'",Long.class));
+        assertEquals(3,f.db.queryForObject("SELECT COUNT(*) FROM finance_query_partitions WHERE built_revision=0",Integer.class));
+        assertEquals(1,pending("2026-10-01"),"A saved snapshot remains behind every missing baseline");
+    }
     @Test void repeatedSameDayKeepsItsNewerRevisionWhileOlderDirtyDaysAreCleared(){
         assertTrue(projections.buildNext());change("first","15");change("other","8");drain();
         long revision=revision("requested_revision");assertEquals(revision,dirtyRevision("2026-10-01"));
@@ -152,6 +191,7 @@ class FinanceProjectionBaselineIntegrationTest {
     private void drain(){while(projections.drainEvents()>0){}}
     private long revision(String column){var value=f.db.queryForMap("SELECT * FROM finance_query_partitions").get(column);return Boolean.TRUE.equals(value)?1:number(value);}
     private long dirtyRevision(String day){return f.db.queryForObject("SELECT requested_revision FROM finance_query_dirty_days WHERE record_date=?",Long.class,LocalDate.parse(day));}
+    private int pending(String month){return f.db.queryForObject("SELECT built_revision<>requested_revision FROM finance_query_partitions WHERE organization_id=? AND platform_filter='' AND partition_month=?",Integer.class,f.owner.organizationId(),LocalDate.parse(month));}
     private int dirtyCount(){return f.db.queryForObject("SELECT COUNT(*) FROM finance_query_dirty_days",Integer.class);}
     private Map<String,Object> payload(){return f.db.queryForMap("SELECT full_month_json,partial_first_day_json,spend_json,generated_at FROM finance_query_partitions");}
     private java.math.BigDecimal storedAmount(String day){return rows(f.repo.read(f.db.queryForObject("SELECT full_month_json FROM finance_query_partitions",String.class)).get("buckets")).stream().filter(row->day.equals(text(row.get("record_date")))).map(row->decimal(row.get("amount"))).findFirst().orElseThrow();}
