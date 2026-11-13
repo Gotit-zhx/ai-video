@@ -9,6 +9,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.nio.file.*;
 import java.time.*;
 import java.util.*;
+import java.util.concurrent.*;
 import static com.yingdao.aicommerce.finance.FinanceData.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -140,6 +141,49 @@ class FinanceProjectionDefaultWarmIntegrationTest {
             assertEquals(List.of(2000,2000,2000,2000,2000,2000,2000,2000),db.deletedBatches);
             assertEquals(0,gate.activeWorkers());worker.tickEvents();assertEquals(0,eventCount());
         }
+    }
+    @Test void aFullTickSchedulesFastCatchUpThenReturnsToIdlePolling()throws Exception{
+        fixture.connect(fixture.owner,false);projections.drainEvents();enqueue(16001);
+        var timers=new TimerLane();worker.stop();worker=new FinanceQueryProjectionWorker(projections,clock,nanos::get,timers.scheduler);
+        var gate=gate(temp.resolve("adaptive-gate"));db.gate=gate;
+        try(var ignored=redirectGate(gate)){
+            worker.start();timers.nextEvent().run();assertEquals(1,eventCount());
+            assertEquals(0,gate.activeWorkers(),"No maintenance permit may span a scheduled wait");
+            assertTrue(timers.eventDelayMillis<1000,"A successful full tick must avoid the idle one-second wait");
+            timers.nextEvent().run();assertEquals(0,eventCount());assertEquals(1000,timers.eventDelayMillis);
+            assertEquals(1000,timers.buildDelayMillis,"Rebuild scheduling must retain its independent lane");
+        }
+    }
+    @Test void failedCatchUpBacksOffAndTheEventLaneContinues()throws Exception{
+        fixture.connect(fixture.owner,false);projections.drainEvents();enqueue(16001);
+        var timers=new TimerLane();worker.stop();worker=new FinanceQueryProjectionWorker(projections,clock,nanos::get,timers.scheduler);
+        var gate=gate(temp.resolve("retry-gate"));db.gate=gate;
+        try(var ignored=redirectGate(gate)){
+            worker.start();timers.nextEvent().run();assertEquals(1,eventCount());
+            db.afterDelete=()->{throw new org.springframework.dao.TransientDataAccessResourceException("retry batch");};
+            timers.nextEvent().run();assertEquals(1,eventCount(),"The failed transaction must retain its event");
+            assertEquals(1000,timers.eventDelayMillis,"A failure must not inherit the previous tick's fast retry");
+            db.afterDelete=()->{};timers.nextEvent().run();assertEquals(0,eventCount());
+            assertEquals(1000,timers.eventDelayMillis);assertEquals(0,gate.activeWorkers());
+            worker.stop();timers.nextEvent().run();assertTrue(timers.events.isEmpty(),"Stopped workers must not recreate their scheduling chain");
+        }
+    }
+    private static final class TimerLane {
+        final ScheduledExecutorService scheduler=mock(ScheduledExecutorService.class);
+        final Deque<Runnable> events=new ArrayDeque<>();long eventDelayMillis,buildDelayMillis;boolean stopped;
+        TimerLane(){
+            when(scheduler.isShutdown()).thenAnswer(call->stopped);
+            when(scheduler.shutdownNow()).thenAnswer(call->{stopped=true;return List.of();});
+            when(scheduler.schedule(any(Runnable.class),anyLong(),any(TimeUnit.class))).thenAnswer(call->{
+                events.add(call.getArgument(0));eventDelayMillis=call.<TimeUnit>getArgument(2).toMillis(call.getArgument(1));return null;
+            });
+            when(scheduler.scheduleWithFixedDelay(any(Runnable.class),anyLong(),anyLong(),any(TimeUnit.class))).thenAnswer(call->{
+                long initial=call.getArgument(1);var unit=call.<TimeUnit>getArgument(3);
+                if(unit.toMillis(initial)==20000){events.add(call.getArgument(0));eventDelayMillis=unit.toMillis(call.getArgument(2));}
+                else buildDelayMillis=unit.toMillis(call.getArgument(2));return null;
+            });
+        }
+        Runnable nextEvent(){assertFalse(events.isEmpty(),"The event lane must remain scheduled");return events.removeFirst();}
     }
     private void enqueue(int count){
         db.deletedBatches.clear();var events=new ArrayList<Object[]>();

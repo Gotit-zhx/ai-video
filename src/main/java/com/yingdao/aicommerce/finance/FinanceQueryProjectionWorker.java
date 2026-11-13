@@ -17,22 +17,34 @@ public final class FinanceQueryProjectionWorker {
     private final Clock clock;
     private final LongSupplier nanoTime;
     private Instant lastDefaultWarm;
-    private final ScheduledExecutorService workers=Executors.newScheduledThreadPool(2,r->{var t=new Thread(r,"finance-query-projection");t.setDaemon(true);return t;});
+    private final ScheduledExecutorService workers;
     @org.springframework.beans.factory.annotation.Autowired
     public FinanceQueryProjectionWorker(FinanceQueryProjections projections){this(projections,Clock.systemUTC());}
     FinanceQueryProjectionWorker(FinanceQueryProjections projections,Clock clock){this(projections,clock,System::nanoTime);}
-    FinanceQueryProjectionWorker(FinanceQueryProjections projections,Clock clock,LongSupplier nanoTime){this.projections=projections;this.clock=clock;this.nanoTime=nanoTime;}
+    FinanceQueryProjectionWorker(FinanceQueryProjections projections,Clock clock,LongSupplier nanoTime){
+        this(projections,clock,nanoTime,Executors.newScheduledThreadPool(2,r->{var t=new Thread(r,"finance-query-projection");t.setDaemon(true);return t;}));
+    }
+    FinanceQueryProjectionWorker(FinanceQueryProjections projections,Clock clock,LongSupplier nanoTime,ScheduledExecutorService workers){this.projections=projections;this.clock=clock;this.nanoTime=nanoTime;this.workers=workers;}
     @PostConstruct public void start(){
-        workers.scheduleWithFixedDelay(this::tickEvents,20,1,TimeUnit.SECONDS);
+        workers.schedule(this::scheduledEvents,20,TimeUnit.SECONDS);
         workers.scheduleWithFixedDelay(()->run(projections::buildNext),21,1,TimeUnit.SECONDS);
     }
+    /** One self-scheduling lane: committed full batches catch up without extending a transaction or tick. */
+    private void scheduledEvents(){
+        if(workers.isShutdown()||Thread.currentThread().isInterrupted())return;
+        boolean full=tickEvents();
+        if(workers.isShutdown()||Thread.currentThread().isInterrupted())return;
+        try{workers.schedule(this::scheduledEvents,full?100:1000,TimeUnit.MILLISECONDS);}
+        catch(RejectedExecutionException stopped){if(!workers.isShutdown())throw stopped;}
+    }
     /** The existing event lane warms on its first eligible tick, hourly, and immediately at a business-month boundary. */
-    void tickEvents(){run(()->{
+    boolean tickEvents(){var full=new boolean[]{false};run(()->{
         long started=nanoTime.getAsLong();
         // Each batch retains its own bounded transaction. Fast catch-up shares a
         // short tick; slow work yields, and maintenance never starts another batch.
+        int drained=0;
         for(int batch=0;batch<MAX_EVENT_BATCHES;batch++){
-            int drained=projections.drainEvents();
+            drained=projections.drainEvents();
             if(drained<FinanceQueryProjections.EVENT_BATCH||nanoTime.getAsLong()-started>=EVENT_BUDGET_NANOS
                     ||com.yingdao.aicommerce.ops.MaintenanceGate.instance().closed()||Thread.currentThread().isInterrupted())break;
         }
@@ -44,7 +56,8 @@ public final class FinanceQueryProjectionWorker {
             // Advance only after every company/platform request succeeds; INSERT IGNORE makes a partial retry safe.
             lastDefaultWarm=now;
         }
-    });}
+        full[0]=drained==FinanceQueryProjections.EVENT_BATCH;
+    });return full[0];}
     private void run(Runnable action){
         try{com.yingdao.aicommerce.ops.MaintenanceGate.runIfOpen(action);}
         catch(RuntimeException failure){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance projection worker deferred: {}",failure.getClass().getSimpleName());}
