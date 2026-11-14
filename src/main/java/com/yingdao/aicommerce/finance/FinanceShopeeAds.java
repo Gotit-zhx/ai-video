@@ -124,6 +124,7 @@ public class FinanceShopeeAds {
         LocalDate requestFrom=from.equals(to)&&!forward?from.minusDays(1):from,requestTo=forward?to.plusDays(1):to;final LocalDate end=to;
         int saved=repo.jdbc().update("UPDATE finance_shopee_ad_grants SET checkpoint_json=? WHERE organization_id=? AND external_shop_id=? AND lease_token=?",repo.write(cp),org,external,lease);if(saved!=1)return;
         var response=app.client().shopGetExact(FinanceShopeeAdsApi.PATH,new MarketplaceAccess.Connection(shop,tokens),FinanceShopeeAdsApi.query(requestFrom,requestTo));var facts=FinanceShopeeAdsApi.daily(response,requestFrom,requestTo);
+        FinanceShopeeAdsApi.requireClosedDays(facts,requestFrom,requestTo,today);
         repo.transaction(()->{
             // Shop deletion also locks the connection before the grant.
             var connected=repo.jdbc().queryForList("SELECT id FROM finance_connections WHERE organization_id=? AND external_shop_id=? AND platform='SHOPEE' AND status='ACTIVE' AND enabled=TRUE FOR SHARE",org,external);
@@ -165,7 +166,7 @@ public class FinanceShopeeAds {
     private void failed(Map<String,Object> grant,String lease,RuntimeException failure){
         String message=text(failure.getMessage()).toLowerCase(Locale.ROOT);boolean permission=message.contains("403")||message.contains("error_api_permission");boolean auth=message.contains("token")||message.contains("auth")||message.contains("401");boolean limited=message.contains("429")||message.contains("rate_limit");
         String status=permission?"NEEDS_PERMISSION":auth?"NEEDS_AUTHORIZATION":limited?"RATE_LIMITED":"ERROR";
-        String safe=permission?"Shopee Ads 报表权限未开通；检查独立正式应用及重新授权":auth?"Shopee Ads 独立授权需更新":limited?"Shopee Ads 请求限流，保留原窗口等待重试":"Shopee Ads 报表未完成或刷新不完整，保留旧数据与窗口";
+        String safe=permission?"Shopee Ads 报表权限未开通；检查独立正式应用及重新授权":auth?"Shopee Ads 独立授权需更新":limited?"Shopee Ads 请求限流，保留原窗口等待重试":failure instanceof FinanceShopeeAdsApi.IncompleteReport?failure.getMessage():"Shopee Ads 报表未完成或刷新不完整，保留旧数据与窗口";
         long delay=permission||auth?86400:Math.min(21600,60L*(1L<<Math.min(8,number(grant.get("failures"))+1)));
         if(limited)repo.jdbc().update("UPDATE finance_api_pacing SET next_allowed_at=GREATEST(next_allowed_at,?),throttle_count=throttle_count+1 WHERE platform='SHOPEE_ADS' AND channel='CPC'",Timestamp.from(Instant.now().plusSeconds(delay)));
         repo.jdbc().update("UPDATE finance_shopee_ad_grants SET status=?,error_message=?,failures=failures+1,next_at=?,lease_token=NULL,lease_until=NULL WHERE organization_id=? AND external_shop_id=? AND lease_token=?",status,safe,Timestamp.from(Instant.now().plusSeconds(delay)),grant.get("organization_id"),grant.get("external_shop_id"),lease);

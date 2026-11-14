@@ -5,7 +5,7 @@ const dom=new JSDOM('<!doctype html><div id="finance-page"></div>',{url:'https:/
 const w=dom.window,d=w.document,requests=[];
 w.currentUser={permissions:['finance:view']};w.matchMedia=()=>({matches:false});
 w.ResizeObserver=class{observe(){}disconnect(){}};
-let overviewGate=null,recordsGate=null;
+let queryGate=null;
 const shops=[{id:'baby-ph',group_id:'baby',name:'母婴原名',display_name:'母婴别名',platform:'SHOPEE'},
   {id:'baby-tk',group_id:'baby',name:'母婴 TK',platform:'TIKTOK_SHOP'},
   {id:'perfume',group_id:'perfume',name:'香水店',platform:'SHOPEE'},
@@ -13,27 +13,21 @@ const shops=[{id:'baby-ph',group_id:'baby',name:'母婴原名',display_name:'母
 const groups=[{id:'baby',name:'母婴组'},{id:'perfume',name:'香水组'},{id:'empty',name:'空分组'}];
 w.api=async path=>{
   const url=new URL(path,'https://example.test');requests.push(url);
+  assert(url.pathname.endsWith('/workspace/query'));
   const cny=url.searchParams.get('displayCurrency')==='CNY';
+  if(queryGate)await queryGate;
   if(url.searchParams.get('orderScope')==='ALL')return {data:{
     filters:{...Object.fromEntries(url.searchParams),currency:'',displayCurrency:'CNY'},
     fx:{id:'test-cny-snapshot',time:'2026-10-24T00:00:00Z',provider:'test'},shops,groups,currencies:['PHP','MYR'],sync:[],
-    items:[{id:'raw',order_id:'RAW-ORDER',status:'CANCELLED'}],page:1,pageSize:50,total:1,
-    fieldSettings:{fields:[{id:'order_id',label:'订单编号',type:'text'}],visible:['order_id']}}};
-  if(url.pathname.endsWith('/overview')){
-    if(overviewGate)await overviewGate;
-    return {data:{filters:{...Object.fromEntries(url.searchParams),currency:cny?'':'PHP',displayCurrency:cny?'CNY':'PHP'},
-      ...(cny?{fx:{id:'test-cny-snapshot',time:'2026-10-24T00:00:00Z',provider:'test'}}:{}),
-      currencies:['PHP','MYR'],shops,groups,sync:[],totals:[],trend:[],fees:[],statuses:[],ranking:[],
-      productCosts:{scope:'SETTLED_ORDER',total:{amount_cny:12,pending_count:0},shops:[],basis:'首次平台结算'}}};
-  }
-  assert(url.pathname.endsWith('/records'));
-  if(recordsGate)await recordsGate;
-  assert.equal(url.searchParams.get('currency'),cny?'':'PHP','CNY includes all currencies; native rows use the resolved currency');
-  if(cny)assert.equal(url.searchParams.get('fxSnapshot'),'test-cny-snapshot','CNY rows use the overview FX snapshot');
-  assert.equal(url.searchParams.get('includeProductCosts'),'false','reuse the dashboard settled cost summary');
+    records:{items:[{id:'raw',order_id:'RAW-ORDER',status:'CANCELLED'}],page:1,pageSize:50,total:1,
+      fieldSettings:{fields:[{id:'order_id',label:'订单编号',type:'text'}],visible:['order_id']}}}};
   const page=Number(url.searchParams.get('page'));
-  return {data:{items:[{id:'row-'+page,order_id:'ORDER-'+page,platform:'SHOPEE'}],page,pageSize:50,total:100,
-    fieldSettings:{fields:[{id:'order_id',label:'订单编号',type:'text'}],visible:['order_id']}}};
+  const records={items:[{id:'row-'+page,order_id:'ORDER-'+page,platform:'SHOPEE'}],page,pageSize:50,total:100,
+    fieldSettings:{fields:[{id:'order_id',label:'订单编号',type:'text'}],visible:['order_id']}};
+  return {data:{filters:{...Object.fromEntries(url.searchParams),currency:cny?'':'PHP',displayCurrency:cny?'CNY':'PHP'},
+    ...(cny?{fx:{id:'test-cny-snapshot',time:'2026-10-24T00:00:00Z',provider:'test'}}:{}),
+    currencies:['PHP','MYR'],shops,groups,sync:[],totals:[],trend:[],fees:[],statuses:[],ranking:[],records,
+    productCosts:{scope:'SETTLED_ORDER',total:{amount_cny:12,pending_count:0},shops:[],basis:'首次平台结算'}}};
 };
 for(const file of ['incremental-dom.js','incremental-charts.js','finance-workspace.js'])w.eval(await fs.readFile(new URL('../../frontend/'+file,import.meta.url),'utf8'));
 const pause=()=>new Promise(r=>setTimeout(r,5));
@@ -47,20 +41,18 @@ const scope=d.querySelector('[aria-label="订单范围"]');scope.value='SETTLED'
 assert.equal(d.querySelector('tbody tr').textContent.includes('ORDER-1'),true);
 assert(d.querySelector('.fi-product-cost-summary').textContent.includes('12'));
 assert(d.querySelector('script[src*="echarts"]'),'table is usable while the chart download is still pending');
-assert.equal(requests[0].pathname,'/api/v1/finance/overview');
-assert.equal(requests[1].pathname,'/api/v1/finance/records');
+assert.equal(requests.length,1,'settled orders publish summary and rows from one response');
+assert.equal(requests[0].pathname,'/api/v1/finance/workspace/query');
 assert.equal(requests[0].searchParams.get('displayCurrency'),'CNY');
 assert.equal(requests[0].searchParams.get('currency'),'','first entry includes all currencies');
 const retained=d.querySelector('tbody tr');
-let releaseOverview,releaseRecords;
-overviewGate=new Promise(r=>releaseOverview=r);recordsGate=new Promise(r=>releaseRecords=r);
+let releaseQuery;
+queryGate=new Promise(r=>releaseQuery=r);
 button('下一页').click();await pause();
-assert.equal(requests.at(-2).pathname,'/api/v1/finance/overview');
-assert.equal(requests.at(-1).pathname,'/api/v1/finance/records','pagination launches both requests before either response');
+assert.equal(requests.at(-1).pathname,'/api/v1/finance/workspace/query');
 assert.equal(d.querySelector('tbody tr'),retained);
 assert.equal(d.querySelector('#finance-page').getAttribute('aria-busy'),'true');
-releaseRecords();await pause();assert.equal(d.querySelector('tbody tr'),retained,'commit the matching summary and rows together');
-releaseOverview();overviewGate=null;recordsGate=null;await ready();
+releaseQuery();queryGate=null;await ready();
 assert(d.querySelector('tbody tr').textContent.includes('ORDER-2'));
 // A late chart response initializes only the charts, retaining visible rows.
 const second=d.querySelector('tbody tr');let paints=0;
@@ -68,27 +60,26 @@ w.echarts={init:()=>({setOption(){paints++;},resize(){},dispose(){},getWidth(){r
 d.querySelector('script[src*="echarts"]').dispatchEvent(new w.Event('load'));await pause();
 assert.equal(d.querySelector('tbody tr'),second);
 // A superseded page request must not overwrite the newly selected calendar.
-overviewGate=new Promise(r=>releaseOverview=r);recordsGate=new Promise(r=>releaseRecords=r);
+queryGate=new Promise(r=>releaseQuery=r);
 button('上一页').click();await pause();
-const firstOverview=releaseOverview,firstRecords=releaseRecords;
-overviewGate=null;recordsGate=null;
+const firstQuery=releaseQuery;queryGate=null;
 const start=d.querySelector('[aria-label="开始日期"]');
 const previousDay=new Date(start.value+'T00:00:00Z');previousDay.setUTCDate(previousDay.getUTCDate()-1);
 const changedStart=previousDay.toISOString().slice(0,10);
 start.value=changedStart;start.dispatchEvent(new w.Event('change'));await ready();
-const latest=d.querySelector('tbody tr');firstRecords();firstOverview();await pause();
+const latest=d.querySelector('tbody tr');firstQuery();await pause();
 assert.equal(d.querySelector('tbody tr'),latest);
 assert.equal(d.querySelector('[aria-label="开始日期"]').value,changedStart);
 const choose=(label,value)=>{const n=d.querySelector(`[aria-label="${label}"]`);n.value=value;n.dispatchEvent(new w.Event('change'));};
 const shopValues=()=>[...d.querySelector('[aria-label="店铺"]').options].map(n=>n.value);
 choose('店铺分组','baby');await ready();choose('店铺','baby-ph');await ready();
 assert.equal(d.querySelector('[aria-label="店铺"]').selectedOptions[0].textContent,'母婴别名');
-overviewGate=new Promise(r=>releaseOverview=r);
+queryGate=new Promise(r=>releaseQuery=r);
 choose('店铺分组','perfume');
 assert.deepEqual(shopValues(),['','perfume'],'group/shop cascade is synchronous even while summary is blocked');
 assert.equal(d.querySelector('[aria-label="店铺"]').value,'');
 assert.equal(requests.at(-1).searchParams.get('groupId'),'perfume');assert.equal(requests.at(-1).searchParams.get('shopId'),'');
-const staleGroup=releaseOverview;overviewGate=null;
+const staleGroup=releaseQuery;queryGate=null;
 choose('店铺分组','baby');choose('平台','TIKTOK_SHOP');
 assert.deepEqual(shopValues(),['','baby-tk'],'group and platform filters intersect immediately');
 await ready();staleGroup();await pause();
@@ -100,9 +91,9 @@ choose('店铺分组','');assert.deepEqual(shopValues(),['','baby-ph','baby-tk',
 const nativeStart=requests.length;
 button('原币').click();await ready();
 assert.equal(requests[nativeStart].searchParams.get('currency'),'');
-assert.equal(requests[nativeStart+1].searchParams.get('currency'),'PHP','native mode still resolves currency before fetching rows');
+assert.equal(d.querySelector('[aria-label="原币"]').value,'PHP','single response resolves the native currency with its rows');
 button('人民币 ¥').click();await ready();
-assert.equal(requests.at(-2).searchParams.get('currency'),'','switching to CNY clears the previous native currency');
+assert.equal(requests.at(-1).searchParams.get('currency'),'','switching to CNY clears the previous native currency');
 assert.equal(requests.at(-1).searchParams.get('displayCurrency'),'CNY');
 button('原币').click();await ready();
 w.FinanceWorkspace.reset();w.FinanceWorkspace.enter('orders');await ready();

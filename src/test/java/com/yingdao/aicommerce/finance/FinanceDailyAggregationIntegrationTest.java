@@ -92,6 +92,70 @@ class FinanceDailyAggregationIntegrationTest extends FinanceConfigurationIntegra
             assertNull(map(actual.get("total")).get("amount_cny"));
         }
     }
+    @Test void nativeDashboardCostsUseSingleDayScansAndMatchTheUnsplitResult(){
+        seedNativeCosts();var full=nativeCostMonth();
+        var expected=new FinanceCostReport(unsplit()).dashboardFacts(owner,full);
+        var scans=new java.util.concurrent.atomic.AtomicInteger();
+        var bounded=new org.springframework.jdbc.core.JdbcTemplate(dataSource){
+            @Override public List<Map<String,Object>> queryForList(String sql,Object...args){
+                if((sql.startsWith("SELECT r.shop_id,r.record_date,o.record_date fx_date")&&sql.contains("FROM finance_records r FORCE INDEX(idx_finance_company_kind_date)"))){
+                    var dates=Arrays.stream(args).filter(java.sql.Date.class::isInstance).map(java.sql.Date.class::cast).toList();
+                    assertTrue(dates.size()>=2);
+                    assertEquals(dates.get(dates.size()-2),dates.getLast(),"Native dashboard cost scans must not aggregate a whole month into one temporary table");
+                    scans.incrementAndGet();
+                }
+                return super.queryForList(sql,args);
+            }
+        };
+        var target=new FinanceRepository(bounded,new ObjectMapper());
+        var actual=target.readSnapshot(180,()->new FinanceCostReport(target).dashboardFacts(owner,full));
+        assertEquals(31,scans.get());assertEquals(canonicalFacts(expected),canonicalFacts(actual));
+        assertEquals(2,actual.stream().mapToLong(row->number(row.get("order_count"))).sum(),"Marked orders and duplicate/later settlements remain excluded");
+    }
+    @Test void nativeDashboardCostFailureCannotPublishAPartialMonth(){
+        seedNativeCosts();var scans=new java.util.concurrent.atomic.AtomicInteger();
+        var failing=new org.springframework.jdbc.core.JdbcTemplate(dataSource){
+            @Override public List<Map<String,Object>> queryForList(String sql,Object...args){
+                if((sql.startsWith("SELECT r.shop_id,r.record_date,o.record_date fx_date")&&sql.contains("FROM finance_records r FORCE INDEX(idx_finance_company_kind_date)"))&&scans.incrementAndGet()==2)
+                    throw new org.springframework.dao.TransientDataAccessResourceException("second day unavailable");
+                return super.queryForList(sql,args);
+            }
+        };
+        var target=new FinanceRepository(failing,new ObjectMapper());
+        assertThrows(org.springframework.dao.TransientDataAccessResourceException.class,()->new FinanceService(target,null,null,null).buildNativeDashboardFacts(owner,nativeCostMonth(),false));
+        assertEquals(2,scans.get());
+    }
+    @Test void nativeDashboardCostDaysShareTheOriginalReadSnapshot(){
+        String shop=seedNativeCosts();var full=nativeCostMonth();var expected=service.buildNativeDashboardFacts(owner,full,false);
+        var first=new java.util.concurrent.atomic.AtomicBoolean();
+        var observed=new org.springframework.jdbc.core.JdbcTemplate(dataSource){
+            @Override public List<Map<String,Object>> queryForList(String sql,Object...args){
+                var rows=super.queryForList(sql,args);
+                if((sql.startsWith("SELECT r.shop_id,r.record_date,o.record_date fx_date")&&sql.contains("FROM finance_records r FORCE INDEX(idx_finance_company_kind_date)"))&&first.compareAndSet(false,true))
+                    java.util.concurrent.CompletableFuture.runAsync(()->db.update("UPDATE finance_records SET amount=999 WHERE shop_id=? AND kind='ORDER' AND order_id='native-cost-31'",shop)).orTimeout(5,java.util.concurrent.TimeUnit.SECONDS).join();
+                return rows;
+            }
+        };
+        var target=new FinanceRepository(observed,new ObjectMapper());
+        var actual=new FinanceService(target,null,null,null).buildNativeDashboardFacts(owner,full,false);
+        assertEquals(canonicalFacts(expected),canonicalFacts(actual));
+        assertNotEquals(canonicalFacts(expected),canonicalFacts(service.buildNativeDashboardFacts(owner,full,false)));
+    }
+    private String seedNativeCosts(){
+        String shop=connect(owner,false);
+        for(int day:List.of(1,8,31)){
+            String order="native-cost-"+day;
+            for(String kind:List.of("ORDER","SETTLEMENT"))repo.save(owner,new Entry(shop,"SHOPEE",kind,kind+order,order,"native-bill","ORDER","SETTLED",LocalDate.of(2026,10,day),"PHP",decimal("12.345678"),null,null,null,null,"API",Map.of()));
+            if(day==1)for(int at:List.of(1,15))repo.save(owner,new Entry(shop,"SHOPEE","SETTLEMENT","later-"+at,order,"later-bill","ORDER","SETTLED",LocalDate.of(2026,10,at),"PHP",decimal("1"),null,null,null,null,"API",Map.of()));
+        }
+        db.update("INSERT INTO finance_marketing_orders(organization_id,shop_id,order_id,source_count) VALUES(?,?,'native-cost-8',1)",owner.organizationId(),shop);return shop;
+    }
+    private Filter nativeCostMonth(){return new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,31),"","","","day");}
+    private Object canonicalFacts(Object value){
+        if(value instanceof Map<?,?> map){var sorted=new TreeMap<String,Object>();map.forEach((k,v)->sorted.put(String.valueOf(k),canonicalFacts(v)));return sorted;}
+        if(value instanceof List<?> list)return list.stream().map(this::canonicalFacts).sorted(Comparator.comparing(Object::toString)).toList();
+        if(value instanceof Number n)return new java.math.BigDecimal(n.toString()).stripTrailingZeros();return value;
+    }
     @Test void concurrentWritesCannotMixDifferentSnapshotsWithinOneMonth(){
         String shop=connect(owner,false);
         for(int day:List.of(1,20))repo.save(owner,new Entry(shop,"SHOPEE","AD","ad-"+day,"","","ads","ACTIVE",

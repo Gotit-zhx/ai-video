@@ -10,7 +10,8 @@
   const orderStates={UNPAID:'待付款',ON_HOLD:'订单暂挂',CANCELLED:'已取消',CANCELED:'已取消',IN_CANCEL:'取消处理中',COMPLETED:'已完成',DELIVERED:'已送达',AWAITING_SHIPMENT:'待发货',AWAITING_COLLECTION:'待揽收',PARTIALLY_SHIPPING:'部分发货',PARTIALLY_SHIPPED:'部分发货',IN_TRANSIT:'运输中',READY_TO_SHIP:'待发货',PROCESSED:'已处理',RETRY_SHIP:'待重新发货',SHIPPED:'已发货',TO_CONFIRM_RECEIVE:'待确认收货',TO_RETURN:'待退货'};
   const refundStates={INITIATED:'已发起申请',REFUND_OR_RETURN_REQUESTED:'已申请退货退款',RETURN_OR_REFUND_REQUEST_PENDING:'退货退款待处理',RETURN_OR_REFUND_REQUEST_REJECT:'退货退款已拒绝',RETURN_OR_REFUND_REQUEST_REJECTED:'退货退款已拒绝',RETURN_OR_REFUND_REQUEST_APPROVED:'退货退款已同意',REFUND_OR_RETURN_REQUEST_REJECT:'退货退款已拒绝',RETURN_OR_REFUND_REQUEST_REVIEWING:'退货退款审核中',RETURN_OR_REFUND_REQUEST_REVIEWING_APPEAL:'退货退款申诉审核中',RETURN_OR_REFUND_REQUEST_APPROVED_APPEAL:'退货退款申诉已通过',RETURN_OR_REFUND_REQUEST_REJECTED_APPEAL:'退货退款申诉已拒绝',RETURN_OR_REFUND_REQUEST_PENDING_BUYER_RETURN:'待买家退货',RETURN_OR_REFUND_REQUEST_BUYER_RETURNING:'买家退货中',RETURN_OR_REFUND_REQUEST_PENDING_RECEIVE:'待卖家收货',RETURN_OR_REFUND_REQUEST_RECEIVED:'退货已收到',REPLACEMENT_REQUEST_REFUND_SUCCESS:'换货退款已完成',REPLACEMENT_REQUEST_COMPLETE:'换货已完成',REPLACEMENT_REQUEST_CANCEL:'换货已取消',REJECTED:'已拒绝',APPROVED:'已同意',REFUNDED:'已退款',REFUNDING:'退款中'};
   const paths={chart:'M4 19h16M7 15v-4m5 4V5m5 10V8',download:'M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4',refresh:'M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-2l2 3M18 17a7 7 0 0 1-12 2l-2-3',shop:'M3 10h18l-2-7H5zM5 10v11h14V10M9 21v-7h6v7',wallet:'M3 6h18v15H3zM3 6V3h15v3M16 12h5v5h-5z',arrow:'M7 17 17 7M7 7h10v10',refund:'m9 6-5 5 5 5M4 11h10a5 5 0 0 1 0 10',ad:'m3 11 15-6v14L3 14zM6 15v6h4v-5M21 9v6',fee:'M7 3h10l4 4v14H3V7zM8 9h8M8 13h8M8 17h5',info:'M12 11v6M12 7v1M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',plus:'M12 4v16M4 12h16',check:'m5 12 4 4 10-10'};
-  let callbackNotice='';const callbackParams=new URLSearchParams(location.search);if(callbackParams.has('financeAuth')){callbackNotice=callbackParams.get('financeMessage')||(callbackParams.get('financeAuth')==='success'?'财务店铺已连接':'财务授权未完成');callbackParams.delete('financeAuth');callbackParams.delete('financeMessage');history.replaceState(null,'',location.pathname+(callbackParams.size?'?'+callbackParams:'')+location.hash);}
+  let callbackNotice=globalThis.HoyeeFinanceAuthNotice?.message||'';delete globalThis.HoyeeFinanceAuthNotice;const callbackParams=new URLSearchParams(location.search);if(callbackParams.has('financeAuth')){callbackNotice=callbackParams.get('financeMessage')||(callbackParams.get('financeAuth')==='success'?'财务店铺已连接':'财务授权未完成');callbackParams.delete('financeAuth');callbackParams.delete('financeMessage');history.replaceState(null,'',location.pathname+(callbackParams.size?'?'+callbackParams:'')+location.hash);}
+  let adSupportExpanded=false;
   let active=false,generation=0,mountedGeneration=0,view='overview',data=null,chartPromise,charts=[],observer,themeObserver,refreshTimer=null,clockTimer=null,page=1,selectedKind='ORDER',mountedView='',loadController=null,mountedSelection='';
   let adSpendSearch='',adSpendAssignment='',adSpendPage=1,shopeeEpoch=0;
   let marketFx=null,marketFxError='',marketFxLoading=false,marketFxLoaded=false,marketFxOwner='',marketFxRun=0,marketFxController=null;
@@ -269,11 +270,24 @@
   function setLoading(busy){root.setAttribute('aria-busy',String(busy));const n=root.querySelector('.fi-loading');if(n){n.hidden=!busy;n.textContent=view==='shops'?'正在读取店铺同步进度…':view==='live'?'正在读取最新经营数据…':'正在加载所选店铺和日期…';n.title=filters.start+' 至 '+filters.end;}}
   function navigate(route){location.hash='finance-'+route;}
   function cleanup(){qianyiCleanup?.();qianyiCleanup=null;mountedSelection='';root.classList.remove('fi-selection-pending');clearInterval(clockTimer);clockTimer=null;charts.forEach(c=>c.dispose());charts=[];observer?.disconnect();themeObserver?.disconnect();observer=themeObserver=null;mountedView='';}
-  function reset(){shopeeEpoch++;adSpendSearch='';adSpendAssignment='';adSpendPage=1;shopMonthFilter='ALL';shopSearch='';qianyiSelection={};orderScope='ALL';active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();resetMarketFx();resetCostExports();globalThis.FinanceFeeExports?.reset();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();numberQueries={};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
+  function reset(){shopeeEpoch++;adSupportExpanded=false;adSpendSearch='';adSpendAssignment='';adSpendPage=1;shopMonthFilter='ALL';shopSearch='';qianyiSelection={};orderScope='ALL';active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();resetMarketFx();resetCostExports();globalThis.FinanceFeeExports?.reset();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();numberQueries={};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
   function leave(){shopeeEpoch++;document.querySelectorAll('[data-shopee-authorization]').forEach(d=>d.remove());active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();stopMarketFx();leaveCostExports();}
-  function refreshWhenIdle(){
+  async function refreshWhenIdle(){
     if(!active)return;
     if(document.hidden||document.querySelector('.fi-dialog[open]')){refreshTimer=setTimeout(refreshWhenIdle,15000);return;}
+    if(data?.readModel&&!['shops','costs','expense-ledger','live','overview'].includes(view)){
+      const run=generation;
+      try{
+        const state=await request('/workspace/status?'+new URLSearchParams({...filters,view}));
+        if(run!==generation||!active)return;
+        updateOperationalState(state.operations);
+        const age=Date.now()-Date.parse(data.cache?.generatedAt||data.updatedAt||'');
+        const fxPending=data.fx?.status==='PARTIAL'&&age>=60000;
+        if(state.status==='READY'&&(state.revision!==data.readModel.revision||data.cache?.refreshing||fxPending)){load(false);return;}
+      }catch(error){/* Status outages do not discard already displayed scoped data. */}
+      if(run===generation&&active)refreshTimer=setTimeout(refreshWhenIdle,15000);
+      return;
+    }
     load(false);
   }
   function ensureCharts(){
@@ -293,6 +307,7 @@
     el('span','FINANCE / ANALYTICS',copy,'fi-eyebrow');el('h1',routes[view],copy,'fi-title');
     el('p',view==='shops'?'统一管理财务店铺、广告账户与数据同步。':view==='costs'?'管理商品成本、SKU 关系与订单核算口径。':view==='ads'?'按店铺与分组核对广告资金消耗，追溯每笔归属。':'看清每一笔收入、每一项费用，与每家店铺的经营表现。',copy,'fi-subtitle');
     const actions=el('div',null,head,'fi-actions');
+    if(view==='overview')globalThis.FinanceEntry?.addExperienceLink(actions,location,filters,globalThis.FinanceEntry.enabled);
     loadingIndicator(actions);
     if(view!=='shops')action('财务店铺管理','shop',actions,()=>navigate('shops'));
     action('刷新','refresh',actions,()=>{filters.fxSnapshot='';return load();});
@@ -393,13 +408,18 @@
         },'fi-record-link');
       }
     }
+    const work=el('div',null,parent);work.dataset.financeSettlementWork='';drawSettlementWork(work);
+  }
+  function drawSettlementWork(parent){
     const job=data?.settlementCalculation;
     if(job?.status==='RUNNING'){
       const status=calculationIndicator(parent,'结算金额计算中');
       status.title=(job.scope||'历史结算')+' · 已处理 '+number(job.processed)+' / '+number(job.total)+' 条；当前筛选统计会自动更新';
       el('span','已处理 '+number(job.processed)+' / '+number(job.total)+' 条',status,'fi-calculation-detail');
     }else if(['FAILED','INTERRUPTED'].includes(job?.status))el('span','历史结算计算暂时中断，已保留数据与进度',parent,'fi-calculation-paused');
+    parent.hidden=!parent.childNodes.length;
   }
+
   function calculationIndicator(parent,label){
     const status=el('div',null,parent,'fi-calculation-status');status.dataset.updateKey='calculation:'+label;
     status.setAttribute('role','status');status.setAttribute('aria-live','polite');
@@ -728,8 +748,35 @@
       ['待补齐成本的订单',number(totals.pending_count),'缺价、缺型号或正在后台计算'],
       ['历史价估算',number(totals.estimated_count),'使用最近可用月份，明细保留原月份']
     ].entries()){if(compact&&index===0)continue;const n=el('div',null,stats);el('span',label,n);const valueNode=el('strong',null,n);if(index===0)valueNode.append(costLink(value,{kind:report.scope||'ORDER'}));else valueNode.textContent=value;el('small',note,n);}
-    if(report.rebuilding)footnote(block,'成本配置已更新，后台正在分批重算；完成后自动更新统计。');
-    if(report.processing)calculationIndicator(block,report.labelProcessing&&!report.productProcessing?'贴单费用更新中 · 商品成本已保留':'商品成本计算中 · 已有结果保留');
+    const work=el('div',null,block);work.dataset.financeCostWork=report.scope||'ORDER';drawCostWork(work,report);
+  }
+  function drawCostWork(parent,report){
+    if(report?.rebuilding)footnote(parent,'成本配置已更新，后台正在分批重算；完成后自动更新统计。');
+    if(report?.processing)calculationIndicator(parent,report.labelProcessing&&!report.productProcessing?'贴单费用更新中 · 商品成本已保留':'商品成本计算中 · 已有结果保留');
+    parent.hidden=!parent.childNodes.length;
+  }
+  function updateOperationalState(operations){
+    if(!data||!operations||operations.revision&&operations.revision===data.operationalRevision)return;
+    if(Object.hasOwn(operations,'settlementCalculation'))data.settlementCalculation=operations.settlementCalculation;
+    if(Array.isArray(operations.sync))data.sync=operations.sync;
+    if(Array.isArray(operations.adAccounts))data.adAccounts=operations.adAccounts;
+    if(Object.hasOwn(operations,'adAccountError'))data.adAccountError=operations.adAccountError;
+    if(operations.shopeeAds){data.shopeeAds=operations.shopeeAds;if(data.adSpend)data.adSpend.shopeeAds=operations.shopeeAds;}
+    const idle=operations.costState?.rebuilding===false&&operations.costState?.hasProductJobs===false;
+    if(idle)for(const report of [data.productCosts,data.records?.productCosts])if(report){report.processing=false;report.productProcessing=false;report.rebuilding=false;}
+    for(const node of root.querySelectorAll('[data-finance-settlement-work]')){const next=node.cloneNode(false);drawSettlementWork(next);IncrementalDOM.patch(node,next);}
+    for(const node of root.querySelectorAll('[data-finance-cost-work]')){
+      const report=data.records?.productCosts?.scope===node.dataset.financeCostWork?data.records.productCosts:data.productCosts;
+      const next=node.cloneNode(false);drawCostWork(next,report);IncrementalDOM.patch(node,next);
+    }
+    for(const node of root.querySelectorAll('[data-finance-ad-health]')){const holder=document.createElement('div');IncrementalDOM.patch(node,adHealthStatus(holder));}
+    if(operations.shopeeAds&&window.FinanceShopeeAds)for(const node of root.querySelectorAll('[data-shopee-ads]')){
+      const holder=document.createElement('div');window.FinanceShopeeAds.render(holder,{...adSpendContext(),status:operations.shopeeAds},true);
+      if(holder.firstElementChild)IncrementalDOM.patch(node,holder.firstElementChild);
+    }
+    data.operationalRevision=operations.revision||'';data.operationalGeneratedAt=operations.generatedAt;
+    const errors=(data.sync||[]).filter(state=>state.status==='ERROR').length;
+    notify(errors?`${errors} 项同步需要处理，可在财务店铺管理查看权限或连接问题。`:'');
   }
   function shopCost(id){return data?.productCosts?.shops?.find(r=>r.shop_id===id);}
   function costAmountText(row,selection){return row?costLink('¥ '+number(Number(row.pending_count)>0?row.known_amount_cny:row.amount_cny)+(Number(row.pending_count)>0?' · 已算部分':''),selection):'—';}
@@ -1004,12 +1051,29 @@
     company:()=>typeof currentUser==='undefined'?null:currentUser?.organizationId,shops:data?.shops||[],accounts:data?.adAccounts||[],fundingAccounts:(data?.adAccounts||[]).filter(a=>adAccountInScope(a)||(data?.adSpend?.accountFunding||[]).some(r=>r.account_id===a.advertiser_id)),filters:{...filters},report:data?.adSpend,search:adSpendSearch,assignment:adSpendAssignment,reload:()=>load(),selectFilters,
     query:(search,status)=>{adSpendSearch=search.trim();adSpendAssignment=status;adSpendPage=1;return load();},page:delta=>{adSpendPage+=delta;return load();}};}
   function adsView(parent,records){
-    if(window.FinanceAdSpend&&data.adSpend){
-      window.FinanceAdSpend.render(parent,adSpendContext());
-      const support=el('details',null,parent,'fi-ad-spend-support');support.dataset.adSpendSupport='';el('summary','辅助核对：广告费用（已入账）、投放效果及同步状态',support);const body=el('div',null,support);adsSupportView(body,records);
+    if(window.FinanceAdSpend){
+      if(data.adSpend)window.FinanceAdSpend.render(parent,adSpendContext());
+      else el('p','店铺消耗读取失败，当前范围的主表金额不可用；可展开辅助核对资料。',parent,'fi-feedback is-error');
+      const support=el('details',null,parent,'fi-ad-spend-support');support.dataset.adSpendSupport='';el('summary','辅助核对：广告费用（已入账）、投放效果及同步状态',support);const body=el('div',null,support);
+      const run=generation,selection={...filters};let loaded=false,loading=false,supportEpoch=0,prefetched=records;
+      const show=async(force=false)=>{
+        adSupportExpanded=support.open;if(!support.open||!force&&(loaded||loading))return;
+        const epoch=++supportEpoch;loading=true;body.textContent='正在读取广告辅助核对资料…';
+        try{
+          const response=!force&&prefetched?{...data,records:prefetched}:await request('/workspace/query?'+new URLSearchParams({...selection,view:'ads-support',kind:selectedKind,page,numbers:detailNumbers()}),{signal:loadController?.signal});prefetched=null;
+          if(run!==generation||epoch!==supportEpoch||!active||view!=='ads')return;
+          // Auxiliary coverage must not advance the primary report's revision or age.
+          body.replaceChildren();const primary=data;data={...data,...response};
+          try{adsSupportView(body,response.records,()=>show(true),{...selection,...response.filters,fxSnapshot:response.fx?.id||''});}finally{data=primary;}
+          loaded=true;mountedSelection=selectionKey();markPending();
+          ensureCharts().then(()=>{if(run===generation&&active&&view==='ads')paintCharts();});
+        }catch(error){if(run===generation&&epoch===supportEpoch&&active){body.replaceChildren();el('p','辅助核对资料读取失败，可收起后重新展开。',body,'fi-feedback is-error');loaded=false;}}
+        finally{if(epoch===supportEpoch)loading=false;}
+      };
+      support.addEventListener('toggle',()=>show());if(adSupportExpanded){support.open=true;show();}
     }else{if(data.adSpendError)el('p','店铺消耗读取失败，不能展示当前范围的主表金额。下方仅保留已有账单及同步资料，可刷新重试。',parent,'fi-feedback is-error');adsSupportView(parent,records);}
   }
-  function adsSupportView(parent,records){
+  function adsSupportView(parent,records,reload=()=>load(),selectionOverride=null){
     parent.style.display='grid';parent.style.gap='15px';meta(parent);
     const report=data.advertising,currency=data.filters.displayCurrency||data.filters.currency||'';
     if(!report)footnote(parent,'广告分类统计待更新；下方暂显示独立广告报表，不能视为全部广告费用。');
@@ -1055,8 +1119,23 @@
     }
     const gmv=report?.gmv||total('AD_GMV'),gmvCard=card(parent,'GMV Max 专项分析','自动获取商品及直播计划（含已删除计划）；与普通报表、账单的覆盖差异待核对，不直接相加。归因收入不是结算收入。',12);
     table(gmvCard.n,['专项消耗（'+currency+'）','归因收入','SKU 订单数','归因 ROI'],[[adAmountText(gmv),coverage('revenue','known_revenues',gmv),coverage('conversions','known_conversions',gmv),number(gmv?.roi)]]);
+    adHealthStatus(parent);
+    const detailKinds=el('div',null,parent,'fi-tabs');if(!['AD','FEE','AD_GMV'].includes(selectedKind))selectedKind='AD';
+    const detailTitle=kind=>kind==='FEE'?'平台账单广告费明细':kind==='AD'?'普通独立广告消耗明细':kinds[kind]+'明细';
+    for(const k of ['AD','FEE','AD_GMV'])button(detailTitle(k),detailKinds,()=>{selectedKind=k;page=1;reload();}).setAttribute('aria-pressed',String(k===selectedKind));
+    const detail=card(parent,detailTitle(selectedKind),'当前筛选 · 共 '+number(records.total)+' 条 · 编号查询仅过滤明细，期间汇总不受分页影响',12);
+    if(selectedKind==='AD')el('p','这里仅列普通独立广告报表和导入费用；平台账单广告费与 GMV Max 报表在相邻页签查看。没有返回记录不代表没有广告投放。',detail.n,'fi-muted');
+    action('字段设置','fee',detail.h,()=>fieldsDialog(selectedKind,records.fieldSettings));action('导出 Excel','download',detail.h,()=>exportDialog(selectedKind,selectionOverride));
+    numberSearch(detail.n,detailNumbers(),value=>{numberQueries[view+':'+currentFieldView()]=value;page=1;reload();},'费用记录 / 订单 / 账单编号');
+    renderFieldsTable(detail.n,records.items,records.fieldSettings);
+    const pager=el('div',null,detail.n,'fi-pagebar');el('span',`第 ${records.page} 页 · 每页 ${records.pageSize} 条`,pager);const controls=el('div',null,pager,'fi-actions');
+    button('上一页',controls,()=>{page--;reload();}).disabled=page<=1;button('下一页',controls,()=>{page++;reload();}).disabled=page*records.pageSize>=records.total;
+    footnote(parent,report?.basis||'广告归因收入与平台结算收入口径不同，不作为净利润。');
+    if(report){footnote(parent,report.profitBasis);footnote(parent,report.coverageNote);}
+  }
+  function adHealthStatus(parent){
     const accounts=(data.adAccounts||[]).filter(adAccountInScope);
-    const health=card(parent,'广告数据同步','账户维护在财务店铺管理完成；这里展示同步状态和可用范围',12);
+    const health=card(parent,'广告数据同步','账户维护在财务店铺管理完成；这里展示同步状态和可用范围',12);health.n.dataset.financeAdHealth='';
     if(data.adAccountError)footnote(health.n,'广告账户状态暂时读取失败；费用统计和明细仍展示已入库数据，可点击刷新重试。');
     table(health.n,['广告账户','归属店铺','报表币种 / 时区','状态','最近同步'],accounts.map(account=>{
       return [account.name||account.advertiser_id,adOwnership(account),account.currency+' / '+(account.timezone||'时区待确认'),adSyncStatus(account),
@@ -1078,19 +1157,9 @@
         number(records),amountText,dateTimeCell(coverage?.oldest_observation,displayZone)||'—']);
     }
     if(coverageRows.length){table(health.n,['广告账户','报表范围','任务状态','日期覆盖','数据状态','返回记录数','已采集消耗（原币）','范围内最早采集时间'],coverageRows);footnote(health.n,'覆盖仅指接口请求成功覆盖对应日期；返回记录数来源于接口返回的报表行，按所选日期合计。没有返回记录不代表实际零消耗；报表合计为0也不代表每条记录都为0。普通账户报表不保证包含部分 Shop 创建的 GMV Max，不能当作全媒体消耗。覆盖不等于结算对账完成。当天及近期数据可能延迟，系统每小时回查近 7 天、每日回查近 31 天，首次补齐近 90 天。');}
-    const detailKinds=el('div',null,parent,'fi-tabs');if(!['AD','FEE','AD_GMV'].includes(selectedKind))selectedKind='AD';
-    const detailTitle=kind=>kind==='FEE'?'平台账单广告费明细':kind==='AD'?'普通独立广告消耗明细':kinds[kind]+'明细';
-    for(const k of ['AD','FEE','AD_GMV'])button(detailTitle(k),detailKinds,()=>{selectedKind=k;page=1;load();}).setAttribute('aria-pressed',String(k===selectedKind));
-    const detail=card(parent,detailTitle(selectedKind),'当前筛选 · 共 '+number(records.total)+' 条 · 编号查询仅过滤明细，期间汇总不受分页影响',12);
-    if(selectedKind==='AD')el('p','这里仅列普通独立广告报表和导入费用；平台账单广告费与 GMV Max 报表在相邻页签查看。没有返回记录不代表没有广告投放。',detail.n,'fi-muted');
-    action('字段设置','fee',detail.h,()=>fieldsDialog(selectedKind,records.fieldSettings));action('导出 Excel','download',detail.h,()=>exportDialog(selectedKind));
-    numberSearch(detail.n,detailNumbers(),value=>{numberQueries[view+':'+currentFieldView()]=value;page=1;load();},'费用记录 / 订单 / 账单编号');
-    renderFieldsTable(detail.n,records.items,records.fieldSettings);
-    const pager=el('div',null,detail.n,'fi-pagebar');el('span',`第 ${records.page} 页 · 每页 ${records.pageSize} 条`,pager);const controls=el('div',null,pager,'fi-actions');
-    button('上一页',controls,()=>{page--;load();}).disabled=page<=1;button('下一页',controls,()=>{page++;load();}).disabled=page*records.pageSize>=records.total;
-    footnote(parent,report?.basis||'广告归因收入与平台结算收入口径不同，不作为净利润。');
-    if(report){footnote(parent,report.profitBasis);footnote(parent,report.coverageNote);}
+    return health.n;
   }
+
   function dialog(title){
     const d=el('dialog',null,document.body,'fi-dialog');const head=el('div',null,d,'fi-dialog-head');el('h3',title,head);button('×',head,()=>d.close(),'fi-close').setAttribute('aria-label','关闭');
     const body=el('div',null,d,'fi-dialog-body'),feedback=el('div','',body,'fi-feedback');feedback.setAttribute('role','status');
@@ -1338,8 +1407,8 @@
     if(line.costCode)el('small','成本型号：'+line.costCode,cell);
     return cell;
   }
-  function exportDialog(fixedType=''){
-    const selection={...filters,numbers:detailNumbers(),orderScope:allOrderView()?'ALL':'SETTLED'},identity=()=>typeof currentUser==='undefined'?'':JSON.stringify([currentUser?.organizationId,currentUser?.userId]),owner=identity();
+  function exportDialog(fixedType='',selectionOverride=null){
+    const selection={...filters,...selectionOverride,numbers:detailNumbers(),orderScope:allOrderView()?'ALL':'SETTLED'},identity=()=>typeof currentUser==='undefined'?'':JSON.stringify([currentUser?.organizationId,currentUser?.userId]),owner=identity();
     const advertisingExport=view==='ads',ledgerAds=advertisingExport&&fixedType==='FEE';
     if(ledgerAds)selection.advertisingOnly='true';
     const d=dialog(ledgerAds?'导出平台账单广告费':fixedType?'导出'+kinds[fixedType]:'导出财务报表');
@@ -1477,15 +1546,26 @@
     if(!changed)notify(mountedView===view?'正在更新当前数据，请稍候…':'正在查询，请稍候…');
     const selection={...filters},selectedPage=page,numbers=detailNumbers(),spendSelection={search:adSpendSearch,assignment:adSpendAssignment,page:adSpendPage};
     const query=extra=>new URLSearchParams({...selection,...extra}).toString();
+    let initialLabelPrefetch=null,labelPrefetchHandedOff=false;
     try{
       const next=root.cloneNode(false);
       if(view==='costs'||view==='expense-ledger'){
-        const response=await read('/shops');if(run!==generation||!active)return;
+        const shopsRead=read('/shops');
+        if(view==='costs'&&!globalThis.FinanceCostPreviewData&&globalThis.FinanceLabelCosts?.prefetchInitial){
+          const labelFilters=globalThis.FinanceCosts?.initialLabelFilters?.({start:selection.start,end:selection.end});
+          if(labelFilters)initialLabelPrefetch=FinanceLabelCosts.prefetchInitial({filters:labelFilters,signal,request:(path,options)=>request('/workspace'+path,options)});
+        }
+        const response=await shopsRead;if(run!==generation||!active)return;
         const nextData={shops:response.items,groups:response.groups||[],sync:[]};
         if(view==='costs'){
-          const shopId=globalThis.FinanceCosts?.shopId?.(),selected=nextData.shops.find(s=>s.id===shopId);
-          const wantedGroup=globalThis.FinanceCosts?.groupId?.(),groupId=selected?.group_id||nextData.groups.find(g=>g.id===wantedGroup)?.id||(!nextData.shops.length?nextData.groups[0]?.id:'')||'';
-          nextData.costs=globalThis.FinanceCostPreviewData||await read('/workspace/costs?'+new URLSearchParams({shopId:selected?.id||'',groupId}));
+          const shopId=globalThis.FinanceCosts?.shopId?.(),selected=nextData.shops.find(shop=>shop.id===shopId);
+          const wantedGroup=globalThis.FinanceCosts?.groupId?.(),groupId=selected?.group_id||nextData.groups.find(group=>group.id===wantedGroup)?.id||(!nextData.shops.length?nextData.groups[0]?.id:'')||'';
+          const costScope=typeof globalThis.FinanceCosts?.initialScope==='function'?FinanceCosts.initialScope(nextData):{shopId:selected?.id||'',groupId};
+          const costPath=typeof globalThis.FinanceCosts?.initialPath==='function'?FinanceCosts.initialPath(costScope):'/costs?'+new URLSearchParams(costScope);
+          if(globalThis.FinanceCostPreviewData)nextData.costs=globalThis.FinanceCostPreviewData;
+          else if(costPath===null)nextData.costs={live:true,catalogLoaded:false,settingsLoaded:false,...costScope,
+            groupName:nextData.groups.find(group=>group.id===costScope.groupId)?.name||''};
+          else nextData.costs=await read('/workspace'+costPath);
           if(run!==generation||!active)return;data=nextData;const host=el('div',null,shell(next));host.dataset.financeCosts='';
         }else{
           data=nextData;const host=el('div',null,shell(next));host.dataset.financeExpenses='';
@@ -1495,14 +1575,14 @@
         data={shops:response.items,groups:response.groups||[],sync:[]};
         recordView(shell(next),run,null);
       }else if(allOrderView()){
-        const response=await read('/records?'+query({kind:'ORDER',orderScope:'ALL',page:selectedPage,numbers,includeProductCosts:'false'}));
+        const response=await read('/workspace/query?'+query({view:'orders',kind:'ORDER',orderScope:'ALL',page:selectedPage,numbers}));
         if(run!==generation||!active)return;
         data=response;filters.currency=data.filters.currency||'';filters.fxSnapshot=data.fx?.id||'';
-        recordView(shell(next),run,response);
+        recordView(shell(next),run,response.records);
       }else if(view==='reconciliation'){
-        const response=await read('/reconciliation?'+query({page:selectedPage,numbers}));if(run!==generation||!active)return;
+        const response=await read('/workspace/query?'+query({view:'reconciliation',page:selectedPage,numbers}));if(run!==generation||!active)return;
         data=response;filters.currency=data.filters.currency||'';filters.fxSnapshot=data.fx?.id||'';
-        reconciliation(shell(next),response);
+        reconciliation(shell(next),{...response.records,...response});
       }else if(view!=='shops'){
         // Start the chart download immediately; a slow chart component must not hold up rows.
         ensureCharts().then(()=>{if(run===generation&&run===mountedGeneration&&active&&mountedView===view)paintCharts();})
@@ -1512,22 +1592,16 @@
         if(isRecordView&&!allowedKinds.includes(selectedKind))selectedKind=allowedKinds[0];
         activeLoadKey=selectionKey();
         const kind=selectedKind;
-        const recordQuery=resolved=>'/records?'+query({...resolved,kind,page:selectedPage,includeProductCosts:'false',numbers,...(view==='ads'&&kind==='FEE'?{advertisingOnly:'true'}:{})});
-        const resolvedCurrency=selection.currency||selection.displayCurrency==='CNY';
-        const resolvedFx=selection.displayCurrency!=='CNY'||selection.fxSnapshot;
-        const [response,prefetched,adAccounts]=await Promise.all([read('/overview?'+query()),
-          isRecordView&&resolvedCurrency&&resolvedFx?read(recordQuery()):null,view==='ads'?read('/ads?'+query()).then(items=>({items})).catch(error=>{
-            if(signal.aborted)throw error;return {items:[],error:true};
-          }):null]);
+        const response=await read(view==='overview'?'/overview?'+query():
+          '/workspace/query?'+query({view:view==='ads'&&!window.FinanceAdSpend?'ads-support':view,kind,page:selectedPage,numbers,orderScope,...(view==='ads'?{search:spendSelection.search,assignment:spendSelection.assignment,spendPage:spendSelection.page}:{})})).catch(async error=>{
+            if(view!=='ads'||!window.FinanceAdSpend||signal.aborted)throw error;
+            const [shops,accounts]=await Promise.all([read('/shops'),read('/ads').catch(()=>[])]);
+            return {shops:shops.items,groups:shops.groups||[],sync:[],currencies:[],filters:{...selection},adAccounts:accounts,adSpendError:true};
+          });
         if(run!==generation||!active)return;
-        const resolved={currency:response.filters.currency||'',fxSnapshot:response.fx?.id||''};
-        const records=isRecordView?(prefetched||await read(recordQuery(resolved))):null;
-        const adSpend=view==='ads'&&window.FinanceAdSpend?await read('/advertising/spend?'+query({...resolved,currency:selection.currency||'',...spendSelection})).then(report=>({report})).catch(error=>{if(signal.aborted)throw error;return {error:true};}):null;
-        if(run!==generation||!active)return;
-        // Publish the resolved scope, amounts and rows together, after every read has finished.
-        data=adAccounts?{...response,adAccounts:adAccounts.items,adAccountError:adAccounts.error,adSpend:adSpend?.report,adSpendError:adSpend?.error}:response;if(adSpend?.report){resolved.currency=adSpend.report.filters?.currency??selection.currency??'';data.filters={...data.filters,currency:resolved.currency};data.currencies=[...new Set([...(data.currencies||[]),...(adSpend.report.currencies||[])])].sort();}Object.assign(filters,resolved);
+        data=response;Object.assign(filters,{currency:response.filters.currency||'',fxSnapshot:response.fx?.id||''});
         const body=shell(next);
-        if(view==='overview')overview(body);else if(view==='ads')adsView(body,records);else recordView(body,run,records);
+        if(view==='overview')overview(body);else if(view==='ads')adsView(body,response.records);else recordView(body,run,response.records);
       }else{
         const [shops,accounts,shopeeAds]=await Promise.all([read('/shops'),read('/ads'),window.FinanceShopeeAds?read('/shopee-ads').catch(error=>{if(signal.aborted)throw error;return {loadError:true};}):null]);
         if(run!==generation||!active)return;data={...(data||{}),shopeeAds};shopView(shell(next),shops,accounts);
@@ -1552,8 +1626,8 @@
       }
       if(view==='costs'){
         const host=root.querySelector('[data-finance-costs]');
-        if(globalThis.FinanceCosts)FinanceCosts.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),preview:data.costs,dates:{start:filters.start,end:filters.end},onDatesChange:dates=>{filters.start=dates.start;filters.end=dates.end;filters.granularity=dateGranularity(dates.start,dates.end);filters.fxSnapshot='';pinnedDates=true;rememberFilters();},openRecord:detailDialog,skuCell,dateTimeCell,numberSearch,downloadOrderCosts,mountOrderCostExports:mountCostExports,isActive:()=>active&&view==='costs',request:(path,options)=>request('/workspace'+path,options)});
-        else el('p','成本管理页面组件暂未加载，请刷新重试。',host,'fi-muted');
+        if(globalThis.FinanceCosts){FinanceCosts.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),preview:data.costs,initialLabelPrefetch,dates:{start:filters.start,end:filters.end},onDatesChange:dates=>{filters.start=dates.start;filters.end=dates.end;filters.granularity=dateGranularity(dates.start,dates.end);filters.fxSnapshot='';pinnedDates=true;rememberFilters();},openRecord:detailDialog,skuCell,dateTimeCell,numberSearch,downloadOrderCosts,mountOrderCostExports:mountCostExports,isActive:()=>active&&view==='costs',request:(path,options)=>request('/workspace'+path,options)});labelPrefetchHandedOff=true;}
+        else{initialLabelPrefetch?.cancel();el('p','成本管理页面组件暂未加载，请刷新重试。',host,'fi-muted');}
       }
       if(view==='expense-ledger'){
         const host=root.querySelector('[data-finance-expenses]');
@@ -1562,7 +1636,7 @@
       }
       const errors=(data?.sync||[]).filter(s=>s.status==='ERROR').length;
       notify(callbackNotice||(errors?`${errors} 项同步需要处理，可在财务店铺管理查看权限或连接问题。`:''));callbackNotice='';
-      if(view==='shops'||data?.settlementCalculation?.status==='RUNNING'||data?.cache?.refreshing||data?.productCosts?.processing||(data?.sync||[]).some(s=>['READY','RUNNING','SYNCING'].includes(s.status)))
+      if(data?.readModel||view==='shops'||data?.settlementCalculation?.status==='RUNNING'||data?.cache?.refreshing||data?.productCosts?.processing||(data?.sync||[]).some(s=>['READY','RUNNING','SYNCING'].includes(s.status)))
         refreshTimer=setTimeout(refreshWhenIdle,view==='shops'&&data?.deletions?.some(job=>job.status!=='COMPLETE')?3000:15000);
     }catch(e){if(run===generation&&!signal.aborted){
       const changed=mountedView===view&&!!mountedSelection&&mountedSelection!==selectionKey();
@@ -1572,10 +1646,11 @@
       const message=temporary?'本次查询连接中断':e.message;
       notify(message+'。已停止自动重试，可点击刷新重新查询。'+(changed?'已隐藏上次筛选的结果。':mountedView===view?'当前显示的是相同条件的上次结果。':''),true);
     }}
-    finally{if(run===generation){activeLoadKey='';clearInterval(waitingTimer);setLoading(false);}}
+    finally{if(!labelPrefetchHandedOff)initialLabelPrefetch?.cancel();if(run===generation){activeLoadKey='';clearInterval(waitingTimer);setLoading(false);}}
   }
-  globalThis.FinanceWorkspace={allowed,canManage,enter(route){
+  globalThis.FinanceWorkspace={allowed,canManage,enter(route,initialFilters){
     if(!allowed())return;shopeeEpoch++;restoreFilters();const wasLive=view==='live';
+    if(initialFilters&&globalThis.FinanceEntry){const seed=globalThis.FinanceEntry.cleanFilters(initialFilters);Object.assign(filters,seed);if(seed.start||seed.end){pinnedDates=true;filters.granularity=dateGranularity(filters.start,filters.end);}filters.fxSnapshot='';}
     view=route==='fees'?'fee-records':routes[route]?route:'overview';
     if(view!=='costs')leaveCostExports();
     if(route==='fees')selectedKind='FEE';

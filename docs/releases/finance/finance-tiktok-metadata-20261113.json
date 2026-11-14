@@ -1,0 +1,75 @@
+{
+  "date": "2026-11-13",
+  "checkedAt": "2026-11-13T11:25:03+08:00",
+  "mode": "source-development",
+  "phase": "activated-and-ui-verified",
+  "implementationCommit": "0f96712a2444e95e7d7feac85061fdcc9fa7e871",
+  "schemaVersion": 156,
+  "flywayChecksum": -685751492,
+  "schemaFingerprint": "b5d115487e1bc0ce49d55156bc70e90368c771c0d09b0db31ef63906e1992aa8",
+  "contextBefore": "3a83c9b6-6821-4207-835f-d42b678ffba5",
+  "contextAfter": "519735df-85c5-44fa-95f9-a172a1c9f498",
+  "runtimeFileSha256": "5c05696671f4daedae128faa8acd1db7ae74b25bf623a5302ce656a9a5234ba4",
+  "runtimeConfigurationHash": "c4ae5422fc452f04eb5188ce1a325462494d5992fd407bdcbbf7982a0c9355ab",
+  "sourceFiles": {
+    "frontend/finance-ad-spend.js": "80182c851b7155a5f439d3b2bca2a0ef97a0bfe7b11589c8b10da5693abcfb92",
+    "frontend/index.html": "393d7e1fa105f1a5bdb916545d5f5bfac6d44ab8a548fa7617e648d19eebf68a",
+    "src/main/java/com/yingdao/aicommerce/finance/FinanceAdAutomation.java": "c168441b8a13a565919c281c91f8907b29afbc5480c5cbe3237309b08473526b",
+    "src/main/java/com/yingdao/aicommerce/finance/FinanceAdCampaignMetadata.java": "a82264a7098d852bf8ef69ec8bf226ac7c95db3782fe0a54d11c01980870e7e0",
+    "src/main/java/com/yingdao/aicommerce/finance/FinanceAdMetadataSync.java": "00b3962bf9152774f9df69640afa0a16031e73fa82c2c6eaf1af64ae62258731",
+    "src/main/java/com/yingdao/aicommerce/finance/FinanceAdSpendController.java": "108f16df79782885bf2ec837764444f135a20ec2ba44236518a3a93d6dde2d3f",
+    "src/main/java/com/yingdao/aicommerce/finance/FinanceAdSpendService.java": "f636b0b279b1762a733556f626a697b902c970eae42c1c50bbecb44c1f801186",
+    "src/main/java/com/yingdao/aicommerce/finance/FinanceAds.java": "fecacc52a69af932caa45801b5e74f36be43138aa8c17f07d08886213df1a8bb",
+    "src/main/java/com/yingdao/aicommerce/finance/FinanceShopDeletion.java": "16dda2409468424bf66195a23b0afd6f3edf72936b8c6e593e6fe8b1f9ecb2ac",
+    "src/main/resources/db/migration/V156__finance_ad_campaign_metadata.sql": "0a8268cd9b78cdbb24c2dee18b1ecbdf47a3f1965d4d75e06c5d098115b99abd"
+  },
+  "protectedData": {
+    "tables": 13,
+    "adRows": 66535,
+    "beforeAfterEqual": true,
+    "snapshotVersion": 2,
+    "rowLimit": 100000,
+    "queryTimeoutMs": 5000
+  },
+  "verification": {
+    "health": 200,
+    "anonymousFinance": 401,
+    "tlsAndStaticHashes": true,
+    "watcherResumed": true,
+    "maintenance": false,
+    "preservedCostAndPerformance": true,
+    "ui": {
+      "phase": "passed",
+      "loggedIn": true,
+      "workspaceCount": 1,
+      "mainTableCount": 3,
+      "detailRowCount": 50,
+      "officialTargetsHeader": true,
+      "campaignObjectiveHeader": true,
+      "readFailure": false,
+      "screenshotStoredPrivately": true,
+      "checkedAt": 1794540303
+    }
+  },
+  "localChecks": {
+    "activationDrills": 44,
+    "oldSchemaHelper": 1,
+    "newSchemaAndSnapshot": 1,
+    "metadataProjection": 64,
+    "queryProjection": 16,
+    "workspaceRedis": 13,
+    "uiScripts": 4
+  },
+  "metadataAtVerification": {
+    "NEEDS_AUTHORIZATION": 12,
+    "READY": 709,
+    "publishedMetadata": 0
+  },
+  "privateOperation": "/opt/heyi/dev/operations/finance-tiktok-metadata-20261113-ff1c89758fca909c156774201133bd13",
+  "maintenanceWindowReleased": true,
+  "remaining": [
+    "Merchant reauthorization explicitly deferred by user.",
+    "New-token field/history coverage and cash/credit/grant invoice contract remain unverified.",
+    "Current targets are evidence, never automatic historical store allocation."
+  ]
+}

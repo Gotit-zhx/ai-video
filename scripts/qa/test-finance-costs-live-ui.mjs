@@ -32,6 +32,11 @@ w.api=async(path,options={})=>{
   }
   if(url.pathname==='/api/v1/finance/shops')return {data:{items:shops,groups,sync:[]}};
   if(url.pathname==='/api/v1/finance/workspace/costs/orders'){reads.push(Object.fromEntries(url.searchParams));return {data:{items:[{id:'order-1',shop_id:'shop',order_id:'ORDER-1',order_type_label:'商家承担的免费样品单',product_skus:'PACK\n（PACK）*2',record_date:'2026-08-28',order_created_time:'2026-08-28T05:27:54Z',first_settlement_date:'2026-10-23',amount:99,settlement_goods_amount:129,settlement_net_amount:80,settlement_currency:'PHP',product_cost_cny:null,product_cost_state:'待补齐'}],total:1,page:1,pageSize:50,productCosts:{total:{pending_count:1,ready_count:0,estimated_count:0,known_amount_cny:5.5,amount_cny:null}}}};}
+  if(url.pathname==='/api/v1/finance/workspace/costs/context'){
+    reads.push(url.searchParams.get('shopId'));
+    const other=url.searchParams.get('shopId')==='other'||url.searchParams.get('groupId')==='other-group';
+    return {data:{live:true,catalogLoaded:false,settingsLoaded:false,shopId:other?'other':'shop',groupId:other?'other-group':'group',groupName:other?'其他组':'母婴组'}};
+  }
   if(url.pathname==='/api/v1/finance/workspace/costs'){
     reads.push(url.searchParams.get('shopId'));
     if(url.searchParams.get('shopId')==='other'||url.searchParams.get('groupId')==='other-group'){
@@ -57,7 +62,7 @@ assert.equal(mutations.filter(r=>r.path.endsWith('/auto-match')).length,0,'invoi
 await click('商品成本表');
 assert.equal(mutations.filter(r=>r.path.endsWith('/auto-match')).length,1,'same codes are linked automatically without per-SKU clicks');
 assert(!d.body.textContent.includes('待启用'));assert(button('订单成本'));assert(!button('仓库与规则'));
-assert.equal(reads[0],'','initial selection is chosen by persisted cost availability, not the first shop');
+assert.equal(reads[0],'shop','the first catalogue transition uses the first shop in the freshly authorized group without a context request');
 assert.equal(d.querySelector('[aria-label="财务店铺"]').value,'shop');
 await click('订单成本');assert(d.body.textContent.includes('已结算订单已算部分'));assert(d.body.textContent.includes('¥ 5.5'));assert(d.querySelector('tbody').textContent.includes('待补齐'));assert(!d.querySelector('tbody').textContent.includes('¥ 0'));
 assert(d.querySelector('thead').textContent.includes('结算归属日期'));assert.equal(reads.at(-1).kind,'SETTLED_ORDER');assert(d.querySelector('thead').textContent.includes('商品 SKU'));assert(d.querySelector('tbody').textContent.includes('（PACK）*2'));

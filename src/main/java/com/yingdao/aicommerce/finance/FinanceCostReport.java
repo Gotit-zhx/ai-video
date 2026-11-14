@@ -117,7 +117,7 @@ public final class FinanceCostReport {
     /** Read first-settled orders and their cost snapshots once for every dashboard metric. */
     List<Map<String,Object>> dashboardFacts(Scope scope,Filter filter){
         var q=repo.query(scope,filter,"r");
-        var facts=repo.jdbc().queryForList("""
+        var facts=repo.aggregateWindows(filter,q,"r.record_date",1,part->repo.jdbc().queryForList("""
             SELECT r.shop_id,r.record_date,o.record_date fx_date,r.currency settlement_currency,o.currency,'ORDER' kind,'' category,
               o.status,COUNT(o.id) records,COUNT(o.amount) known_amounts,COUNT(o.revenue) known_revenues,
               SUM(o.amount) amount,SUM(o.revenue) revenue,SUM(o.impressions) impressions,
@@ -129,8 +129,8 @@ public final class FinanceCostReport {
               AND o.kind='ORDER' AND o.source='API'
             LEFT JOIN finance_order_costs c ON c.order_record_id=o.id
             LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=o.id
-            """+FinanceLabelCosts.join("r.organization_id","r.shop_id","r.order_id")+" WHERE "+firstSettlement("r",true)+" AND "+q.where()
-                +" GROUP BY r.shop_id,r.record_date,o.record_date,r.currency,o.currency,o.status",q.args().toArray());
+            """+FinanceLabelCosts.join("r.organization_id","r.shop_id","r.order_id")+" WHERE "+firstSettlement("r",true)+" AND "+part.where()
+                +" GROUP BY r.shop_id,r.record_date,o.record_date,r.currency,o.currency,o.status",part.args().toArray()));
         var sums=new LinkedHashSet<>(FinanceFxDates.LEDGER_SUMS);sums.addAll(COST_SUMS);sums.add("amount_cny");
         return FinanceFxDates.split(facts,FinanceFxDates.costs(repo,scope,filter,"SETTLED_ORDER"),FinanceFxDates.COST_KEYS,new ArrayList<>(sums),"order_count","cost_fx_date");
     }
@@ -263,7 +263,7 @@ public final class FinanceCostReport {
             case "BILL","RECONCILIATION"->"仅计入归属于所选账单的首次平台结算订单成本；重复结算或调整不重复计整单成本。";
             default->"仅核对已完成平台结算的订单商品成本；未结算订单不计入。";
         });
-        result.put("formula","有实际出库凭据时使用 ERP 型号、数量及人民币成本；其余使用商家 SKU 单价 × 购买数量 × 组合数量。");
+        result.put("formula","有实际出库凭据时使用 ERP 型号、数量及人民币成本；其余先用商品 SKU、再用平台 SKU 匹配型号，按单价 × 购买数量 × 组合数量计算。");
         result.put("pendingNote","待补齐订单不按零成本计算；历史月份价格标为估算。");
         boolean productRebuilding=false,labelRebuilding=false;
         if(!perShop.isEmpty()){
@@ -383,11 +383,16 @@ public final class FinanceCostReport {
         var args=new ArrayList<Object>();args.add(scope.organizationId());args.addAll(pending.keySet());
         String slots=String.join(",",Collections.nCopies(pending.size(),"?"));
         for(var snapshot:repo.jdbc().queryForList("""
-            SELECT c.order_record_id,c.data_json FROM finance_order_costs c
+            SELECT c.order_record_id,c.data_json,r.status rebuild_status FROM finance_order_costs c
             LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=c.order_record_id
+            LEFT JOIN finance_cost_rebuilds r ON r.organization_id=c.organization_id AND r.shop_id=c.shop_id
             WHERE c.organization_id=? AND c.order_record_id IN (%s) AND (j.order_record_id IS NULL OR j.priority=2)
             """.formatted(slots),args.toArray())){
             var cost=new FinanceOrderCosts(repo).decode(snapshot.get("data_json"));var issues=new LinkedHashSet<String>();
+            if("READY".equals(snapshot.get("rebuild_status"))&&!FinanceOrderCosts.POLICY_VERSION.equals(cost.get("policyVersion"))){
+                pending.get(text(snapshot.get("order_record_id"))).put("product_cost_issue","匹配规则已更新，后台正在按商品 SKU、平台 SKU 重新计算成本");
+                continue;
+            }
             for(var line:rows(cost.get("lines")))if(!text(line.get("issue")).isBlank())issues.add(text(line.get("issue")));
             if(!issues.isEmpty())pending.get(text(snapshot.get("order_record_id"))).put("product_cost_issue",String.join("；",issues));
         }
