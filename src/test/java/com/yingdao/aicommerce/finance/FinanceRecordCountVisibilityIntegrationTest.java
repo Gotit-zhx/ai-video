@@ -15,7 +15,7 @@ import tools.jackson.databind.ObjectMapper;
 import static com.yingdao.aicommerce.finance.FinanceData.*;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Test-only native visibility hypothesis; no schema, hint, page or production change. */
+/** Test-only grouped visibility and independent row-order cohorts; no production adoption. */
 @EnabledIfEnvironmentVariable(named="FINANCE_QA_JDBC",matches=".+")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class FinanceRecordCountVisibilityIntegrationTest extends FinanceConfigurationIntegrationTest {
@@ -34,10 +34,11 @@ class FinanceRecordCountVisibilityIntegrationTest extends FinanceConfigurationIn
     JdbcTemplate experimentDb;
     long ownedEventStart;
     boolean semanticsVerified,collationVerified;
+    String fixtureStage="native-matrix";
 
     @Test @Order(1) void literalNativeSemanticsAndRealWrongResultControlsRunBeforeHeavyProbe() {
         try {
-            beginFixture();shops();smallLedger();
+            fixtureStage="native-matrix";beginFixture();shops();smallLedger();
             repo.readSnapshot(180,()->{
                 var witness=new Witness(dataSource);var probes=probes(witness);
                 compareCases(cases(),probes,witness,"native-matrix");
@@ -52,25 +53,37 @@ class FinanceRecordCountVisibilityIntegrationTest extends FinanceConfigurationIn
                 assertEquals(1,current.jdbc().counts.size());assertEquals(ownerCase.total(),number(wrongPage.get("total")));
                 assertThrows(AssertionFailedError.class,()->oracle(ownerCase,1,5,wrongPage));
                 emit("realNegativeControls",Map.of("wrongTotalFromRealForeignScopeCount",true,"wrongPageFromRealOwnerPageTwo",true,
-                    "eachExecutedCount",1,"noInjectedTotal",true,"snapshot",witness.receipt()));
+                    "eachExecutedCount",1,"noInjectedTotal",true,"mode",Mode.CURRENT_EXISTS,"snapshot",witness.receipt()));
                 String actual=current.jdbc().counts.getFirst().original();
                 assertNotEquals(actual,rewrite(actual));
                 for(String nearMiss:List.of(actual.replace("OR EXISTS (","OR EXISTS  ("),actual.replace("fc.id=finance_records.shop_id","fc.id=r.shop_id"),
                     actual+" "+ORIGINAL,actual.replace("SELECT COUNT(*) FROM","select count(*) from")))
                     assertEquals(nearMiss,rewrite(nearMiss),"Only one exact positively recognized typed clause may change");
                 for(var page:current.jdbc().pages)assertEquals(page.sql(),rewrite(page.sql()));
-                emit("positiveGuard",Map.of("actualTypedCountRewritten",true,"nearMissesPreserved",4,"pageSqlPreserved",true));
+                verifyGroupedGuard(actual,current.jdbc().counts.getFirst().args());
+                emit("positiveGuard",Map.of("actualTypedCountRewritten",true,"nearMissesPreserved",4,"pageSqlPreserved",true,"groupedBindingAndMalformedControls",true));
+                for(var mode:List.of(Mode.CANDIDATE_IN,Mode.GROUPED_EXISTS)) {
+                    var candidate=probes.get(mode);candidate.jdbc().clear();
+                    var foreignActual=read(candidate.repo(),foreign,100,5);assertEquals(1,candidate.jdbc().counts.size());assertEquals(1,number(foreignActual.get("total")));
+                    assertThrows(AssertionFailedError.class,()->oracle(ownerCase,100,5,foreignActual));
+                    candidate.jdbc().clear();var secondPage=read(candidate.repo(),ownerCase,2,5);assertEquals(1,candidate.jdbc().counts.size());assertEquals(ownerCase.total(),number(secondPage.get("total")));
+                    assertThrows(AssertionFailedError.class,()->oracle(ownerCase,1,5,secondPage));
+                    emit("realNegativeControls",Map.of("mode",mode,"wrongTotalFromRealForeignScopeCount",true,"wrongPageFromRealOwnerPageTwo",true,
+                        "eachExecutedCount",1,"noInjectedTotal",true,"snapshot",witness.receipt()));
+                }
                 return null;
             });
             var cached=new CountJdbc(experimentDb,Mode.CURRENT_EXISTS);var cachedRepo=new FinanceRepository(cached,new ObjectMapper());
             cachedRepo.readSnapshot(60,()->{
                 cached.witness=new Witness(dataSource);var selected=cases().getFirst();
                 var oldPage=read(cachedRepo,selected,100,5);assertEquals(1,cached.counts.size());
-                cached.mode=Mode.CANDIDATE_IN;
-                assertEquals(oldPage,read(cachedRepo,selected,100,5));assertEquals(1,cached.counts.size());
-                assertFalse(cached.counts.getFirst().rewritten());
-                emit("cacheNegativeControl",Map.of("currentCountsExecuted",1,"candidateCountsExecuted",0,"cacheWouldHideCandidate",true,
-                    "snapshot",cached.witness.receipt()));return null;
+                for(var mode:List.of(Mode.CANDIDATE_IN,Mode.GROUPED_EXISTS)) {
+                    cached.mode=mode;assertEquals(oldPage,read(cachedRepo,selected,100,5));assertEquals(1,cached.counts.size());
+                    assertFalse(cached.counts.getFirst().rewritten());
+                    emit("cacheNegativeControl",Map.of("mode",mode,"currentCountsExecuted",1,"candidateCountsExecuted",0,"cacheWouldHideCandidate",true,
+                        "snapshot",cached.witness.receipt()));
+                }
+                return null;
             });
             semanticsVerified=true;
         } finally {cleanup();}
@@ -79,7 +92,7 @@ class FinanceRecordCountVisibilityIntegrationTest extends FinanceConfigurationIn
     @Test @Order(2) void collationEquivalentDisabledAndPermittedMissingShopRowsKeepExactVisibility() {
         assertTrue(semanticsVerified,"Literal native comparison must pass before extra visibility cases");
         try {
-            beginFixture();shops();
+            fixtureStage="collation-and-disabled";beginFixture();shops();
             var values=new ArrayList<Object[]>();
             for(int n=33;n<=39;n++) {
                 String shop=switch(n){case 33->"RCI-SHOP-A";case 34->"rci-shóp-a";case 35->"unassigned";case 36->"";case 37->"rcv-missing";case 38->D2;default->"RCI-SHOP-FOREIGN";};
@@ -108,9 +121,15 @@ class FinanceRecordCountVisibilityIntegrationTest extends FinanceConfigurationIn
     }
 
     @Test @Order(3) void boundedSkewedProfileReportsThirtyPairedSamplesPerModeWithoutSpeedThreshold() {
+        runProfile(Profile.FIXED);
+    }
+    @Test @Order(4) void independentlyInterleavedIdsReportAllModesWithoutPoolingTheFixedCohort() {
+        runProfile(Profile.INTERLEAVED);
+    }
+    private void runProfile(Profile profile) {
         assertTrue(semanticsVerified&&collationVerified,"Heavy probe is unexecuted unless both semantic stages pass");
         try {
-            beginFixture();shops();
+            fixtureStage=profile.label;beginFixture();shops();
             for(int n=0;n<100;n++)shop(tail(n),"org",n%2==0?"u":"colleague","SHOPEE","USD",n%2==0?GB:null,"ACTIVE",true);
             long seed=System.nanoTime();
             for(int first=1;first<=100_000;first+=500) {
@@ -118,64 +137,84 @@ class FinanceRecordCountVisibilityIntegrationTest extends FinanceConfigurationIn
                 for(int n=first;n<first+500;n++) {
                     String shop=n<=60_000?A:n<=80_000?tail((n-60_001)%100):n<=85_000?D2:n<=90_000?(n%2==0?"UNASSIGNED":"unassigned"):n<=93_000?R:n<=95_000?"rcv-missing":n<=98_000?F:A;
                     String category=n<=80_000?(n%2==0?"fees.affiliate_ads_commission_amount":"PLATFORM_FEE"):"tap_shop_ads_commission";
-                    batch.add(ledger("rcv-h-"+String.format(Locale.ROOT,"%06d",n),n>95_000&&n<=98_000?"other-org":"org",n%2==0?"colleague":"u",shop,
-                        "TIKTOK_SHOP","FEE",category,n>98_000?"DATE_PENDING":"SETTLED","2026-10-10","PHP",n%3==0?"IMPORT":"API",null,null,null,
+                    String logicalId=heavyId(n),physicalId=heavyId(profile==Profile.FIXED?n:permutedSlot(n));
+                    batch.add(ledger(physicalId,n>95_000&&n<=98_000?"other-org":"org",n%2==0?"colleague":"u",shop,
+                        "TIKTOK_SHOP","FEE",category,n>98_000?"DATE_PENDING":"SETTLED","2026-10-10","PHP",n%3==0?"IMPORT":"API",
+                        "external-"+logicalId,"order-"+logicalId,"statement-"+logicalId,
                         "{\"padding\":\""+"p".repeat(480)+"\"}"));
                 }
                 insert(batch);
             }
             assertEquals(100_000,experimentDb.queryForObject("SELECT COUNT(*) FROM finance_records",Long.class));
             experimentDb.execute("ANALYZE TABLE finance_records,finance_connections");
-            emit("profile",Map.of("actualRecords",100_000,"maximumInsertBatch",500,"rawJsonCharacters",494,"seedMs",millis(seed),
-                "serverVersion",Objects.requireNonNull(experimentDb.queryForObject("SELECT VERSION()",String.class)),
-                "innodbBufferPoolBytes",Objects.requireNonNull(experimentDb.queryForObject("SELECT @@innodb_buffer_pool_size",Long.class)),
-                "tableMetadata",experimentDb.queryForList("SELECT TABLE_NAME,TABLE_ROWS,DATA_LENGTH,INDEX_LENGTH FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('finance_records','finance_connections')"),
-                "indexMetadata",experimentDb.queryForList("SELECT TABLE_NAME,INDEX_NAME,SEQ_IN_INDEX,COLUMN_NAME,COLLATION,IS_VISIBLE FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('finance_records','finance_connections') ORDER BY TABLE_NAME,INDEX_NAME,SEQ_IN_INDEX"),
-                "actualShopSkew",experimentDb.queryForList("SELECT shop_id,COUNT(*) records FROM finance_records GROUP BY shop_id ORDER BY records DESC,shop_id LIMIT 8"),"newDdl",false));
+            var receipt=new LinkedHashMap<String,Object>();
+            receipt.put("profile",profile.label);receipt.put("actualRecords",100_000);receipt.put("maximumInsertBatch",500);receipt.put("rawJsonCharacters",494);receipt.put("seedMs",millis(seed));
+            receipt.put("serverVersion",experimentDb.queryForObject("SELECT VERSION()",String.class));receipt.put("innodbBufferPoolBytes",experimentDb.queryForObject("SELECT @@innodb_buffer_pool_size",Long.class));
+            receipt.put("tableMetadata",experimentDb.queryForList("SELECT TABLE_NAME,TABLE_ROWS,DATA_LENGTH,INDEX_LENGTH FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('finance_records','finance_connections')"));
+            receipt.put("indexMetadata",experimentDb.queryForList("SELECT TABLE_NAME,INDEX_NAME,SEQ_IN_INDEX,COLUMN_NAME,COLLATION,IS_VISIBLE FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('finance_records','finance_connections') ORDER BY TABLE_NAME,INDEX_NAME,SEQ_IN_INDEX"));
+            receipt.put("actualShopSkew",experimentDb.queryForList("SELECT shop_id,COUNT(*) records FROM finance_records GROUP BY shop_id ORDER BY records DESC,shop_id LIMIT 8"));
+            receipt.put("newDdl",false);receipt.put("idPermutation",profile==Profile.FIXED?"identity":"1+((logical-1)*7919 mod 100000); business fields retain logical identity");
+            emit("profile",receipt);verifyActualIndexOrder(profile);
             repo.readSnapshot(180,()->{
                 var witness=new Witness(dataSource);var probes=probes(witness);
                 for(boolean ads:List.of(false,true)) {
-                    var selected=new Case(ads?"heavy-ad-only-fee":"heavy-ordinary-fee",owner,MONTH,"FEE","",false,ads,ads?50_000:90_000,List.of());
+                    var selected=new Case(profile.label+(ads?"-ad-only-fee":"-ordinary-fee"),owner,MONTH,"FEE","",false,ads,ads?50_000:90_000,List.of());
                     var current=probes.get(Mode.CURRENT_EXISTS);current.jdbc().clear();
-                    var reference=read(current.repo(),selected,1,50);heavyOracle(selected,reference);
-                    assertEquals(1,current.jdbc().counts.size());var original=current.jdbc().counts.getFirst();
-                    var pages=List.copyOf(current.jdbc().pages);
+                    var reference=read(current.repo(),selected,1,50);heavyOracle(selected,reference,profile);
+                    assertEquals(1,current.jdbc().counts.size());var original=current.jdbc().counts.getFirst();var pages=List.copyOf(current.jdbc().pages);
                     for(var mode:Mode.values()) {
                         var p=probes.get(mode);p.jdbc().clear();var actual=read(p.repo(),selected,1,50);
                         assertEquals(reference,actual);assertEquals(pages,p.jdbc().pages);assertEquals(1,p.jdbc().counts.size());
                         assertCountShape(List.of(original),p.jdbc().counts,mode);
                         explain(selected.name()+"-"+mode,p.jdbc().counts.getFirst(),witness);
                     }
-                    emit("equivalence",Map.of("case",selected.name(),"literalTotal",selected.total(),"pageRows",50,"pageIdHash",idHash(reference),
-                        "originalSql",original.original(),"bindingReceipt",bindingReceipt(original.args()),"snapshot",witness.receipt()));
+                    emit("equivalence",Map.of("profile",profile.label,"case",selected.name(),"literalTotal",selected.total(),"pageRows",50,"pageIdHash",idHash(reference),
+                        "originalSql",original.original(),"originalBindings",bindingReceipt(original.args()),"snapshot",witness.receipt()));
                     measuredPhase(probes,selected,reference,witness);
                 }
                 witness.verify();return null;
             });
         } finally {cleanup();}
     }
+    private void verifyActualIndexOrder(Profile profile) {
+        String sql="SELECT id,shop_id,LOWER(shop_id) shop_order_key FROM finance_records FORCE INDEX (idx_finance_company_kind_date) WHERE organization_id=? AND kind=? AND record_date>=? AND record_date<=? ORDER BY record_date DESC,id";
+        Object[] args={"org","FEE",java.sql.Date.valueOf(MONTH.start()),java.sql.Date.valueOf(MONTH.end())};
+        int[] rows={0},run={0},max={0},changes={0};String[] previous={null};var first=new ArrayList<Map<String,Object>>();
+        experimentDb.query(sql,(org.springframework.jdbc.core.RowCallbackHandler)rs->{
+            String shop=rs.getString("shop_id"),key=rs.getString("shop_order_key");rows[0]++;if(Objects.equals(previous[0],key))run[0]++;else{if(previous[0]!=null)changes[0]++;run[0]=1;previous[0]=key;}
+            max[0]=Math.max(max[0],run[0]);if(first.size()<30)first.add(Map.of("id",rs.getString("id"),"shop",shop));
+        },args);
+        emit("indexRowOrder",Map.of("profile",profile.label,"sql",sql,"bindings",bindingReceipt(Arrays.asList(args)),"actualCompanyIndexRows",rows[0],
+            "maximumAdjacentShopRun",max[0],"adjacentShopChanges",changes[0],"firstThirty",first,"asciiFixtureCaseFold",true));
+        assertEquals(97_000,rows[0]);
+        if(profile==Profile.INTERLEAVED){assertTrue(max[0]<50,"Interleaving fixture must break the dominant shop block");assertTrue(changes[0]>20_000);}
+    }
+    private static int permutedSlot(int logical){return 1+(int)(((logical-1L)*7919)%100_000);}
+    private static String heavyId(int slot){return "rcv-h-"+String.format(Locale.ROOT,"%06d",slot);}
 
     private void compareCases(List<Case> cases,EnumMap<Mode,Probe> probes,Witness witness,String stage) {
-        int executed=0,inferred=0,rewritten=0,unchangedRoutes=0;
+        int executed=0,inferred=0;var rewrites=new EnumMap<Mode,Integer>(Mode.class);var compatibility=new EnumMap<Mode,Integer>(Mode.class);
+        for(var mode:Mode.values()){rewrites.put(mode,0);compatibility.put(mode,0);}
         for(var selected:cases)for(int page:List.of(1,2,100)) {
             var observations=new EnumMap<Mode,Observation>(Mode.class);
             for(var mode:Mode.values()) {
                 var p=probes.get(mode);p.jdbc().clear();var actual=read(p.repo(),selected,page,5);oracle(selected,page,5,actual);
-                assertTrue(p.jdbc().counts.size()<=1);
-                if(page==100)assertEquals(1,p.jdbc().counts.size(),"Empty later page must really count");
+                assertTrue(p.jdbc().counts.size()<=1);if(page==100)assertEquals(1,p.jdbc().counts.size(),"Empty later page must really count");
                 if(p.jdbc().counts.isEmpty())inferred++;else executed++;
                 observations.put(mode,new Observation(actual,List.copyOf(p.jdbc().counts),List.copyOf(p.jdbc().pages)));
             }
-            var old=observations.get(Mode.CURRENT_EXISTS);var candidate=observations.get(Mode.CANDIDATE_IN);
-            assertEquals(old.page(),candidate.page());assertEquals(old.pages(),candidate.pages());
-            assertCountShape(old.counts(),candidate.counts(),Mode.CANDIDATE_IN);
-            for(var count:candidate.counts())if(count.rewritten())rewritten++;else unchangedRoutes++;
+            var old=observations.get(Mode.CURRENT_EXISTS);var routeReceipt=new LinkedHashMap<String,Object>();
+            for(var mode:List.of(Mode.CANDIDATE_IN,Mode.GROUPED_EXISTS)) {
+                var candidate=observations.get(mode);assertEquals(old.page(),candidate.page());assertEquals(old.pages(),candidate.pages());
+                assertCountShape(old.counts(),candidate.counts(),mode);
+                for(var count:candidate.counts())if(count.rewritten())rewrites.merge(mode,1,Integer::sum);else compatibility.merge(mode,1,Integer::sum);
+                routeReceipt.put(mode.name(),candidate.counts().stream().anyMatch(Count::rewritten));
+            }
             emit("semantic",Map.of("stage",stage,"case",selected.name(),"page",page,"literalTotal",selected.total(),"pageIds",itemIds(old.page()),
-                "actualCountStatementsPerMode",old.counts().size(),"inferred",old.counts().isEmpty(),
-                "candidateActuallyRewritten",candidate.counts().stream().anyMatch(Count::rewritten)));
+                "actualCountStatementsPerMode",old.counts().size(),"inferred",old.counts().isEmpty(),"candidateActuallyRewritten",routeReceipt));
         }
-        emit("semanticSummary",Map.of("stage",stage,"cases",cases.size(),"modes",2,"pagesPerCase",3,"realCountStatements",executed,"inferredCalls",inferred,
-            "candidateRewrittenCounts",rewritten,"candidateCompatibilityCountsUnchanged",unchangedRoutes,"snapshot",witness.receipt()));
+        emit("semanticSummary",Map.of("stage",stage,"cases",cases.size(),"modes",Mode.values().length,"pagesPerCase",3,"realCountStatements",executed,"inferredCalls",inferred,
+            "rewrittenCountsByMode",rewrites,"compatibilityCountsByMode",compatibility,"snapshot",witness.receipt()));
     }
     private void measuredPhase(EnumMap<Mode,Probe> probes,Case selected,Map<String,Object> expected,Witness witness) {
         for(var mode:Mode.values())sample(probes.get(mode),selected,expected,"warmup",0);
@@ -183,7 +222,8 @@ class FinanceRecordCountVisibilityIntegrationTest extends FinanceConfigurationIn
         var samples=new ArrayList<Sample>();int attempted=0;
         try {
             paired:for(int pair=1;pair<=SAMPLES_PER_MODE;pair++) {
-                var order=pair%2==1?List.of(Mode.CURRENT_EXISTS,Mode.CANDIDATE_IN):List.of(Mode.CANDIDATE_IN,Mode.CURRENT_EXISTS);
+                var order=modeOrder(pair);
+                emit("pairOrder",Map.of("case",selected.name(),"pair",pair,"order",order));
                 for(var mode:order) {
                     if(System.nanoTime()>=deadline){budgetExit=true;break paired;}
                     attempted++;samples.add(sample(probes.get(mode),selected,expected,"measured",pair));
@@ -207,7 +247,7 @@ class FinanceRecordCountVisibilityIntegrationTest extends FinanceConfigurationIn
             var actual=read(p.repo(),selected,1,50);double elapsed=millis(start);
             assertEquals(expected,actual);assertEquals(1,p.jdbc().counts.size());
             var count=p.jdbc().counts.getFirst();assertEquals(selected.total(),count.total());
-            assertEquals(p.jdbc().mode==Mode.CANDIDATE_IN,count.rewritten());
+            assertEquals(p.jdbc().mode!=Mode.CURRENT_EXISTS,count.rewritten());
             emit("sample",Map.of("case",selected.name(),"phase",phase,"pair",pair,"mode",p.jdbc().mode,"status","COMPLETED",
                 "countMs",count.millis(),"detailsMs",elapsed,"actualCounts",1,"total",count.total(),"pageIdHash",idHash(actual)));
             return new Sample(p.jdbc().mode,count.millis(),elapsed);
@@ -224,7 +264,7 @@ class FinanceRecordCountVisibilityIntegrationTest extends FinanceConfigurationIn
     private EnumMap<Mode,Probe> probes(Witness witness) {
         var out=new EnumMap<Mode,Probe>(Mode.class);
         for(var mode:Mode.values()){var jdbc=new CountJdbc(experimentDb,mode);jdbc.witness=witness;out.put(mode,new Probe(jdbc,new FinanceRepository(jdbc,new ObjectMapper())));}
-        assertSame(out.get(Mode.CURRENT_EXISTS).jdbc().getDataSource(),out.get(Mode.CANDIDATE_IN).jdbc().getDataSource());return out;
+        for(var probe:out.values())assertSame(dataSource,probe.jdbc().getDataSource());return out;
     }
     private Map<String,Object> read(FinanceRepository selected,Case c,int page,int size) {
         return c.ads()?selected.advertisingFeeDetails(c.scope(),c.filter(),page,size,c.numbers()):selected.details(c.scope(),c.filter(),c.kind(),page,size,c.numbers(),c.allOrders());
@@ -234,29 +274,44 @@ class FinanceRecordCountVisibilityIntegrationTest extends FinanceConfigurationIn
         assertEquals(c.ids().subList(Math.min(offset,c.ids().size()),Math.min(offset+size,c.ids().size())),itemIds(actual),c.name()+": ordered literal IDs");
         assertEquals(page,number(actual.get("page")));assertEquals(size,number(actual.get("pageSize")));
     }
-    private void heavyOracle(Case c,Map<String,Object> actual) {
+    private void heavyOracle(Case c,Map<String,Object> actual,Profile profile) {
         assertEquals(c.total(),number(actual.get("total")));var expected=new ArrayList<String>();
-        for(int n=1;expected.size()<50;n++)if(!c.ads()||n%2==0)expected.add("rcv-h-"+String.format(Locale.ROOT,"%06d",n));
+        if(profile==Profile.FIXED)for(int n=1;expected.size()<50;n++){if(!c.ads()||n%2==0)expected.add(heavyId(n));}
+        else {
+            int[] literal=c.ads()?new int[]{2,4,6,8,10,14,16,17,18,20,22,23,24,26,28,30,32,34,36,38,40,42,44,48,50,51,52,54,56,58,60,62,64,66,68,70,72,76,78,82,84,85,86,88,90,92,94,96,98,100}
+                :new int[]{1,2,3,4,5,6,7,8,9,10,11,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,47,48,49,50,51,52,53};
+            for(int slot:literal)expected.add(heavyId(slot));
+        }
         assertEquals(expected,itemIds(actual));
+    }
+    private static List<Mode> modeOrder(int pair) {
+        var order=new ArrayList<>(List.of(Mode.CURRENT_EXISTS,Mode.CANDIDATE_IN,Mode.GROUPED_EXISTS));
+        Collections.rotate(order,-(((pair-1)/2)%3));if(pair%2==0)Collections.reverse(order);return order;
     }
     private void assertCountShape(List<Count> original,List<Count> candidate,Mode mode) {
         assertEquals(original.size(),candidate.size());
         for(int n=0;n<original.size();n++) {
             var old=original.get(n);var now=candidate.get(n);assertEquals(old.original(),now.original());assertEquals(old.args(),now.args());
-            assertEquals(mode==Mode.CANDIDATE_IN?rewrite(old.original()):old.original(),now.emitted());
-            assertEquals(!old.original().equals(now.emitted()),now.rewritten());
-            assertEquals(questionMarks(old.original()),questionMarks(now.emitted()));
+            var expected=transform(mode,old.original(),old.args());assertEquals(expected.sql(),now.emitted());assertEquals(expected.args(),now.emittedArgs());
+            assertEquals(!old.original().equals(now.emitted()),now.rewritten());assertEquals(old.args().size(),now.emittedArgs().size());
+            assertEquals(scan(now.emitted(),-1).parameters().size(),now.emittedArgs().size());
+            if(mode==Mode.GROUPED_EXISTS&&now.rewritten()) {
+                assertEquals(old.args().get(now.visibilityArgumentIndex()),now.emittedArgs().getLast());
+                var remaining=new ArrayList<>(now.emittedArgs());remaining.removeLast();
+                var originalRemainder=new ArrayList<>(old.args());originalRemainder.remove(now.visibilityArgumentIndex());assertEquals(originalRemainder,remaining);
+            } else assertEquals(old.args(),now.emittedArgs());
         }
     }
     @SuppressWarnings("unchecked") private void explain(String label,Count q,Witness witness) {
         var planDb=new JdbcTemplate(dataSource);planDb.setQueryTimeout(10);witness.verify();
-        var json=JSON.readValue(planDb.queryForObject("EXPLAIN FORMAT=JSON "+q.emitted(),String.class,q.args().toArray()),Map.class);
-        var actual=planDb.queryForList("EXPLAIN ANALYZE "+q.emitted(),q.args().toArray());
+        var json=JSON.readValue(planDb.queryForObject("EXPLAIN FORMAT=JSON "+q.emitted(),String.class,q.emittedArgs().toArray()),Map.class);
+        var actual=planDb.queryForList("EXPLAIN ANALYZE "+q.emitted(),q.emittedArgs().toArray());
         String tree=actual.stream().flatMap(r->r.values().stream()).map(String::valueOf).reduce("",(a,b)->a+b+"\n");witness.verify();
-        emit("plan",Map.of("label",label,"sql",q.emitted(),"bindings",bindingReceipt(q.args()),"tables",tables(json),
-            "sortFlags",flags(json,"using_filesort"),"temporaryFlags",flags(json,"using_temporary_table"),
-            "materializedSubqueryFlags",flags(json,"materialized_from_subquery"),"explainJson",json,"explainAnalyze",tree,
-            "statementRowsExamined","UNAVAILABLE_NOT_REQUESTED"));
+        var receipt=new LinkedHashMap<String,Object>();receipt.put("label",label);receipt.put("originalSql",q.original());receipt.put("emittedSql",q.emitted());
+        receipt.put("originalBindings",bindingReceipt(q.args()));receipt.put("emittedBindings",bindingReceipt(q.emittedArgs()));receipt.put("visibilityArgumentIndex",q.visibilityArgumentIndex());
+        receipt.put("tables",tables(json));receipt.put("sortFlags",flags(json,"using_filesort"));receipt.put("temporaryFlags",flags(json,"using_temporary_table"));
+        receipt.put("materializedSubqueryFlags",flags(json,"materialized_from_subquery"));receipt.put("explainJson",json);receipt.put("explainAnalyze",tree);receipt.put("statementRowsExamined","UNAVAILABLE_NOT_REQUESTED");
+        emit("plan",receipt);
     }
     private List<Case> cases() {
         var fee=ids(1,2,3,4,5,6,12,13,14,21,15,16,17,18,19,20);var ad=ids(1,2,3,4,5,14,15);
@@ -377,7 +432,7 @@ class FinanceRecordCountVisibilityIntegrationTest extends FinanceConfigurationIn
         int connections=ownedShops.isEmpty()?0:Objects.requireNonNull(experimentDb.queryForObject("SELECT COUNT(*) FROM finance_connections WHERE id IN ("+String.join(",",Collections.nCopies(ownedShops.size(),"?"))+")",Integer.class,ownedShops.toArray()));
         assertEquals(0,connections);assertEquals(0,experimentDb.queryForObject("SELECT COUNT(*) FROM finance_groups WHERE id IN (?,?)",Integer.class,GA,GB));
         assertEquals(0,dataSource.getHikariPoolMXBean().getActiveConnections());
-        emit("cleanup",Map.of("declaredOwnedIds",ownedIds.size(),"deletedOwnedLedgerRows",deleted,"ownedRowsRemaining",remaining,
+        emit("cleanup",Map.of("stage",fixtureStage,"declaredOwnedIds",ownedIds.size(),"deletedOwnedLedgerRows",deleted,"ownedRowsRemaining",remaining,
             "ownedEventStart",ownedEventStart,"ownedEventEnd",eventEnd,"deletedOwnedEvents",events,"ownedConnectionsRemaining",connections,"activePooledConnections",0));
     }
     private static String tail(int n){return "rcv-tail-"+String.format(Locale.ROOT,"%03d",n);}
@@ -386,7 +441,72 @@ class FinanceRecordCountVisibilityIntegrationTest extends FinanceConfigurationIn
         if(position<0||sql.indexOf(ORIGINAL,position+ORIGINAL.length())>=0)return sql;
         return sql.substring(0,position)+CANDIDATE+sql.substring(position+ORIGINAL.length());
     }
-    private static long questionMarks(String sql){return sql.chars().filter(c->c=='?').count();}
+
+    /** Strict native-shape transform; no general SQL rewrite is attempted. */
+    private static Transformation transform(Mode mode,String sql,List<Object> args) {
+        if(mode==Mode.CURRENT_EXISTS||!sql.startsWith(PREFIX))return new Transformation(sql,List.copyOf(args),-1);
+        int position=sql.indexOf(ORIGINAL);
+        if(position<0)return new Transformation(sql,List.copyOf(args),-1);
+        if(sql.indexOf(ORIGINAL,position+ORIGINAL.length())>=0)throw new IllegalArgumentException("Ambiguous native visibility clauses");
+        var shape=scan(sql,position);
+        if(!shape.markerAtTopLevel()||shape.parameters().size()!=args.size())throw new IllegalArgumentException("Malformed native placeholder shape");
+        var forbidden=Set.of("SELECT","GROUP","HAVING","ORDER","LIMIT","UNION","INTO","FOR","LOCK","PROCEDURE","WINDOW");
+        if(shape.topLevelTailWords().stream().anyMatch(forbidden::contains))throw new IllegalArgumentException("Unsupported native count tail");
+        int parameter=shape.parameters().indexOf(position+ORIGINAL.indexOf('?'));
+        if(parameter<0||parameter>=args.size())throw new IllegalArgumentException("Visibility argument could not be located");
+        if(mode==Mode.CANDIDATE_IN)return new Transformation(rewrite(sql),List.copyOf(args),parameter);
+        String rowWhere=sql.substring(PREFIX.length(),position)+sql.substring(position+ORIGINAL.length());
+        String grouped="SELECT COALESCE(SUM(grouped.records),0) FROM (SELECT finance_records.shop_id,COUNT(*) records FROM finance_records FORCE INDEX (idx_finance_company_kind_date) WHERE "
+            +rowWhere+" GROUP BY finance_records.shop_id) grouped WHERE (grouped.shop_id='UNASSIGNED' OR EXISTS (SELECT 1 FROM finance_connections fc FORCE INDEX(PRIMARY) WHERE fc.id=grouped.shop_id AND fc.organization_id=? AND fc.status<>'REMOVED'))";
+        var emitted=new ArrayList<>(args);Object visibilityCompany=emitted.remove(parameter);emitted.add(visibilityCompany);
+        if(scan(grouped,-1).parameters().size()!=emitted.size())throw new IllegalArgumentException("Grouped emitted placeholders differ");
+        return new Transformation(grouped,List.copyOf(emitted),parameter);
+    }
+    /** Lexer only identifies real placeholders and rejects comments, unterminated quotes and unsupported tails. */
+    private static SqlScan scan(String sql,int marker) {
+        var parameters=new ArrayList<Integer>();var tailWords=new ArrayList<String>();char quote=0;int depth=0;boolean markerAtTop=false;
+        for(int i=0;i<sql.length();i++) {
+            char c=sql.charAt(i);
+            if(quote!=0) {
+                if(c=='\\'){if(++i>=sql.length())throw new IllegalArgumentException("Unterminated SQL escape");}
+                else if(c==quote){if(i+1<sql.length()&&sql.charAt(i+1)==quote)i++;else quote=0;}
+                continue;
+            }
+            if(i==marker)markerAtTop=depth==0;
+            if(c=='\''||c=='"'||c=='`'){quote=c;continue;}
+            if(c==';'||c=='#'||c=='/'&&i+1<sql.length()&&sql.charAt(i+1)=='*'||c=='-'&&i+1<sql.length()&&sql.charAt(i+1)=='-')
+                throw new IllegalArgumentException("SQL comments or multiple statements are unsupported");
+            if(c=='('){depth++;continue;}if(c==')'){if(--depth<0)throw new IllegalArgumentException("Unbalanced SQL parentheses");continue;}
+            if(c=='?'){parameters.add(i);continue;}
+            if(depth==0&&i>=PREFIX.length()&&(Character.isLetter(c)||c=='_')) {
+                int first=i;while(i+1<sql.length()&&(Character.isLetterOrDigit(sql.charAt(i+1))||sql.charAt(i+1)=='_'))i++;
+                tailWords.add(sql.substring(first,i+1).toUpperCase(Locale.ROOT));
+            }
+        }
+        if(quote!=0||depth!=0)throw new IllegalArgumentException("Unterminated SQL quoting or parentheses");
+        return new SqlScan(List.copyOf(parameters),markerAtTop,List.copyOf(tailWords));
+    }
+    private static void verifyGroupedGuard(String actual,List<Object> actualArgs) {
+        var grouped=transform(Mode.GROUPED_EXISTS,actual,actualArgs);assertNotEquals(actual,grouped.sql());
+        assertTrue(grouped.sql().startsWith("SELECT COALESCE(SUM(grouped.records),0) FROM ("));
+        String fixture=PREFIX+" organization_id=? AND shop_id=? "+ORIGINAL
+            +" AND shop_id IN (SELECT fg.id FROM finance_connections fg WHERE fg.organization_id=? AND fg.group_id=?) AND kind=?";
+        var tags=List.<Object>of("record-org","record-shop","visibility-org","group-org","group-id","FEE");
+        var expected=List.<Object>of("record-org","record-shop","group-org","group-id","FEE","visibility-org");
+        var transformed=transform(Mode.GROUPED_EXISTS,fixture,tags);assertEquals(2,transformed.visibilityArgumentIndex());assertEquals(expected,transformed.args());
+        assertTrue(transformed.sql().contains("AND shop_id IN (SELECT fg.id FROM finance_connections fg WHERE fg.organization_id=? AND fg.group_id=?) AND kind=? GROUP BY"));
+        String quoted=PREFIX+" organization_id=? "+ORIGINAL+" AND category='literal?identifier' AND kind=?";
+        assertEquals(List.of("record-org","FEE","visibility-org"),transform(Mode.GROUPED_EXISTS,quoted,List.of("record-org","visibility-org","FEE")).args());
+        for(var mode:List.of(Mode.CANDIDATE_IN,Mode.GROUPED_EXISTS)) {
+            assertThrows(IllegalArgumentException.class,()->transform(mode,actual,actualArgs.subList(0,actualArgs.size()-1)));
+            assertThrows(IllegalArgumentException.class,()->transform(mode,actual+" "+ORIGINAL,actualArgs));
+            assertThrows(IllegalArgumentException.class,()->transform(mode,actual+" AND category='unterminated",actualArgs));
+            assertThrows(IllegalArgumentException.class,()->transform(mode,actual+" GROUP BY shop_id",actualArgs));
+            assertThrows(IllegalArgumentException.class,()->transform(mode,actual+"; SELECT 1",actualArgs));
+            assertThrows(IllegalArgumentException.class,()->transform(mode,actual+" /* unsupported */",actualArgs));
+            assertThrows(IllegalArgumentException.class,()->transform(mode,actual.replace(ORIGINAL,"("+ORIGINAL+")"),actualArgs));
+        }
+    }
     private static List<Map<String,String>> bindingReceipt(List<Object> values) {
         return values.stream().map(v->Map.of("jdbcType",v.getClass().getName(),"value",v instanceof java.sql.Date day?day.toLocalDate().toString():String.valueOf(v))).toList();
     }
@@ -403,27 +523,34 @@ class FinanceRecordCountVisibilityIntegrationTest extends FinanceConfigurationIn
         var out=new ArrayList<Object>();if(v instanceof Map<?,?> raw){if(raw.containsKey(name))out.add(raw.get(name));for(var child:raw.values())out.addAll(flags(child,name));}
         else if(v instanceof List<?> list)for(var child:list)out.addAll(flags(child,name));return out;
     }
-    enum Mode {CURRENT_EXISTS,CANDIDATE_IN}
+    enum Mode {CURRENT_EXISTS,CANDIDATE_IN,GROUPED_EXISTS}
+    enum Profile {FIXED("fixed-skewed"),INTERLEAVED("interleaved-id");final String label;Profile(String label){this.label=label;}}
     record Case(String name,Scope scope,Filter filter,String kind,String numbers,boolean allOrders,boolean ads,long total,List<String> ids){}
-    record Count(String original,String emitted,List<Object> args,long total,double millis,boolean rewritten){}
+    record Count(String original,String emitted,List<Object> args,List<Object> emittedArgs,int visibilityArgumentIndex,long total,double millis,boolean rewritten){}
+    record Transformation(String sql,List<Object> args,int visibilityArgumentIndex){}
+    record SqlScan(List<Integer> parameters,boolean markerAtTopLevel,List<String> topLevelTailWords){}
+    record EmittedShape(Mode mode,String sql,List<Object> args){}
     record Page(String sql,List<Object> args){}
     record Probe(CountJdbc jdbc,FinanceRepository repo){}
     record Observation(Map<String,Object> page,List<Count> counts,List<Page> pages){}
     record Sample(Mode mode,double countMs,double detailsMs){}
     static final class CountJdbc extends JdbcTemplate {
         Mode mode;Witness witness;final List<Count> counts=new ArrayList<>();final List<Page> pages=new ArrayList<>();
+        final Set<EmittedShape> shapes=new HashSet<>();
         CountJdbc(JdbcTemplate original,Mode mode){super(Objects.requireNonNull(original.getDataSource()));this.mode=mode;setQueryTimeout(10);}
         void clear(){counts.clear();pages.clear();}
         @Override public <T>T queryForObject(String sql,Class<T> type,Object...args) {
             boolean count=(sql.startsWith("SELECT COUNT(*)")||sql.startsWith("SELECT (SELECT COUNT(*)"))&&sql.contains("finance_records");
             if(!count)return super.queryForObject(sql,type,args);
-            witness.verify();String emitted=mode==Mode.CANDIDATE_IN?rewrite(sql):sql;assertEquals(questionMarks(sql),questionMarks(emitted));
+            witness.verify();var originalArgs=List.copyOf(Arrays.asList(args.clone()));var transformed=transform(mode,sql,originalArgs);String emitted=transformed.sql();
+            if(shapes.add(new EmittedShape(mode,sql,originalArgs)))emit("countShape",Map.of("mode",mode,"originalSql",sql,"emittedSql",emitted,
+                "originalBindings",bindingReceipt(originalArgs),"emittedBindings",bindingReceipt(transformed.args()),"visibilityArgumentIndex",transformed.visibilityArgumentIndex()));
             long start=System.nanoTime();T value;
-            try {value=super.queryForObject(emitted,type,args);} catch(RuntimeException failure) {
+            try {value=super.queryForObject(emitted,type,transformed.args().toArray());} catch(RuntimeException failure) {
                 emit("countExecutionFailure",Map.of("mode",mode,"rewritten",!sql.equals(emitted),"failureClass",failure.getClass().getName(),"elapsedMs",millis(start)));throw failure;
             }
             double elapsed=millis(start);witness.verify();
-            counts.add(new Count(sql,emitted,List.copyOf(Arrays.asList(args.clone())),number(value),elapsed,!sql.equals(emitted)));return value;
+            counts.add(new Count(sql,emitted,originalArgs,transformed.args(),transformed.visibilityArgumentIndex(),number(value),elapsed,!sql.equals(emitted)));return value;
         }
         @Override public List<Map<String,Object>> queryForList(String sql,Object...args) {
             if(sql.contains(" LIMIT ? OFFSET ?)")){witness.verify();pages.add(new Page(sql,List.copyOf(Arrays.asList(args.clone()))));}
