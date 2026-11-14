@@ -102,17 +102,26 @@ assert.doesNotMatch(d.querySelector('.fc-feedback').textContent,/任务已提交
 slowPost.resolve();await settle();
 
 button('导出 Excel').click();await settle();
-assert.deepEqual(posts.at(-1).body,{start:'2026-10-01',end:'2026-10-31',shopId:'',groupId:'',platform:'',currency:'',kind:'SETTLED_ORDER',recordId:'',costStatus:'PENDING',numbers:'ORDER-A'},'all-shop pending export preserves the complete date/number scope and every page');
+assert.deepEqual(posts.at(-1).body,{start:'2026-10-01',end:'2026-10-31',shopId:'shop-a',groupId:'group-a',platform:'SHOPEE',currency:'MYR',kind:'SETTLED_ORDER',recordId:'',costStatus:'PENDING',numbers:'ORDER-A'},'pending export preserves the selected shop, group, provider, currency, dates and numbers');
+
+for(const [label,expectedGroup]of [['财务店铺','group-a'],['成本分组','']]){
+  const field=d.querySelector(`[aria-label="${label}"]`);field.value='';field.dispatchEvent(new w.Event('change'));await settle();
+  const query=requests.filter(r=>r.url.pathname.endsWith('/costs/orders')).at(-1).url.searchParams;
+  assert.equal(query.get('shopId'),'');assert.equal(query.get('groupId'),expectedGroup);assert.equal(query.get('costStatus'),'PENDING');
+  button('导出 Excel').click();await settle();
+  assert.deepEqual(posts.at(-1).body,{start:'2026-10-01',end:'2026-10-31',shopId:'',groupId:expectedGroup,platform:'',currency:'',kind:'SETTLED_ORDER',recordId:'',costStatus:'PENDING',numbers:'ORDER-A'},'all options are explicit scopes shared by the query and actual export POST');
+}
+details=d.querySelector('[data-finance-cost-exports]');
 
 details.open=false;details.dispatchEvent(new w.Event('toggle'));assert.equal(polls.size,0,'closing the panel clears frontend polling');
 serverJobs=[{id:'remembered',status:'READY',processed:1,total:1,orders:1,lines:1,parts:1,filename:'重新打开.xlsx',contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',start:'2026-10-01',end:'2026-10-31'}];
 details.open=true;details.dispatchEvent(new w.Event('toggle'));await settle();assert(details.querySelector('a[download="重新打开.xlsx"]'),'reopening reloads the current user task list');
 
 postFailure=Error('connection closed');button('导出 Excel').click();await settle();
-const uncertainPost=posts.at(-1);assert(button('确认上次任务',details));
+const uncertainPost=posts.at(-1),beforeExplicitRetry=posts.length;assert(button('确认上次任务',details));
 postFailure=null;button('确认上次任务',details).click();await settle();
 assert.equal(posts.at(-1).options.headers['Idempotency-Key'],uncertainPost.options.headers['Idempotency-Key']);
-assert.deepEqual(posts.at(-1).body,uncertainPost.body);assert.equal(posts.length,5,'uncertain delivery is retried only by an explicit confirmation');
+assert.deepEqual(posts.at(-1).body,uncertainPost.body);assert.equal(posts.length,beforeExplicitRetry+1,'uncertain delivery is retried only by an explicit confirmation');
 
 const oldLink=details.querySelector('a[download]');const beforeCrossUser=automaticDownloads.length;
 w.currentUser={organizationId:'org-b',userId:'user-b',permissions:['finance:view']};
