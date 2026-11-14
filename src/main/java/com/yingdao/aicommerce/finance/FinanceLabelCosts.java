@@ -225,11 +225,13 @@ public class FinanceLabelCosts {
             JOIN LATERAL (
               SELECT r0.id,r0.organization_id,r0.shop_id,r0.order_id,r0.kind,r0.source,r0.status,
                 r0.record_date,r0.platform,r0.category,r0.currency
-              FROM finance_records r0 FORCE INDEX(idx_finance_settled_order)
+              FROM finance_records r0 FORCE INDEX(idx_finance_first_settlement)
               WHERE r0.organization_id=lc.organization_id AND r0.shop_id=lc.shop_id AND r0.order_id=lc.order_id
                 AND
             """+FinanceCostReport.confirmed("r0")+" AND (r0.platform<>'TIKTOK_SHOP' OR r0.category='ORDER')"
-              +" ORDER BY r0.record_date,r0.id LIMIT 1) r ON TRUE WHERE ls.organization_id=? AND "
+              // MySQL does not treat correlated references as constant index parts for ORDER BY.
+              // The equality prefix is fixed per order; spelling it out preserves date/id selection.
+              +" ORDER BY r0.organization_id,r0.shop_id,r0.kind,r0.order_id,r0.source,r0.status,r0.record_date,r0.id LIMIT 1) r ON TRUE WHERE ls.organization_id=? AND "
               +FinanceOrderCharges.normalOrder("r")+" AND "+q.where(),periodArgs.toArray());
         var states=repo.jdbc().queryForList("SELECT requested_revision,applied_revision,error_message FROM finance_label_state WHERE organization_id=?",scope.organizationId());
         var state=states.isEmpty()?Map.<String,Object>of():states.getFirst();

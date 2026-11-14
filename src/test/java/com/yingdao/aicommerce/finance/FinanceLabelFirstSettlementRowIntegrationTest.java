@@ -25,7 +25,7 @@ class FinanceLabelFirstSettlementRowIntegrationTest extends FinanceConfiguration
         assertTrue(query.sql().contains("JOIN LATERAL"),"Each published label order must select one settlement row before report filters");
         assertFalse(query.sql().contains("finance_records earlier"),"The correlated anti-earlier lookup must be removed from this aggregate");
         assertEquals(1,occurrences(query.sql(),"finance_records"),"The aggregate must have one settlement-record source");
-        assertTrue(query.plan().contains("idx_finance_settled_order"),"The first-row selection must retain the settled-order index");
+        assertTrue(query.plan().contains("idx_finance_first_settlement"),"The first-row selection must use its ordered covering index");
         assertTrue(query.plan().contains("r0"));
         assertFalse(query.plan().contains("earlier"));
     }
