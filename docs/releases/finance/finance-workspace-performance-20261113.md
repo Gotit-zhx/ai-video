@@ -142,4 +142,23 @@ V155 已于前一维护阶段应用，V156 由广告会话完成；本记录中�
 
 本地 `8b5c657a` 只为完整 workspace/detailsOnly 增加七行只读 RR 入口/guard，原正文逐字保持；真实 RED 3 失败、修订后新增 4 测试通过、最终兼容 149（4＋66＋79，含继承）全过，独立复审通过，尚未受控生效。源 SHA `63a6fa6eb4a1d4a12514eb574c4cdfd5a680222330dffd367e6336ebc52b7932`。本阶段不直接把新版源码保存后等待非阻塞 watcher 接续；继续演练已验收的显式 reservation/停 watcher/门控排空/成功编译重载流程，生产仍以操作前现场和正式回执为准。
 
-本地 `bab01f3e` 完成首次事实隔离 schema/源事务登记片段，77 次执行通过（14 新声明＋63 继承）且独立审查通过。原型 SQL 仅在测试资源，临时 Flyway 版本只存在于可销毁库，不占生产迁移号。未安装生产触发器、未启用首次事实读路由，未更改 Redis。后续初始化、RR/CAS 发布、完整预算消费、独立计数和真实负载准入继续按[原型计划](../../superpowers/plans/2026-11-14-finance-first-settlement-facts-prototype.md)推进。
+本地 `bab01f3e` 完成首次事实隔离 schema/源事务登记片段，77 次执行通过（14 新声明＋63 继承）且独立审查通过。原型 SQL 仅在测试资源，临时 Flyway 版本只存在于可销毁库，不占生产迁移号。未安装生产触发器、未启用首次事实读路由，未更改 Redis。初始化/升级随后以 `8e5bd767` 完成本地隔离验证和独立 spec/质量审查：最终初始化 80 次（17 新声明＋63 继承）与 schema 77 次均零失败/错误/跳过，涵盖稳定游标、自动发现和持久旧状态维护 CAS；SQL 回滚不当作系统崩溃恢复证据。后续 RR/CAS 发布、完整预算消费、独立计数和真实负载准入继续按[原型计划](../../superpowers/plans/2026-11-14-finance-first-settlement-facts-prototype.md)推进。
+
+## 完整贴单查询快照边界受控生效
+
+单文件 `8b5c657a` 已通过显式源码维护流程生效。先前“保存源码后等待 watcher”方案因实际 Store 为非阻塞且 watcher 不重试被否决，没有执行。替代工具采用短 reservation、Store 锁外停 watcher、workspace 锁内门控和安全点、源码 CAS、成功编译后触发、受控上下文健康确认、释放本次门控，再恢复 watcher。35 项离线演练及独立审查通过，包含 drain 失败时仅 journal 归属变化仍完整保留 foreign journal/owned gate 的真实 RED/GREEN；离线演练不充当生产验收。
+
+本次已授权的广告协调会话明确无冲突维护，现场重新捕获 schema159 和完整源码/配置/容器向量后，只封入一份批准的 Java 源码。一次性服务 `heyi-finance-label-workspace-rr-9e20a21e6e98.service` 实际终态 success、ExecMainStatus0、MainPID0，独立验收确认下列连续性；未重放操作。
+
+| 验收项 | 实际结果 |
+| --- | --- |
+| 维护前 → 受控 → watcher 最终上下文 | `bdf70ffe-73e9-4b17-b8d0-2294e5537878` → `77c759aa-1cac-438b-b50c-57e462c0dcaa` → `89bb3740-4ade-4b59-9739-eb3d6b744bd3` |
+| journal | 两段 ready/编译成功及各自 owner、前后 context 连续；最终前驱是受控中间上下文 |
+| 唯一源码变化 | `FinanceLabelCosts.java`，SHA `63a6fa6eb4a1d4a12514eb574c4cdfd5a680222330dffd367e6336ebc52b7932` |
+| 实际类文件 | SHA `f0b14c735be05977039554b12fe271d9f09c7f3f66564bc8a8cf115a5d22ce07`，包含 workspaceSnapshot 与只读 RR guard |
+| 保护 | schema159/指纹、runtime配置、其他全部源码及暂存、运行容器保持；watcher active、无维护门、健康200、匿名财务401 |
+| 事实原型 | 未安装表、触发器或启用读路由；Redis配置保持 |
+
+小型独立回执和恢复材料：`/opt/heyi/dev/operations/finance-label-workspace-rr-20261114-9e20a21e6e98/independent-acceptance.json`、`before/`、`classes-before/`、`intermediate-context.json`。维护窗口已释放并交回新基线；后续操作仍须 fresh CAS，不能把本记录当作永久现场。
+
+随后真实 UI 六样本：完整刷新3.816秒；服装组30.218秒出现反馈，未通过；再次观察时反馈已清空，确切错误文字和恢复时刻未捕获。后续另一个同窗只读观察下，全部组3.856秒、服装组4.569秒、纯分页1.108秒、恢复全组4.311秒。60次线程采样单位已 terminal success/上下文保持，成本工作器19次、投影工作器58次运行，贴单借连接等待采样0；该窗口开始晚于30秒失败，不能排除其等待或归因。保留 `labels-rr-actual-ui-20261114.json`、`label-ui-waits-rr-observation.json`，未证明冷缓存及持续人工导入，未宣称页面五秒通过。
