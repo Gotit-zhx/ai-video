@@ -124,11 +124,13 @@ Map<String,Object> nativePeriod(Scope scope, Filter filter); // 仅 Task5 新增
 
 ## Task 1：隔离 schema 与源事务登记
 
+**执行状态（2026-11-14）：** 已完成隔离实现与独立审查，提交 `bab01f3e`。77 次执行（14 声明＋63 继承）通过；测试资源 schema/三个独立触发器保持，源事务登记与 SQL 身份语义有实际回归。未生产安装，物理计划与服务能力留待 Task6。
+
 **Files:** 新建原型 SQL、Facts 类型与 `eligible`，TestSupport、SchemaIntegrationTest。此任务不改生产迁移目录。
 
 **Interfaces:** 消费原生 `FinanceCostReport.confirmed` 与源列 collation；产出持久表和三个触发器 `fin_fsf_records_ai/au/ad`，以及共同类型。既有 V155/V156 触发器继续存在。
 
-- [ ] **1. 写 schema 与登记 RED。** TestSupport 的新方法 `installPrototype()` 仅在 JDBC URL 匹配现有 `finance_qa_[a-f0-9]+` 且连接目标等于 runner 目标时加载 test resource；用支持 compound trigger 的现有 Flyway SQL 解析路径在临时 location 测试，编号仅在隔离目录按已用号选下一空闲值，测试结束移除本任务临时文件。不得直接在普通 Spring 启动中加载 test SQL。RED 首轮尚无 SQL 时应是明确缺少原型表/触发器断言，不以连接失败代替。
+- [x] **1. 写 schema 与登记 RED。** TestSupport 的新方法 `installPrototype()` 仅在 JDBC URL 匹配现有 `finance_qa_[a-f0-9]+` 且连接目标等于 runner 目标时加载 test resource；用支持 compound trigger 的现有 Flyway SQL 解析路径在临时 location 测试，编号仅在隔离目录按已用号选下一空闲值，测试结束移除本任务临时文件。不得直接在普通 Spring 启动中加载 test SQL。RED 首轮尚无 SQL 时应是明确缺少原型表/触发器断言，不以连接失败代替。
 
 ```java
 @Test void sourceRollbackAlsoRollsBackOwnerRegistration() {
@@ -148,8 +150,8 @@ Map<String,Object> nativePeriod(Scope scope, Filter filter); // 仅 Task5 新增
 }
 ```
 
-- [ ] **2. root 授权单 writer 执行 RED。** `python3 /tmp/finance-bi-performance-qa/run-db-tests.py FinanceFirstSettlementSchemaIntegrationTest`。保存测试名/失败断言和脱敏 XML；环境失败先修测试环境。
-- [ ] **3. 实现专用 schema。** 表 `finance_first_settlement_facts` 使用源列精确类型、`utf8mb4_0900_ai_ci`，部署前 information_schema 校对实际源列；不附带源外键以免源删除重置状态。DDL 核心：
+- [x] **2. root 授权单 writer 执行 RED。** `python3 /tmp/finance-bi-performance-qa/run-db-tests.py FinanceFirstSettlementSchemaIntegrationTest`。保存测试名/失败断言和脱敏 XML；环境失败先修测试环境。
+- [x] **3. 实现专用 schema。** 表 `finance_first_settlement_facts` 使用源列精确类型、`utf8mb4_0900_ai_ci`，部署前 information_schema 校对实际源列；不附带源外键以免源删除重置状态。DDL 核心：
 
 ```sql
 CREATE TABLE finance_first_settlement_facts (
@@ -196,7 +198,7 @@ CREATE TABLE finance_first_settlement_registration (
 
 初始化表 `finance_first_settlement_initialization` 字段精确定义为：`organization_id CHAR(36) PK`；`generation BIGINT DEFAULT 0`、`target_schema_version INT DEFAULT 0`、`registration_version INT DEFAULT 0`；`registration_definition_sha CHAR(64) NULL`、`registration_boundary VARCHAR(128) NULL`（只存维护操作/证据 ID，无凭据）；`seed_complete BOOLEAN DEFAULT FALSE`；`shop_after CHAR(36) NULL`、`current_shop CHAR(36) NULL`、`order_after VARCHAR(128) NULL`、`shops_complete BOOLEAN DEFAULT FALSE`；`requeue_shop_after CHAR(36) NULL`、`requeue_order_after VARCHAR(128) NULL`、`requeue_complete BOOLEAN DEFAULT FALSE`；`updated_at DATETIME(6)`。同 collation。代次 0 无登记证明，reader 必须 native；generation>=1 必须来自受控维护验证后发布的 singleton 安装证明或隔离测试 fixture。可选预热本原型不实现，因此没有阻塞 seed 的预热游标。
 
-- [ ] **4. 实现三个独立触发器。** `eligible(a)` 具体为 `FinanceCostReport.confirmed(a)+" AND ("+a+".platform<>'TIKTOK_SHOP' OR "+a+".category='ORDER')"`。INSERT 登记 NEW eligible owner；DELETE 登记 OLD eligible owner；UPDATE 仅在下列 null-safe 字段比较变化且 OLD/NEW 至少一侧 eligible 时登记两侧仍/原来 eligible 的 distinct owner：
+- [x] **4. 实现三个独立触发器。** `eligible(a)` 具体为 `FinanceCostReport.confirmed(a)+" AND ("+a+".platform<>'TIKTOK_SHOP' OR "+a+".category='ORDER')"`。INSERT 登记 NEW eligible owner；DELETE 登记 OLD eligible owner；UPDATE 仅在下列 null-safe 字段比较变化且 OLD/NEW 至少一侧 eligible 时登记两侧仍/原来 eligible 的 distinct owner：
 
 ```sql
 NOT (OLD.organization_id <=> NEW.organization_id AND OLD.shop_id <=> NEW.shop_id
@@ -209,16 +211,18 @@ NOT (OLD.organization_id <=> NEW.organization_id AND OLD.shop_id <=> NEW.shop_id
 
 对于两 eligible owner，先用源 collation 判等；相同身份只递增一次，否则按 SQL `(organization_id,shop_id,order_id)` 顺序执行两个 upsert。每次 upsert 只写 owner/default revision，重复时 `requested_revision=requested_revision+1,updated_at=UTC_TIMESTAMP(6)`；保留 applied、已发布事实和 lease。禁止 `REPLACE`、删除重建、事件 ID 高水位和 `applied=requested`。金额/raw_json/sync-only 更新不增加此身份修订，但原触发器保持自己的金额/明细失效。同一事务多行交叉更新仍可能死锁，不能假定单行排序消除全部死锁。
 
-- [ ] **5. 补齐具体登记断言并 GREEN。** SQL 直写、repo.save/upsert、删除和 rollback 都覆盖；winner 不变时 platform-only/currency-only 更新必须 +1；eligible↔非 API、取消、TikTok 非 ORDER、空订单、日期/ID 变化逐项覆盖；同 owner 双候选混合 TikTok 类别必须登记有效候选；旧新公司/店铺/订单各迁移一次，两行都 dirty；同一事务失败无半个 owner；大小写/重音/尾空格按实际源 collation 对照，不能产生两个 Java 分支身份。两个写者交换 owner 时允许整事务失败并由调用者有界重试，但成功提交必须两端原子登记；核对真实受支持写路径的事务重试/错误反馈，禁止只在触发器吞 deadlock。
-- [ ] **6. 验证索引/保留旧协议并独立提交。** INFORMATION_SCHEMA 比对新列/索引、源列以及既有全部事件触发器定义 hash；EXPLAIN `WHERE organization_id=? AND pending=1 ORDER BY shop_id,order_id LIMIT ?` 必须走 pending 索引且领取不是全表表达式扫描。root 复核 diff 后按上述本任务文件单独 stage/commit，记录 `feat: prototype transactional first settlement registration`。
+- [x] **5. 补齐具体登记断言并 GREEN。** SQL 直写、repo.save/upsert、删除和 rollback 都覆盖；winner 不变时 platform-only/currency-only 更新必须 +1；eligible↔非 API、取消、TikTok 非 ORDER、空订单、日期/ID 变化逐项覆盖；同 owner 双候选混合 TikTok 类别必须登记有效候选；旧新公司/店铺/订单各迁移一次，两行都 dirty；同一事务失败无半个 owner；大小写/重音/尾空格按实际源 collation 对照，不能产生两个 Java 分支身份。两个写者交换 owner 时允许整事务失败并由调用者有界重试，但成功提交必须两端原子登记；核对真实受支持写路径的事务重试/错误反馈，禁止只在触发器吞 deadlock。
+- [x] **6. 验证索引/保留旧协议并独立提交。** INFORMATION_SCHEMA 比对新列/索引、源列以及既有全部事件触发器定义 hash；EXPLAIN `WHERE organization_id=? AND pending=1 ORDER BY shop_id,order_id LIMIT ?` 必须走 pending 索引且领取不是全表表达式扫描。root 复核 diff 后按上述本任务文件单独 stage/commit，记录 `feat: prototype transactional first settlement registration`。
 
 ## Task 2：公司发现、稳定种子游标和模式升级
+
+**执行状态（2026-11-14）：** 已完成隔离初始化/升级与独立审查，提交 `8e5bd767`。初始化 80 次、schema 77 次通过；持久维护状态、可重启 advance 与稳定游标有实际回归。未据此声称操作系统崩溃恢复或生产覆盖已完成。
 
 **Files:** 新建 Initialization 与 InitializationIntegrationTest；Task1 表字段不重命名。必要 TestSupport fixture 只追加本任务方法。
 
 **Interfaces:** 消费 Guard/Batch/MaintenanceCompanyState/AdvanceResult 和事实表；实现共同接口 `discoverCompanies/seed/requeue/complete/maintenanceState/advance`。普通 seed/requeue/complete/claim/publish 必须先验证 singleton 与公司当前模式匹配；普通 `guard(org)` 不匹配时返回 empty。`maintenanceState(org)` 是维护专用持久旧状态读取，不调用普通 guard、不依赖旧行匹配新 proof；`advance` 是唯一可从旧登记版本推进已有公司代次的维护 CAS。discoverCompanies 只创建缺失/从未初始化任务，不修改已有活动代次。
 
-- [ ] **1. 写 RED：中断重放不重置 revision。** 建 org/shop 两个 owner；将 A requested=7/applied=6，执行一批 seed 后 A 保持 7/6，新 B 是 1/0。强制在 owner insert 后、游标 update 前抛异常，事务全部回滚；再次运行只登记未覆盖批次。最终 `complete` 在游标未结束返回 false。
+- [x] **1. 写 RED：中断重放不重置 revision。** 建 org/shop 两个 owner；将 A requested=7/applied=6，执行一批 seed 后 A 保持 7/6，新 B 是 1/0。强制在 owner insert 后、游标 update 前抛异常，事务全部回滚；再次运行只登记未覆盖批次。最终 `complete` 在游标未结束返回 false。
 
 ```java
 @Test void missingCompanyIsNotReadyAndReadDoesNotCreateIt() {
@@ -229,8 +233,8 @@ NOT (OLD.organization_id <=> NEW.organization_id AND OLD.shop_id <=> NEW.shop_id
 ```
 
 其余 fixture 用 TestSupport 的 `installPrototype()` 和 SQL 明确插入初始化行，registration hash/boundary 仅用测试值；不伪造生产维护通过。
-- [ ] **2. root 执行 RED。** `python3 /tmp/finance-bi-performance-qa/run-db-tests.py FinanceFirstSettlementInitializationIntegrationTest`，期望失败于缺少初始化能力或游标/CAS 断言。
-- [ ] **3. 实现稳定 shop→order 枚举。** `discoverCompanies(limit)` 按源财务 `finance_records.organization_id` 和 `finance_connections.organization_id` 的去重公司键分页，若 singleton 安装证明有效则创建独立 generation=1 任务并复制该 proof 的 target/registration/hash/boundary，seed_complete=false；否则创建 generation=0 待办。后续有 proof 时仅将从未初始化的 generation=0 待办升级为 1，旧公司不得借新公司发现降级/重置状态。发现游标保存在工作器内存并循环，重启可重扫，不写请求线程。seed 必须 guard.registrationVersion>0 且全局 proof 一致。取下一个 shop 时用源 collation `shop_id>shop_after ORDER BY shop_id LIMIT 1`，遍历该公司已有源记录，不受当前月份/平台或连接是否可见限制；持久化 current_shop。该 shop 的候选按以下固定谓词分页：
+- [x] **2. root 执行 RED。** `python3 /tmp/finance-bi-performance-qa/run-db-tests.py FinanceFirstSettlementInitializationIntegrationTest`，期望失败于缺少初始化能力或游标/CAS 断言。
+- [x] **3. 实现稳定 shop→order 枚举。** `discoverCompanies(limit)` 按源财务 `finance_records.organization_id` 和 `finance_connections.organization_id` 的去重公司键分页，若 singleton 安装证明有效则创建独立 generation=1 任务并复制该 proof 的 target/registration/hash/boundary，seed_complete=false；否则创建 generation=0 待办。后续有 proof 时仅将从未初始化的 generation=0 待办升级为 1，旧公司不得借新公司发现降级/重置状态。发现游标保存在工作器内存并循环，重启可重扫，不写请求线程。seed 必须 guard.registrationVersion>0 且全局 proof 一致。取下一个 shop 时用源 collation `shop_id>shop_after ORDER BY shop_id LIMIT 1`，遍历该公司已有源记录，不受当前月份/平台或连接是否可见限制；持久化 current_shop。该 shop 的候选按以下固定谓词分页：
 
 ```sql
 SELECT DISTINCT r.order_id
@@ -243,7 +247,7 @@ ORDER BY r.order_id LIMIT ?;
 ```
 
 首次 order cursor 为 NULL 时省略 `order_id>?` 而非猜测最小字符串。资格在所有行上 WHERE 后 DISTINCT，不从随机一行类别决定 owner。每批对结果执行 `INSERT ... ON DUPLICATE KEY UPDATE order_id=order_id`（只确保 missing），随后同事务推进 order_after；该 shop 空批后更新 shop_after/current_shop/order_after。最终无 shop 后设置 shops_complete。登记安装后的新增 shop、游标前后新订单及源删除由触发器覆盖，MAX ID 不是完成证据。
-- [ ] **4. 实现维护恢复 CAS 与重新入队。** 新 singleton proof 发布后，旧公司普通 `guard(org)` 正确返回 empty；维护进程即使此时重启，也须调用 `maintenanceState(org)` 从初始化表直接 SELECT organization/generation/target/registration 重建 expected，而非借用安装前 Java 对象或放松 reader guard。`advance(expected,target)` 在维护授权入口的短事务中按 singleton FOR SHARE→公司 FOR UPDATE 锁序执行以下固定分支：
+- [x] **4. 实现维护恢复 CAS 与重新入队。** 新 singleton proof 发布后，旧公司普通 `guard(org)` 正确返回 empty；维护进程即使此时重启，也须调用 `maintenanceState(org)` 从初始化表直接 SELECT organization/generation/target/registration 重建 expected，而非借用安装前 Java 对象或放松 reader guard。`advance(expected,target)` 在维护授权入口的短事务中按 singleton FOR SHARE→公司 FOR UPDATE 锁序执行以下固定分支：
 
 ```text
 1. 目标 target 必须与持久 singleton 的 enabled/schema/registration/hash/boundary 全部一致，
@@ -259,17 +263,19 @@ ORDER BY r.order_id LIMIT ?;
 ```
 
 此维护 CAS 允许旧公司 registration 与新 singleton 不同；不能先要求普通 guard 成功。fact revision、已发布值、lease 不清空。`requeue` 按事实主键 `(shop_id,order_id)>cursor` 有界读取所有 owner；对于 `queued_generation<newGeneration` 且应用 schema/generation/registration 不匹配者 `requested_revision=requested_revision+1,queued_generation=newGeneration`；匹配者也可标记 queued_generation，但不得反复加 revision。新 owner applied=0 自然 pending。游标写入同一事务；旧 worker 使用旧 guard 发布失败。
-- [ ] **5. 完成 CAS 及 GREEN。** `complete(expected)` 仅在 guard 所有字段精确一致、registration proof 非空、shops_complete=true、requeue_complete=true 时设置 seed_complete。首次 generation 的 requeue 也扫描现有 owner；不得以“没有 pending”代替两游标完成，seed_complete 不要求全部应用追平。回归：新公司无 init；global proof 缺失/disabled/模式或定义 hash 不匹配；有效 proof 下新公司独立 generation=1 且不能借旧公司的 seed；空公司；游标前/后插入与删除；跨公司/店铺/订单迁入；批次前后崩溃；旧 seeder 不能完成新 generation；旧模式 requested=applied、queued_generation 已标记但尚未应用都不能 clean；旧版本进程不能降级 target；长 totals ID 不插入 128 列。
-- [ ] **5a. Q1 中断恢复 GREEN。** 建公司 `generation=g,registration=1,seed_complete=true` 并保留旧 worker；发布有效 proof2 后模拟丢弃全部维护实例/expected 内存，新建维护实例。断言 reader native、旧 worker publish=false；从 maintenanceState 读旧持久行并 advance 为 `g+1/proof2`；重复旧 expected 调用返回 ALREADY_TARGET 且 generation/游标不动。再从重启后的新状态重放相同 target 仍不动；proof3 已推进时旧 target2 被 REJECTED，不降级。requeue/seed 完成后通过普通 guard，是否消费仍由 Task5 allowlist 控制。
-- [ ] **6. 独立审查/提交。** reviewer 按 B1/B2 对照每个完成门与 SQL WHERE，确认升级后未应用 owner 都在 pending 索引，未扫描旧模式 owner 仍可被 reader 分类为 native。root 只提交本任务文件，记录 `feat: add bounded first settlement initialization`。
+- [x] **5. 完成 CAS 及 GREEN。** `complete(expected)` 仅在 guard 所有字段精确一致、registration proof 非空、shops_complete=true、requeue_complete=true 时设置 seed_complete。首次 generation 的 requeue 也扫描现有 owner；不得以“没有 pending”代替两游标完成，seed_complete 不要求全部应用追平。回归：新公司无 init；global proof 缺失/disabled/模式或定义 hash 不匹配；有效 proof 下新公司独立 generation=1 且不能借旧公司的 seed；空公司；游标前/后插入与删除；跨公司/店铺/订单迁入；批次前后崩溃；旧 seeder 不能完成新 generation；旧模式 requested=applied、queued_generation 已标记但尚未应用都不能 clean；旧版本进程不能降级 target；长 totals ID 不插入 128 列。
+- [x] **5a. Q1 中断恢复 GREEN。** 建公司 `generation=g,registration=1,seed_complete=true` 并保留旧 worker；发布有效 proof2 后模拟丢弃全部维护实例/expected 内存，新建维护实例。断言 reader native、旧 worker publish=false；从 maintenanceState 读旧持久行并 advance 为 `g+1/proof2`；重复旧 expected 调用返回 ALREADY_TARGET 且 generation/游标不动。再从重启后的新状态重放相同 target 仍不动；proof3 已推进时旧 target2 被 REJECTED，不降级。requeue/seed 完成后通过普通 guard，是否消费仍由 Task5 allowlist 控制。
+- [x] **6. 独立审查/提交。** reviewer 按 B1/B2 对照每个完成门与 SQL WHERE，确认升级后未应用 owner 都在 pending 索引，未扫描旧模式 owner 仍可被 reader 分类为 native。root 只提交本任务文件，记录 `feat: add bounded first settlement initialization`。
 
 ## Task 3：有界租约工作器与 RR→CAS 发布
+
+**执行状态（2026-11-14）：** 已完成隔离 RR/CAS 工作器与独立复审，提交 `ce2bc525`。公司 SQL 身份修复的三个真实 RED 后，Worker101＋初始化80＋schema77 共258次通过；后续 Task6 显式批次上界前置以 `7a9142bc` 支持256，Worker102次通过。工作器尚无生产调度，不能据此宣称持续吞吐或全页五秒完成。
 
 **Files:** 完成 Facts 存储方法、新建 Worker、WorkerIntegrationTest。
 
 **Interfaces:** 实现 claim/calculate/publish/tick；消费 Task2 Guard，公司 target 未登记或 generation=0 时不能领取/发布。应用 schema 常量初值 1；只能计算本进程支持的 target。
 
-- [ ] **1. 写 RED：计算读取 R 后发生变更不可发布。** 测试实际 calculate 返回 Computed，另一个连接更早插入候选并提交，publish 返回 false，applied 不推进且 requested>applied。至少以下断言固定：
+- [x] **1. 写 RED：计算读取 R 后发生变更不可发布。** 测试实际 calculate 返回 Computed，另一个连接更早插入候选并提交，publish 返回 false，applied 不推进且 requested>applied。至少以下断言固定：
 
 ```java
 var lease = facts.claim("org", java.util.UUID.randomUUID().toString(), 30).orElseThrow();
@@ -295,16 +301,17 @@ assertTrue(db.queryForObject("SELECT requested_revision>applied_revision FROM fi
 ```
 
 第二连接以 `dataSource.getConnection()` 创建并显式 commit/rollback；测试不能在同线程共享 Spring 绑定连接模拟并发。用 CountDownLatch（最多 10 秒）协调，finally 关闭连接/执行器；不用 sleep 猜顺序。
-- [ ] **2. root 执行 RED。** `python3 /tmp/finance-bi-performance-qa/run-db-tests.py FinanceFirstSettlementWorkerIntegrationTest`。
-- [ ] **3. 实现 claim。** 短事务以 singleton 共享锁验证安装 proof、当前读 Guard 后从 pending 索引 `FOR UPDATE SKIP LOCKED` 有界取一行，排除未到期 lease，设置 UUID token 与 DB `UTC_TIMESTAMP(6)+leaseSeconds`。禁止在 claimant 长计算期间锁源行。多个进程可争用同一链，但 token/CAS 保证不覆盖；失败租约到期可重新领取。公平轮转每个有任务公司最多 batchSize，再继续下个公司；Facts 内保存每公司的上次领取 owner 游标，按 pending 主键从其后领取、到末尾再绕回，避免持续变化的低位 owner 永久挤占队尾，重启可从头扫描且 lease/CAS 仍负责跨进程安全；批次、lease 与 tick deadline 为显式配置，默认调度关闭。
-- [ ] **4. 实现 calculate 的独立 RR。** 用 REQUIRES_NEW + readOnly + ISOLATION_REPEATABLE_READ + 有界 timeout 新事务，普通一致性 SELECT 读取 Guard、fact requested=R、完整源历史；不先用 FOR UPDATE 产生错误快照边界。读取 lease/guard 不符直接拒绝本轮。查询只按完整 owner 和 eligible，排序同现有覆盖索引等值前缀后 `record_date,id LIMIT 1`；无行表示 Optional.empty。R 和候选必须来自同一快照，不能用 claim 时看到的 revision 代替。事务结束后才 publish。
-- [ ] **5. 实现短事务 publish。** 统一锁顺序：singleton 安装 proof FOR SHARE→初始化公司行→owner 行（所有维护方法同顺序），均为当前读。global proof 必须 enabled 且 schema/registration/definition hash 与本次计算及进程支持值一致。SQL 条件必须同时包含 organization、target_schema、generation、registration_version、lease_token、`lease_until>UTC_TIMESTAMP(6)`、`requested_revision=Computed.revision` 和工作器支持模式。写 has_settlement、四个复制字段、`schema_version=guard.targetSchemaVersion`、`applied_generation=guard.generation`、`applied_registration_version=guard.registrationVersion`、`applied_revision=Computed.revision`，清本 token lease；失败零行不得推进 applied。无候选原子清空四字段，known-empty 仅在成功应用后成立。事务异常回滚事实/版本所有写入，重试后重新读 R 计算。
+- [x] **2. root 执行 RED。** `python3 /tmp/finance-bi-performance-qa/run-db-tests.py FinanceFirstSettlementWorkerIntegrationTest`。
+- [x] **3. 实现 claim。** 短事务以 singleton 共享锁验证安装 proof、当前读 Guard 后从 pending 索引 `FOR UPDATE SKIP LOCKED` 有界取一行，排除未到期 lease，设置 UUID token 与 DB `UTC_TIMESTAMP(6)+leaseSeconds`。禁止在 claimant 长计算期间锁源行。多个进程可争用同一链，但 token/CAS 保证不覆盖；失败租约到期可重新领取。公平轮转每个有任务公司最多 batchSize，再继续下个公司；Facts 内保存每公司的上次领取 owner 游标，按 pending 主键从其后领取、到末尾再绕回，避免持续变化的低位 owner 永久挤占队尾，重启可从头扫描且 lease/CAS 仍负责跨进程安全；批次、lease 与 tick deadline 为显式配置，默认调度关闭。
+- [x] **4. 实现 calculate 的独立 RR。** 用 REQUIRES_NEW + readOnly + ISOLATION_REPEATABLE_READ + 有界 timeout 新事务，普通一致性 SELECT 读取 Guard、fact requested=R、完整源历史；不先用 FOR UPDATE 产生错误快照边界。读取 lease/guard 不符直接拒绝本轮。查询只按完整 owner 和 eligible，排序同现有覆盖索引等值前缀后 `record_date,id LIMIT 1`；无行表示 Optional.empty。R 和候选必须来自同一快照，不能用 claim 时看到的 revision 代替。事务结束后才 publish。
+- [x] **5. 实现短事务 publish。** 统一锁顺序：singleton 安装 proof FOR SHARE→初始化公司行→owner 行（所有维护方法同顺序），均为当前读。global proof 必须 enabled 且 schema/registration/definition hash 与本次计算及进程支持值一致。SQL 条件必须同时包含 organization、target_schema、generation、registration_version、lease_token、`lease_until>UTC_TIMESTAMP(6)`、`requested_revision=Computed.revision` 和工作器支持模式。写 has_settlement、四个复制字段、`schema_version=guard.targetSchemaVersion`、`applied_generation=guard.generation`、`applied_registration_version=guard.registrationVersion`、`applied_revision=Computed.revision`，清本 token lease；失败零行不得推进 applied。无候选原子清空四字段，known-empty 仅在成功应用后成立。事务异常回滚事实/版本所有写入，重试后重新读 R 计算。
 
 ```java
 // publish 的边界，不是“读取当前 requested 再覆盖”的算法。
 var expected = computed.lease().guard();
-if (!currentGuard.organizationId().equals(expected.organizationId())
-    || currentGuard.generation()!=expected.generation()
+// currentGuard 已由同一数据库列的两个公司条件绑定到 lease owner 与 expected；
+// 保持 MySQL collation 身份，不改成 Java 字符串相等或手工归一化。
+if (currentGuard.generation()!=expected.generation()
     || currentGuard.targetSchemaVersion()!=expected.targetSchemaVersion()
     || currentGuard.registrationVersion()!=expected.registrationVersion()) return false;
 // UPDATE ... WHERE requested_revision=? AND lease_token=? AND lease_until>UTC_TIMESTAMP(6)
@@ -312,18 +319,20 @@ if (!currentGuard.organizationId().equals(expected.organizationId())
 ```
 
 Guard 的 seedComplete 不是发布版本：实现比较 organization/generation/target/registration 四字段，允许同代次 seed_complete 变 true；不可直接用整个 record.equals 将 seed 完成误判成版本变化。
-- [ ] **6. 补齐两连接 GREEN。** 低 ID 源事务先开始后提交；R 后 update/delete/日期跨月；租约被替换/过期；发布后源写者再提交使 requested 增加；publish 中途抛错保留旧事实；两个旧新 owner 交换写入 + worker；旧 schema/generation/registration/token/R 每一项不符均拒绝。发布无候选后重新插入能 dirty。deadlock 仅允许完整事务最多 3 次重试并报告仍失败，不隐去源写失败；测试验证每次成功源提交都有登记，不要求不可能的零死锁。
-- [ ] **7. 独立提交。** root 查测试 XML 有真实两连接执行且超时测试无悬挂事务，记录 `feat: publish first settlement facts with revision CAS`。
+- [x] **6. 补齐两连接 GREEN。** 低 ID 源事务先开始后提交；R 后 update/delete/日期跨月；租约被替换/过期；发布后源写者再提交使 requested 增加；publish 中途抛错保留旧事实；两个旧新 owner 交换写入 + worker；旧 schema/generation/registration/token/R 每一项不符均拒绝。发布无候选后重新插入能 dirty。deadlock 仅允许完整事务最多 3 次重试并报告仍失败，不隐去源写失败；测试验证每次成功源提交都有登记，不要求不可能的零死锁。
+- [x] **7. 独立提交。** root 查测试 XML 有真实两连接执行且超时测试无悬挂事务，记录 `feat: publish first settlement facts with revision CAS`。
 
 ## Task 4：真实 workspace 的完整 RR 边界
+
+**执行状态（2026-11-14）：** 已完成：本地提交 `8b5c657a`；四个真实入口/两连接测试及 149 次兼容执行通过，随后单文件受控生效并独立验收。最终上下文与恢复入口见常驻性能/上线回执。后续 Task5 在此边界内接入消费者。
 
 **Files:** 修改 `FinanceLabelCosts.java`，新建 WorkspaceSnapshotIntegrationTest；本任务仍 native 期间查询。
 
 **Interfaces:** workspace 公开签名及原三参构造器不变；Task4 只新增 package-private workspaceSnapshot 和显式 `readSnapshot(30,...)`。原 period SQL 完整留在 workspaceSnapshot；nativePeriod 抽取、路由注入和所有新事实依赖均延至 Task5。
 
-- [ ] **1. 写实际入口 RED。** 用代理 JdbcTemplate 在 sourcePage 首个一致性 SELECT 返回后触发 latch；第二连接同事务切 active_generation、更新其 totals、files/import 与 label state。A 继续执行实际 `labels.workspace(...)`，断言 source rows/count/period/files/state/processing 都属于旧 S；新请求看到新代次。当前没有 workspace RR 时此测试应产生明确混合结果。再对 detailsOnly 在 rows 与 count/enrichment 间做同类变更，不在测试外层调用 repo.readSnapshot。
-- [ ] **2. root 执行 RED。** `python3 /tmp/finance-bi-performance-qa/run-db-tests.py FinanceLabelWorkspaceSnapshotIntegrationTest`。
-- [ ] **3. 最小实现。** 把原 workspace 的全部主体移入 workspaceSnapshot，原 period SQL/参数构造完整保留在该方法，公共入口只做：
+- [x] **1. 写实际入口 RED。** 用代理 JdbcTemplate 在 sourcePage 首个一致性 SELECT 返回后触发 latch；第二连接同事务切 active_generation、更新其 totals、files/import 与 label state。A 继续执行实际 `labels.workspace(...)`，断言 source rows/count/period/files/state/processing 都属于旧 S；新请求看到新代次。当前没有 workspace RR 时此测试应产生明确混合结果。再对 detailsOnly 在 rows 与 count/enrichment 间做同类变更，不在测试外层调用 repo.readSnapshot。
+- [x] **2. root 执行 RED。** `python3 /tmp/finance-bi-performance-qa/run-db-tests.py FinanceLabelWorkspaceSnapshotIntegrationTest`。
+- [x] **3. 最小实现。** 把原 workspace 的全部主体移入 workspaceSnapshot，原 period SQL/参数构造完整保留在该方法，公共入口只做：
 
 ```java
 public Map<String,Object> workspace(Scope scope, Filter filter, Map<String,String> query) {
@@ -332,16 +341,18 @@ public Map<String,Object> workspace(Scope scope, Filter filter, Map<String,Strin
 ```
 
 workspaceSnapshot 开始断言当前连接只读 RR（沿用 Repository.withAuthoritativePageTotal 的同类检查）；不允许内部 RC/REQUIRES_NEW helper 或仅 period 包事务。sourcePage、files、原 period、当前校正/营销与 state 共用 repo 的 DataSource；Task4 不引入 init/facts 查询。detailsOnly 在此内部早返回，因此也受快照保护。已有 HTTP authorize 保持，visible/group 在 S 内执行。
-- [ ] **4. GREEN 与兼容性。** root 运行 `python3 /tmp/finance-bi-performance-qa/run-db-tests.py FinanceLabelWorkspaceSnapshotIntegrationTest FinanceLabelFirstSettlementRowIntegrationTest FinanceLabelCostsIntegrationTest`。保留原四指标、files/50 行/total、授权、detailsOnly 响应字段与原排序；测试实际调用路径并断言使用显式 30 秒 RR deadline。30 秒由 root 指定为前端既有读取 deadline 与已观测 group 18.611 秒仍未完成的兼容边界，避免默认 15 秒提前截断已有请求；它不是五秒通过，也不保证端到端请求在 30 秒内成功。后续 Task5/6 保持该整体边界，只在其内选择候选局部预算/回退余量；整体 deadline 变更须另有当前证据与 review。
-- [ ] **5. 独立提交。** root 记录 `fix: read label workspace in one repeatable read snapshot`，生产是否先启用该边界仍按 root 维护时序决定。
+- [x] **4. GREEN 与兼容性。** root 运行 `python3 /tmp/finance-bi-performance-qa/run-db-tests.py FinanceLabelWorkspaceSnapshotIntegrationTest FinanceLabelFirstSettlementRowIntegrationTest FinanceLabelCostsIntegrationTest`。保留原四指标、files/50 行/total、授权、detailsOnly 响应字段与原排序；测试实际调用路径并断言使用显式 30 秒 RR deadline。30 秒由 root 指定为前端既有读取 deadline 与已观测 group 18.611 秒仍未完成的兼容边界，避免默认 15 秒提前截断已有请求；它不是五秒通过，也不保证端到端请求在 30 秒内成功。后续 Task5/6 保持该整体边界，只在其内选择候选局部预算/回退余量；整体 deadline 变更须另有当前证据与 review。
+- [x] **5. 独立提交。** root 记录 `fix: read label workspace in one repeatable read snapshot`，生产是否先启用该边界仍按 root 维护时序决定。
 
 ## Task 5：完整 totals 预算与首个事实消费者
+
+**执行状态（2026-11-14）：** 已完成本地实现与独立复审：提交 `267bc690`，默认 OFF。初始真实 RED、首轮 573 次广域回归及最后修复 173 次受影响回归按字节分别保留；三项 P2 均关闭。Task6 容量、Task7 生产迁移/shadow/激活尚未完成，不能把本地完成解释为全目标通过。
 
 **Files:** 新建 LabelFirstSettlementFacts、FactsIntegrationTest；修改 LabelCosts 接入 OFF/SHADOW/ACTIVE，默认 OFF；在现有 `src/test/java/com/yingdao/aicommerce/finance/FinanceLabelFirstSettlementRowIntegrationTest.java` 加 OFF 不依赖新表回归。
 
 **Interfaces:** 消费 Guard/Resolution/Period/ApprovedRange/CandidateBudget；reader 不写初始化、revision、lease 或临时共享表，不另开事务。Task5 此时才把 workspaceSnapshot 内原 period SQL 原样抽为 nativePeriod。全局 Mode 与 allowlist 配置在 workspace 开始时冻结为同一份不可变快照；OFF 或范围未获准时不访问新事实表。
 
-- [ ] **1. 写 RED：missing、known-empty、dirty 不可混为零。** 活动 totals 建三个 owner：clean known-empty、没有 facts、requested>applied 且早日期改变；同时加旧 schema requested=applied、未匹配 init/new company、255 长 ID 与其前 128 字符的另一订单。以 cap=2/3/4 做临界预算；未知项超限必须 native，cap 内每个完整 owner 都原生查询，长 ID 不匹配截断前缀。原生四指标与返回逐项一致。
+- [x] **1. 写 RED：missing、known-empty、dirty 不可混为零。** 活动 totals 建三个 owner：clean known-empty、没有 facts、requested>applied 且早日期改变；同时加旧 schema requested=applied、未匹配 init/new company、255 长 ID 与其前 128 字符的另一订单。以 cap=2/3/4 做临界预算；未知项超限必须 native，cap 内每个完整 owner 都原生查询，长 ID 不匹配截断前缀。原生四指标与返回逐项一致。
 
 ```java
 @Test void offRouteNeverNeedsFactTables() {
@@ -353,11 +364,11 @@ workspaceSnapshot 开始断言当前连接只读 RR（沿用 Repository.withAuth
 ```
 
 该短测试放在 Task5 Files 明确列出的既有 FirstSettlementRow 测试类，复用其 fixture/filter/constants；其断言之外扩展该类现有 TracedJdbc 的 SQL 记录，确认整次 workspace SQL 不包含 `finance_first_settlement_`。
-- [ ] **2. root 执行 RED。** `python3 /tmp/finance-bi-performance-qa/run-db-tests.py FinanceLabelFirstSettlementFactsIntegrationTest`。
-- [ ] **3. 实现完整分类/预算。** 先按步骤5检查默认空 allowlist；范围获准且预算允许才在 S 读公司 Guard；singleton 缺失/disabled/版本或定义 hash 不匹配、无登记、缺 init/不支持 target/定义不完整直接 native。seed 未完成时仍可从完整当前 `ls.active_generation` totals 分类，不能用 facts 表反推 totals 域。clean 必须满足 `applied_revision=requested_revision>0 AND schema_version=target AND applied_generation=generation AND applied_registration_version=registration`；queued_generation 不是 clean 条件。missing、applied=0、旧模式/代次/登记、pending 一律 unresolved。
+- [x] **2. root 执行 RED。** `python3 /tmp/finance-bi-performance-qa/run-db-tests.py FinanceLabelFirstSettlementFactsIntegrationTest`。
+- [x] **3. 实现完整分类/预算。** 先按步骤5检查默认空 allowlist；范围获准且预算允许才在 S 读公司 Guard；singleton 缺失/disabled/版本或定义 hash 不匹配、无登记、缺 init/不支持 target/定义不完整直接 native。seed 未完成时仍可从完整当前 `ls.active_generation` totals 分类，不能用 facts 表反推 totals 域。clean 必须满足 `applied_revision=requested_revision>0 AND schema_version=target AND applied_generation=generation AND applied_registration_version=registration`；queued_generation 不是 clean 条件。missing、applied=0、旧模式/代次/登记、pending 一律 unresolved。
 
 先用公司 pending 索引读取至 cap+1，不加日期/币种/平台过滤；可先保守包含不可见 owner，额外回退合法，不能遗漏可见 owner。另从完整活动 totals LEFT JOIN facts/Guard 列出 missing/不兼容（包括 requested=applied）的 distinct owner 至 cap+1。以 MySQL 身份比较规则合并两个有界集合，达到 cap+1 立刻整条 native；不能分别都 cap 内却合计超 cap。若任一枚举不能证明完整或候选局部时间/读取量预算提前耗尽，仅在步骤5a确认整个 RR 仍有效后转同 S native；SQL/事务 timeout、rollbackOnly、连接失效一律抛出并使整次 workspace 失败。预算内公司 dirty 全部解析，再只把对应活动 totals 参与汇总；不先做无界 COUNT，也不生成无界 IN。新 totals missing 即使 seed_complete=true 也必须识别。
-- [ ] **4. 实现八列 relation。** clean/known-empty 和 unresolved 两支由同一个完整 totals 域分类；known-empty 不输出 candidate，但保留其覆盖证明。每个 unresolved 用当前 S 内完整历史 eligible LATERAL/有界绑定 owner 查 earliest。两支 `UNION ALL` 的 r 列固定为：
+- [x] **4. 实现八列 relation。** clean/known-empty 和 unresolved 两支由同一个完整 totals 域分类；known-empty 不输出 candidate，但保留其覆盖证明。每个 unresolved 用当前 S 内完整历史 eligible LATERAL/有界绑定 owner 查 earliest。两支 `UNION ALL` 的 r 列固定为：
 
 ```sql
 id, organization_id, shop_id, order_id, record_date, platform, currency, status
@@ -367,7 +378,7 @@ id, organization_id, shop_id, order_id, record_date, platform, currency, status
 ```
 
 在 reader 内构建限定本调用方的 SQL derived relation，不向其他静态 firstSettlement 调用推广、不伪造 category/kind/source。clean 的 status=SETTLED 由 eligible 发布不变量保证。统一关系外仍调用原 `repo.query(scope,filter,"r")` 和 `FinanceOrderCharges.normalOrder("r")`；query 已追加 reporting constrain，不再重复追加。汇总保持原 COUNT、COALESCE SUM 与当前代次 totals，规范化 BigDecimal 数值比较不比较 JSON 字段顺序。权限/UNASSIGNED/removed/group 必须经原 query；校正按 winner ID 与 S 中 raw/correction 子查询，raw provenance 改变而复制字段不变仍即时反映。
-- [ ] **5. 接入默认空的范围配置。** 三参旧构造器默认 OFF/空 allowlist；Spring 默认 `finance.first-settlement-facts.mode=OFF`、`finance.first-settlement-facts.allowed-ranges=[]`、worker disabled。allowed-ranges 是严格解析的 ApprovedRange 列表：每项需显式公司 ID、闭区间 start/end、SHADOW 或 ACTIVE、已验 schema/registration 和非空 evidenceId；不接受通配公司、无界日期、OFF 条目或 start>end，非法配置关闭事实路由并报告短错误。隔离测试显式注入 synthetic A/B/C grant；生产由受控维护根据验收回执配置，不从公司数据自动生成。
+- [x] **5. 接入默认空的范围配置。** 三参旧构造器默认 OFF/空 allowlist；Spring 默认 `finance.first-settlement-facts.mode=OFF`、`finance.first-settlement-facts.allowed-ranges=[]`、worker disabled。allowed-ranges 是严格解析的 ApprovedRange 列表：每项需显式公司 ID、闭区间 start/end、SHADOW 或 ACTIVE、已验 schema/registration 和非空 evidenceId；不接受通配公司、无界日期、OFF 条目或 start>end，非法配置关闭事实路由并报告短错误。隔离测试显式注入 synthetic A/B/C grant；生产由受控维护根据验收回执配置，不从公司数据自动生成。
 
 `permitted(mode,scope,filter,registration)` 仅当全局 mode 非 OFF，且**同一条** grant 精确匹配 mode/授权后的 company ID/schema/registration，且 `grant.start<=filter.start && filter.end<=grant.end` 时为 true。不得将分散 grant 拼接成未获验日期范围；跨出任何一端整条 native。每项 grant 表示该公司/日期内原接口支持的筛选组合均获验；如只测了部分筛选，不建立宽 grant。先仅用不可变配置检查 company/mode/日期是否有候选 grant，未命中不查任何新表；命中后才在 S 读取 Registration 并调用 permitted 做完整版本匹配，随后查询事实 Guard。自动发现新公司、初始化完成、seed_complete 或 clean 数量都不修改 allowlist。
 
@@ -383,7 +394,7 @@ boolean permitted(Mode mode, Scope scope, Filter filter, Registration registrati
 
 SHADOW 只有对应 SHADOW grant 才在同一个 workspace RR 内先算 native、后按预算算 candidate，HTTP 只返回完整 native；ACTIVE 只有 ACTIVE grant 才尝试事实，按5a决定能否同 S native 回退。全局模式切换不会自动把 SHADOW grant 变为 ACTIVE。detailsOnly 不额外跑 period。受控 logger 仅记录 route/reason/耗时/行数和规范化哈希，禁止金额、订单/店铺标识和原 SQL 参数；持久日志沿用现有策略。
 
-- [ ] **5a. 区分候选早退与 RR 失败。** workspace 整体仍是 Task4 的 `readSnapshot(30,...)`。CandidateBudget 三个正值满足 `candidateMillis+nativeReserveMillis+completionReserveMillis<30000`；生产 grant 启用前须有 Task6 实测选出的明确值，未配置时跳过 candidate。候选开始前使用当前 Spring ConnectionHolder 的真实剩余 deadline，而非从 period 再起30秒。ACTIVE 为完整 nativePeriod 与后续 state/响应装配预留 `nativeReserveMillis+completionReserveMillis`；SHADOW 已算 native，只预留 completionReserveMillis。候选局部截止为 `min(开始时间+candidateMillis,整体截止-相应余量)`，使用单调时钟在每个有界枚举/lookup 前检查。剩余量不足则不启动下一候选 SQL，返回 NATIVE 路由；候选 SQL 的逐 statement timeout 同时受候选剩余预算与整体剩余 deadline 上限约束（使用当前 statement 的设置，不修改共享 JdbcTemplate 的全局 timeout）；不足驱动支持的最小精度则提前跳过该 candidate SQL，不能无界执行来等待下次软预算检查。statement 超时按下面的整次失败规则处理，不冒充可安全 fallback 的主动早退。
+- [x] **5a. 区分候选早退与 RR 失败。** workspace 整体仍是 Task4 的 `readSnapshot(30,...)`。CandidateBudget 三个正值满足 `candidateMillis+nativeReserveMillis+completionReserveMillis<30000`；生产 grant 启用前须有 Task6 实测选出的明确值，未配置时跳过 candidate。候选开始前使用当前 Spring ConnectionHolder 的真实剩余 deadline，而非从 period 再起30秒。ACTIVE 为完整 nativePeriod 与后续 state/响应装配预留 `nativeReserveMillis+completionReserveMillis`；SHADOW 已算 native，只预留 completionReserveMillis。候选局部截止为 `min(开始时间+candidateMillis,整体截止-相应余量)`，使用单调时钟在每个有界枚举/lookup 前检查。剩余量不足则不启动下一候选 SQL，返回 NATIVE 路由；候选 SQL 的逐 statement timeout 同时受候选剩余预算与整体剩余 deadline 上限约束（使用当前 statement 的设置，不修改共享 JdbcTemplate 的全局 timeout）；不足驱动支持的最小精度则提前跳过该 candidate SQL，不能无界执行来等待下次软预算检查。statement 超时按下面的整次失败规则处理，不冒充可安全 fallback 的主动早退。
 
 嵌套 ReadBudget 的 `requireUsable()` 读取与 repo 相同 DataSource 绑定的 `ConnectionHolder`，要求实际事务活跃、只读 RR、holder 存在且 `hasTimeout()`、`getTimeToLiveInMillis()>0`、`!isRollbackOnly()`、连接未关闭；任何检查异常直接传播。数据库连接失败可能在下一 SQL 才暴露，该 SQL 异常也直接传播；不能因先前检查通过就吞掉失败。候选 SQL 的任何异常（包括 query timeout/cancel）都按整 workspace 失败处理，本版不猜测驱动还能否安全复用。只有主动的候选局部时间/行数/cap 早退而事务检查有效才允许同 S native。
 
@@ -395,13 +406,13 @@ RR deadline 到期 / rollbackOnly / 连接失效 / SQL异常 → 传播异常，
 
 本版不自动重试整次请求；调用者若重新请求，必须从 workspace 入口重新执行全部 source/files/period/state。禁止只给 period 新开事务拼接旧 source/files，也禁止 SHADOW 用已算 native 掩盖失效事务后的 state 失败。余量是启动候选的门槛，不保证 native 在波动负载下必能完成；后续 native 超时仍整次失败。
 
-- [ ] **5b. Q2/Q3 明确回归。** A/B 均有有效 Guard，仅 A 的指定日期有 ACTIVE grant：A 命中事实，B native；自动发现 C 并完成 seed 后 C 仍 native；A 越界日期/部分跨出区间 native，空 allowlist 全 native，切换 SHADOW 不沿用 ACTIVE grant；为 A 显式配置 SHADOW grant 后才执行双算。移除 grant 后确认事实/登记/revision 不变。
+- [x] **5b. Q2/Q3 明确回归。** A/B 均有有效 Guard，仅 A 的指定日期有 ACTIVE grant：A 命中事实，B native；自动发现 C 并完成 seed 后 C 仍 native；A 越界日期/部分跨出区间 native，空 allowlist 全 native，切换 SHADOW 不沿用 ACTIVE grant；为 A 显式配置 SHADOW grant 后才执行双算。移除 grant 后确认事实/登记/revision 不变。
 
 两类预算测试调用实际 workspace 入口：①注入可控单调时钟，使候选达到局部截止而 Spring holder 仍有效；另一连接此时提交变化，断言 native fallback 仍来自原 S，返回 source/files/period/state 完整旧视图，且所有 SQL 同一连接。②在候选前的测试 latch 将实际绑定 holder `setTimeoutInMillis(0)`（另测 `setRollbackOnly()`、关闭物理连接）后继续；断言整 workspace 抛异常、没有执行 nativePeriod fallback、没有返回部分 map、没有新建 period 事务；SHADOW 即使已算 native 也同样失败。对候选 SQL query-timeout 异常再做一例传播断言，不能算成局部预算耗尽。
-- [ ] **6. 逐项等价 GREEN。** 独立 oracle 直接调用 `FinanceCostReport.firstSettlementIdentity("r",true)`，不引用新 eligible/adapter/clean predicate；并与保留的 native LATERAL 各对照。fixture 包括同日多行多币种、TikTok 非 ORDER + ORDER、取消/非 API、营销、真实零、负金额/六位精度、组织/移除/UNASSIGNED/组/UNGROUPED、部分归属月与跨月请求、首笔删除/移月、winner 不变只改 platform/currency、raw reporting provenance-only 更新。读时校正/营销改变不需要 pointer revision，但结果须变化。测试公司内 dirty 不在请求月份仍补齐，跨月旧结果正确移除；cap/cap+1 无丢行。
-- [ ] **7. 两连接消费 GREEN。** actual workspace A 已读取 sourcePage 建立 S；B 在分类前后发布事实/dirty clean owner、切 label generation 或完成初始化。A 在 S 内分类/汇总一次，不重不漏；下一请求见新状态。重复 true 同日两币种、跨月第一日期移动。以新类加 Task4 类运行，超时或 fallback 比率不能当等价通过。
-- [ ] **8. 明确 false 尚未激活并验证防串用。** 所有现有 false 调用继续原 SQL，回归 `FinanceCostReport.related` 的 DISTINCT 和 ORDER/REFUND 多源记录。新增测试仅在隔离 SQL 用 `r.record_date=f.first_record_date AND eligible(r)` 复接全部首日行，再逐行使用原 platform/currency/reporting-ID，证明该 relation 与原 `firstSettlement(...,false)` 等价；禁止使用 winner currency 或 `r.id=f.first_record_id` 替代。此测试提供未来接口证据，不增加本轮公开 false 路由。
-- [ ] **9. 独立提交。** root 记录 `feat: add guarded label first settlement fact route`；审查确认默认 OFF、测试确实执行新 route 和实际入口，而非都在 fallback 下假通过。
+- [x] **6. 逐项等价 GREEN。** 独立 oracle 直接调用 `FinanceCostReport.firstSettlementIdentity("r",true)`，不引用新 eligible/adapter/clean predicate；并与保留的 native LATERAL 各对照。fixture 包括同日多行多币种、TikTok 非 ORDER + ORDER、取消/非 API、营销、真实零、负金额/六位精度、组织/移除/UNASSIGNED/组/UNGROUPED、部分归属月与跨月请求、首笔删除/移月、winner 不变只改 platform/currency、raw reporting provenance-only 更新。读时校正/营销改变不需要 pointer revision，但结果须变化。测试公司内 dirty 不在请求月份仍补齐，跨月旧结果正确移除；cap/cap+1 无丢行。
+- [x] **7. 两连接消费 GREEN。** actual workspace A 已读取 sourcePage 建立 S；B 在分类前后发布事实/dirty clean owner、切 label generation 或完成初始化。A 在 S 内分类/汇总一次，不重不漏；下一请求见新状态。重复 true 同日两币种、跨月第一日期移动。以新类加 Task4 类运行，超时或 fallback 比率不能当等价通过。
+- [x] **8. 明确 false 尚未激活并验证防串用。** 所有现有 false 调用继续原 SQL，回归 `FinanceCostReport.related` 的 DISTINCT 和 ORDER/REFUND 多源记录。新增测试仅在隔离 SQL 用 `r.record_date=f.first_record_date AND eligible(r)` 复接全部首日行，再逐行使用原 platform/currency/reporting-ID，证明该 relation 与原 `firstSettlement(...,false)` 等价；禁止使用 winner currency 或 `r.id=f.first_record_id` 替代。此测试提供未来接口证据，不增加本轮公开 false 路由。
+- [x] **9. 独立提交。** root 记录 `feat: add guarded label first settlement fact route`；审查确认默认 OFF、测试确实执行新 route 和实际入口，而非都在 fallback 下假通过。
 
 ## Task 6：隔离计划/服务能力实验与 shadow 准入
 
