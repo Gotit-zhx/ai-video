@@ -241,3 +241,5 @@ RR/CAS 工作器随后以 `ce2bc525` 完成本地隔离验证和独立审查：�
 配置默认为 `finance.first-settlement-facts.mode=OFF`、`allowed-ranges=[]`，三项毫秒预算未设置；因此既有环境不查询新表。启用候选需同时指定 `candidate-millis`、`native-reserve-millis`、`completion-reserve-millis`，总和严格小于 30000，具体值仍待服务能力实验。`dirty-cap` 接受 0..1000，默认 100 仅为原型边界，尚非生产推荐；0 能证明干净域完整，首个 unresolved 即整段原生。`allowed-ranges` 是 JSON 列表，每项精确包含 `organizationId,start,end,mode,schemaVersion,registrationVersion,evidenceId`；模式、公司、整个请求日期及版本均须匹配。新公司完成初始化不会自动取得范围授权。格式或数值配置错误只关闭候选并记录固定短错误码，不泄露配置正文或阻断原生查询。
 
 隔离真实入口已覆盖 clean/known-empty/missing/dirty/旧模式、长 totals ID、完整域 cap、两连接并发、跨月、首日多币种、人工归属及权限。首轮广域回归为 573 次执行；后续审查修复了秒级取整阻止亚秒实验、零 cap 和 Spring 数值预转换问题，最终受影响两类共 173 次（consumer 106＝43 声明＋63 继承，FirstRow 67）零失败/错误/跳过，独立限定复审通过。100/250/500/1000ms 均在小样本实际到达 FACTS；延迟准备后 timeout 收紧及 ACTIVE/SHADOW 中 MySQL SLEEP 的自然驱动取消均有证据。573 次不是最终修复字节的重复全套验证。仍需 Task6 实际计划、吞吐与负载证据，以及 Task7 受控迁移、自动工作器 wiring、shadow 和范围准入；本片段未生产安装或激活。
+
+为支持既定容量实验的 16/64/256 档，显式工作批次上界由 128 扩至 256，其他边界、默认和调度状态保持。真实 257 个 pending owner 的新增 RED 在旧构造器失败；修复后一次真实 tick 发布 256 个、保留最后 1 个未领取，并逐个核对原生首笔身份；257 配置仍拒绝。最终 Worker 102 次执行（39 声明＋63 继承）零失败/错误/跳过，独立审查通过。这仅使实验输入可执行，不是吞吐、可持续参数或生产启用证据。

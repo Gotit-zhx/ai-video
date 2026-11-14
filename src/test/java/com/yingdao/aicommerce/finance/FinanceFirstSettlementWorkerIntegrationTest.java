@@ -537,6 +537,57 @@ class FinanceFirstSettlementWorkerIntegrationTest extends FinanceFirstSettlement
         assertTrue(completed, "bounded explicit ticks must complete initialization and owner publication");
     }
 
+    @Test void explicitBatch256PublishesExactly256Of257PendingOwnersAndMatchesNativeWinners(@TempDir Path temporary) throws Exception {
+        for (int index = 0; index < 257; index++) {
+            String suffix = "%03d".formatted(index);
+            settlement("tail-" + suffix, "org", "shop", "order-" + suffix, LocalDate.of(2026, 10, 2));
+            settlement("winner-" + suffix, "org", "shop", "order-" + suffix, LocalDate.of(2020, 1, 1));
+        }
+        var facts = facts(); var init = initialization(); init.discoverCompanies(1);
+        var guard = facts.guard("org").orElseThrow();
+        boolean seeded = false;
+        for (int step = 0; step < 12 && !seeded; step++) seeded = init.seed(guard, 64).complete();
+        assertTrue(seeded, "the 257-owner seed must finish in bounded batches");
+        boolean requeued = false;
+        for (int step = 0; step < 12 && !requeued; step++) requeued = init.requeue(guard, 64).complete();
+        assertTrue(requeued); assertTrue(init.complete(guard));
+        assertTrue(facts.guard("org").orElseThrow().seedComplete());
+        assertEquals(257, db.queryForObject("SELECT COUNT(*) FROM finance_first_settlement_facts WHERE pending=TRUE AND requested_revision=3 AND applied_revision=0 AND lease_token IS NULL AND lease_until IS NULL", Integer.class));
+
+        var worker = assertDoesNotThrow(() -> new FinanceFirstSettlementWorker(facts, init, 256, 30, 1,
+            Duration.ofSeconds(30), System::nanoTime, gate(temporary.resolve("gate"))),
+            "an explicitly bounded batch of 256 must be supported");
+        assertEquals(new Tick(256, 256, 0), worker.tick());
+        assertEquals(257, db.queryForObject("SELECT COUNT(*) FROM finance_first_settlement_facts", Integer.class));
+        assertEquals(256, db.queryForObject("SELECT COUNT(*) FROM finance_first_settlement_facts WHERE pending=FALSE AND requested_revision=3 AND applied_revision=3 AND schema_version=1 AND applied_generation=1 AND applied_registration_version=1 AND lease_token IS NULL AND lease_until IS NULL", Integer.class));
+        assertEquals(1, db.queryForObject("SELECT COUNT(*) FROM finance_first_settlement_facts WHERE pending=TRUE", Integer.class));
+
+        var published = db.queryForList("""
+            SELECT f.order_id,f.first_record_id,f.first_record_date,f.first_platform,f.first_currency,
+              r.id native_id,r.record_date native_date,r.platform native_platform,r.currency native_currency
+            FROM finance_first_settlement_facts f JOIN finance_records r
+              ON r.organization_id=f.organization_id AND r.shop_id=f.shop_id AND r.order_id=f.order_id
+            WHERE f.organization_id='org' AND f.pending=FALSE AND
+            """ + FinanceCostReport.firstSettlementIdentity("r", true) + " ORDER BY f.order_id");
+        assertEquals(256, published.size(), "every published owner must have exactly one native winner");
+        for (int index = 0; index < published.size(); index++) {
+            var row = published.get(index); String suffix = "%03d".formatted(index);
+            assertEquals("order-" + suffix, row.get("order_id")); assertEquals("winner-" + suffix, row.get("native_id"));
+            assertEquals(row.get("native_id"), row.get("first_record_id"));
+            assertEquals(row.get("native_date"), row.get("first_record_date"));
+            assertEquals(row.get("native_platform"), row.get("first_platform"));
+            assertEquals(row.get("native_currency"), row.get("first_currency"));
+        }
+        var untouched = fact(new Owner("org", "shop", "order-256"));
+        assertEquals(3L, ((Number) untouched.get("requested_revision")).longValue());
+        assertEquals(0L, ((Number) untouched.get("applied_revision")).longValue());
+        assertEquals(true, untouched.get("pending")); assertEquals(false, untouched.get("has_settlement"));
+        for (String field : List.of("lease_token", "lease_until", "first_record_id", "first_record_date", "first_platform", "first_currency")) assertNull(untouched.get(field), field);
+        assertEquals(0, ((Number) untouched.get("schema_version")).intValue());
+        assertEquals(0L, ((Number) untouched.get("applied_generation")).longValue());
+        assertEquals(0, ((Number) untouched.get("applied_registration_version")).intValue());
+    }
+
     @Test void proofMissingTickOnlyDiscoversGenerationZeroAndNeverClaimsIt(@TempDir Path temporary) throws Exception {
         settlement("new", "org", "shop", "order", LocalDate.of(2026, 10, 2));
         db.update("DELETE FROM finance_first_settlement_registration");
@@ -704,7 +755,7 @@ class FinanceFirstSettlementWorkerIntegrationTest extends FinanceFirstSettlement
     @Test void invalidCapacityAndLeaseConfigurationAreRejected(@TempDir Path temporary) throws Exception {
         var facts = facts(); var gate = gate(temporary.resolve("gate"));
         assertThrows(IllegalArgumentException.class, () -> worker(facts, 0, 1, System::nanoTime, gate));
-        assertThrows(IllegalArgumentException.class, () -> worker(facts, 129, 1, System::nanoTime, gate));
+        assertThrows(IllegalArgumentException.class, () -> worker(facts, 257, 1, System::nanoTime, gate));
         assertThrows(IllegalArgumentException.class, () -> worker(facts, 1, 0, System::nanoTime, gate));
         assertThrows(IllegalArgumentException.class, () -> new FinanceFirstSettlementWorker(facts, initialization(), 1, 0));
         assertThrows(IllegalArgumentException.class, () -> facts.claim("org", "", 30));

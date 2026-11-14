@@ -32,7 +32,7 @@ final class FinanceFirstSettlementWorker {
             int companyLimit, Duration tickBudget, LongSupplier nanoTime, MaintenanceGate gate) {
         this.facts = Objects.requireNonNull(facts); this.initialization = Objects.requireNonNull(initialization);
         this.nanoTime = Objects.requireNonNull(nanoTime); this.gate = Objects.requireNonNull(gate);
-        if (batchSize < 1 || batchSize > 128 || leaseSeconds < 1 || leaseSeconds > 300 || companyLimit < 1 || companyLimit > 32
+        if (batchSize < 1 || batchSize > 256 || leaseSeconds < 1 || leaseSeconds > 300 || companyLimit < 1 || companyLimit > 32
             || tickBudget == null || tickBudget.isNegative() || tickBudget.isZero() || tickBudget.compareTo(Duration.ofSeconds(30)) > 0)
             throw new IllegalArgumentException("Invalid first-settlement worker bounds");
         this.batchSize = batchSize; this.leaseSeconds = leaseSeconds; this.companyLimit = companyLimit; this.tickNanos = tickBudget.toNanos();
