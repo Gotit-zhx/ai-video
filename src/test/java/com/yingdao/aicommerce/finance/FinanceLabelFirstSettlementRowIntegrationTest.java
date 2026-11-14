@@ -15,6 +15,15 @@ class FinanceLabelFirstSettlementRowIntegrationTest extends FinanceConfiguration
     String groupA,groupB,shopA,shopB,removed,foreign;
     TracedJdbc traced;FinanceRepository tracedRepo;FinanceLabelCosts labels;
 
+    @Test void offRouteNeverNeedsFactTables() {
+        fixture();
+        var result=labels.workspace(owner,filter(OCTOBER_1,OCTOBER_31,"","","",""),Map.of());
+        assertNotNull(result.get("period"));
+        assertNotNull(result.get("files"));
+        assertFalse(traced.sql.stream().anyMatch(sql->sql.contains("finance_first_settlement_")),
+            "The compatible three-argument constructor must execute OFF without the prototype schema");
+    }
+
     @Test void productionPeriodSqlSelectsOneIndexedFirstSettlementRow() {
         fixture();
 
@@ -190,8 +199,16 @@ class FinanceLabelFirstSettlementRowIntegrationTest extends FinanceConfiguration
     record PeriodQuery(String sql,List<Object> args,String plan) {}
     static final class TracedJdbc extends JdbcTemplate {
         final List<PeriodQuery> periods=new ArrayList<>();
+        final List<String> sql=new ArrayList<>();
         TracedJdbc(JdbcTemplate delegate){super(Objects.requireNonNull(delegate.getDataSource()));}
+        @Override public List<Map<String,Object>> queryForList(String statement,Object...args){
+            sql.add(statement);return super.queryForList(statement,args);
+        }
+        @Override public <T> T queryForObject(String statement,Class<T> type,Object...args){
+            sql.add(statement);return super.queryForObject(statement,type,args);
+        }
         @Override public Map<String,Object> queryForMap(String sql,Object...args){
+            this.sql.add(sql);
             if(sql.contains("SUM(lc.amount_cny)")&&sql.contains("finance_label_order_totals")){
                 String plan=super.queryForObject("EXPLAIN FORMAT=JSON "+sql,String.class,args);
                 periods.add(new PeriodQuery(sql,List.copyOf(Arrays.asList(args.clone())),plan));

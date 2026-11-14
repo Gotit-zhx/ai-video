@@ -12,6 +12,7 @@ import java.security.MessageDigest;
 import java.util.*;
 import java.util.concurrent.*;
 import static com.yingdao.aicommerce.finance.FinanceData.*;
+import static com.yingdao.aicommerce.finance.FinanceFirstSettlementFacts.*;
 
 /** Bounded invoice ingestion and generation-based publication. Web reads never parse XLSX files. */
 @Service
@@ -19,12 +20,29 @@ public class FinanceLabelCosts {
     static final int BATCH=500;
     static final long MAX_FILE=96L*1024*1024,MAX_QUEUED=512L*1024*1024;
     final FinanceRepository repo;final FinanceService service;final Path directory;
+    final FinanceLabelFirstSettlementFacts.Configuration firstSettlementConfiguration;
+    final java.util.function.LongSupplier firstSettlementClock;
     final Semaphore uploads=new Semaphore(2);
     long nextFileCleanup;
     final ScheduledExecutorService worker=Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"finance-label-invoices");t.setDaemon(true);return t;});
+    public FinanceLabelCosts(FinanceRepository repo,FinanceService service,String directory){
+        this(repo,service,directory,FinanceLabelFirstSettlementFacts.Configuration.off(),System::nanoTime);
+    }
     @Autowired public FinanceLabelCosts(FinanceRepository repo,FinanceService service,
-        @Value("${finance.label-import-directory:/data/automation-attachments/finance-label-imports}") String directory){
+        @Value("${finance.label-import-directory:/data/automation-attachments/finance-label-imports}") String directory,
+        @Value("${finance.first-settlement-facts.mode:OFF}") String mode,
+        @Value("${finance.first-settlement-facts.allowed-ranges:[]}") String allowedRanges,
+        @Value("${finance.first-settlement-facts.dirty-cap:100}") String dirtyCap,
+        @Value("${finance.first-settlement-facts.candidate-millis:0}") String candidateMillis,
+        @Value("${finance.first-settlement-facts.native-reserve-millis:0}") String nativeReserveMillis,
+        @Value("${finance.first-settlement-facts.completion-reserve-millis:0}") String completionReserveMillis){
+        this(repo,service,directory,FinanceLabelFirstSettlementFacts.Configuration.parse(mode,allowedRanges,dirtyCap,
+            candidateMillis,nativeReserveMillis,completionReserveMillis),System::nanoTime);
+    }
+    FinanceLabelCosts(FinanceRepository repo,FinanceService service,String directory,
+                      FinanceLabelFirstSettlementFacts.Configuration configuration,java.util.function.LongSupplier clock){
         this.repo=repo;this.service=service;this.directory=Path.of(directory).toAbsolutePath().normalize();
+        this.firstSettlementConfiguration=Objects.requireNonNull(configuration);this.firstSettlementClock=Objects.requireNonNull(clock);
     }
     @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->com.yingdao.aicommerce.ops.MaintenanceGate.runIfOpen(this::tick),25,2,TimeUnit.SECONDS);}
     @PreDestroy public void stop(){worker.shutdownNow();}
@@ -208,23 +226,60 @@ public class FinanceLabelCosts {
         return Map.of("rows",records,"total",count,"page",page,"pageSize",50);
     }
     public Map<String,Object> workspace(Scope scope,Filter filter,Map<String,String> query){
-        return repo.readSnapshot(30,()->workspaceSnapshot(scope,filter,query));
+        var configuration=firstSettlementConfiguration;
+        return repo.readSnapshot(30,()->workspaceSnapshot(scope,filter,query,configuration));
     }
     Map<String,Object> workspaceSnapshot(Scope scope,Filter filter,Map<String,String> query){
+        return workspaceSnapshot(scope,filter,query,firstSettlementConfiguration);
+    }
+    private Map<String,Object> workspaceSnapshot(Scope scope,Filter filter,Map<String,String> query,
+                                               FinanceLabelFirstSettlementFacts.Configuration configuration){
         if(!org.springframework.transaction.support.TransactionSynchronizationManager.isCurrentTransactionReadOnly()
                 ||!Objects.equals(org.springframework.transaction.support.TransactionSynchronizationManager.getCurrentTransactionIsolationLevel(),
                         org.springframework.transaction.TransactionDefinition.ISOLATION_REPEATABLE_READ))
             throw new IllegalStateException("Label workspace requires a read-only repeatable-read snapshot");
         var details=sourcePage(scope,filter,query);
-        if("true".equals(query.get("detailsOnly")))return details;
+        if("true".equals(query.get("detailsOnly"))){FinanceLabelFirstSettlementFacts.requireUsable(repo);return details;}
         var files=repo.jdbc().queryForList("""
             SELECT id,source_name,status,source_type,customer,currency,period_start,period_end,row_count,matched_count,
               unmatched_count,review_count,billing_failed_count,conflict_count,amount_cny,error_message,created_at,updated_at FROM finance_label_imports
             WHERE organization_id=? AND status<>'REMOVED' ORDER BY created_at DESC,id LIMIT 200
             """,scope.organizationId());
+        var reader=new FinanceLabelFirstSettlementFacts(repo,configuration.dirtyCap(),configuration.allowedRanges(),configuration.budget(),firstSettlementClock);
+        Map<String,Object> period;
+        if(configuration.mode()==Mode.SHADOW){
+            FinanceLabelFirstSettlementFacts.requireUsable(repo);
+            period=nativePeriod(scope,filter);
+            var resolution=reader.period(Mode.SHADOW,scope,filter);
+            if(resolution.route()==Route.FACTS){
+                var nativeValue=new Period(decimal(period.get("amount_cny")),number(period.get("orders")),number(period.get("conflicts")),number(period.get("shipments")));
+                org.slf4j.LoggerFactory.getLogger(FinanceLabelCosts.class).debug(
+                    "finance_label_first_settlement shadow={} native_hash={} candidate_hash={}",
+                    FinanceLabelFirstSettlementFacts.equal(nativeValue,resolution.value())?"MATCH":"MISMATCH",
+                    FinanceLabelFirstSettlementFacts.normalizedHash(nativeValue),FinanceLabelFirstSettlementFacts.normalizedHash(resolution.value()));
+            }
+        }else{
+            var resolution=reader.period(configuration.mode(),scope,filter);
+            FinanceLabelFirstSettlementFacts.requireUsable(repo);
+            if(resolution.route()==Route.FACTS){
+                var value=resolution.value();
+                period=Map.of("orders",value.orders(),"amount_cny",value.amountCny(),"conflicts",value.conflicts(),"shipments",value.shipments());
+            }else period=nativePeriod(scope,filter);
+        }
+        FinanceLabelFirstSettlementFacts.requireUsable(repo);
+        var states=repo.jdbc().queryForList("SELECT requested_revision,applied_revision,error_message FROM finance_label_state WHERE organization_id=?",scope.organizationId());
+        FinanceLabelFirstSettlementFacts.requireUsable(repo);
+        var state=states.isEmpty()?Map.<String,Object>of():states.getFirst();
+        var result=new LinkedHashMap<String,Object>(details);
+        result.putAll(Map.of("files",files,"period",period,"state",state,
+            "processing",number(state.get("requested_revision"))>number(state.get("applied_revision")),
+            "basis","贴单金额取订单费用明细的金额（或仓库账单的操作费），固定人民币。参考号绑定平台订单；重复来源去重，同日同仓正式计费优先于零金额占位。汇总按订单首次结算日期，刷单不计入。"));
+        return result;
+    }
+    Map<String,Object> nativePeriod(Scope scope,Filter filter){
         var q=repo.query(scope,filter,"r");
         var periodArgs=new ArrayList<Object>();periodArgs.add(scope.organizationId());periodArgs.addAll(q.args());
-        var period=repo.jdbc().queryForMap("""
+        return repo.jdbc().queryForMap("""
             SELECT COUNT(*) orders,COALESCE(SUM(lc.amount_cny),0) amount_cny,
               COALESCE(SUM(lc.pending_count),0) conflicts,COALESCE(SUM(lc.shipment_count),0) shipments
             FROM finance_label_state ls JOIN finance_label_order_totals lc
@@ -240,13 +295,6 @@ public class FinanceLabelCosts {
               // The equality prefix is fixed per order; spelling it out preserves date/id selection.
               +" ORDER BY r0.organization_id,r0.shop_id,r0.kind,r0.order_id,r0.source,r0.status,r0.record_date,r0.id LIMIT 1) r ON TRUE WHERE ls.organization_id=? AND "
               +FinanceOrderCharges.normalOrder("r")+" AND "+q.where(),periodArgs.toArray());
-        var states=repo.jdbc().queryForList("SELECT requested_revision,applied_revision,error_message FROM finance_label_state WHERE organization_id=?",scope.organizationId());
-        var state=states.isEmpty()?Map.<String,Object>of():states.getFirst();
-        var result=new LinkedHashMap<String,Object>(details);
-        result.putAll(Map.of("files",files,"period",period,"state",state,
-            "processing",number(state.get("requested_revision"))>number(state.get("applied_revision")),
-            "basis","贴单金额取订单费用明细的金额（或仓库账单的操作费），固定人民币。参考号绑定平台订单；重复来源去重，同日同仓正式计费优先于零金额占位。汇总按订单首次结算日期，刷单不计入。"));
-        return result;
     }
     Path source(Map<String,Object> job){
         String name=text(job.get("storage_name"));

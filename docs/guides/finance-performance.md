@@ -233,3 +233,11 @@ RR/CAS 工作器随后以 `ce2bc525` 完成本地隔离验证和独立审查：�
 60,000 行合成样本中，原自然计划为 PRIMARY、非覆盖、每文件实际读取 20,000 行；安装候选后，原 SQL 自然选择覆盖索引，实际读取 6,000 行。计划估算与实际行数分别保留。两轮热配对中，显式强制旧 PRIMARY 的完整 sourcePage 为 19.247/19.543ms，强制候选为 8.236/8.611ms；安装后未改 SQL 的自然路径也已选择候选，因此该自然路径与候选的配对不能再次算作旧新加速。展示分页仍保留原 50 行排序/物化；编号和 CONFLICT 依赖额外字段，未宣称被三列索引覆盖。已有无条件 `uk_label_file_event` 提示保持。
 
 新增索引后的总 INDEX_LENGTH 元数据增量为 6,864,896 字节，仅是该样本的元数据观察，不是生产容量或物理 IO 预测。没有冷内存、写入/重匹配吞吐或生产 DDL 证据，不能解释早前 30.218 秒失败或承诺整页五秒。生产索引仍需结合真实筛选频率、选择性、空间及协调维护另行验证；本实验不激活首次结算事实读路由。
+
+### 贴单首笔事实消费者（仅隔离，默认关闭）
+
+真实 `FinanceLabelCosts.workspace` 可按显式范围使用首笔事实：同一 30 秒只读 RR 内检查安装证明、公司代次与完整活动 totals 的 unresolved 集合；clean 使用已发布身份，dirty/missing/旧模式按完整历史重算，八列关系仍交由原权限、营销、归属月和期间条件过滤。局部预算或完整域 cap 不足时，仅在原事务仍可用的前提下整段回到原生查询；SQL 故障、原 holder 到期、rollbackOnly 或连接失效使整次 workspace 失败。公开 false 首日关系保持原实现，本阶段不增加整页 Redis。
+
+配置默认为 `finance.first-settlement-facts.mode=OFF`、`allowed-ranges=[]`，三项毫秒预算未设置；因此既有环境不查询新表。启用候选需同时指定 `candidate-millis`、`native-reserve-millis`、`completion-reserve-millis`，总和严格小于 30000，具体值仍待服务能力实验。`dirty-cap` 接受 0..1000，默认 100 仅为原型边界，尚非生产推荐；0 能证明干净域完整，首个 unresolved 即整段原生。`allowed-ranges` 是 JSON 列表，每项精确包含 `organizationId,start,end,mode,schemaVersion,registrationVersion,evidenceId`；模式、公司、整个请求日期及版本均须匹配。新公司完成初始化不会自动取得范围授权。格式或数值配置错误只关闭候选并记录固定短错误码，不泄露配置正文或阻断原生查询。
+
+隔离真实入口已覆盖 clean/known-empty/missing/dirty/旧模式、长 totals ID、完整域 cap、两连接并发、跨月、首日多币种、人工归属及权限。首轮广域回归为 573 次执行；后续审查修复了秒级取整阻止亚秒实验、零 cap 和 Spring 数值预转换问题，最终受影响两类共 173 次（consumer 106＝43 声明＋63 继承，FirstRow 67）零失败/错误/跳过，独立限定复审通过。100/250/500/1000ms 均在小样本实际到达 FACTS；延迟准备后 timeout 收紧及 ACTIVE/SHADOW 中 MySQL SLEEP 的自然驱动取消均有证据。573 次不是最终修复字节的重复全套验证。仍需 Task6 实际计划、吞吐与负载证据，以及 Task7 受控迁移、自动工作器 wiring、shadow 和范围准入；本片段未生产安装或激活。
