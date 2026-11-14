@@ -318,7 +318,7 @@ if (currentGuard.generation()!=expected.generation()
 // applied_revision 参数只能 computed.revision()；never current requested。
 ```
 
-Guard 的 seedComplete 不是发布版本：实现比较 organization/generation/target/registration 四字段，允许同代次 seed_complete 变 true；不可直接用整个 record.equals 将 seed 完成误判成版本变化。
+Guard 的 seedComplete 不是发布版本：公司身份先在 MySQL 列比较中绑定，再比较 generation/target/registration 数字字段，允许同代次 seed_complete 变 true；不可直接用整个 record.equals 将 seed 完成或 SQL 等价公司拼写误判成版本变化。
 - [x] **6. 补齐两连接 GREEN。** 低 ID 源事务先开始后提交；R 后 update/delete/日期跨月；租约被替换/过期；发布后源写者再提交使 requested 增加；publish 中途抛错保留旧事实；两个旧新 owner 交换写入 + worker；旧 schema/generation/registration/token/R 每一项不符均拒绝。发布无候选后重新插入能 dirty。deadlock 仅允许完整事务最多 3 次重试并报告仍失败，不隐去源写失败；测试验证每次成功源提交都有登记，不要求不可能的零死锁。
 - [x] **7. 独立提交。** root 查测试 XML 有真实两连接执行且超时测试无悬挂事务，记录 `feat: publish first settlement facts with revision CAS`。
 
@@ -430,10 +430,11 @@ RR deadline 到期 / rollbackOnly / 连接失效 / SQL异常 → 传播异常，
 
 ## Task 7：定向迁移、受控 shadow 与限定激活门
 
-**Files:** root 后续创建专用迁移/维护工具及验收回执；具体迁移文件名在现场确认空闲号后写入回执，本计划不占号。维护工具先在隔离环境演练并单独 review；不复用 V159 操作身份，不修改 V158/V159。
+**Files:** root 后续安排默认关闭的 `FinanceFirstSettlementScheduler.java` 及对应隔离集成测试，再创建专用迁移/维护工具及验收回执；具体迁移文件名在现场确认空闲号后写入回执，本计划不占号。工作器 wiring 与维护工具各自先隔离验证并单独 review；不复用 V159 操作身份，不修改 V158/V159。
 
 **Interfaces:** 消费隔离通过的原型 SQL hash、Guard schema/registration 常量、支持配置和 actual workspace shadow 模式。生产共享资源操作仅 root/其明确授权操作者执行串行维护。
 
+- [ ] **0. 补齐真实自动调度入口。** 当前 `FinanceFirstSettlementWorker` 不是 Spring bean，也没有生产调度器；属性名本身不构成 wiring。用默认关闭、需明确配置的单任务调度入口复用同一个真实 Worker，显式参数须来自 Task6 已获验组合；构造及关闭状态不读新表，关闭开关时不创建任务/执行器。无效 worker 配置只关闭该候选工作器并给固定脱敏错误码，不阻断既有原生财务服务。工作复用既有 MaintenanceGate 的实际 admission/计数及单位间中断检查；停止后不再调度新 tick，实际在途工作按既有事务/租约边界退出，不改源计划、检查点或清队列。隔离测试用真实 Spring 条件/属性绑定与实际 tick 覆盖默认关闭零查询、显式开启自动初始化及发布、维护关闭不领取/恢复后可继续、异常后有界重试及销毁后无新工作/残留任务；不要以 mocked tick 计数代替自动发布证明。该入口不得自动修改安装 proof、模式升级或 reader allowlist。完成独立审查后才纳入后续源码维护；禁止外置未门控 JVM tick 循环代替。
 - [ ] **1. 现场复核与迁移定稿。** 确认 V159 操作完成/失败的实际回执、schema、源码、所有运行维护、DDL 元数据锁、正在写源表的事务、配置/挂载/worker。取得下一空闲 Flyway 号后将经过隔离验证的 schema/三个触发器编为新增定向迁移，保持老触发器不变；真实 Flyway 升级另跑隔离校验。不得只复制 test resource 到生产自动运行，也不得同步整个本地迁移目录。
 - [ ] **2. 维护工具硬门。** 维护锁内停止领取新源写任务、等待现有写事务安全点/排空，检查所有受支持写入者边界；先将已有 singleton proof 禁用并持久记录本次恢复边界，再安装并校验三个独立 trigger 的实际定义/schema hash 后才发布 singleton 安装 proof，再建立各公司 registration_boundary/hash/version 和新 generation；新公司由 worker 使用同一 proof 自主发现和初始化，不能借旧公司 seed；已有公司使用 Task2 maintenanceState/advance 从持久旧状态可重启恢复，不能依赖普通 guard 或安装前内存。DDL autocommit 不是原子安装：中途失败保持 route OFF/覆盖门未开，工具记录已完成步骤和恢复入口，禁止安装一个就先开 gate。有外部未受控 writer 无法证明安装前在途事务覆盖时，不开放事实读路由。任何源码热重载均先成功编译、按同锁重启健康确认并恢复本次门控；不构建 JAR/OCI、不清队列/检查点。
 - [ ] **3. shadow 回填。** read mode 保持 native 返回；工作器有界初始化/回填，仅在门开放后轮转，保留正常同步/导入与 API 限流。比较全必需 owner 覆盖、first date/ID/platform/currency/存在性的规范化 hash 和数量（按有界批次）；known-empty/missing 分开计数。仅 seed_complete 不足以允许 bulk，bulk 仍保持 native；shadow 首消费者仅 label workspace。
