@@ -47,6 +47,8 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
     final List<ExecutorService> executors=new ArrayList<>();
     final ThreadLocal<Attempt> current=new ThreadLocal<>();
     final List<Attempt> attempts=new CopyOnWriteArrayList<>();
+    final ThreadLocal<SnapshotWriter> writing=new ThreadLocal<>();
+    final List<SnapshotWriter> writers=new CopyOnWriteArrayList<>();
     long hardDeadline,phaseDeadline;
     int phaseAttempts;
     Path gateDirectory;
@@ -79,7 +81,16 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
                     invalidSnapshotsAndSqlFailuresNeverBecomeFallback();
                     assertTrue(genuineDate>0,"An all-native run cannot close the date experiment");
                 }
-                case "snapshot","selectivity","selective-clean-1pct","selective-mixed-1pct","selective-clean-10pct",
+                case "snapshot" -> {
+                    snapshotAddsAndTransfersBeforeCoverage();
+                    snapshotKeepsEnumeratedDirtyAfterPublication();
+                    snapshotKeepsCleanBeforeDateAndDeleteChanges();
+                    snapshotKeepsCopiedFieldsAndBytes();
+                    snapshotKeepsInitializationAndRegistrationBoundaries();
+                    snapshotExcludesLowIdLateCommit();
+                    assertTrue(genuineDate>0,"Snapshot must exercise genuine DATE_TEST");
+                }
+                case "selectivity","selective-clean-1pct","selective-mixed-1pct","selective-clean-10pct",
                      "all-month-control","plan","continuous" -> fail("NOT_IMPLEMENTED: "+selected);
                 default -> fail("Unknown date-bulk profile: "+selected);
             }
@@ -96,10 +107,11 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
                 receipt.put("phaseSeconds",120);receipt.put("phaseAttempts",200);receipt.put("rrSeconds",30);
                 receipt.put("defaultCap",64);receipt.put("genuineDate",genuineDate);
                 receipt.put("evidence",evidence);receipt.put("attempts",attempts.stream().map(Attempt::receipt).toList());
+                receipt.put("writers",writers.stream().map(SnapshotWriter::receipt).toList());
                 receipt.put("cleanup",cleanup);receipt.put("productionAdmission",false);
                 var directory=Path.of("/tmp/finance-bi-performance-qa/first-settlement-date-bulk");
                 Files.createDirectories(directory);
-                var path=directory.resolve("closure-"+UUID.randomUUID()+".json");
+                var path=directory.resolve((selected.equals("snapshot")?"snapshot-":"closure-")+UUID.randomUUID()+".json");
                 Files.writeString(path,repo.write(receipt)+"\n",StandardOpenOption.CREATE_NEW);
                 System.out.println("DATE_BULK_RECEIPT "+path);
             }
@@ -119,6 +131,8 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
         int registration=1;
         LongSupplier clock=System::nanoTime;
         Runnable afterSnapshot=()->{},beforeProof=()->{},beforeAudit=()->{};
+        Runnable afterUnresolved=()->{};
+        Runnable afterIdentityRead;
         String auditControl="";
         Options(String organization){grantOrganization=organization;}
     }
@@ -132,6 +146,9 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
         boolean sameSnapshot=true,completed;
         int borrows,auditRows=-1,unresolved=-1,lookups,newTableReads,nativeData,oracleData,returnedData;
         int pendingBranch=-1,oldBranch=-1,combined=-1,externalDomainReads,dateStatements;
+        int proofRegistration=-1;
+        long guardGeneration=-1;
+        Boolean guardSeed,guardShops,guardRequeue;
         String route="",reason="",failure="",stage="SOURCE";
         final List<Map<String,Object>> errors=new ArrayList<>();
         Attempt(String name){this.name=name;}
@@ -143,6 +160,8 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
             m.put("pendingBranch",pendingBranch);m.put("oldBranch",oldBranch);m.put("combined",combined);
             m.put("lookups",lookups);m.put("newTableReads",newTableReads);m.put("nativeData",nativeData);m.put("externalDomainReads",externalDomainReads);
             m.put("actualDateStatements",dateStatements);
+            m.put("proofRegistration",proofRegistration);m.put("guardGeneration",guardGeneration);
+            m.put("guardSeed",guardSeed);m.put("guardShops",guardShops);m.put("guardRequeue",guardRequeue);
             m.put("oracleData",oracleData);m.put("returnedData",returnedData);m.put("failure",failure);
             m.put("sqlErrors",errors);m.put("elapsedMillis",(System.nanoTime()-started)/1_000_000);
             return m;
@@ -209,15 +228,18 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
                 (r,n)->new Registration(r.getInt(1),r.getInt(2),r.getString(3),r.getString(4),r.getBoolean(5)));
             if(registrations.isEmpty())return nativeResolution("REGISTRATION",-1);
             var proof=registrations.getFirst();
+            current.get().proofRegistration=proof.registrationVersion();
             if(!supported(proof)||proof.registrationVersion()!=options.registration)return nativeResolution("REGISTRATION",-1);
             var guards=select(budget,"""
                 SELECT organization_id,generation,target_schema_version,registration_version,
                   registration_definition_sha,registration_boundary,seed_complete,shops_complete,requeue_complete
                 FROM finance_first_settlement_initialization WHERE organization_id=?
-                """,(r,n)->r.getLong(2)>0&&r.getInt(3)==proof.schemaVersion()&&r.getInt(4)==proof.registrationVersion()
+                """,(r,n)->{
+                    var a=current.get();a.guardGeneration=r.getLong(2);a.guardSeed=r.getBoolean(7);a.guardShops=r.getBoolean(8);a.guardRequeue=r.getBoolean(9);
+                    return r.getLong(2)>0&&r.getInt(3)==proof.schemaVersion()&&r.getInt(4)==proof.registrationVersion()
                     &&proof.definitionSha().equals(r.getString(5))&&proof.boundary().equals(r.getString(6))
                     &&r.getBoolean(7)&&r.getBoolean(8)&&r.getBoolean(9)
-                    ?new Guard(r.getString(1),r.getLong(2),r.getInt(3),r.getInt(4),true):null,scope.organizationId());
+                    ?new Guard(r.getString(1),r.getLong(2),r.getInt(3),r.getInt(4),true):null;},scope.organizationId());
             if(guards.isEmpty()||guards.getFirst()==null)return nativeResolution("CLOSURE_GATE",-1);
             var guard=guards.getFirst();options.beforeAudit.run();budget.check();
             // This is full-company/full-history E\F. Request dates, permissions and currency do not narrow it.
@@ -247,6 +269,7 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
             var attempt=current.get();attempt.pendingBranch=p.size();attempt.oldBranch=o.size();
             attempt.combined=u.size();attempt.unresolved=u.size();
             if(u.size()>cap)return nativeResolution("OWNER_CAP",u.size());
+            options.afterUnresolved.run();budget.check();
             var resolved=new ArrayList<Candidate>();
             for(var key:u) {
                 attempt.lookups++;
@@ -297,7 +320,7 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
                 options.afterSnapshot.run();a.stage="CANDIDATE";
                 var resolution=resolve(scope,filter,cap,options);
                 Data actual;
-                try {actual=data(scope,filter,resolution.relation(),resolution.budget(),numbers,false);}
+                try {actual=data(scope,filter,resolution.relation(),resolution.budget(),numbers,false,options.afterIdentityRead);}
                 catch(LocalExit expired){resolution=nativeResolution("LOCAL_BUDGET",resolution.unresolved());actual=data(scope,filter,resolution.relation(),null,numbers,false);}
                 a.route=resolution.route().name();a.reason=resolution.reason();
                 assertEquals(route,resolution.route(),name);assertEquals(reason,resolution.reason(),name);
@@ -323,10 +346,20 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
         finally {current.remove();}
     }
     Data data(Scope scope,Filter filter,Relation relation,Budget budget,String numbers,boolean oracle) {
+        return data(scope,filter,relation,budget,numbers,oracle,null);
+    }
+    Data data(Scope scope,Filter filter,Relation relation,Budget budget,String numbers,boolean oracle,Runnable afterIdentityRead) {
         var a=current.get();if(oracle)a.oracleData++;else if(budget==null)a.nativeData++;
         var q=reader.query(scope,filter,"r");
-        var identities=rows(budget,"SELECT "+exactProjection("r")+" FROM ("+relation.sql()+") r WHERE "+q.where()+
-            " ORDER BY r.record_date DESC,r.id",joined(relation.args(),q.args()));
+        String identitySql="SELECT "+exactProjection("r")+" FROM ("+relation.sql()+") r WHERE "+q.where()+" ORDER BY r.record_date DESC,r.id";
+        var identityArgs=joined(relation.args(),q.args());
+        var identities=rows(budget,identitySql,identityArgs);
+        if(afterIdentityRead!=null) {
+            afterIdentityRead.run();FinanceLabelFirstSettlementFacts.requireUsable(reader);
+            var repeated=rows(budget,identitySql,identityArgs);
+            assertEquals(identities,repeated,"Identity/rExact must remain in the original S after B commits");
+            identities=repeated;
+        }
         var settled=new LinkedHashMap<String,Settled>();
         for(String kind:List.of("ORDER","REFUND"))for(boolean normal:List.of(false,true)) {
             var selected=FinanceRecordSearch.apply(q,"o",numbers,false);
@@ -885,6 +918,406 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
         evidence.add(Map.of("case",a.name,"entireProbeFailed",true,"nativeFallbacks",0,"oracleCompletions",0,"partialResponses",0,"physicalBorrows",1));
     }
 
+
+
+    void snapshotAddsAndTransfersBeforeCoverage() throws Exception {
+        {
+            resetFixture();String shop=groupedShop(COMPANY,"snapshot-add",null);
+            settlement("snapshot-add-base",shop,"base",OCT.plusDays(2));addSources(COMPANY,shop,"base","snapshot-add-base");
+            addSources(COMPANY,shop,"new","snapshot-add-new");initializeAndPublish(COMPANY);
+            var options=new Options(COMPANY.organizationId());SnapshotWriter[] writer={null};
+            options.afterSnapshot=()->writer[0]=atBoundary("S1_add_after_source_before_proof",w->{
+                commitSettlement(w,"snapshot-add-new",shop,"new",OCT.plusDays(7));
+                assertEquals(1,pending(COMPANY,reader));
+                freshSourceWitness(w,MONTH,List.of("snapshot-add-new","snapshot-add-base"));
+            });
+            var old=probe("S1_add_old_S",COMPANY,MONTH,0,options,DateRoute.DATE_TEST,"",List.of("snapshot-add-base"),"");
+            assertSingleOwnerRows(old,"snapshot-add-base");assertEquals(0,old.attempt().unresolved);
+            assertNotEquals(old.data().identities(),writer[0].freshRows,"A wrong fresh/reopened S would include B's committed owner");
+            evidence.add(Map.of("case","S1_real_fresh_snapshot_negative_control","oldIds",ids(old.data().identities()),
+                "freshIds",ids(writer[0].freshRows),"actuallyDifferent",true));
+            var expected=List.of("snapshot-add-new","snapshot-add-base");
+            var cap0=probe("S1_add_next_cap0",MONTH,0,DateRoute.NATIVE,"OWNER_CAP",expected);
+            assertEquals(0,cap0.attempt().lookups);
+            var next=probe("S1_add_next_cap1",MONTH,1,DateRoute.DATE_TEST,"",expected);
+            assertEquals(1,next.attempt().lookups);
+            assertSourceRows(next,List.of("snapshot-add-new-o1","snapshot-add-new-o2","snapshot-add-base-o1","snapshot-add-base-o2"),
+                List.of("snapshot-add-new-r1","snapshot-add-new-r2","snapshot-add-new-r3","snapshot-add-base-r1","snapshot-add-base-r2","snapshot-add-base-r3"));
+        }
+        {
+            resetFixture();String from=groupedShop(COMPANY,"snapshot-transfer-from",null),to=groupedShop(COMPANY,"snapshot-transfer-to",null);
+            settlement("snapshot-transfer",from,"old",OCT.plusDays(2));
+            addSources(COMPANY,from,"old","transfer-old");addSources(COMPANY,to,"new","transfer-new");initializeAndPublish(COMPANY);
+            var options=new Options(COMPANY.organizationId());
+            options.afterSnapshot=()->atBoundary("S1_transfer_after_source_before_proof",w->{
+                commitMutation(w,"UPDATE finance_records SET shop_id=?,order_id='new' WHERE id='snapshot-transfer'",to);
+                assertEquals(2,pending(COMPANY,reader));
+            });
+            var old=probe("S1_transfer_old_S",COMPANY,MONTH,0,options,DateRoute.DATE_TEST,"",List.of("snapshot-transfer"),"");
+            assertSingleOwnerRows(old,"transfer-old");assertEquals(from,old.data().identities().getFirst().get("shop_id"));
+            probe("S1_transfer_next_cap1",MONTH,1,DateRoute.NATIVE,"OWNER_CAP",List.of("snapshot-transfer"));
+            var next=probe("S1_transfer_next_cap2",MONTH,2,DateRoute.DATE_TEST,"",List.of("snapshot-transfer"));
+            assertEquals(2,next.attempt().lookups);assertSingleOwnerRows(next,"transfer-new");
+            assertEquals(to,next.data().identities().getFirst().get("shop_id"));assertEquals("new",next.data().identities().getFirst().get("order_id"));
+            assertNotEquals(old.data().identities(),next.data().identities());
+        }
+    }
+
+    void snapshotKeepsEnumeratedDirtyAfterPublication() throws Exception {
+        resetFixture();String shop=groupedShop(COMPANY,"snapshot-publish",null);
+        settlement("snapshot-dirty-old",shop,"dirty",OCT.minusDays(1));settlement("snapshot-dirty-next",shop,"dirty",OCT.plusDays(9));
+        addSources(COMPANY,shop,"dirty","snapshot-dirty");initializeAndPublish(COMPANY);
+        db.update("UPDATE finance_records SET record_date='2026-10-11' WHERE id='snapshot-dirty-old'");
+        assertEquals(1,pending(COMPANY));
+        var options=new Options(COMPANY.organizationId());
+        options.afterUnresolved=()->{
+            assertEquals(1,current.get().unresolved);
+            atBoundary("S2_after_U_before_lookup_worker_publish",w->{
+                publish(COMPANY,reader);
+                assertEquals(0,pending(COMPANY,reader));
+                assertEquals("snapshot-dirty-next",reads.queryForObject("SELECT first_record_id FROM finance_first_settlement_facts "+
+                    "WHERE organization_id=? AND applied_revision=requested_revision AND has_settlement=TRUE",String.class,COMPANY.organizationId()));
+                evidence.add(Map.of("case",w.boundary,"realWorkerPublishedClean",true));
+            });
+        };
+        var old=probe("S2_enumerated_dirty_old_S",COMPANY,MONTH,1,options,DateRoute.DATE_TEST,"",List.of("snapshot-dirty-next"),"");
+        assertEquals(1,old.attempt().unresolved);assertEquals(1,old.attempt().lookups);assertSingleOwnerRows(old,"snapshot-dirty");
+        var next=probe("S2_next_S_clean_cap0",MONTH,0,DateRoute.DATE_TEST,"",List.of("snapshot-dirty-next"));
+        assertEquals(0,next.attempt().unresolved);assertEquals(0,next.attempt().lookups);assertSingleOwnerRows(next,"snapshot-dirty");
+    }
+
+    void snapshotKeepsCleanBeforeDateAndDeleteChanges() throws Exception {
+        snapshotCleanDateMove(false);snapshotCleanDateMove(true);
+        {
+            resetFixture();String shop=groupedShop(COMPANY,"snapshot-delete-first",null);
+            settlement("snapshot-delete-first",shop,"delete",OCT.plusDays(1));settlement("snapshot-delete-next",shop,"delete",OCT.plusDays(4));
+            addSources(COMPANY,shop,"delete","snapshot-delete");initializeAndPublish(COMPANY);
+            var options=new Options(COMPANY.organizationId());
+            options.afterIdentityRead=()->{
+                assertEquals(0,current.get().unresolved);
+                atBoundary("S3_clean_then_delete_first",w->commitMutation(w,"DELETE FROM finance_records WHERE id='snapshot-delete-first'"));
+            };
+            var old=probe("S3_delete_first_old_S",COMPANY,MONTH,0,options,DateRoute.DATE_TEST,"",List.of("snapshot-delete-first"),"");
+            assertSingleOwnerRows(old,"snapshot-delete");
+            var next=probe("S3_delete_first_next_S",MONTH,1,DateRoute.DATE_TEST,"",List.of("snapshot-delete-next"));
+            assertSingleOwnerRows(next,"snapshot-delete");assertEquals(1,next.attempt().lookups);
+        }
+        {
+            resetFixture();String shop=groupedShop(COMPANY,"snapshot-delete-all",null);
+            settlement("snapshot-all-first",shop,"all",OCT.plusDays(1));addSources(COMPANY,shop,"all","snapshot-all");initializeAndPublish(COMPANY);
+            var options=new Options(COMPANY.organizationId());
+            options.afterIdentityRead=()->{
+                assertEquals(0,current.get().unresolved);
+                atBoundary("S3_clean_then_delete_all_candidates",w->commitMutation(w,"DELETE FROM finance_records WHERE id='snapshot-all-first'"));
+            };
+            var old=probe("S3_delete_all_old_S",COMPANY,MONTH,0,options,DateRoute.DATE_TEST,"",List.of("snapshot-all-first"),"");
+            assertSingleOwnerRows(old,"snapshot-all");
+            var next=probe("S3_delete_all_next_S_pending_empty",MONTH,1,DateRoute.DATE_TEST,"",List.of());
+            assertSourceRows(next,List.of(),List.of());assertEquals(1,next.attempt().lookups);
+            publish(COMPANY);
+            var empty=probe("S3_delete_all_published_empty",MONTH,0,DateRoute.DATE_TEST,"",List.of());
+            assertSourceRows(empty,List.of(),List.of());
+        }
+    }
+    void snapshotCleanDateMove(boolean intoOctober) throws Exception {
+        resetFixture();String tag=intoOctober?"snapshot-in":"snapshot-out",shop=groupedShop(COMPANY,tag,null);
+        LocalDate first=intoOctober?OCT.minusDays(1):OCT.plusDays(1);
+        LocalDate second=intoOctober?OCT.plusDays(9):OCT.plusMonths(1);
+        LocalDate moved=intoOctober?OCT.plusDays(10):OCT.plusMonths(1).plusDays(1);
+        Filter oldMonth=intoOctober?window(OCT.minusMonths(1),OCT.minusDays(1)):MONTH;
+        Filter newMonth=intoOctober?MONTH:window(OCT.plusMonths(1),OCT.plusMonths(2).minusDays(1));
+        settlement(tag+"-first",shop,"move",first);settlement(tag+"-next",shop,"move",second);
+        addSources(COMPANY,shop,"move",tag);initializeAndPublish(COMPANY);
+        var options=new Options(COMPANY.organizationId());
+        options.afterIdentityRead=()->{
+            assertEquals(0,current.get().unresolved);
+            atBoundary("S3_clean_then_"+tag,w->commitMutation(w,"UPDATE finance_records SET record_date=? WHERE id=?",java.sql.Date.valueOf(moved),tag+"-first"));
+        };
+        var old=probe("S3_"+tag+"_old_S",COMPANY,oldMonth,0,options,DateRoute.DATE_TEST,"",List.of(tag+"-first"),"");
+        assertSingleOwnerRows(old,tag);
+        var exit=probe("S3_"+tag+"_next_old_month_exit",oldMonth,1,DateRoute.DATE_TEST,"",List.of());
+        assertSourceRows(exit,List.of(),List.of());assertEquals(1,exit.attempt().lookups);
+        var enter=probe("S3_"+tag+"_next_new_month_entry",newMonth,1,DateRoute.DATE_TEST,"",List.of(tag+"-next"));
+        assertSingleOwnerRows(enter,tag);assertEquals(1,enter.attempt().lookups);
+    }
+
+
+    void snapshotKeepsCopiedFieldsAndBytes() throws Exception {
+        {
+            resetFixture();String shop=groupedShop(COMPANY,"snapshot-copy",null);
+            settlement("snapshot-copy-a",shop,"copy",OCT.plusDays(2));
+            settlement(COMPANY,"snapshot-copy-z",shop,"copy",OCT.plusDays(2),"TIKTOK_SHOP","PHP","ORDER","SETTLED","API");
+            addSources(COMPANY,shop,"copy","snapshot-copy");initializeAndPublish(COMPANY);
+            var options=new Options(COMPANY.organizationId());
+            options.afterIdentityRead=()->atBoundary("S4_clean_then_platform_currency",w->
+                commitMutation(w,"UPDATE finance_records SET platform='TIKTOK_SHOP',currency='PHP' WHERE id='snapshot-copy-a'"));
+            var old=probe("S4_copied_old_S",COMPANY,chosen(shop,"SHOPEE","USD",""),0,options,DateRoute.DATE_TEST,"",List.of("snapshot-copy-a"),"");
+            assertSingleOwnerRows(old,"snapshot-copy");
+            assertEquals("SHOPEE",old.data().identities().getFirst().get("platform"));assertEquals("USD",old.data().identities().getFirst().get("currency"));
+            var exit=probe("S4_copied_next_old_filter",chosen(shop,"SHOPEE","USD",""),1,DateRoute.DATE_TEST,"",List.of());
+            assertSourceRows(exit,List.of(),List.of());
+            var next=probe("S4_copied_next_new_filter",chosen(shop,"TIKTOK_SHOP","PHP",""),1,DateRoute.DATE_TEST,"",List.of("snapshot-copy-a"));
+            assertSingleOwnerRows(next,"snapshot-copy");
+            assertEquals("TIKTOK_SHOP",next.data().identities().getFirst().get("platform"));assertEquals("PHP",next.data().identities().getFirst().get("currency"));
+        }
+        {
+            resetFixture();String shop=groupedShop(COMPANY,"snapshot-byte",null);
+            settlement("snapshot-byte-a",shop,"byte",OCT.plusDays(2));
+            settlement(COMPANY,"snapshot-byte-z",shop,"byte",OCT.plusDays(2),"SHOPEE","PHP","ORDER","SETTLED","API");
+            addSources(COMPANY,shop,"byte","snapshot-byte");initializeAndPublish(COMPANY);
+            long revision=revision(COMPANY.organizationId(),shop,"byte");
+            var options=new Options(COMPANY.organizationId());
+            options.afterIdentityRead=()->atBoundary("S4_clean_then_SQL_equal_bytes",w->{
+                commitMutation(w,"UPDATE finance_records SET id='SNAPSHOT-BYTE-A',organization_id='DATE-BULK-COMPANY',shop_id=?,"+
+                    "order_id='BYTE',platform='shopee',currency='usd',status='settled' WHERE id='snapshot-byte-a'",shop.toUpperCase(Locale.ROOT));
+                assertEquals(revision,reads.queryForObject("SELECT requested_revision FROM finance_first_settlement_facts WHERE organization_id=? AND order_id='byte'",Long.class,COMPANY.organizationId()));
+                assertEquals(0,pending(COMPANY,reader));
+            });
+            var old=probe("S4_bytes_old_S",COMPANY,MONTH,0,options,DateRoute.DATE_TEST,"",List.of("snapshot-byte-a"),"");
+            assertSingleOwnerRows(old,"snapshot-byte");assertEquals("555344",old.data().identities().getFirst().get("currency_hex"));
+            assertEquals("53484F504545",old.data().identities().getFirst().get("platform_hex"));
+            var next=probe("S4_bytes_next_S",MONTH,0,DateRoute.DATE_TEST,"",List.of("SNAPSHOT-BYTE-A"));
+            assertSingleOwnerRows(next,"snapshot-byte");assertEquals(0,next.attempt().lookups);
+            assertEquals("757364",next.data().identities().getFirst().get("currency_hex"));
+            assertEquals("73686F706565",next.data().identities().getFirst().get("platform_hex"));
+            assertEquals("736574746C6564",next.data().identities().getFirst().get("status_hex"));
+            assertEquals("BYTE",next.data().identities().getFirst().get("order_id"));
+            assertNotEquals(old.data().identities(),next.data().identities());
+        }
+    }
+
+    void snapshotKeepsInitializationAndRegistrationBoundaries() throws Exception {
+        {
+            resetFixture();String shop=groupedShop(COMPANY,"snapshot-init",null);
+            settlement("snapshot-init",shop,"init",OCT.plusDays(2));addSources(COMPANY,shop,"init","snapshot-init");
+            new FinanceFirstSettlementInitialization(repo).discoverCompanies(8);
+            assertFalse(new FinanceFirstSettlementFacts(repo).guard(COMPANY.organizationId()).orElseThrow().seedComplete());
+            var options=new Options(COMPANY.organizationId());
+            options.afterSnapshot=()->atBoundary("S5_incomplete_S_then_real_initialization",w->initializeAndPublish(COMPANY,reader));
+            var old=probe("S5_incomplete_initialization_old_S",COMPANY,MONTH,64,options,DateRoute.NATIVE,"CLOSURE_GATE",List.of("snapshot-init"),"");
+            assertSingleOwnerRows(old,"snapshot-init");assertEquals(Boolean.FALSE,old.attempt().guardSeed);
+            var unapproved=probe("S5_initialized_but_ungranted",COMPANY,MONTH,0,new Options("not-granted"),DateRoute.NATIVE,"UNGRANTED",List.of("snapshot-init"),"");
+            assertEquals(0,unapproved.attempt().newTableReads);
+            var next=probe("S5_initialized_next_explicit_grant",MONTH,0,DateRoute.DATE_TEST,"",List.of("snapshot-init"));
+            assertSingleOwnerRows(next,"snapshot-init");assertEquals(Boolean.TRUE,next.attempt().guardSeed);
+        }
+        snapshotRegistrationBoundary(false);snapshotRegistrationBoundary(true);
+    }
+    void snapshotRegistrationBoundary(boolean advancedBeforeA) throws Exception {
+        resetFixture();String tag=advancedBeforeA?"snapshot-advanced":"snapshot-upgrade",shop=groupedShop(COMPANY,tag,null);
+        settlement(tag,shop,"upgrade",OCT.plusDays(2));addSources(COMPANY,shop,"upgrade",tag);initializeAndPublish(COMPANY);
+        if(advancedBeforeA)advanceRegistrationTwo(repo);
+        var options=new Options(COMPANY.organizationId());if(advancedBeforeA)options.registration=2;
+        options.afterSnapshot=()->atBoundary("S5_"+tag+"_before_proof",w->{
+            if(!advancedBeforeA)advanceRegistrationTwo(reader);
+            initializeAndPublish(COMPANY,reader);
+            assertEquals(1,reads.queryForObject("SELECT COUNT(*) FROM finance_first_settlement_facts WHERE organization_id=? "+
+                "AND applied_generation=2 AND applied_registration_version=2 AND applied_revision=requested_revision",Integer.class,COMPANY.organizationId()));
+        });
+        var old=probe("S5_"+tag+"_old_S",COMPANY,MONTH,0,options,
+            advancedBeforeA?DateRoute.NATIVE:DateRoute.DATE_TEST,advancedBeforeA?"CLOSURE_GATE":"",List.of(tag),"");
+        assertSingleOwnerRows(old,tag);
+        assertEquals(advancedBeforeA?2:1,old.attempt().proofRegistration);
+        assertEquals(advancedBeforeA?2L:1L,old.attempt().guardGeneration);
+        assertEquals(advancedBeforeA?Boolean.FALSE:Boolean.TRUE,old.attempt().guardSeed);
+        var stale=probe("S5_"+tag+"_next_stale_grant",MONTH,0,DateRoute.NATIVE,"REGISTRATION",List.of(tag));
+        assertSingleOwnerRows(stale,tag);assertEquals(2,stale.attempt().proofRegistration);
+        var missingGrant=new Options("not-granted");missingGrant.registration=2;
+        var unapproved=probe("S5_"+tag+"_next_unapproved",COMPANY,MONTH,0,missingGrant,DateRoute.NATIVE,"UNGRANTED",List.of(tag),"");
+        assertEquals(0,unapproved.attempt().newTableReads);
+        var explicit=new Options(COMPANY.organizationId());explicit.registration=2;
+        var next=probe("S5_"+tag+"_next_correct_grant",COMPANY,MONTH,0,explicit,DateRoute.DATE_TEST,"",List.of(tag),"");
+        assertSingleOwnerRows(next,tag);assertEquals(2,next.attempt().proofRegistration);assertEquals(2L,next.attempt().guardGeneration);
+        assertEquals(Boolean.TRUE,next.attempt().guardSeed);assertEquals(Boolean.TRUE,next.attempt().guardShops);assertEquals(Boolean.TRUE,next.attempt().guardRequeue);
+    }
+    void advanceRegistrationTwo(FinanceRepository runtimeRepo) {
+        var init=new FinanceFirstSettlementInitialization(runtimeRepo);
+        var previous=init.maintenanceState(COMPANY.organizationId()).orElseThrow();
+        assertEquals(1,previous.registrationVersion());
+        int changed=runtimeRepo.transaction(()->runtimeRepo.jdbc().update("UPDATE finance_first_settlement_registration "+
+            "SET registration_version=2,installation_boundary='snapshot-registration-2' WHERE id=1"));
+        assertEquals(1,changed);
+        var target=new FinanceFirstSettlementFacts(runtimeRepo).registration().orElseThrow();
+        assertEquals(AdvanceResult.ADVANCED,init.advance(previous,target));
+        var guard=new FinanceFirstSettlementFacts(runtimeRepo).guard(COMPANY.organizationId()).orElseThrow();
+        assertEquals(2L,guard.generation());assertFalse(guard.seedComplete());
+        evidence.add(Map.of("case","S5_actual_advance","oldGeneration",previous.generation(),"newGeneration",guard.generation(),
+            "registration",target.registrationVersion(),"seedCompleteAtAdvance",false));
+    }
+
+    void snapshotExcludesLowIdLateCommit() throws Exception {
+        resetFixture();String shop=groupedShop(COMPANY,"snapshot-late",null);
+        settlement("zzz-snapshot-stable",shop,"base",OCT.plusDays(2));addSources(COMPANY,shop,"base","late-base");
+        addSources(COMPANY,shop,"late","late-new");initializeAndPublish(COMPANY);
+        var writer=startWriter("S6_low_ID_insert_before_A_commit_after_S",null,w->{
+            try(var connection=source.getConnection()) {
+                connection.setAutoCommit(false);
+                try(var statement=connection.prepareStatement("""
+                    INSERT INTO finance_records(id,organization_id,user_id,shop_id,platform,kind,external_id,order_id,statement_id,
+                      category,status,record_date,currency,source,raw_json)
+                    VALUES('000-snapshot-late',?,?,?,'SHOPEE','SETTLEMENT','000-snapshot-late','late','000-snapshot-late',
+                      'ORDER','SETTLED','2026-10-08','USD','API','{}')
+                    """)) {
+                    statement.setString(1,COMPANY.organizationId());statement.setString(2,COMPANY.userId());statement.setString(3,shop);
+                    assertEquals(1,statement.executeUpdate());
+                }
+                try(var statement=connection.prepareStatement("SELECT pending FROM finance_first_settlement_facts WHERE organization_id=? AND shop_id=? AND order_id='late'")) {
+                    statement.setString(1,COMPANY.organizationId());statement.setString(2,shop);
+                    try(var rows=statement.executeQuery()){assertTrue(rows.next());assertTrue(rows.getBoolean(1));assertFalse(rows.next());}
+                }
+                w.preparedUncommitted=true;w.prepared.countDown();
+                if(!w.release.await(Math.max(1,w.waitDeadline-System.nanoTime()),TimeUnit.NANOSECONDS))
+                    throw new TimeoutException("Held source transaction was not released inside its bounded original wait");
+                if(Thread.currentThread().isInterrupted()||System.nanoTime()>=w.waitDeadline)
+                    throw new TimeoutException("Held writer cannot commit after its original deadline");
+                connection.commit();w.mutationCommitted=true;
+            }
+            freshSourceWitness(w,MONTH,List.of("000-snapshot-late","zzz-snapshot-stable"));
+            assertEquals("000-snapshot-late",reads.queryForObject("SELECT MIN(id) FROM finance_records WHERE organization_id=? AND kind='SETTLEMENT'",String.class,COMPANY.organizationId()));
+        });
+        try {
+            assertTrue(writer.prepared.await(Math.max(1,writer.waitDeadline-System.nanoTime()),TimeUnit.NANOSECONDS));
+            if(!writer.preparedUncommitted) {
+                try{writer.future.get(Math.max(1,writer.waitDeadline-System.nanoTime()),TimeUnit.NANOSECONDS);}
+                catch(ExecutionException failure){throw propagate(failure.getCause());}
+                fail("B must insert both source and trigger registration before A starts S");
+            }
+            var options=new Options(COMPANY.organizationId());
+            options.afterSnapshot=()->{
+                writer.readerConnectionId=current.get().connectionId;
+                assertEquals(0,writer.commits.get());assertFalse(writer.future.isDone());
+                writer.release.countDown();awaitWriter(writer,current.get());
+            };
+            var old=probe("S6_low_late_old_S",COMPANY,MONTH,0,options,DateRoute.DATE_TEST,"",List.of("zzz-snapshot-stable"),"");
+            assertSingleOwnerRows(old,"late-base");assertEquals(0,old.attempt().unresolved);
+            assertNotEquals(old.data().identities(),writer.freshRows);
+            var expected=List.of("000-snapshot-late","zzz-snapshot-stable");
+            probe("S6_low_late_next_cap0",MONTH,0,DateRoute.NATIVE,"OWNER_CAP",expected);
+            var next=probe("S6_low_late_next_cap1",MONTH,1,DateRoute.DATE_TEST,"",expected);
+            assertSourceRows(next,List.of("late-new-o1","late-new-o2","late-base-o1","late-base-o2"),
+                List.of("late-new-r1","late-new-r2","late-new-r3","late-base-r1","late-base-r2","late-base-r3"));
+            evidence.add(Map.of("case","S6_low_ID_late_commit","sourceAndPendingSeenBeforeCommit",true,"oldSnapshotExcluded",true,
+                "nextSnapshotIncluded",true,"lowId","000-snapshot-late","existingId","zzz-snapshot-stable","usesHighWatermark",false));
+        }finally {writer.release.countDown();}
+    }
+
+    @FunctionalInterface interface WriterAction {void run(SnapshotWriter writer)throws Exception;}
+    static final class SnapshotWriter {
+        final String boundary;
+        final long started=System.nanoTime(),readerThread=Thread.currentThread().threadId();
+        final long waitDeadline;
+        final CountDownLatch prepared=new CountDownLatch(1),release=new CountDownLatch(1);
+        final List<Long> connectionIds=new CopyOnWriteArrayList<>();
+        final List<Map<String,Object>> errors=new CopyOnWriteArrayList<>();
+        final AtomicInteger borrowed=new AtomicInteger(),closed=new AtomicInteger(),commits=new AtomicInteger(),rollbacks=new AtomicInteger(),openStatements=new AtomicInteger();
+        volatile long readerConnectionId=-1,readerDeadline,threadId,ended;
+        volatile boolean completed,mutationCommitted,preparedUncommitted,originalHolderRetained;
+        volatile String failure="";
+        ExecutorService executor;
+        FutureTask<Void> future;
+        List<Map<String,Object>> freshRows=List.of();
+        SnapshotWriter(String boundary,long waitDeadline){this.boundary=boundary;this.waitDeadline=waitDeadline;}
+        Map<String,Object> receipt(){
+            var r=new LinkedHashMap<String,Object>();r.put("boundary",boundary);r.put("readerConnectionId",readerConnectionId);
+            r.put("readerHolderDeadlineMillis",readerDeadline);r.put("originalHolderRetained",originalHolderRetained);
+            r.put("readerThread",readerThread);r.put("writerThread",threadId);r.put("physicalWriterIds",connectionIds);
+            r.put("completed",completed);r.put("mutationCommitted",mutationCommitted);r.put("preparedUncommitted",preparedUncommitted);
+            r.put("borrows",borrowed.get());r.put("closed",closed.get());r.put("commits",commits.get());r.put("rollbacks",rollbacks.get());
+            r.put("openStatements",openStatements.get());r.put("failure",failure);r.put("sqlErrors",errors);
+            r.put("freshIds",ids(freshRows));r.put("freshRowsHash",hash(freshRows.toString()));
+            r.put("writerElapsedMillis",ended==0?-1:(ended-started)/1_000_000);
+            r.put("futureDone",future!=null&&future.isDone());r.put("executorTerminated",executor!=null&&executor.isTerminated());
+            return r;
+        }
+    }
+    SnapshotWriter startWriter(String boundary,Attempt a,WriterAction action) {
+        long room=a==null?TimeUnit.SECONDS.toNanos(5):TimeUnit.MILLISECONDS.toNanos(Math.max(1,a.holder.getTimeToLiveInMillis()));
+        long deadline=Math.min(Math.min(hardDeadline,phaseDeadline),System.nanoTime()+Math.min(room,TimeUnit.SECONDS.toNanos(5)));
+        var w=new SnapshotWriter(boundary,deadline);
+        if(a!=null){w.readerConnectionId=a.connectionId;w.readerDeadline=a.deadline;}
+        w.executor=Executors.newSingleThreadExecutor();executors.add(w.executor);writers.add(w);
+        // Register the actual FutureTask before the executor can dispatch it.
+        w.future=new FutureTask<>(()->{
+            writing.set(w);w.threadId=Thread.currentThread().threadId();
+            try {assertNotEquals(w.readerThread,w.threadId);action.run(w);w.completed=true;return null;}
+            catch(Exception|Error failure){w.failure=failure.getClass().getSimpleName();throw failure;}
+            finally {w.ended=System.nanoTime();writing.remove();w.prepared.countDown();}
+        });
+        w.executor.execute(w.future);
+        return w;
+    }
+    SnapshotWriter atBoundary(String boundary,WriterAction action) {
+        var a=current.get();FinanceLabelFirstSettlementFacts.requireUsable(reader);
+        var w=startWriter(boundary,a,action);awaitWriter(w,a);return w;
+    }
+    void awaitWriter(SnapshotWriter w,Attempt a) {
+        w.readerDeadline=a.deadline;
+        Throwable primary=null;
+        try {
+            assertTrue(System.nanoTime()<w.waitDeadline,"B must fit the original S and phase deadline");
+            try {w.future.get(Math.max(1,w.waitDeadline-System.nanoTime()),TimeUnit.NANOSECONDS);}
+            catch(ExecutionException failure){throw propagate(failure.getCause());}
+            catch(TimeoutException failure){throw new IllegalStateException("Snapshot writer exceeded its original bounded wait",failure);}
+            catch(InterruptedException failure){Thread.currentThread().interrupt();throw new IllegalStateException(failure);}
+            assertTrue(w.completed);assertTrue(w.commits.get()>0,"B must actually commit");
+            assertFalse(w.connectionIds.isEmpty());
+            assertTrue(w.connectionIds.stream().allMatch(id->id!=a.connectionId),"B must hold a different real physical connection");
+            assertEquals(w.borrowed.get(),w.closed.get());assertEquals(0,w.openStatements.get());
+            assertSame(a.holder,holder());assertSame(a.connection,holder().getConnection());
+            assertEquals(a.deadline,holder().getDeadline().getTime());
+            FinanceLabelFirstSettlementFacts.requireUsable(reader);
+            assertEquals(1,a.borrows);assertEquals(1,source.activeConnections.get());
+            assertTrue(w.ended<=w.waitDeadline);w.originalHolderRetained=true;
+        }catch(RuntimeException|Error failure){primary=failure;throw failure;}
+        finally {
+            try {
+                if(!w.future.isDone()){source.cancelAll();w.future.cancel(true);}
+                w.executor.shutdownNow();
+                assertTrue(w.executor.awaitTermination(Math.max(0,w.waitDeadline-System.nanoTime()),TimeUnit.NANOSECONDS));
+            }catch(Throwable cleanupFailure){
+                if(primary!=null)primary.addSuppressed(cleanupFailure);else throw propagate(cleanupFailure);
+            }
+        }
+    }
+    static RuntimeException propagate(Throwable failure){
+        if(failure instanceof Error error)throw error;
+        return failure instanceof RuntimeException runtime?runtime:new IllegalStateException("Snapshot writer failed",failure);
+    }
+    void commitMutation(SnapshotWriter w,String sql,Object...args)throws SQLException {
+        try(var connection=source.getConnection()) {
+            connection.setAutoCommit(false);updateAndCommit(connection,sql,args);w.mutationCommitted=true;
+        }
+    }
+    void commitSettlement(SnapshotWriter w,String id,String shop,String order,LocalDate day)throws SQLException {
+        commitMutation(w,"""
+            INSERT INTO finance_records(id,organization_id,user_id,shop_id,platform,kind,external_id,order_id,statement_id,category,status,record_date,currency,source,raw_json)
+            VALUES(?,?,?,?,'SHOPEE','SETTLEMENT',?,?,?,'ORDER','SETTLED',?,'USD','API','{}')
+            """,id,COMPANY.organizationId(),COMPANY.userId(),shop,id,order,id,java.sql.Date.valueOf(day));
+    }
+    void freshSourceWitness(SnapshotWriter w,Filter filter,List<String> expected) {
+        w.freshRows=reader.readSnapshot(30,()->{
+            var q=reader.query(COMPANY,filter,"r");
+            var result=rows(null,"SELECT "+exactProjection("r")+" FROM finance_records r WHERE "+
+                FinanceCostReport.firstSettlementIdentity("r",true)+" AND "+q.where()+" ORDER BY r.record_date DESC,r.id",q.args());
+            FinanceLabelFirstSettlementFacts.requireUsable(reader);
+            var h=holder();long id=reads.queryForObject("SELECT CONNECTION_ID()",Long.class);
+            assertNotEquals(w.readerConnectionId,id);assertEquals(expected,ids(result));
+            evidence.add(Map.of("case",w.boundary,"freshPhysicalConnectionId",id,"freshHolderDeadlineMillis",h.getDeadline().getTime(),
+                "freshLiteralIds",expected,"independentFreshSnapshot",true));
+            return result;
+        });
+    }
+    void assertSourceRows(Probe probe,List<String> orders,List<String> refunds) {
+        for(boolean normal:List.of(false,true)) {
+            var o=probe.data().settled().get("ORDER:"+normal);var r=probe.data().settled().get("REFUND:"+normal);
+            assertEquals(orders,ids(o.bag()));assertEquals(refunds,ids(r.bag()));
+            assertEquals(orders.size(),o.count());assertEquals(refunds.size(),r.count());
+        }
+    }
+    void assertSingleOwnerRows(Probe probe,String prefix) {
+        assertSourceRows(probe,List.of(prefix+"-o1",prefix+"-o2"),List.of(prefix+"-r1",prefix+"-r2",prefix+"-r3"));
+    }
+
     // All fixture setup stays inside the single selected test.
     void resetFixture() {
         checkTime();setup();resetFirstSettlementPrototype();
@@ -915,24 +1348,31 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
             COMPANY.organizationId(),shop,order);
     }
     void initializeAndPublish(Scope company) throws Exception {
-        checkTime();var init=new FinanceFirstSettlementInitialization(repo);var facts=new FinanceFirstSettlementFacts(repo);
+        initializeAndPublish(company,repo);
+    }
+    void initializeAndPublish(Scope company,FinanceRepository runtimeRepo) throws Exception {
+        checkTime();var init=new FinanceFirstSettlementInitialization(runtimeRepo);var facts=new FinanceFirstSettlementFacts(runtimeRepo);
         init.discoverCompanies(8);var guard=facts.guard(company.organizationId()).orElseThrow();
         boolean seed=false,requeue=false;
         for(int n=0;n<200;n++){checkTime();if(init.seed(guard,64).complete()){seed=true;break;}}
         for(int n=0;n<200;n++){checkTime();if(init.requeue(guard,64).complete()){requeue=true;break;}}
-        assertTrue(seed&&requeue&&init.complete(guard));publish(company);
+        assertTrue(seed&&requeue&&init.complete(guard));publish(company,runtimeRepo);
         assertTrue(facts.guard(company.organizationId()).orElseThrow().seedComplete());
     }
     void publish(Scope company)throws Exception {
+        publish(company,repo);
+    }
+    void publish(Scope company,FinanceRepository runtimeRepo)throws Exception {
         if(gateDirectory==null)gateDirectory=Files.createTempDirectory("finance-date-bulk-gate-");
         var constructor=MaintenanceGate.class.getDeclaredConstructor(Path.class);constructor.setAccessible(true);
         var gate=constructor.newInstance(gateDirectory.resolve("closed"));
-        var worker=new FinanceFirstSettlementWorker(new FinanceFirstSettlementFacts(repo),new FinanceFirstSettlementInitialization(repo),
+        var worker=new FinanceFirstSettlementWorker(new FinanceFirstSettlementFacts(runtimeRepo),new FinanceFirstSettlementInitialization(runtimeRepo),
             64,30,8,Duration.ofSeconds(2),System::nanoTime,gate);
-        for(int n=0;pending(company)>0&&n<200;n++){checkTime();worker.tick();}
-        assertEquals(0L,pending(company));assertEquals(0,gate.activeWorkers());
+        for(int n=0;pending(company,runtimeRepo)>0&&n<200;n++){checkTime();worker.tick();}
+        assertEquals(0L,pending(company,runtimeRepo));assertEquals(0,gate.activeWorkers());
     }
-    long pending(Scope scope){return db.queryForObject("SELECT COUNT(*) FROM finance_first_settlement_facts WHERE organization_id=? AND pending=TRUE",Long.class,scope.organizationId());}
+    long pending(Scope scope){return pending(scope,repo);}
+    long pending(Scope scope,FinanceRepository runtimeRepo){return runtimeRepo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_first_settlement_facts WHERE organization_id=? AND pending=TRUE",Long.class,scope.organizationId());}
     List<Map<String,Object>> state(){
         var all=new ArrayList<Map<String,Object>>();
         for(String table:List.of("finance_first_settlement_registration","finance_first_settlement_initialization","finance_first_settlement_facts"))
@@ -943,15 +1383,18 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
     void cleanupOwned(Map<String,Object> saved)throws Exception {
         long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);
         source.cancelAll();
+        for(var w:writers)if(w.future!=null&&!w.future.isDone()){w.future.cancel(true);w.release.countDown();}
         for(var e:executors)e.shutdownNow();
         for(var e:executors)assertTrue(e.awaitTermination(Math.max(0,deadline-System.nanoTime()),TimeUnit.NANOSECONDS),"Owned executor survived the shared cleanup deadline");
         assertEquals(0,source.activeConnections.get());assertTrue(source.executing.isEmpty());assertTrue(source.openStatements.isEmpty());
         assertEquals(0,dataSource.getHikariPoolMXBean().getActiveConnections());
+        for(var w:writers){assertEquals(w.borrowed.get(),w.closed.get());assertEquals(0,w.openStatements.get());}
         if(gateDirectory!=null)Files.delete(gateDirectory);
         saved.put("executorsTerminated",executors.stream().allMatch(ExecutorService::isTerminated));
         saved.put("activeObservedConnections",source.activeConnections.get());saved.put("activePooledConnections",dataSource.getHikariPoolMXBean().getActiveConnections());
         saved.put("openStatements",source.openStatements.size());saved.put("executingStatements",source.executing.size());
         saved.put("cancelCalls",source.cancelCalls.get());saved.put("cancelErrors",source.cancelErrors);
+        saved.put("writerFuturesDone",writers.stream().allMatch(w->w.future!=null&&w.future.isDone()));
         saved.put("sharedLimitMillis",5000);saved.put("deadlineRespected",System.nanoTime()<=deadline);
         assertTrue(System.nanoTime()<=deadline);assertTrue(source.cancelErrors.isEmpty());
     }
@@ -971,9 +1414,12 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
             long id;
             try(var s=connection.createStatement();var r=s.executeQuery("SELECT CONNECTION_ID()")){r.next();id=r.getLong(1);}
             var a=current.get();if(a!=null){a.borrows++;a.connectionId=id;}
+            var w=writing.get();if(w!=null){w.connectionIds.add(id);w.borrowed.incrementAndGet();}
             activeConnections.incrementAndGet();boolean[] closed={false};
             return (Connection)Proxy.newProxyInstance(Connection.class.getClassLoader(),new Class<?>[]{Connection.class},(proxy,method,args)->{
-                if(method.getName().equals("close")&&!closed[0]){closed[0]=true;activeConnections.decrementAndGet();}
+                if(method.getName().equals("close")&&!closed[0]){closed[0]=true;activeConnections.decrementAndGet();if(w!=null)w.closed.incrementAndGet();}
+                if(w!=null&&method.getName().equals("commit")){var result=invoke(connection,method,args);w.commits.incrementAndGet();return result;}
+                if(w!=null&&method.getName().equals("rollback")){var result=invoke(connection,method,args);w.rollbacks.incrementAndGet();return result;}
                 if(method.getName().equals("prepareStatement")&&args!=null&&args[0] instanceof String sql) {
                     var h=(ConnectionHolder)TransactionSynchronizationManager.getResource(this);
                     if(a!=null) {
@@ -986,14 +1432,16 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
                         if(sql.contains("FORCE INDEX(idx_fsf_date)"))a.dateStatements++;
                     }
                     var actual=(PreparedStatement)invoke(connection,method,args);openStatements.add(actual);
+                    boolean[] statementClosed={false};if(w!=null)w.openStatements.incrementAndGet();
                     return Proxy.newProxyInstance(PreparedStatement.class.getClassLoader(),new Class<?>[]{PreparedStatement.class},(p,m,x)->{
-                        if(m.getName().equals("close"))openStatements.remove(actual);
-                        if(m.getName().equals("executeQuery")){
+                        if(m.getName().equals("close")&&!statementClosed[0]){statementClosed[0]=true;openStatements.remove(actual);if(w!=null)w.openStatements.decrementAndGet();}
+                        if(m.getName().equals("executeQuery")||m.getName().equals("executeUpdate")){
                             if(sql.equals("SELECT SLEEP(10)"))sleep=actual;
                             executing.add(actual);
                             try{return invoke(actual,m,x);}
                             catch(Throwable failure){var e=FinanceFirstSettlementLoadIntegrationTest.findSql(failure);
                                 if(a!=null&&e!=null)a.errors.add(Map.of("state",String.valueOf(e.getSQLState()),"vendorCode",e.getErrorCode(),"driverException",e.getClass().getSimpleName()));
+                                if(w!=null&&e!=null)w.errors.add(Map.of("state",String.valueOf(e.getSQLState()),"vendorCode",e.getErrorCode(),"driverException",e.getClass().getSimpleName()));
                                 throw failure;
                             }finally{executing.remove(actual);}
                         }
