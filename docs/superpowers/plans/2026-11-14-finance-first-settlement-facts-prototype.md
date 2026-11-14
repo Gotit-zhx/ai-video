@@ -26,6 +26,7 @@
 - 2026-11-14 编写本计划期间 root 回报 V159 已独立 accepted，生产 schema159/context `bdf70ffe`；本计划作者未接触服务器，也未独立复测。V158 是其他会话材料，必须保留。这是交接记录，不能代替下一次现场核对。
 - 当前文档任务不执行任何 SSH、数据库、测试、Maven、Git、生产操作或源码修改。下面未勾选步骤均是后续执行动作。
 - 集成测试仅由 root 明确授权的单一 Maven/target writer 运行 `python3 /tmp/finance-bi-performance-qa/run-db-tests.py ClassName...`，只连接 runner 创建的可销毁库，禁止业务库。
+- Task6 元数据计量的显式例外：默认 runner 和仓库 CI 不变。root 可在私有包装器独立审查通过、明确取得唯一 writer 租约后，为唯一 `FinanceFirstSettlementLoadIntegrationTest` 使用 `/tmp/finance-bi-performance-qa/run_db_tests_with_statement_metrics.py` 先做一次真实 baseline 烟测；确认元数据与清理有效后再测其他档。它复用原 runner 的创建、600 秒、3GiB、审计及 finally，仅对精确绑定本次 loopback/schema/user/image/owner/fullID 的临时 CI MySQL 开五张 Performance Schema 表 SELECT 和计量 instrumentation，不加业务权限、PROCESS、全局 ALL 或生产访问。包装器固定已验 unix Docker endpoint；未经独立审查及明确 writer 租约不得执行。仪表模式与原 baseline 分列，真实权限/数据完整性/清理不因离线测试通过而视为完成。
 - 原型 SQL 先放 `src/test/resources/finance/first-settlement-facts-prototype.sql`。不预占 V160 或其他生产迁移号；定向迁移前现场复核下一空闲号并重新审查。已有 Flyway 文件和校验和不改。
 - 新源表触发器不得在当前阶段安装到业务库；影子迁移/回填/生产激活各自必须有独立 review、维护工具、实际锁/门控和恢复证据。
 - 不改变成本作业优先级、GIFT、退货不冲减规则、未知金额、真实零、活动贴单代次、广告重叠、历史 FX、原有权限和原始明细当前性。
@@ -422,6 +423,8 @@ RR deadline 到期 / rollbackOnly / 连接失效 / SQL异常 → 传播异常，
 
 - [ ] **1. 建可重放、有界实验。** seed 固定随机种子 20261114，owner 集合规模 1k/10k/50k，每个 owner 候选 1/4/16 行；clean、1%、10%、持续变更三类负载，各运行最多 120 秒且每类不超过 200 请求。并发只 1/2/4，批次 16/64/256，dirty cap 0/16/64/256；整体 workspace RR 固定30秒，候选局部预算实验档为100/250/500/1000ms，native预留档为5000/10000/20000ms，completion预留档为1000/2000/5000ms，仅采用三者之和<30000ms的组合。以上仅是隔离实验输入，不是生产默认承诺；每次只改变一因素。单 Maven writer 串行运行，DB 仅隔离，硬截止后终止本测试创建的执行器/事务并确认退出。数据超边界时分批，不扩大为全业务导出。
 - [ ] **2. root 运行隔离实验。** `python3 /tmp/finance-bi-performance-qa/run-db-tests.py FinanceFirstSettlementLoadIntegrationTest`。实验为测试公司/日期显式注入对应 mode 的 allowlist 和预算，必须预先调用真实 new route 并断言非 fallback 样本存在；每轮在同一真实 workspace RR 中 native 与 facts 做四值规范化哈希/数量对照，零差异为硬门。零差异只证明这批样本。
+
+首轮实际基准证明现有隔离用户读取 statement history/data_lock_waits 时为1142/42000，不能用 EXPLAIN 估计替代真实 statement ROWS_EXAMINED。需要这些指标时按上面的显式私有计量例外先做 baseline 烟测，核对五表可读、consumer 和采集完整性及实际清理后，再测其余档。statement LOCK_TIME 只代表表锁时间，InnoDB 行锁/错误1213/重试和最老待办仍分别取证；任一指标不可用继续记录门未满足，不能填零准入。
 - [ ] **3. 获取实际执行计划。** 对 claim、seed per shop、clean totals、missing/old-mode 枚举、dirty 全历史 lookup、日期索引候选分别记录 EXPLAIN FORMAT=JSON/ANALYZE（后者仅隔离并有界），检查排序、实际 loops/rows、覆盖索引与临时表。不能因 index 列顺序看似正确就声称无 filesort。dates bulk 只采实验计划，不上线 facts-only 枚举。该实验只有 seed_complete/升级游标闭合时才允许 facts 日期枚举：合并区间内 clean owner 与公司全部可见 dirty owner，全部 dirty 从全历史重算后再按请求过滤；跨月移出旧区间和移入新区间必须同时正确。新/不完整公司 bulk 一律 native，不能把 label 完整 totals 域的许可推广到 bulk。
 - [ ] **4. 选择参数的明确门槛。** 每档至少 30 个完成请求并报告 p50/p95/max、超时数、native fallback 比率、每个 owner 查询量/耗时、active RR 最长持续、rows examined、锁等待/死锁/重试、dirty 到达率 λ、成功发布率 μ、最老 dirty 年龄。选择满足零差异、无未清理事务、总 RR 在30秒边界内、主动预算早退有足够同S native及state余量、且 p95 明显优于相同负载 native 的最大 cap；没有满足档就保留 OFF，不凭猜测设置 64。worker 配置只接受连续三个 30 秒窗口 μ>λ、最老年龄不持续增长，并且前台 p95 未较同负载 native 基线退化超过 10%的档；这是准入实验标准，不承诺生产每秒能力。负载不足 30 样本/窗口时记录 insufficient，追加有界轮次，而非宣称收敛。
 - [ ] **5. 区分无法收敛、正确回退与失败。** 事务有效时 cap/局部预算触发整 native 是正确性结果，仍可能超五秒；整体 RR/连接/rollbackOnly 失败单独计数，不计为成功 native 回退或等价样本；如普通持续导入大多 fallback 或 μ<=λ，报告实际瓶颈，继续下一事实粒度设计，不能用暂停同步取得通过。记录预算是否被公司非相关 pending 保守消耗；只有独立证明可见域筛选完整后才缩减此域。
