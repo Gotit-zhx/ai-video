@@ -614,7 +614,15 @@
       });
       const shop=shops.find(s=>s.id===scope.shopId);if(shop){const meta=el('div',null,shopControl,'fc-shop-meta');tag(meta,shop.platform==='SHOPEE'?'虾皮':'TikTok');el('span',(shop.region||'')+' · '+(context.groups?.find(g=>g.id===shop.group_id)?.name||'未分组')+' · 已授权',meta);}
       action(shopControl,'成本表设置',async()=>{
-        if(orders&&scope.shopId!==state.shopId){await reload(scope.shopId,'','rules');return;}
+        if(orders&&scope.shopId!==state.shopId){
+          const orderContext=state.orderContext;
+          try{await reload(scope.shopId,'','rules');}
+          catch(error){
+            if(root.isConnected&&state.tab==='orders'&&state.orderContext===orderContext)draw();
+            throw error;
+          }
+          return;
+        }
         state.tab='rules';draw();
       },'fi-record-link').disabled=!scope.shopId;
       const metrics=el('div',null,root,'fc-metrics fc-cost-metrics'),linked=currentProducts().filter(p=>tone(recommendation(p))==='good').length;

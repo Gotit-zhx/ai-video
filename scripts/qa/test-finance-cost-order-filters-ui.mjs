@@ -68,7 +68,9 @@ delayedGroup='';await choose('成本分组','ga');finishOldRead();await settle()
 assert.equal(selector('成本分组').value,'ga');assert(d.querySelector('.fc-order-amount-summary').textContent.includes('¥ 59'),'late results must not replace the active query');
 await expectExport({...base,shopId:'',groupId:'ga'});
 await choose('成本分组','');await choose('财务店铺','b1');failCatalogueShop='b1';
-await click('成本表设置');d.querySelector('[data-cost-status=ALL]').click();await settle();
+await click('成本表设置');const readsBeforeRefresh=reads.length;await click('刷新成本');
+assert(reads.length>readsBeforeRefresh,'a failed settings request must not permanently disable the existing order refresh');
+d.querySelector('[data-cost-status=ALL]').click();await settle();
 assert.equal(reads.at(-1).shopId,'b1','failed settings reads must not reset the order query to the catalogue shop');
 failCatalogueShop='';await click('成本表设置');assert.equal(catalogReads.at(-1).shopId,'b1');
 assert.equal(selector('财务店铺').value,'b1','settings must belong to the selected order shop');
@@ -77,5 +79,14 @@ await choose('财务店铺','a1');delayedCatalogue='a1';await click('成本表�
 await choose('成本分组','gb');finishCatalogue();await settle();
 assert(d.querySelector('[role="tab"][aria-selected="true"]').textContent.includes('订单成本'),'a late settings response cannot replace a newer order filter');
 assert.equal(selector('成本分组').value,'gb');assert.equal(selector('财务店铺').value,'');
+await choose('成本分组','ga');await choose('财务店铺','a1');delayedGroup='ga';
+w.FinanceCosts.mount(root,{...context,preview:{...preview,shopId:'b1',groupId:'gb'}});await settle();
+const completeInvalidatedOrder=finishOldRead;assert(button('导出 Excel').disabled);
+delayedGroup='';delayedCatalogue='';failCatalogueShop='a1';await click('成本表设置');
+completeInvalidatedOrder();await settle();
+assert(!button('导出 Excel').disabled,'settings failure during an order query must restore a usable query and export');
+assert(!d.querySelector('.fc-order-amount-summary').textContent.includes('查询中'));
+const readsAfterRecovery=reads.length;await click('刷新成本');assert(reads.length>readsAfterRecovery);
+assert.equal(selector('成本分组').value,'ga');assert.equal(selector('财务店铺').value,'a1');
 w.FinanceCosts.reset();dom.window.close();
 console.log('PASS order-cost filters: all groups/shops, scoped pending, pagination, export, remount and stale-response protection.');
