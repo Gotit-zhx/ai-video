@@ -208,6 +208,13 @@ public class FinanceLabelCosts {
         return Map.of("rows",records,"total",count,"page",page,"pageSize",50);
     }
     public Map<String,Object> workspace(Scope scope,Filter filter,Map<String,String> query){
+        return repo.readSnapshot(30,()->workspaceSnapshot(scope,filter,query));
+    }
+    Map<String,Object> workspaceSnapshot(Scope scope,Filter filter,Map<String,String> query){
+        if(!org.springframework.transaction.support.TransactionSynchronizationManager.isCurrentTransactionReadOnly()
+                ||!Objects.equals(org.springframework.transaction.support.TransactionSynchronizationManager.getCurrentTransactionIsolationLevel(),
+                        org.springframework.transaction.TransactionDefinition.ISOLATION_REPEATABLE_READ))
+            throw new IllegalStateException("Label workspace requires a read-only repeatable-read snapshot");
         var details=sourcePage(scope,filter,query);
         if("true".equals(query.get("detailsOnly")))return details;
         var files=repo.jdbc().queryForList("""
