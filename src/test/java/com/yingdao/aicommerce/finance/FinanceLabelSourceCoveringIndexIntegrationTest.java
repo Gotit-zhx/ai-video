@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.util.*;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -25,6 +26,13 @@ class FinanceLabelSourceCoveringIndexIntegrationTest extends FinanceConfiguratio
     static final String NEW="cover-sem-new",MIDDLE="cover-sem-middle",OLD="cover-sem-old";
     static final List<String> HEAVY=List.of("cover-heavy-new","cover-heavy-mid","cover-heavy-old");
     static final ObjectMapper JSON=new ObjectMapper();
+
+    @Override @BeforeAll void migrate()throws Exception{
+        migrateThrough(157);
+        migration("V159__finance_first_settlement_order.sql");
+        migration("V160__finance_projection_record_identity_events.sql");
+        migration("V161__finance_projection_currency_byte_events.sql");
+    }
 
     /** Catches narrowed file authorization, changed filters, wrong page order, and unsupported candidate routing. */
     @Test void prototypePreservesLiteralSourceOraclesAndUnsupportedSearchFallbacks() {

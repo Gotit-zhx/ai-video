@@ -33,7 +33,7 @@ class FinanceConfigurationIntegrationTest {
     final Filter filter=new Filter(LocalDate.of(2026,10,21),LocalDate.of(2026,10,21),"","","PHP","day");
     PlatformPrincipal principal(){return new PlatformPrincipal("u","org","heyi","admin","admin","",true,List.of("ADMIN"),List.of());}
     int migratedThrough;
-    @BeforeAll void migrate()throws Exception{migrateThrough(157);migration("V159__finance_first_settlement_order.sql");migration("V160__finance_projection_record_identity_events.sql");migration("V161__finance_projection_currency_byte_events.sql");}
+    @BeforeAll void migrate()throws Exception{migrateThrough(157);migration("V159__finance_first_settlement_order.sql");migration("V160__finance_projection_record_identity_events.sql");migration("V161__finance_projection_currency_byte_events.sql");migration("V162__finance_label_source_count_covering.sql");}
     void migrateThrough(int version)throws Exception{
         assertTrue(Set.of(154,155,156,157).contains(version));migratedThrough=version;
         assertTrue(System.getenv("FINANCE_QA_JDBC").matches("jdbc:mysql://[^/]+/finance_qa_[a-f0-9]+\\?.*"),"Only disposable finance_qa schemas are permitted");
