@@ -300,4 +300,10 @@ root 独立解析两份 XML/JSON，并检查四个精确临时容器不存在，
 
 ### 完整版本 Redis 的前置：记录身份更新登记
 
-只读源码审计发现，现有 `fin_qp_records_au` 未比较 `id/external_id/user_id`；它们分别参与同日首笔选择、有序页/编号搜索和对账关联。常规 `repo.save` 不原位更新这三个身份列，因此不能据此声称普通 API 已出现故障；维护 SQL 的版本覆盖仍需独立验证。准备中的隔离回归将使用真实源事务和 Redis，分别比较 A 原快照与提交后的完整新请求，先取得实际 RED 再决定最小新增迁移。现阶段为源码缺口、未运行复现，不将首次事实版本或缓存 TTL 当作整页完整性证明，也不修改已有迁移。
+2026-11-15 的真实 MySQL＋Redis 隔离回归已复现 `fin_qp_records_au` 漏比较 `id/external_id/user_id`：三个单列提交后原生完整页已变化，事件仍为 0，版本仍为 READY/旧 R，暖 Redis 返回旧页；原三例均为预期业务失败，错误和跳过为 0。`id` 用例还复现了冷 PHP 页的权威总数不一致。A 在 B 独立提交前后保持同一只读 RR 旧快照，新请求看到当前源。常规 `repo.save` 不原位更新这三个身份列，因此这些维护 SQL 场景不构成已发生生产业务事故的证明。
+
+本地新增 `V160__finance_projection_record_identity_events.sql`：先从 `finance_query_partitions` 按公司去重追加 ALL 事件，使旧 guard 期间可能漏记的已生成结果停止复用；再只重建目标 UPDATE trigger，在原 OLD/NEW 两个条件中补齐三个 NULL-safe 身份比较。原有事件字段、范围分类和比较保留，不改写已有迁移、原始财务行或金额，不直接改 READY、修订或缓存载荷。
+
+新 guard 下覆盖类六项（三个业务场景及三个资源控制）、真实 Flyway 升级一项、原有三个兼容类 21＋14＋27 项，共 **69 次执行零失败、错误或跳过**。三个业务场景均观察到两个 OLD/NEW 事件、PENDING 阶段的当前完整页，以及真实 drain/build 后的新 READY/R 与暖页一致。独立升级测试从明确标注的可销毁 baseline159 应用仓库同一份 V160，首次 migrate=1、validate 成功、再次 migrate=0；旧 READY 先失效，真实重建后恢复。历史前缀、选定源字段与金额/原始 JSON 哈希、其余 74 个 trigger 定义保持；未生成旧分区的公司不伪造载荷。既存 Mockito/JDK、Netty fallback 和故意的 projection-deferred 告警单独保留。小型原件位于本地计划工作区 `evidence/20261115-record-identity-green-run1`。
+
+当前为本地验证结果，独立规格与质量审查均已通过；生产维护验收尚未执行，尚未在生产应用 V160。该修复覆盖上述三个逻辑身份字段，全部字符串字节变化、其他 Redis 依赖和整页五秒仍需独立证明。DDL 非原子，正式应用必须重新核对实际迁移号、历史及源码基线，遵守共享维护锁、门控、安全点和失败恢复协议。首次事实读路由与工作器继续 OFF。
