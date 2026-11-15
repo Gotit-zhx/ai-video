@@ -280,6 +280,12 @@ root 独立解析两份 XML/JSON，并检查四个精确临时容器不存在，
 
 实际计划显示，干净日期分支的自然计划也选择 `idx_fsf_date`；完整性审计约 19.2ms，源索引估算 5500 行、按索引条件后的实际输出 4000 行，并执行 4000 次事实主键查找。这里的算子输出不等于 statement ROWS_EXAMINED 或物理 IO。八列＋HEX 身份结果两侧均 10 行相等；完整 ORDER COUNT 均为 20，有序完整页均为 20 行相等。原生 COUNT/页单次普通查询为 1.093/1.288ms，候选为 12.552/54.757ms。原生关联源订单使用 `idx_finance_settled_order` 的完整订单/source 键，每次约 2 行、循环 10 次；候选未保留这个索引约束，COUNT/页分别自然选择 `idx_finance_cost_statement`/`idx_finance_cost_backfill`，每次先输出约 3000 行、循环 10 次，再筛到当前订单。两侧页仍有临时表和排序。这个隔离诊断定位了候选的不利访问路径，下一步先对照候选恢复原索引约束的效果；单次计划不生成请求 p95，也不改变公开读路由或生产准入。
 
+后续新增显式 `order-index` 实验 selector，仅在候选关联源订单 `o` 时增加 `FORCE INDEX(idx_finance_settled_order)`。原 CURRENT、native oracle、数据、排序、字段、where/参数和预算保持。两个同 S 三方对照的 COUNT 均为 20，完整页均为同序 20 行；8 份 JSON/ANALYZE 未截断。HINTED 的 `o` 实际绑定公司/店铺/kind/order/source 五个键，算子由每次输出约 3000 行降为 2 行、均循环 10 次；实际 SQL 只有该 hint 差异。
+
+固定 1000 身份、clean 1% 的新完整 cohort 达到 30/30 完成且逐对等价，0 回退、超时、失败或晚完成。原生每次 25 条 SELECT；HINTED 每次 31 条，包括完整 proof 2、全历史 audit 1、U 3，以及八列＋HEX identity 1、ORDER/REFUND×normal 四组合的 bag 4、真实 COUNT 4、全部四类分页共 16。候选 500ms 仍包含这些完整工作。nearest-rank p50/p95/max 为原生 **278.025/284.192/292.688ms**、HINTED **68.488/75.069/76.240ms**，本样本 p95 耗时减少约 73.6%；这是 native 与新 HINTED 的配对，旧 CURRENT 的 0/30 超时记录不回填为成功统计。
+
+实验 plan、cohort、真实 HINTED closure/snapshot 四个 profile 各 64 次执行（同一个声明测试＋63 继承）零失败、错误或跳过，独立规格与质量审查通过；closure/snapshot 分别有 52/28 个完成 DATE probe 真实执行带 hint 的 SQL，构造计数不充当请求数。所有原件在 `evidence/20261115-order-index-experiment`，root 独立重算全部 30 个样本及 8 个实际计划。结果仅覆盖静态单读取者、固定 clean 1% 和隔离 V160→prototype v161；冷缓存、持续写入、其它选择性/规模、完整 HTTP/UI 与生产计划继续待验。公开 facts route 仍 OFF，生产 SQL 和 Redis 配置未改。
+
 ### 现有窄索引用于费用 COUNT：隔离实验未证明实用收益
 
 新增 `FinanceRecordCountCoveringIndexIntegrationTest`，真实执行 `details`/`advertisingFeeDetails`，仅在测试 JdbcTemplate 中对比当前强制 16 列索引、现有 11 列 `idx_finance_page` 及取消该提示的自然路径，不改应用 SQL 或增加索引。38 组独立预期覆盖权限、归属、广告佣金、编号、部分月及兼容路由，完整页面一致；通过空的后续页、独立 repo 但同原始 DataSource/holder/物理连接，证明两边实际 COUNT 未被终页推断或同快照缓存隐藏。实际记录 246 次 COUNT、96 次推断；每次均说明是否执行。两次运行各 65 次（2 声明＋63 继承）零失败/错误/跳过，独立规格和质量审查通过；保留继承测试的既存 JVM warning。

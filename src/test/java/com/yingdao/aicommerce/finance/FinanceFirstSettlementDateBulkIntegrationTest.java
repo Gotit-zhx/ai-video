@@ -55,6 +55,9 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
     final Map<String,Object> selective=new LinkedHashMap<>();
     final List<PlanPair> planPairs=new CopyOnWriteArrayList<>();
     final Map<String,Object> plan=new LinkedHashMap<>();
+    final AtomicInteger orderIndexHintRelations=new AtomicInteger();
+    final Set<String> orderIndexHintSqlHashes=ConcurrentHashMap.newKeySet();
+    boolean orderIndexHintEnabled;
     int explainStatements;
     long hardDeadline,phaseDeadline;
     int phaseAttempts;
@@ -74,7 +77,8 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
         Map<String,Object> cleanup=new LinkedHashMap<>();
         try {
             switch(selected) {
-                case "closure" -> {
+                case "closure","closure-order-index" -> {
+                    orderIndexHintEnabled=selected.equals("closure-order-index");
                     coverageCannotTrustADeletedFact();
                     strongGatesRequireTheWholeInitializationProtocol();
                     unresolvedIsGlobalAndResolvedBeforeDates();
@@ -87,8 +91,10 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
                     falseFirstDayWitnessPreservesEveryCurrency();
                     invalidSnapshotsAndSqlFailuresNeverBecomeFallback();
                     assertTrue(genuineDate>0,"An all-native run cannot close the date experiment");
+                    if(orderIndexHintEnabled)assertTrue(orderIndexHintRelations.get()>0,"HINTED closure must execute candidate relations with the order index");
                 }
-                case "snapshot" -> {
+                case "snapshot","snapshot-order-index" -> {
+                    orderIndexHintEnabled=selected.equals("snapshot-order-index");
                     snapshotAddsAndTransfersBeforeCoverage();
                     snapshotKeepsEnumeratedDirtyAfterPublication();
                     snapshotKeepsCleanBeforeDateAndDeleteChanges();
@@ -96,9 +102,12 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
                     snapshotKeepsInitializationAndRegistrationBoundaries();
                     snapshotExcludesLowIdLateCommit();
                     assertTrue(genuineDate>0,"Snapshot must exercise genuine DATE_TEST");
+                    if(orderIndexHintEnabled)assertTrue(orderIndexHintRelations.get()>0,"HINTED snapshot must execute candidate relations with the order index");
                 }
                 case "selective-clean-1pct" -> selectiveCleanOnePercent();
+                case "selective-clean-1pct-order-index" -> selectiveCleanOnePercentOrderIndex();
                 case "plan" -> planCleanOnePercent();
+                case "plan-order-index" -> planOrderIndex();
                 case "selectivity","selective-mixed-1pct","selective-clean-10pct",
                      "all-month-control","continuous" -> fail("NOT_IMPLEMENTED: "+selected);
                 default -> fail("Unknown date-bulk profile: "+selected);
@@ -119,10 +128,13 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
                 receipt.put("writers",writers.stream().map(SnapshotWriter::receipt).toList());
                 receipt.put("pairs",pairs.stream().map(PairSample::receipt).toList());receipt.put("selective",selective);
                 receipt.put("planPairs",planPairs.stream().map(PlanPair::receipt).toList());receipt.put("plan",plan);
+                receipt.put("orderIndexExperiment",Map.of("enabled",orderIndexHintEnabled,"hintedCandidateRelations",orderIndexHintRelations.get(),
+                    "hintedSqlHashes",new TreeSet<>(orderIndexHintSqlHashes)));
                 receipt.put("cleanup",cleanup);receipt.put("productionAdmission",false);
                 var directory=Path.of("/tmp/finance-bi-performance-qa/first-settlement-date-bulk");
                 Files.createDirectories(directory);
-                String prefix=selected.equals("snapshot")?"snapshot":Set.of("selective-clean-1pct","plan").contains(selected)?selected:"closure";
+                String prefix=Set.of("closure","snapshot","selective-clean-1pct","plan","plan-order-index",
+                    "selective-clean-1pct-order-index","closure-order-index","snapshot-order-index").contains(selected)?selected:"closure";
                 var path=directory.resolve(prefix+"-"+UUID.randomUUID()+".json");
                 Files.writeString(path,repo.write(receipt)+"\n",StandardOpenOption.CREATE_NEW);
                 System.out.println("DATE_BULK_RECEIPT "+path);
@@ -167,7 +179,7 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
         ConnectionHolder holder;
         long connectionId,deadline;
         boolean sameSnapshot=true,completed;
-        int borrows,auditRows=-1,unresolved=-1,lookups,newTableReads,nativeData,oracleData,returnedData;
+        int borrows,auditRows=-1,unresolved=-1,lookups,newTableReads,nativeData,oracleData,returnedData,hintedCandidateRelations;
         int pendingBranch=-1,oldBranch=-1,combined=-1,externalDomainReads,dateStatements;
         int proofRegistration=-1;
         long guardGeneration=-1;
@@ -182,6 +194,7 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
             m.put("holderDeadlineMillis",deadline);m.put("auditRows",auditRows);m.put("unresolved",unresolved);
             m.put("pendingBranch",pendingBranch);m.put("oldBranch",oldBranch);m.put("combined",combined);
             m.put("lookups",lookups);m.put("newTableReads",newTableReads);m.put("nativeData",nativeData);m.put("externalDomainReads",externalDomainReads);
+            m.put("hintedCandidateRelations",hintedCandidateRelations);
             m.put("actualDateStatements",dateStatements);
             m.put("proofRegistration",proofRegistration);m.put("guardGeneration",guardGeneration);
             m.put("guardSeed",guardSeed);m.put("guardShops",guardShops);m.put("guardRequeue",guardRequeue);
@@ -447,12 +460,20 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
         var settled=new LinkedHashMap<String,Settled>();
         for(String kind:List.of("ORDER","REFUND"))for(boolean normal:List.of(false,true)) {
             var selected=FinanceRecordSearch.apply(q,"o",numbers,false);
-            String sql=" FROM ("+relation.sql()+") r JOIN finance_records o ON o.organization_id=r.organization_id "+
-                "AND o.shop_id=r.shop_id AND o.order_id=r.order_id AND o.kind='"+kind+"' AND o.source='API' WHERE "+
-                selected.where()+(normal?" AND "+FinanceOrderCharges.normalOrder("r"):"");
+            String sql=candidateSettledRelation(relation,selected,kind,normal,orderIndexHintEnabled);
             settled.put(kind+":"+normal,settled(sql,joined(relation.args(),selected.args()),budget));
         }
         return new Data(identities,settled);
+    }
+    String candidateSettledRelation(Relation relation,FinanceRepository.Query selected,String kind,boolean normal,boolean hinted) {
+        String sql=" FROM ("+relation.sql()+") r JOIN finance_records o "+(hinted?"FORCE INDEX(idx_finance_settled_order) ":"")+"ON o.organization_id=r.organization_id "+
+            "AND o.shop_id=r.shop_id AND o.order_id=r.order_id AND o.kind='"+kind+"' AND o.source='API' WHERE "+
+            selected.where()+(normal?" AND "+FinanceOrderCharges.normalOrder("r"):"");
+        if(hinted) {
+            orderIndexHintRelations.incrementAndGet();orderIndexHintSqlHashes.add(hash(sql));
+            var attempt=current.get();if(attempt!=null)attempt.hintedCandidateRelations++;
+        }
+        return sql;
     }
     Data originalData(Scope scope,Filter filter,String numbers) {
         current.get().oracleData++;
@@ -1017,14 +1038,28 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
         return (owner<505?OCT.minusMonths(1):OCT.plusMonths(1)).plusDays((owner<505?owner-10:owner-505)%27);
     }
     void selectiveCleanOnePercent() throws Exception {
+        configureSelectiveReceipt("CURRENT");
+        try {selectiveSmallControls();runSelectiveLargeCohort("selective-clean-one-percent");}
+        finally {selective.put("timingSummary",selectiveTimingSummary());}
+    }
+    void selectiveCleanOnePercentOrderIndex() throws Exception {
+        orderIndexHintEnabled=true;configureSelectiveReceipt("HINTED_ORDER_INDEX");
+        try {runSelectiveLargeCohort("selective-clean-one-percent-order-index");}
+        finally {selective.put("timingSummary",selectiveTimingSummary());}
+        assertEquals(30,pairs.stream().filter(p->p.completed).count());
+        assertTrue(orderIndexHintRelations.get()>=120,"Thirty HINTED pairs must build all four candidate source relations");
+    }
+    void configureSelectiveReceipt(String candidateVariant) {
         selective.put("seed",SELECTIVE_SEED);selective.put("owners",1000);selective.put("eligiblePerOwner",4);
         selective.put("readerConcurrency",1);selective.put("workerBatch",64);selective.put("cap",64);
         selective.put("targetPairs",30);selective.put("cacheState","ISOLATED_SEQUENTIAL_NOT_COLD_CACHE_CONTROLLED");
+        selective.put("candidateVariant",candidateVariant);
         selective.put("unmeasured",Map.of("statementRowsExamined","NOT_MEASURED_NO_PRIVILEGE_EXPANSION",
             "physicalIO","NOT_MEASURED","globalLockWait","NOT_MEASURED"));
+    }
+    void runSelectiveLargeCohort(String shopName) throws Exception {
         try {
-            selectiveSmallControls();
-            resetFixture();String shop=groupedShop(COMPANY,"selective-clean-one-percent",null);
+            resetFixture();String shop=groupedShop(COMPANY,shopName,null);
             seedSelectiveSources(shop);initializeSelectiveFacts();verifySelectiveSources();
             // Setup/backfill belongs to the 540s harness; the measured phase starts once, here.
             phaseDeadline=Math.min(hardDeadline,System.nanoTime()+TimeUnit.SECONDS.toNanos(120));phaseAttempts=0;
@@ -1055,7 +1090,7 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
                 selective.put("phaseDeadlineDetectionLagNanos",Math.max(0,System.nanoTime()-phaseDeadline));
             }
             assertEquals(30,pairs.stream().filter(p->p.completed).count(),"A short phase must remain explicitly insufficient");
-        }finally {selective.put("timingSummary",selectiveTimingSummary());}
+        }finally {selective.put("cohortFinallyNanos",System.nanoTime());}
     }
     void selectiveSmallControls() throws Exception {
         resetFixture();String shop=groupedShop(COMPANY,"selective-small-control",null);
@@ -1191,6 +1226,103 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
             plan.put("performanceAdmission",false);
         }
     }
+    void planOrderIndex() throws Exception {
+        orderIndexHintEnabled=true;
+        selective.put("seed",SELECTIVE_SEED);selective.put("owners",1000);selective.put("eligiblePerOwner",4);
+        selective.put("readerConcurrency",1);selective.put("workerBatch",64);selective.put("cap",64);
+        plan.put("profile","plan-order-index");plan.put("targetPairs",2);plan.put("maxExplainsPerPair",4);plan.put("maxExplains",8);
+        plan.put("statementDiagnosticMillis",5000);plan.put("candidateMillis",BUDGET.candidateMillis());
+        plan.put("onlySqlDifference","candidate o FORCE INDEX(idx_finance_settled_order)");
+        plan.put("unmeasured",Map.of("statementRowsExamined","NOT_MEASURED_NO_PRIVILEGE_EXPANSION",
+            "physicalIO","NOT_MEASURED","globalLockWait","NOT_MEASURED"));
+        resetFixture();String shop=groupedShop(COMPANY,"plan-order-index",null);
+        seedSelectiveSources(shop);initializeSelectiveFacts();verifySelectiveSources();
+        phaseDeadline=Math.min(hardDeadline,System.nanoTime()+TimeUnit.SECONDS.toNanos(120));phaseAttempts=0;
+        plan.put("phaseStartedNanos",System.nanoTime());plan.put("phaseDeadlineNanos",phaseDeadline);
+        try {
+            runOrderIndexPlanPair("COUNT");runOrderIndexPlanPair("PAGE");
+            assertEquals(2,planPairs.stream().filter(p->p.completed).count());
+            assertEquals(8,explainStatements,"The order-index plan must issue exactly eight EXPLAIN statements");
+            assertEquals(2,orderIndexHintRelations.get(),"Each diagnostic pair builds exactly one HINTED candidate relation");
+        }finally {
+            plan.put("phaseEndedNanos",System.nanoTime());plan.put("explainStatements",explainStatements);
+            plan.put("completedPairs",planPairs.stream().filter(p->p.completed).count());
+            plan.put("failedPairs",planPairs.stream().filter(p->!p.completed).count());
+            plan.put("allOutputsUntruncated",planPairs.stream().flatMap(p->p.outputs.stream()).noneMatch(o->o.truncated));
+            plan.put("planClosed",planPairs.size()==2&&planPairs.stream().allMatch(p->p.completed)&&explainStatements==8
+                &&planPairs.stream().flatMap(p->p.outputs.stream()).noneMatch(o->o.truncated));
+            plan.put("performanceAdmission",false);
+        }
+    }
+    void runOrderIndexPlanPair(String name) {
+        checkPhase();var a=new Attempt("ORDER_INDEX_PLAN_"+name);attempts.add(a);var pair=new PlanPair(name,a);planPairs.add(pair);current.set(a);
+        pair.explainsBefore=explainStatements;pair.rrStartedNanos=System.nanoTime();
+        try {
+            reader.readSnapshot(30,()->{
+                long establishing=System.nanoTime();
+                reads.queryForObject("SELECT COUNT(*) FROM finance_records WHERE organization_id=?",Long.class,COMPANY.organizationId());
+                pair.establishSnapshotNanos=System.nanoTime()-establishing;a.stage="ORDER_INDEX_PLAN_RESOLVE";
+                var options=new Options(COMPANY.organizationId());pair.resolutionTiming.started=System.nanoTime();pathTiming.set(pair.resolutionTiming);DateResolution resolution;
+                try {resolution=resolve(COMPANY,MONTH,64,options);}
+                finally {pair.resolutionTiming.ended=System.nanoTime();pathTiming.remove();}
+                pair.resolutionTiming.route=resolution.route().name();pair.resolutionTiming.reason=resolution.reason();pair.resolutionTiming.completed=true;
+                a.route=resolution.route().name();a.reason=resolution.reason();
+                assertEquals(DateRoute.DATE_TEST,resolution.route());assertEquals("",resolution.reason());assertEquals(0,a.auditRows);assertEquals(0,a.unresolved);assertEquals(0,a.lookups);
+                long validating=System.nanoTime();
+                if(name.equals("COUNT"))verifyOrderIndexCount(pair,resolution.relation());
+                else if(name.equals("PAGE"))verifyOrderIndexPage(pair,resolution.relation());
+                else fail("Unknown order-index pair "+name);
+                pair.validationNanos=System.nanoTime()-validating;
+                FinanceLabelFirstSettlementFacts.requireUsable(reader);assertTrue(a.sameSnapshot);assertEquals(1,a.borrows);
+                assertEquals(4,explainStatements-pair.explainsBefore);assertEquals(1,a.hintedCandidateRelations);
+                return null;
+            });
+            pair.completed=true;a.completed=true;a.returnedData=1;
+        }catch(RuntimeException|Error failure){pair.failure=failure.getClass().getSimpleName();a.failure=pair.failure;throw failure;}
+        finally {pair.explainsAfter=explainStatements;pair.rrEndedNanos=System.nanoTime();pathTiming.remove();current.remove();}
+    }
+    void verifyOrderIndexCount(PlanPair pair,Relation relation) {
+        var currentRelations=orderRelations(relation,false);var hintedRelations=orderRelations(relation,true);
+        assertOnlyOrderIndexDifference(currentRelations,hintedRelations);
+        var nativeShape=new SqlShape("native-order-count","SELECT COUNT(*)"+currentRelations.nativeSql(),currentRelations.nativeArgs());
+        var currentShape=new SqlShape("current-order-count","SELECT COUNT(*)"+currentRelations.candidateSql(),currentRelations.candidateArgs());
+        var hintedShape=new SqlShape("hinted-order-count","SELECT COUNT(*)"+hintedRelations.candidateSql(),hintedRelations.candidateArgs());
+        long nativeCount=planLong(pair,"native-count",nativeShape);long currentCount=planLong(pair,"current-count",currentShape);
+        long hintedCount=planLong(pair,"hinted-count",hintedShape);
+        assertEquals(20,nativeCount);assertEquals(nativeCount,currentCount);assertEquals(currentCount,hintedCount);
+        pair.verification.put("nativeCount",nativeCount);pair.verification.put("currentCount",currentCount);pair.verification.put("hintedCount",hintedCount);
+        saveOrderIndexShapes(pair,currentRelations,hintedRelations,nativeShape,currentShape,hintedShape);explainBoth(pair,currentShape,hintedShape);
+    }
+    void verifyOrderIndexPage(PlanPair pair,Relation relation) {
+        var currentRelations=orderRelations(relation,false);var hintedRelations=orderRelations(relation,true);
+        assertOnlyOrderIndexDifference(currentRelations,hintedRelations);
+        var nativeShape=new SqlShape("native-order-page",settledProjection()+currentRelations.nativeSql()+
+            " ORDER BY r.record_date DESC,o.id LIMIT ? OFFSET ?",joined(currentRelations.nativeArgs(),List.of(50,0)));
+        var currentShape=new SqlShape("current-order-page",settledProjection()+currentRelations.candidateSql()+
+            " ORDER BY r.record_date DESC,o.id LIMIT ? OFFSET ?",joined(currentRelations.candidateArgs(),List.of(50,0)));
+        var hintedShape=new SqlShape("hinted-order-page",settledProjection()+hintedRelations.candidateSql()+
+            " ORDER BY r.record_date DESC,o.id LIMIT ? OFFSET ?",joined(hintedRelations.candidateArgs(),List.of(50,0)));
+        var nativeRows=planRows(pair,"native-page",nativeShape);var currentRows=planRows(pair,"current-page",currentShape);
+        var hintedRows=planRows(pair,"hinted-page",hintedShape);
+        assertEquals(20,nativeRows.size());assertEquals(nativeRows,currentRows);assertEquals(currentRows,hintedRows);
+        pair.verification.put("rows",nativeRows.size());pair.verification.put("page",1);pair.verification.put("pageSize",50);
+        pair.verification.put("nativeHash",hash(nativeRows.toString()));pair.verification.put("currentHash",hash(currentRows.toString()));
+        pair.verification.put("hintedHash",hash(hintedRows.toString()));
+        saveOrderIndexShapes(pair,currentRelations,hintedRelations,nativeShape,currentShape,hintedShape);explainBoth(pair,currentShape,hintedShape);
+    }
+    void assertOnlyOrderIndexDifference(SettledRelations currentRelations,SettledRelations hintedRelations) {
+        assertEquals(currentRelations.nativeSql(),hintedRelations.nativeSql());assertEquals(currentRelations.nativeArgs(),hintedRelations.nativeArgs());
+        assertEquals(currentRelations.candidateArgs(),hintedRelations.candidateArgs());
+        assertEquals(currentRelations.candidateSql().replace("JOIN finance_records o ON","JOIN finance_records o FORCE INDEX(idx_finance_settled_order) ON"),
+            hintedRelations.candidateSql());
+    }
+    void saveOrderIndexShapes(PlanPair pair,SettledRelations currentRelations,SettledRelations hintedRelations,SqlShape nativeShape,SqlShape currentShape,SqlShape hintedShape) {
+        pair.verification.put("nativeSql",nativeShape.sql());pair.verification.put("nativeSqlHash",hash(nativeShape.sql()));
+        pair.verification.put("currentSql",currentShape.sql());pair.verification.put("currentSqlHash",hash(currentShape.sql()));
+        pair.verification.put("hintedSql",hintedShape.sql());pair.verification.put("hintedSqlHash",hash(hintedShape.sql()));
+        pair.verification.put("nativeArgs",nativeShape.args());pair.verification.put("currentArgs",currentShape.args());pair.verification.put("hintedArgs",hintedShape.args());
+        pair.verification.put("onlyDifference","FORCE INDEX(idx_finance_settled_order)");
+    }
     void runPlanPair(String name) {
         checkPhase();var a=new Attempt("PLAN_"+name);attempts.add(a);var pair=new PlanPair(name,a);planPairs.add(pair);current.set(a);
         pair.explainsBefore=explainStatements;pair.rrStartedNanos=System.nanoTime();
@@ -1276,11 +1408,11 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
         pair.verification.put("nativeHash",hash(nativeRows.toString()));pair.verification.put("candidateHash",hash(candidateRows.toString()));pair.verification.put("equal",true);
         explainBoth(pair,nativeShape,candidateShape);
     }
-    SettledRelations orderRelations(Relation relation) {
+    SettledRelations orderRelations(Relation relation) {return orderRelations(relation,false);}
+    SettledRelations orderRelations(Relation relation,boolean hinted) {
         var q=reader.query(COMPANY,MONTH,"r");var selected=FinanceRecordSearch.apply(q,"o","",false);
         String nativeSql=reader.settledOrderRelation(COMPANY,MONTH,"ORDER",false)+selected.where().substring(q.where().length());
-        String candidateSql=" FROM ("+relation.sql()+") r JOIN finance_records o ON o.organization_id=r.organization_id "+
-            "AND o.shop_id=r.shop_id AND o.order_id=r.order_id AND o.kind='ORDER' AND o.source='API' WHERE "+selected.where();
+        String candidateSql=candidateSettledRelation(relation,selected,"ORDER",false,hinted);
         return new SettledRelations(nativeSql,selected.args(),candidateSql,joined(relation.args(),selected.args()));
     }
     static List<String> expectedSelectiveWinners(){return List.of("sel-00000009-s0","sel-00000008-s0","sel-00000007-s0","sel-00000006-s0","sel-00000005-s0",
