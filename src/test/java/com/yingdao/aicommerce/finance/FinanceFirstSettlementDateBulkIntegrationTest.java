@@ -43,6 +43,8 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
     static final Filter MONTH=window(OCT,OCT.plusMonths(1).minusDays(1));
     static final String COLUMNS="id,organization_id,shop_id,order_id,record_date,platform,currency,status";
     static final CandidateBudget BUDGET=new CandidateBudget(500,10000,2000);
+    static final SelectiveFixture SELECTIVE_1K=new SelectiveFixture(1000,10,505,200,200);
+    static final SelectiveFixture SELECTIVE_10K=new SelectiveFixture(10000,100,5050,400,400);
     final List<Map<String,Object>> evidence=new CopyOnWriteArrayList<>();
     final List<ExecutorService> executors=new ArrayList<>();
     final ThreadLocal<Attempt> current=new ThreadLocal<>();
@@ -58,6 +60,7 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
     final AtomicInteger orderIndexHintRelations=new AtomicInteger();
     final Set<String> orderIndexHintSqlHashes=ConcurrentHashMap.newKeySet();
     boolean orderIndexHintEnabled;
+    SelectiveFixture selectiveFixture=SELECTIVE_1K;
     int explainStatements;
     long hardDeadline,phaseDeadline;
     int phaseAttempts;
@@ -106,6 +109,8 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
                 }
                 case "selective-clean-1pct" -> selectiveCleanOnePercent();
                 case "selective-clean-1pct-order-index" -> selectiveCleanOnePercentOrderIndex();
+                case "selective-clean-1pct-order-index-smoke" -> selectiveCleanOnePercentOrderIndexSmoke();
+                case "selective-clean-1pct-order-index-size-10000" -> selectiveCleanOnePercentOrderIndexSize10000();
                 case "plan" -> planCleanOnePercent();
                 case "plan-order-index" -> planOrderIndex();
                 case "selectivity","selective-mixed-1pct","selective-clean-10pct",
@@ -134,7 +139,8 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
                 var directory=Path.of("/tmp/finance-bi-performance-qa/first-settlement-date-bulk");
                 Files.createDirectories(directory);
                 String prefix=Set.of("closure","snapshot","selective-clean-1pct","plan","plan-order-index",
-                    "selective-clean-1pct-order-index","closure-order-index","snapshot-order-index").contains(selected)?selected:"closure";
+                    "selective-clean-1pct-order-index","selective-clean-1pct-order-index-smoke","selective-clean-1pct-order-index-size-10000",
+                    "closure-order-index","snapshot-order-index").contains(selected)?selected:"closure";
                 var path=directory.resolve(prefix+"-"+UUID.randomUUID()+".json");
                 Files.writeString(path,repo.write(receipt)+"\n",StandardOpenOption.CREATE_NEW);
                 System.out.println("DATE_BULK_RECEIPT "+path);
@@ -149,6 +155,14 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
     record Settled(List<Map<String,Object>> bag,long count,List<List<Map<String,Object>>> pages) {}
     record Data(List<Map<String,Object>> identities,Map<String,Settled> settled) {}
     record Probe(DateResolution resolution,Data data,Attempt attempt) {}
+    record SelectiveFixture(int owners,int octoberOwners,int novemberStart,int maxInitializationBatches,int maxWorkerTicks) {
+        SelectiveFixture {
+            if(!((owners==1000&&octoberOwners==10&&novemberStart==505)||(owners==10000&&octoberOwners==100&&novemberStart==5050)))
+                throw new IllegalArgumentException("Only the frozen 1k and 10k selective fixtures are supported");
+        }
+        int septemberOwners(){return novemberStart-octoberOwners;}
+        int novemberOwners(){return owners-novemberStart;}
+    }
     record SettledRelations(String nativeSql,List<Object> nativeArgs,String candidateSql,List<Object> candidateArgs) {}
     record SqlShape(String name,String sql,List<Object> args) {
         Map<String,Object> receipt(){return Map.of("name",name,"sql",sql,"args",args,"sqlHash",hash(sql),"argCount",args.size());}
@@ -1033,31 +1047,50 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
     static final long SELECTIVE_SEED=20261114L;
     static String selectivePrefix(int owner){return "sel-"+String.format(Locale.ROOT,"%08d",owner);}
     static String selectiveOrder(int owner){return "selective-order-"+String.format(Locale.ROOT,"%08d",owner);}
-    static LocalDate selectiveFirstDay(int owner) {
-        if(owner<10)return OCT.plusDays(owner);
-        return (owner<505?OCT.minusMonths(1):OCT.plusMonths(1)).plusDays((owner<505?owner-10:owner-505)%27);
+    static LocalDate selectiveFirstDay(int owner,SelectiveFixture fixture) {
+        if(owner<fixture.octoberOwners())return OCT.plusDays(owner%10);
+        return (owner<fixture.novemberStart()?OCT.minusMonths(1):OCT.plusMonths(1)).plusDays(
+            (owner<fixture.novemberStart()?owner-fixture.octoberOwners():owner-fixture.novemberStart())%27);
     }
     void selectiveCleanOnePercent() throws Exception {
-        configureSelectiveReceipt("CURRENT");
-        try {selectiveSmallControls();runSelectiveLargeCohort("selective-clean-one-percent");}
+        selectiveFixture=SELECTIVE_1K;configureSelectiveReceipt("CURRENT",30,false);
+        try {selectiveSmallControls();runSelectiveLargeCohort("selective-clean-one-percent",30);}
         finally {selective.put("timingSummary",selectiveTimingSummary());}
     }
     void selectiveCleanOnePercentOrderIndex() throws Exception {
-        orderIndexHintEnabled=true;configureSelectiveReceipt("HINTED_ORDER_INDEX");
-        try {runSelectiveLargeCohort("selective-clean-one-percent-order-index");}
+        orderIndexHintEnabled=true;selectiveFixture=SELECTIVE_1K;configureSelectiveReceipt("HINTED_ORDER_INDEX",30,false);
+        try {runSelectiveLargeCohort("selective-clean-one-percent-order-index",30);}
         finally {selective.put("timingSummary",selectiveTimingSummary());}
         assertEquals(30,pairs.stream().filter(p->p.completed).count());
         assertTrue(orderIndexHintRelations.get()>=120,"Thirty HINTED pairs must build all four candidate source relations");
     }
-    void configureSelectiveReceipt(String candidateVariant) {
-        selective.put("seed",SELECTIVE_SEED);selective.put("owners",1000);selective.put("eligiblePerOwner",4);
+    void selectiveCleanOnePercentOrderIndexSmoke() throws Exception {
+        orderIndexHintEnabled=true;selectiveFixture=SELECTIVE_1K;configureSelectiveReceipt("HINTED_ORDER_INDEX",1,true);
+        try {runSelectiveLargeCohort("selective-clean-one-percent-order-index-smoke",1);}
+        finally {selective.put("timingSummary",selectiveTimingSummary());}
+        assertEquals(1,pairs.stream().filter(p->p.completed).count());assertEquals(4,orderIndexHintRelations.get());
+        assertEquals(25,pairs.getFirst().nativePath.selects());assertEquals(31,pairs.getFirst().candidatePath.selects());
+        assertEquals("a21cab7b3e8468824243f1d26521be52634be403a7583d2b589b85bef1153cf7",
+            ((Map<?,?>)selective.get("sourceSetup")).get("insertionOwnerOrderHash"));
+    }
+    void selectiveCleanOnePercentOrderIndexSize10000() throws Exception {
+        orderIndexHintEnabled=true;selectiveFixture=SELECTIVE_10K;configureSelectiveReceipt("HINTED_ORDER_INDEX",30,false);
+        try {runSelectiveLargeCohort("selective-clean-one-percent-order-index-size-10000",30);}
+        finally {selective.put("timingSummary",selectiveTimingSummary());}
+        assertEquals(30,pairs.stream().filter(p->p.completed).count());assertEquals(120,orderIndexHintRelations.get());
+        assertTrue(pairs.stream().allMatch(p->p.nativePath.selects()==25&&p.candidatePath.selects()==31));
+    }
+    void configureSelectiveReceipt(String candidateVariant,int targetPairs,boolean smokeOnly) {
+        selective.put("seed",SELECTIVE_SEED);selective.put("owners",selectiveFixture.owners());selective.put("eligiblePerOwner",4);
+        selective.put("octoberOwners",selectiveFixture.octoberOwners());selective.put("septemberOwners",selectiveFixture.septemberOwners());
+        selective.put("novemberOwners",selectiveFixture.novemberOwners());
         selective.put("readerConcurrency",1);selective.put("workerBatch",64);selective.put("cap",64);
-        selective.put("targetPairs",30);selective.put("cacheState","ISOLATED_SEQUENTIAL_NOT_COLD_CACHE_CONTROLLED");
-        selective.put("candidateVariant",candidateVariant);
+        selective.put("targetPairs",targetPairs);selective.put("smokeOnly",smokeOnly);
+        selective.put("cacheState","ISOLATED_SEQUENTIAL_NOT_COLD_CACHE_CONTROLLED");selective.put("candidateVariant",candidateVariant);
         selective.put("unmeasured",Map.of("statementRowsExamined","NOT_MEASURED_NO_PRIVILEGE_EXPANSION",
             "physicalIO","NOT_MEASURED","globalLockWait","NOT_MEASURED"));
     }
-    void runSelectiveLargeCohort(String shopName) throws Exception {
+    void runSelectiveLargeCohort(String shopName,int targetPairs) throws Exception {
         try {
             resetFixture();String shop=groupedShop(COMPANY,shopName,null);
             seedSelectiveSources(shop);initializeSelectiveFacts();verifySelectiveSources();
@@ -1066,7 +1099,7 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
             long phaseStarted=System.nanoTime();selective.put("phaseStartedNanos",phaseStarted);selective.put("phaseDeadlineNanos",phaseDeadline);
             var executor=Executors.newSingleThreadExecutor();executors.add(executor);
             try {
-                for(int number=0;number<30;number++) {
+                for(int number=0;number<targetPairs;number++) {
                     checkPhase();var a=new Attempt("SELECTIVE_PAIR_"+(number+1));attempts.add(a);
                     var pair=new PairSample(number,a);pairs.add(pair);pair.phaseDeadlineNanos=phaseDeadline;
                     var task=new FutureTask<PairSample>(()->measuredPair(pair));
@@ -1089,7 +1122,7 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
                 executor.shutdownNow();selective.put("phaseEndedNanos",System.nanoTime());
                 selective.put("phaseDeadlineDetectionLagNanos",Math.max(0,System.nanoTime()-phaseDeadline));
             }
-            assertEquals(30,pairs.stream().filter(p->p.completed).count(),"A short phase must remain explicitly insufficient");
+            assertEquals(targetPairs,pairs.stream().filter(p->p.completed).count(),"A short phase must remain explicitly insufficient");
         }finally {selective.put("cohortFinallyNanos",System.nanoTime());}
     }
     void selectiveSmallControls() throws Exception {
@@ -1105,31 +1138,34 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
         assertEquals(1,broken.attempt().auditRows);assertEquals(0,broken.attempt().lookups);
     }
     void seedSelectiveSources(String shop) {
-        long started=System.nanoTime();var order=new ArrayList<Integer>();for(int n=0;n<1000;n++)order.add(n);
+        long started=System.nanoTime();var order=new ArrayList<Integer>();for(int n=0;n<selectiveFixture.owners();n++)order.add(n);
         Collections.shuffle(order,new Random(SELECTIVE_SEED));
         var setup=new LinkedHashMap<String,Object>();selective.put("sourceSetup",setup);
         setup.put("insertionOwnerOrderHash",hash(order.toString()));
-        setup.put("allocation","owners0..9 Oct(day1..10);10..504 Sep;505..999 Nov;Sep/Nov day=1+(offset%27)");
+        setup.put("allocation","owners0.."+(selectiveFixture.octoberOwners()-1)+" Oct(day=1+(owner%10)); "+selectiveFixture.octoberOwners()+
+            ".."+(selectiveFixture.novemberStart()-1)+" Sep; "+selectiveFixture.novemberStart()+".."+(selectiveFixture.owners()-1)+" Nov; Sep/Nov day=1+(offset%27)");
         setup.put("idFormat","sel-%08d-s0..s3; source sel-%08d-o1/o2/r1/r2/r3/oi/ri");
-        int eligibleBatches=0,otherBatches=0;
+        int eligibleBatches=0;int otherBatches=0;
         try {
-            for(int first=0;first<1000;first+=100) {
+            for(int first=0;first<selectiveFixture.owners();first+=100) {
                 checkTime();var settlements=new ArrayList<Object>();var sources=new ArrayList<Object>();
-                for(int index=first;index<first+100;index++) {
-                    int owner=order.get(index);String prefix=selectivePrefix(owner),businessOrder=selectiveOrder(owner);
+                int end=Math.min(first+100,selectiveFixture.owners());
+                for(int index=first;index<end;index++) {
+                    int owner=order.get(index);String prefix=selectivePrefix(owner);String businessOrder=selectiveOrder(owner);
                     for(int row=0;row<4;row++) {
                         String id=prefix+"-s"+row;
                         Collections.addAll(settlements,id,COMPANY.organizationId(),COMPANY.userId(),shop,
                             owner%2==0?"SHOPEE":"TIKTOK_SHOP",id,businessOrder,id,
-                            java.sql.Date.valueOf(selectiveFirstDay(owner).plusDays(row/2)),row%2==0?"USD":"PHP");
+                            java.sql.Date.valueOf(selectiveFirstDay(owner,selectiveFixture).plusDays(row/2)),row%2==0?"USD":"PHP");
                     }
                     appendSourceValues(sources,COMPANY,shop,businessOrder,prefix);
                 }
+                int batchOwners=end-first;
                 db.update("""
                     INSERT INTO finance_records(id,organization_id,user_id,shop_id,platform,kind,external_id,order_id,statement_id,
                       category,status,record_date,currency,source,raw_json) VALUES
-                    """+String.join(",",Collections.nCopies(400,"(?,?,?,?,?,'SETTLEMENT',?,?,?,'ORDER','SETTLED',?,?,'API','{}')")),settlements.toArray());
-                eligibleBatches++;insertSources(100,sources);otherBatches++;
+                    """+String.join(",",Collections.nCopies(4*batchOwners,"(?,?,?,?,?,'SETTLEMENT',?,?,?,'ORDER','SETTLED',?,?,'API','{}')")),settlements.toArray());
+                eligibleBatches++;insertSources(batchOwners,sources);otherBatches++;
             }
         }finally {
             setup.put("elapsedNanos",System.nanoTime()-started);setup.put("eligibleInsertBatches",eligibleBatches);
@@ -1139,32 +1175,34 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
     }
     void initializeSelectiveFacts() throws Exception {
         var record=new LinkedHashMap<String,Object>();selective.put("realInitialization",record);
+        record.put("owners",selectiveFixture.owners());record.put("maxInitializationBatches",selectiveFixture.maxInitializationBatches());
+        record.put("maxWorkerTicks",selectiveFixture.maxWorkerTicks());
         var init=new FinanceFirstSettlementInitialization(repo);var facts=new FinanceFirstSettlementFacts(repo);
         long started=System.nanoTime();init.discoverCompanies(8);
         var guard=facts.guard(COMPANY.organizationId()).orElseThrow();
         record.put("discoverNanos",System.nanoTime()-started);started=System.nanoTime();
-        int seedBatches=0,requeueBatches=0,seedVisited=0,requeueVisited=0;boolean seeded=false,requeued=false;
-        for(int n=0;n<200;n++) {checkTime();var batch=init.seed(guard,64);seedBatches++;seedVisited+=batch.visited();if(batch.complete()){seeded=true;break;}}
+        int seedBatches=0;int requeueBatches=0;int seedVisited=0;int requeueVisited=0;boolean seeded=false;boolean requeued=false;
+        for(int n=0;n<selectiveFixture.maxInitializationBatches();n++) {checkTime();var batch=init.seed(guard,64);seedBatches++;seedVisited+=batch.visited();if(batch.complete()){seeded=true;break;}}
         record.put("seedNanos",System.nanoTime()-started);record.put("seedBatches",seedBatches);record.put("seedVisited",seedVisited);
         assertTrue(seeded);started=System.nanoTime();
-        for(int n=0;n<200;n++) {checkTime();var batch=init.requeue(guard,64);requeueBatches++;requeueVisited+=batch.visited();if(batch.complete()){requeued=true;break;}}
+        for(int n=0;n<selectiveFixture.maxInitializationBatches();n++) {checkTime();var batch=init.requeue(guard,64);requeueBatches++;requeueVisited+=batch.visited();if(batch.complete()){requeued=true;break;}}
         record.put("requeueNanos",System.nanoTime()-started);record.put("requeueBatches",requeueBatches);record.put("requeueVisited",requeueVisited);
         assertTrue(requeued);started=System.nanoTime();assertTrue(init.complete(guard));record.put("completeNanos",System.nanoTime()-started);
-        assertEquals(1000,pending(COMPANY));
+        assertEquals(selectiveFixture.owners(),pending(COMPANY));
         if(gateDirectory==null)gateDirectory=Files.createTempDirectory("finance-date-bulk-gate-");
         var constructor=MaintenanceGate.class.getDeclaredConstructor(Path.class);constructor.setAccessible(true);
         var gate=constructor.newInstance(gateDirectory.resolve("closed"));
         var worker=new FinanceFirstSettlementWorker(facts,init,64,30,8,Duration.ofSeconds(2),System::nanoTime,gate);
-        started=System.nanoTime();int ticks=0,claimed=0,published=0,rejected=0;
+        started=System.nanoTime();int ticks=0;int claimed=0;int published=0;int rejected=0;
         try {
-            while(pending(COMPANY)>0&&ticks<200) {
+            while(pending(COMPANY)>0&&ticks<selectiveFixture.maxWorkerTicks()) {
                 checkTime();var tick=worker.tick();ticks++;claimed+=tick.claimed();published+=tick.published();rejected+=tick.rejected();
             }
         }finally {
             record.put("publishNanos",System.nanoTime()-started);record.put("workerTicks",ticks);record.put("claimed",claimed);
             record.put("published",published);record.put("rejected",rejected);record.put("workerBatch",64);
         }
-        assertEquals(0,pending(COMPANY));assertEquals(1000,published);assertEquals(0,rejected);assertEquals(0,gate.activeWorkers());
+        assertEquals(0,pending(COMPANY));assertEquals(selectiveFixture.owners(),published);assertEquals(0,rejected);assertEquals(0,gate.activeWorkers());
     }
     void verifySelectiveSources() {
         long started=System.nanoTime();
@@ -1173,27 +1211,29 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
             var kinds=db.queryForList("SELECT source,kind,COUNT(*) records FROM finance_records WHERE organization_id=? GROUP BY source,kind ORDER BY source,kind",COMPANY.organizationId());
             var counts=new LinkedHashMap<String,Long>();
             for(var row:kinds)counts.put(text(row.get("source"))+":"+text(row.get("kind")),number(row.get("records")));
-            assertEquals(Map.of("API:SETTLEMENT",4000L,"API:ORDER",2000L,"API:REFUND",3000L,"IMPORT:ORDER",1000L,"IMPORT:REFUND",1000L),counts);
+            long owners=selectiveFixture.owners();
+            assertEquals(Map.of("API:SETTLEMENT",owners*4,"API:ORDER",owners*2,"API:REFUND",owners*3,"IMPORT:ORDER",owners,"IMPORT:REFUND",owners),counts);
             result.put("sourceKindCounts",counts);
             long eligibleOwners=db.queryForObject("SELECT COUNT(*) FROM finance_records r WHERE r.organization_id=? AND "+
                 FinanceCostReport.firstSettlementIdentity("r",true),Long.class,COMPANY.organizationId());
-            assertEquals(1000,eligibleOwners);result.put("eligibleOwners",eligibleOwners);
+            assertEquals(owners,eligibleOwners);result.put("eligibleOwners",eligibleOwners);
             String eligible=FinanceCostReport.confirmed("r")+" AND (r.platform<>'TIKTOK_SHOP' OR r.category='ORDER')";
             long eligibleRows=db.queryForObject("SELECT COUNT(*) FROM finance_records r WHERE r.organization_id=? AND "+eligible,Long.class,COMPANY.organizationId());
             long uneven=db.queryForObject("SELECT COUNT(*) FROM (SELECT r.shop_id,r.order_id FROM finance_records r WHERE r.organization_id=? AND "+
                 eligible+" GROUP BY r.shop_id,r.order_id HAVING COUNT(*)<>4) per_owner",Long.class,COMPANY.organizationId());
-            assertEquals(4000,eligibleRows);assertEquals(0,uneven);result.put("eligibleRows",eligibleRows);result.put("ownersWithOtherThan4Eligible",uneven);
+            assertEquals(owners*4,eligibleRows);assertEquals(0,uneven);result.put("eligibleRows",eligibleRows);result.put("ownersWithOtherThan4Eligible",uneven);
             var histogram=db.queryForList("SELECT DATE_FORMAT(r.record_date,'%Y-%m') month,COUNT(*) owners FROM finance_records r WHERE r.organization_id=? AND "+
                 FinanceCostReport.firstSettlementIdentity("r",true)+" GROUP BY DATE_FORMAT(r.record_date,'%Y-%m') ORDER BY month",COMPANY.organizationId());
             var months=new LinkedHashMap<String,Long>();for(var row:histogram)months.put(text(row.get("month")),number(row.get("owners")));
-            assertEquals(Map.of("2026-09",495L,"2026-10",10L,"2026-11",495L),months);result.put("firstMonthOwners",months);
+            assertEquals(Map.of("2026-09",(long)selectiveFixture.septemberOwners(),"2026-10",(long)selectiveFixture.octoberOwners(),
+                "2026-11",(long)selectiveFixture.novemberOwners()),months);result.put("firstMonthOwners",months);
             long missing=db.queryForObject("SELECT COUNT(*) FROM finance_records r LEFT JOIN finance_first_settlement_facts f "+
                 "ON f.organization_id=r.organization_id AND f.shop_id=r.shop_id AND f.order_id=r.order_id "+
                 "WHERE r.organization_id=? AND "+FinanceCostReport.firstSettlementIdentity("r",true)+" AND f.organization_id IS NULL",Long.class,COMPANY.organizationId());
             long notClean=db.queryForObject("SELECT COUNT(*) FROM finance_first_settlement_facts WHERE organization_id=? "+
                 "AND NOT(applied_revision=requested_revision AND applied_revision>0 AND schema_version=1 AND applied_generation=1 AND applied_registration_version=1)",Long.class,COMPANY.organizationId());
             long facts=db.queryForObject("SELECT COUNT(*) FROM finance_first_settlement_facts WHERE organization_id=?",Long.class,COMPANY.organizationId());
-            assertEquals(0,missing);assertEquals(0,notClean);assertEquals(1000,facts);
+            assertEquals(0,missing);assertEquals(0,notClean);assertEquals(owners,facts);
             result.put("eligibleMissing",missing);result.put("unresolved",notClean);result.put("facts",facts);
             return result;
         });
@@ -1380,7 +1420,7 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
         var candidateShape=new SqlShape("candidate-rExact-identity","SELECT "+exactProjection("r")+" FROM ("+relation.sql()+") r WHERE "+
             q.where()+" ORDER BY r.record_date DESC,r.id",joined(relation.args(),q.args()));
         var nativeRows=planRows(pair,"native-identity",nativeShape);var candidateRows=planRows(pair,"candidate-identity",candidateShape);
-        assertEquals(expectedSelectiveWinners(),ids(nativeRows));assertEquals(nativeRows,candidateRows);
+        assertEquals(expectedSelectiveWinners(SELECTIVE_1K),ids(nativeRows));assertEquals(nativeRows,candidateRows);
         pair.verification.put("rows",nativeRows.size());pair.verification.put("nativeHash",hash(nativeRows.toString()));
         pair.verification.put("candidateHash",hash(candidateRows.toString()));pair.verification.put("equal",true);
         explainBoth(pair,nativeShape,candidateShape);
@@ -1415,8 +1455,14 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
         String candidateSql=candidateSettledRelation(relation,selected,"ORDER",false,hinted);
         return new SettledRelations(nativeSql,selected.args(),candidateSql,joined(relation.args(),selected.args()));
     }
-    static List<String> expectedSelectiveWinners(){return List.of("sel-00000009-s0","sel-00000008-s0","sel-00000007-s0","sel-00000006-s0","sel-00000005-s0",
-        "sel-00000004-s0","sel-00000003-s0","sel-00000002-s0","sel-00000001-s0","sel-00000000-s0");}
+    static List<Integer> expectedSelectiveOwners(SelectiveFixture fixture){
+        var expected=new ArrayList<Integer>();
+        for(int dayOffset=9;dayOffset>=0;dayOffset--)for(int owner=dayOffset;owner<fixture.octoberOwners();owner+=10)expected.add(owner);
+        return List.copyOf(expected);
+    }
+    static List<String> expectedSelectiveWinners(SelectiveFixture fixture){
+        return expectedSelectiveOwners(fixture).stream().map(owner->selectivePrefix(owner)+"-s0").toList();
+    }
     void explainBoth(PlanPair pair,SqlShape first,SqlShape second) {
         explain(pair,first,"JSON");explain(pair,first,"ANALYZE");explain(pair,second,"JSON");explain(pair,second,"ANALYZE");
     }
@@ -1610,13 +1656,13 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
         finally {t.ended=System.nanoTime();pathTiming.remove();}
     }
     void assertSelectiveData(Data data) {
-        var expectedWinners=expectedSelectiveWinners();
-        assertEquals(expectedWinners,ids(data.identities()));assertEquals(10,data.identities().size());
+        var expectedWinners=expectedSelectiveWinners(selectiveFixture);
+        assertEquals(expectedWinners,ids(data.identities()));assertEquals(selectiveFixture.octoberOwners(),data.identities().size());
         for(String kind:List.of("ORDER","REFUND"))for(boolean normal:List.of(false,true)) {
-            var s=data.settled().get(kind+":"+normal);assertEquals(kind.equals("ORDER")?20:30,s.count());
+            var s=data.settled().get(kind+":"+normal);assertEquals((long)selectiveFixture.octoberOwners()*(kind.equals("ORDER")?2:3),s.count());
             assertEquals(s.bag().size(),s.count());
             var expectedIds=new ArrayList<String>();
-            for(int owner=9;owner>=0;owner--)for(String suffix:kind.equals("ORDER")?List.of("o1","o2"):List.of("r1","r2","r3"))
+            for(int owner:expectedSelectiveOwners(selectiveFixture))for(String suffix:kind.equals("ORDER")?List.of("o1","o2"):List.of("r1","r2","r3"))
                 expectedIds.add(selectivePrefix(owner)+"-"+suffix);
             assertEquals(expectedIds,ids(s.bag()));
             long[] offsets={0,1,Math.max(0,s.count()-1),s.count()+1};
@@ -1624,10 +1670,10 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
                 long offset=offsets[page];
                 assertEquals(s.bag().subList((int)Math.min(offset,s.bag().size()),(int)Math.min(offset+3,s.bag().size())),s.pages().get(page));
             }
-            assertEquals(10,s.bag().stream().filter(row->row.get("amount")==null).count());
-            assertEquals(10,s.bag().stream().filter(row->row.get("amount")!=null&&decimal(row.get("amount")).signum()==0).count());
-            if(kind.equals("ORDER"))assertEquals(10,s.bag().stream().filter(row->"CANCELLED".equals(row.get("status"))).count());
-            else assertEquals(10,s.bag().stream().filter(row->new BigDecimal("-1.234567").equals(row.get("amount"))).count());
+            assertEquals(selectiveFixture.octoberOwners(),s.bag().stream().filter(row->row.get("amount")==null).count());
+            assertEquals(selectiveFixture.octoberOwners(),s.bag().stream().filter(row->row.get("amount")!=null&&decimal(row.get("amount")).signum()==0).count());
+            if(kind.equals("ORDER"))assertEquals(selectiveFixture.octoberOwners(),s.bag().stream().filter(row->"CANCELLED".equals(row.get("status"))).count());
+            else assertEquals(selectiveFixture.octoberOwners(),s.bag().stream().filter(row->new BigDecimal("-1.234567").equals(row.get("amount"))).count());
         }
     }
 
