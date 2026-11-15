@@ -197,15 +197,27 @@ public class FinanceWorkspaceQueryService {
             "groupId",f.groupId(),"currency",f.currency(),"displayCurrency",selected.cny()?"CNY":f.currency(),"granularity",f.granularity()));
         return result;
     }
-    static long exactTotal(List<Map<String,Object>> counts,Filter f,Selection selected){
+    long exactTotal(List<Map<String,Object>> counts,Filter f,Selection selected){
         String kind=selected.view().equals("reconciliation")?"BILL":selected.kind();
         String basis=!selected.allOrders()&&Set.of("ORDER","REFUND").contains(kind)?"SETTLED":"RECORD";
-        return counts.stream().filter(row->basis.equals(row.get("basis"))&&kind.equals(row.get("kind")))
-            .filter(row->f.currency().isBlank()||f.currency().equals(text(row.get("currency"))))
+        var eligible=counts.stream().filter(row->basis.equals(row.get("basis"))&&kind.equals(row.get("kind")))
             .filter(row->!selected.allOrders()||"API".equals(row.get("source")))
             .filter(row->!selected.view().equals("ads-support")||!kind.equals("FEE")||number(row.get("advertising_fee"))==1)
-            .mapToLong(row->number(row.get("records"))).sum();
+            .map(row->Map.<String,Object>of("currency",text(row.get("currency")),"records",number(row.get("records")))).toList();
+        if(f.currency().isBlank())return eligible.stream().mapToLong(row->number(row.get("records"))).sum();
+        if(asciiCurrency(f.currency())&&eligible.stream().allMatch(row->asciiCurrency(text(row.get("currency")))))
+            return eligible.stream().filter(row->f.currency().equals(row.get("currency"))).mapToLong(row->number(row.get("records"))).sum();
+        return number(repo.jdbc().queryForObject("""
+            SELECT COALESCE(SUM(bucket.records),0)
+            FROM JSON_TABLE(CAST(? AS JSON),'$[*]' COLUMNS(
+              currency VARCHAR(8) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci PATH '$.currency',
+              records BIGINT PATH '$.records'
+            )) bucket
+            WHERE bucket.currency=CAST(? AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_0900_ai_ci
+            """,Long.class,repo.write(eligible),f.currency()));
     }
+    private static boolean asciiCurrency(String currency){return currency.length()==3&&currency.charAt(0)>='A'&&currency.charAt(0)<='Z'
+        &&currency.charAt(1)>='A'&&currency.charAt(1)<='Z'&&currency.charAt(2)>='A'&&currency.charAt(2)<='Z';}
     private static Filter nativeFilter(Filter f){return new Filter(f.start(),f.end(),f.shopId(),f.platform(),"",f.granularity(),f.groupId());}
     private String selectionKey(Selection s){
         return s.view().equals("ads")?repo.write(List.of(s.spendPage(),s.search(),s.assignment())):

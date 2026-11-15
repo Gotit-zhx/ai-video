@@ -225,6 +225,67 @@ class FinanceProjectionVersionCoverageIntegrationTest {
         postBuild(revision,usd,selected,next.oracle());
     }
 
+    @Test void currencyByteOnlyCommitMustFenceTheWarmUsdFeePage()throws Exception{
+        startCase("currency-byte");
+        var entry=new Entry(shop,"SHOPEE","FEE","currency-fee","","","pay_per_sale","SETTLED",DAY,"USD",decimal("12.123456"),null,null,null,null,"API",Map.of());
+        fixture.repo.save(scope,entry);String recordId=id(scope,entry);buildInitial();
+        Filter usd=month("USD");var selected=selection("fees","FEE","");
+        var column=fixture.db.queryForMap("""
+            SELECT column_type,character_set_name,collation_name
+            FROM information_schema.columns
+            WHERE table_schema=DATABASE() AND table_name='finance_records' AND column_name='currency'
+            """);
+        assertEquals("varchar(8)",String.valueOf(column.get("column_type")).toLowerCase(Locale.ROOT));
+        assertFalse(text(column.get("character_set_name")).isBlank());assertFalse(text(column.get("collation_name")).isBlank());
+
+        State initial=readState(()->currencySource(recordId,usd),()->oracleInside(usd,selected));
+        Outcome warmFirst=capture(()->queries.query(scope,scope,usd,selected));Outcome warmSecond=capture(()->queries.query(scope,scope,usd,selected));
+        String revision=readyRevision(initial);var baseline=currencyRow(initial.source());
+        assertCurrencySource(initial.source(),"USD","555344",baseline);assertCurrencyBusiness(initial.oracle(),"USD");
+        requireOutcomeEquals(initial.oracle(),warmFirst,"initial USD fee page");requireOutcomeEquals(initial.oracle(),warmSecond,"warm USD fee page");assertWarmRedis(warmFirst,warmSecond);
+
+        MutationReceipt rollback=mutate("rollback","UPDATE finance_records SET currency=? WHERE id=?",List.of("usd",recordId),false,null);
+        SnapshotPage rollbackState=readSnapshotPage(()->currencySource(recordId,usd),()->oracleInside(usd,selected),selected);
+        assertAll("currency byte rollback remains invisible",
+            ()->assertCurrencySource(rollbackState.state().source(),"USD","555344",baseline),
+            ()->assertVersion(rollbackState.state(),"READY",revision,0),
+            ()->assertEquals(initial.oracle().hash(),rollbackState.state().oracle().hash()),
+            ()->requireOutcomeEquals(initial.oracle(),rollbackState.page(),"currency rollback page"),
+            ()->assertTrue(rollback.rolledBack()));
+
+        OldSnapshot old=holdOldSnapshotAndCommit(
+            ()->currencySource(recordId,usd),()->oracleInside(usd,selected),selected,
+            "UPDATE finance_records SET currency=? WHERE id=?",List.of("usd",recordId));
+        assertAll("currency byte A retains one real old snapshot",
+            ()->assertCurrencySource(old.before().source(),"USD","555344",baseline),
+            ()->assertCurrencySource(old.after().source(),"USD","555344",baseline),
+            ()->assertEquals(canonical(old.before().source()),canonical(old.after().source())),
+            ()->assertVersion(old.before(),"READY",revision,0),
+            ()->assertVersion(old.after(),"READY",revision,0),
+            ()->assertEquals(initial.oracle().tree(),old.after().oracle().tree()),
+            ()->requireOutcomeEquals(initial.oracle(),old.beforePage(),"A USD page before B commit"),
+            ()->requireOutcomeEquals(initial.oracle(),old.afterPage(),"A warm USD page after B commit"),
+            ()->assertNotEquals(old.after().snapshot().get("connectionId"),old.commit().connectionId()));
+
+        State next=readState(()->currencySource(recordId,usd),()->oracleInside(usd,selected));
+        Outcome page=capture(()->queries.query(scope,scope,usd,selected));
+        State stable=readState(()->currencySource(recordId,usd),()->oracleInside(usd,selected));
+        printCurrencyReceipt(column,revision,rollback,rollbackState,old,initial,warmFirst,warmSecond,next,page,stable);
+
+        assertAll("currency SQL-equivalent byte change must fence the complete USD fee page",
+            ()->assertCurrencySource(next.source(),"usd","757364",baseline),
+            ()->assertCurrencyBusiness(next.oracle(),"usd"),
+            ()->assertEquals(canonical(next.source()),canonical(stable.source())),
+            ()->assertEquals(next.oracle().tree(),stable.oracle().tree()),
+            ()->assertTrue(next.events()>0,"Committed currency byte change must create a real finance_query_event"),
+            ()->assertEquals("PENDING",next.version().get("status")),
+            ()->assertEquals(revision,next.version().get("revision")),
+            ()->requireOutcomeEquals(next.oracle(),page,"next USD-filtered native page"),
+            ()->requireOutcomeDifferent(initial.oracle(),page,"old Redis USD business page"));
+
+        postBuild(revision,usd,selected,next.oracle());
+    }
+
     @Test void redisCleanupFailureStillClosesEveryLaterOwnedResource()throws Exception{
         startCase("cleanup-fault");
         redis.opsForValue().set(FinanceReadCache.prefix(companyScope(scope.organizationId()))+"control","created");
@@ -436,6 +497,18 @@ class FinanceProjectionVersionCoverageIntegrationTest {
         var rows=fixture.db.queryForList("SELECT id,user_id,shop_id,platform,kind,external_id,order_id,statement_id,category,status,record_date,currency,amount,revenue,impressions,clicks,conversions,source,SHA2(CAST(raw_json AS CHAR),256) raw_hash FROM finance_records WHERE organization_id=? AND id=?",scope.organizationId(),id);
         return Map.of("rows",rows,"oldCount",feeCount(filter,"old-number"),"newCount",feeCount(filter,"new-number"));
     }
+    private Map<String,Object> currencySource(String id,Filter filter){
+        var row=fixture.db.queryForMap("""
+            SELECT id,user_id,shop_id,platform,kind,external_id,order_id,statement_id,category,status,
+              record_date,currency,HEX(currency) currency_hex,(currency <=> _utf8mb4'USD') sql_equal_usd,
+              (currency <=> _utf8mb4'usd') sql_equal_lower,amount,revenue,impressions,clicks,conversions,source,
+              SHA2(CAST(raw_json AS CHAR),256) raw_hash,updated_at
+            FROM finance_records WHERE organization_id=? AND id=?
+            """,scope.organizationId(),id);
+        var query=fixture.repo.query(scope,filter);var args=new ArrayList<>(query.args());args.add("FEE");
+        long count=number(fixture.db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE "+query.where()+" AND kind=?",Long.class,args.toArray()));
+        var result=new LinkedHashMap<String,Object>();result.put("row",row);result.put("nativeCount",count);return result;
+    }
     private long feeCount(Filter filter,String number){
         var query=FinanceRecordSearch.apply(fixture.repo.query(scope,filter),"finance_records",number,true);var args=new ArrayList<>(query.args());args.add("FEE");
         return number(fixture.db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE "+query.where()+" AND kind=?",Long.class,args.toArray()));
@@ -488,6 +561,16 @@ class FinanceProjectionVersionCoverageIntegrationTest {
     }
 
     private void assertExternal(Map<String,Object> source,String external,long oldCount,long newCount){var rows=rows(source.get("rows"));assertEquals(1,rows.size());assertEquals(external,rows.getFirst().get("external_id"));assertEquals(oldCount,number(source.get("oldCount")));assertEquals(newCount,number(source.get("newCount")));assertEquals("",rows.getFirst().get("order_id"));assertEquals("",rows.getFirst().get("statement_id"));assertEquals(0,decimal("12.123456").compareTo(decimal(rows.getFirst().get("amount"))));}
+    private static Map<String,Object> currencyRow(Map<String,Object> source){return map(source.get("row"));}
+    private void assertCurrencySource(Map<String,Object> source,String currency,String hex,Map<String,Object> baseline){
+        var row=currencyRow(source);assertEquals(currency,row.get("currency"));assertEquals(hex,row.get("currency_hex"));assertEquals(1,number(row.get("sql_equal_usd")));assertEquals(1,number(row.get("sql_equal_lower")));assertEquals(1,number(source.get("nativeCount")));
+        for(String key:List.of("id","user_id","shop_id","platform","kind","external_id","order_id","statement_id","category","status","record_date","source","raw_hash","updated_at"))assertEquals(canonical(baseline.get(key)),canonical(row.get(key)),key);
+        assertEquals(0,decimal("12.123456").compareTo(decimal(row.get("amount"))));assertNull(row.get("revenue"));assertNull(row.get("impressions"));assertNull(row.get("clicks"));assertNull(row.get("conversions"));assertEquals("",row.get("order_id"));assertEquals("",row.get("statement_id"));
+    }
+    private void assertCurrencyBusiness(Business business,String currency){
+        assertEquals(1,business.total());assertEquals(1,business.items().size());assertEquals(currency,business.items().getFirst().get("currency"));assertEquals("12.123456",business.items().getFirst().get("amount"));
+        var records=map(map(business.tree()).get("records"));assertEquals(1,number(records.get("page")));assertEquals(50,number(records.get("pageSize")));assertEquals(1,number(records.get("total")));assertEquals(1,rows(records.get("items")).size());
+    }
     private void assertWinner(Map<String,Object> source,String id,String currency,long usd,long php){var winner=rows(source.get("winner"));assertEquals(1,winner.size());assertEquals(id,winner.getFirst().get("id"));assertEquals(currency,winner.getFirst().get("currency"));assertEquals(usd,number(source.get("usdCount")));assertEquals(php,number(source.get("phpCount")));}
     private void assertReconciliation(Map<String,Object> source,String user,long count){var rows=rows(source.get("rows"));assertEquals(1,rows.size());assertEquals(user,rows.getFirst().get("user_id"));assertEquals(count,number(source.get("billCount")));assertEquals("bill-1",rows.getFirst().get("external_id"));assertEquals(0,decimal("10").compareTo(decimal(rows.getFirst().get("amount"))));}
     private void assertMatched(Business business){assertEquals(1,business.total());var item=business.items().getFirst();assertEquals("7",item.get("detail_amount"));assertEquals("1",item.get("detail_count"));assertEquals("3",item.get("difference"));assertEquals("DIFFERENCE",item.get("result"));}
@@ -513,6 +596,12 @@ class FinanceProjectionVersionCoverageIntegrationTest {
         var receipt=new LinkedHashMap<String,Object>();receipt.put("case",field);receipt.put("initialRevision",revision);receipt.put("rollback",rollback.receipt());receipt.put("rollbackState",stateEvidence(rollbackState.state()));receipt.put("A_before",stateEvidence(old.before()));receipt.put("A_after",stateEvidence(old.after()));receipt.put("B_commit",old.commit().receipt());receipt.put("nextOracle",stateEvidence(next.primary()));if(next.secondary()!=null)receipt.put("nextSecondaryOracle",next.secondary().receipt());receipt.put("workspacePrimary",outcomeEvidence(primary));if(secondary!=null)receipt.put("workspaceSecondary",outcomeEvidence(secondary));receipt.put("postQuerySource",stateEvidence(stable.primary()));receipt.put("pendingWaitNanos",pendingClock.get());receipt.put("redisKeys",cacheKeys().size());receipt.put("postDrainBuild","NOT_REACHED_UNLESS_RED_GATE_PASSES");
         @SuppressWarnings("unchecked") Map<String,Object> frozen=(Map<String,Object>)canonical(receipt);runEvidence=frozen;System.out.println("FINANCE_PROJECTION_VERSION_COVERAGE_RECEIPT "+fixture.repo.write(frozen));
     }
+    private void printCurrencyReceipt(Map<String,Object> column,String revision,MutationReceipt rollback,SnapshotPage rollbackState,OldSnapshot old,State initial,Outcome warmFirst,Outcome warmSecond,State next,Outcome page,State stable){
+        var receipt=new LinkedHashMap<String,Object>();receipt.put("case","currency");receipt.put("column",canonical(column));receipt.put("initialRevision",revision);receipt.put("initial",fullStateEvidence(initial));receipt.put("warmFirst",fullOutcomeEvidence(warmFirst));receipt.put("warmSecond",fullOutcomeEvidence(warmSecond));receipt.put("rollback",rollback.receipt());receipt.put("rollbackState",fullStateEvidence(rollbackState.state()));receipt.put("rollbackPage",fullOutcomeEvidence(rollbackState.page()));receipt.put("A_before",fullStateEvidence(old.before()));receipt.put("A_after",fullStateEvidence(old.after()));receipt.put("A_beforePage",fullOutcomeEvidence(old.beforePage()));receipt.put("A_afterPage",fullOutcomeEvidence(old.afterPage()));receipt.put("B_commit",old.commit().receipt());receipt.put("nextOracle",fullStateEvidence(next));receipt.put("workspacePrimary",fullOutcomeEvidence(page));receipt.put("postQuerySource",fullStateEvidence(stable));receipt.put("pendingWaitNanos",pendingClock.get());receipt.put("redisKeys",cacheKeys().size());receipt.put("postDrainBuild","NOT_REACHED_UNLESS_RED_GATE_PASSES");
+        @SuppressWarnings("unchecked") Map<String,Object> frozen=(Map<String,Object>)canonical(receipt);runEvidence=frozen;System.out.println("FINANCE_PROJECTION_CURRENCY_BYTE_RECEIPT "+fixture.repo.write(frozen));
+    }
+    private Map<String,Object> fullStateEvidence(State state){var result=new LinkedHashMap<>(stateEvidence(state));result.put("oracleTree",state.oracle().tree());return result;}
+    private Map<String,Object> fullOutcomeEvidence(Outcome outcome){var result=new LinkedHashMap<>(outcomeEvidence(outcome));if(outcome!=null&&outcome.failure()==null)result.put("businessTree",outcome.business().tree());return result;}
     private Map<String,Object> stateEvidence(State state){return Map.of("source",canonical(state.source()),"version",state.version(),"events",state.events(),"eventRows",canonical(state.eventRows()),"oracle",state.oracle().receipt(),"snapshot",state.snapshot());}
     private Map<String,Object> outcomeEvidence(Outcome outcome){
         if(outcome==null)return Map.of();if(outcome.failure()!=null)return Map.of("failure",failure(outcome.failure()));

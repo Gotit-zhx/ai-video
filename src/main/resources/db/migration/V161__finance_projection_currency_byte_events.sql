@@ -1,0 +1,12 @@
+-- The previous guard used collation equality for currency. Fence existing
+-- projections once, then register future currency byte changes precisely.
+INSERT INTO finance_query_events(organization_id,event_scope,record_date,shop_id,order_id,record_id,source_table,statement_id)
+SELECT DISTINCT organization_id,'ALL',NULL,NULL,NULL,NULL,'finance_records',NULL
+FROM finance_query_partitions;
+
+DROP TRIGGER IF EXISTS fin_qp_records_au;
+
+CREATE TRIGGER fin_qp_records_au AFTER UPDATE ON finance_records FOR EACH ROW
+ INSERT INTO finance_query_events(organization_id,event_scope,record_date,shop_id,order_id,record_id,source_table,statement_id)
+ SELECT OLD.organization_id,CASE WHEN OLD.kind IN ('ORDER','REFUND','SETTLEMENT') THEN 'ORDER' ELSE 'DAY' END,OLD.record_date,OLD.shop_id,OLD.order_id,OLD.id,'finance_records',CASE WHEN OLD.kind='BILL' THEN OLD.external_id ELSE OLD.statement_id END WHERE NOT (OLD.organization_id <=> NEW.organization_id AND OLD.id <=> NEW.id AND OLD.user_id <=> NEW.user_id AND OLD.shop_id <=> NEW.shop_id AND OLD.kind <=> NEW.kind AND OLD.external_id <=> NEW.external_id AND OLD.record_date <=> NEW.record_date AND OLD.order_id <=> NEW.order_id AND OLD.statement_id <=> NEW.statement_id AND HEX(OLD.currency) <=> HEX(NEW.currency) AND OLD.source <=> NEW.source AND OLD.status <=> NEW.status AND OLD.category <=> NEW.category AND OLD.amount <=> NEW.amount AND OLD.revenue <=> NEW.revenue AND OLD.impressions <=> NEW.impressions AND OLD.clicks <=> NEW.clicks AND OLD.conversions <=> NEW.conversions AND OLD.raw_json <=> NEW.raw_json AND OLD.platform <=> NEW.platform)
+ UNION ALL SELECT NEW.organization_id,CASE WHEN NEW.kind IN ('ORDER','REFUND','SETTLEMENT') THEN 'ORDER' ELSE 'DAY' END,NEW.record_date,NEW.shop_id,NEW.order_id,NEW.id,'finance_records',CASE WHEN NEW.kind='BILL' THEN NEW.external_id ELSE NEW.statement_id END WHERE NOT (OLD.organization_id <=> NEW.organization_id AND OLD.id <=> NEW.id AND OLD.user_id <=> NEW.user_id AND OLD.shop_id <=> NEW.shop_id AND OLD.kind <=> NEW.kind AND OLD.external_id <=> NEW.external_id AND OLD.record_date <=> NEW.record_date AND OLD.order_id <=> NEW.order_id AND OLD.statement_id <=> NEW.statement_id AND HEX(OLD.currency) <=> HEX(NEW.currency) AND OLD.source <=> NEW.source AND OLD.status <=> NEW.status AND OLD.category <=> NEW.category AND OLD.amount <=> NEW.amount AND OLD.revenue <=> NEW.revenue AND OLD.impressions <=> NEW.impressions AND OLD.clicks <=> NEW.clicks AND OLD.conversions <=> NEW.conversions AND OLD.raw_json <=> NEW.raw_json AND OLD.platform <=> NEW.platform);
