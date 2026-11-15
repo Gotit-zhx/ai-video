@@ -397,3 +397,7 @@ V162仅增加 `finance_label_invoice_rows(import_id,matched_shop_id,match_status
 随后仅执行 EXPLAIN（非 ANALYZE），核对当前 12 家所选店铺、3 个文件的同条件 COUNT：三者均选 `PRIMARY(import_id,source_row)`，只使用 `import_id`，非覆盖读取，再筛 `matched_shop_id`；当前索引元数据确实没有 `(import_id,matched_shop_id,match_status)`。计划约 437438 行是估算，不能替代上面的实际扫描量。此前 60k 隔离实验中该候选索引能覆盖原查询且无需新增 hint，但生产索引、真实写入成本及维护验收尚未实施。小型证据为本地计划工作区 `evidence/20261115-ui-statement-history-readonly.jsonl`、`20261115-ui-statement-history-root-analysis.json` 和 `20261115-label-group-source-count-explain-readonly.json`。
 
 额外成本页观察中，目录已加载后进入手动成本管理为0.449秒；当前单店订单成本首切为0.850秒，16行及合计/待补齐状态完整，同店待补齐筛选为0.438秒、3行完整。这些均是单次实际条件，未控制冷缓存或覆盖全部店铺。商品成本表首切因使用了错误的等待标题，只取得27.848秒后已完成的观察上界，明确为不确定，不记成功或性能失败。正式页面“待补齐”维持当前店铺，与本地库存里的“所有店铺待补齐”不同；2026-11-15T12:54Z核对的生产 `finance-costs.js` SHA为 `09593774…`，后续须定向合并，不覆盖其他会话的现场改动。小型原件为 `evidence/20261115-additional-cost-ui-diagnostics.json`。
+
+2026-11-15T14:44:09Z再次从成本页进入费用与调整，现有账户仍保持登录；全部分组、平台、店铺及币种，本次日期未独立复核。0.406秒首次观察仍在加载，17.261、42.325及76.331秒时仍显示计算提示，最后提示“已等待70秒”。这些是已知未完成的观察点，完整完成时间和HTTP耗时未知；该样本明确未达到五秒。未清缓存或控制同期负载，不作为冷缓存、p95或财务结果等价验收。小型原件为 `evidence/20261115-fees-entry-ui-diagnostic.json`。
+
+随后在14:47:44Z只读取得59条当前/短历史statement元数据，当时没有耗时至少五秒的记录；该采样晚于上述页面动作，且没有HTTP request ID，不能解释此前费用页长查询或证明它已变快。复用既有Performance Schema配置，未开启新instrumentation，前后运行context保持。原件为 `evidence/20261115-fees-statements-snapshot-readonly.json`；本次仍没有正式源码、配置、DDL或重启动作。
