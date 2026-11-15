@@ -2,6 +2,8 @@
 
 核查日期：2026-11-06（北京时间）。第一轮核查基线为 `brush-source-summary-20261106`，缓存与队列优化见[第一轮回执](../releases/finance/finance-bi-performance-20261106.md)。用户随后报告 9 月总览超过三分钟，第二轮直接优化冷查询；制品、上线状态与边界见[冷查询回执](../releases/finance/finance-cold-queries-20261106.md)。
 
+证据复核说明（2026-11-15 恢复时）：本机 `/tmp/finance-bi-performance-qa` 已被清空，文中位于该目录的历史原始 JSON/日志当前无法重新读取；已提交的说明、计划工作区的冻结报告/哈希及 `target/ci-reports` 的历史 XML 仍在。历史结果保留其当时的测量范围，不能据此推断当前线上状态。后续新实验须保留新的原件和清理回执；缺失的旧原件不通过重建摘要或重跑旧档冒充恢复。
+
 ## 2026-11-12：专页读取与 Redis 按页缓存（实施中）
 
 本轮先消除串行依赖和大表扫描，再复用已有 Redis；没有增加新的 Redis 实例。当前实现与本地验证状态见[实施计划](../superpowers/plans/2026-11-12-finance-bi-performance.md)。11 月 12 日后端和 V155 已生效；11 月 13 日事件批量解析和缓存元数据读取修复也已受控生效，既有积压已开始推进，仍待排空及真实金额核对。两份性能前端已在 11 月 13 日后续阶段受控切换，5 秒验收尚未完成，以下不是全页性能承诺。
@@ -270,6 +272,10 @@ RR/CAS 工作器随后以 `ce2bc525` 完成本地隔离验证和独立审查：�
 
 root 独立解析两份 XML/JSON，并检查四个精确临时容器不存在，回执 `root-date-bulk-snapshot-evidence-audit-20261115.json`；连接、语句、执行器在共享 5 秒清理边界内归零。两连接正确性不代表持续写入的服务能力：选择性、执行计划、三个连续写入窗口和生产准入仍未完成。测试整段用时及到序列化时记录的 attempt elapsed 不能作为请求 p95 或页面提速证据，公开读路由保持原样。
 
+随后单一 `selective-clean-1pct` 首跑得到负结果：固定 1000 个身份、各 4 条有效结算，9/10/11 月首笔身份分别 495/10/495；真实初始化与工作器发布 1000 个 clean 事实，源 missing 和 U 均为 0。三个小域正负控制通过后，大数据段只尝试一个配对：原生 25 条 SELECT 结束于 278.558ms；候选在第 17 条 SELECT 的有序页读取处触及冻结的 500ms 局部预算，506.082ms 后抛 SQL timeout，整个 RR 为 789.165ms。配对未完成，后置大数据等价验证未执行，没有 p50/p95/max 或完整候选样本；不能将小域 smoke 的 genuineDate=1 当作大数据成功。
+
+完整源覆盖审计本次为 20.593ms，完整 resolve 为 28.724ms；候选已执行的 bag/page 片段合计 447.888ms，页计量含失败语句。这些仅是一次不完整的隔离运行，未取得实际 ROWS_EXAMINED 或计划，尚不能据此确定物理扫描根因。原始 XML 为 64/F0/E1/S0；同一源码的 closure、snapshot 各一次回归均 64/F0/E0/S0。没有提高预算或重跑选择性档。新日志、JSON、XML与源码已按哈希复制到本地计划工作区的 `evidence/20261115-selective-clean-1pct-run1`，root 独立核验清理和原件；后续先检查完整关系的实际执行计划，公开路由继续原生。
+
 ### 现有窄索引用于费用 COUNT：隔离实验未证明实用收益
 
 新增 `FinanceRecordCountCoveringIndexIntegrationTest`，真实执行 `details`/`advertisingFeeDetails`，仅在测试 JdbcTemplate 中对比当前强制 16 列索引、现有 11 列 `idx_finance_page` 及取消该提示的自然路径，不改应用 SQL 或增加索引。38 组独立预期覆盖权限、归属、广告佣金、编号、部分月及兼容路由，完整页面一致；通过空的后续页、独立 repo 但同原始 DataSource/holder/物理连接，证明两边实际 COUNT 未被终页推断或同快照缓存隐藏。实际记录 246 次 COUNT、96 次推断；每次均说明是否执行。两次运行各 65 次（2 声明＋63 继承）零失败/错误/跳过，独立规格和质量审查通过；保留继承测试的既存 JVM warning。
@@ -290,4 +296,8 @@ root 独立解析两份 XML/JSON，并检查四个精确临时容器不存在，
 
 2026-11-15 在当前正式 classpath 下，进一步对 10 月 TikTok/PHP 普通费用做三个独立只读探针。首次正序因 QueryTimeoutException 在 31.271 秒失败，没有分段记录，具体超时 SQL 未知；随后反序的原 COUNT/分组 COUNT 为 3.081/6.576 秒，再次正序为 3.183/1.938 秒。成功的每对均在同一物理 RR 中实际执行两个 COUNT，精确总数 532590、完整 50 行页面相等；跨快照页面哈希不同。两次配对的 repo.details 时间分别为原/分组 3.205/7.135 秒与 3.559/2.044 秒，包含 COUNT，但不是完整财务页或 HTTP/浏览器时间。
 
-三次均确认原连接 rollback/close、前后源码/上下文保持且独立进程归零。未清数据库缓冲池或控制同期后台负载；后次回执文件名的 warm 不构成热缓存证明。两种估算计划都使用覆盖 `idx_finance_company_kind_date`，源估计 4091466 行，不是实际 ROWS_EXAMINED；生产未运行 ANALYZE。原始回执 `grouped-count-real-fix4-october-php-forward-20261115-021308.jsonl`、`grouped-count-real-october-php-reverse-20261115-022308.jsonl`、`grouped-count-real-october-php-warm-forward-20261115-022659.jsonl` 均保留本机 QA 目录。当前证据不支持稳定提速准入，正式 SQL 保持；继续已计划的选择性事实实验及独立精确计数，不以单段替代全页五秒、冷缓存或持续同步验收。
+三次均确认原连接 rollback/close、前后源码/上下文保持且独立进程归零。未清数据库缓冲池或控制同期后台负载；后次回执文件名的 warm 不构成热缓存证明。两种估算计划都使用覆盖 `idx_finance_company_kind_date`，源估计 4091466 行，不是实际 ROWS_EXAMINED；生产未运行 ANALYZE。原始回执 `grouped-count-real-fix4-october-php-forward-20261115-021308.jsonl`、`grouped-count-real-october-php-reverse-20261115-022308.jsonl`、`grouped-count-real-october-php-warm-forward-20261115-022659.jsonl` 当时保存在本机临时 QA 目录，当前原件可用性见文首说明。当前证据不支持稳定提速准入，正式 SQL 保持；继续已计划的选择性事实实验及独立精确计数，不以单段替代全页五秒、冷缓存或持续同步验收。
+
+### 完整版本 Redis 的前置：记录身份更新登记
+
+只读源码审计发现，现有 `fin_qp_records_au` 未比较 `id/external_id/user_id`；它们分别参与同日首笔选择、有序页/编号搜索和对账关联。常规 `repo.save` 不原位更新这三个身份列，因此不能据此声称普通 API 已出现故障；维护 SQL 的版本覆盖仍需独立验证。准备中的隔离回归将使用真实源事务和 Redis，分别比较 A 原快照与提交后的完整新请求，先取得实际 RED 再决定最小新增迁移。现阶段为源码缺口、未运行复现，不将首次事实版本或缓存 TTL 当作整页完整性证明，也不修改已有迁移。
