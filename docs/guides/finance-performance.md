@@ -276,6 +276,10 @@ root 独立解析两份 XML/JSON，并检查四个精确临时容器不存在，
 
 完整源覆盖审计本次为 20.593ms，完整 resolve 为 28.724ms；候选已执行的 bag/page 片段合计 447.888ms，页计量含失败语句。这些仅是一次不完整的隔离运行，未取得实际 ROWS_EXAMINED 或计划，尚不能据此确定物理扫描根因。原始 XML 为 64/F0/E1/S0；同一源码的 closure、snapshot 各一次回归均 64/F0/E0/S0。没有提高预算或重跑选择性档。新日志、JSON、XML与源码已按哈希复制到本地计划工作区的 `evidence/20261115-selective-clean-1pct-run1`，root 独立核验清理和原件；后续先检查完整关系的实际执行计划，公开路由继续原生。
 
+随后专用 `plan` 诊断完成五个独立只读 RR 配对、20 份 JSON/ANALYZE，均未截断；每对一次连接借用，普通结果与计划保持原 S。当前默认 fixture 已包含 V160，事实原型仅在隔离库使用 v161；这与旧 1% 失败样本的 baseline159/v160 不同，不重放或回填旧结果。候选 resolve 仍受 500ms 约束，普通验证和执行计划使用独立 5 秒诊断上限；没有放宽旧完整候选预算。plan、closure、snapshot 各 64 次执行（各 1 声明＋63 继承）零失败、错误或跳过，独立规格与质量审查通过，原件位于 `evidence/20261115-plan-clean-1pct`。首次诊断代码编译失败为 0 测试、0 EXPLAIN，另行保留，不算计划负结果。
+
+实际计划显示，干净日期分支的自然计划也选择 `idx_fsf_date`；完整性审计约 19.2ms，源索引估算 5500 行、按索引条件后的实际输出 4000 行，并执行 4000 次事实主键查找。这里的算子输出不等于 statement ROWS_EXAMINED 或物理 IO。八列＋HEX 身份结果两侧均 10 行相等；完整 ORDER COUNT 均为 20，有序完整页均为 20 行相等。原生 COUNT/页单次普通查询为 1.093/1.288ms，候选为 12.552/54.757ms。原生关联源订单使用 `idx_finance_settled_order` 的完整订单/source 键，每次约 2 行、循环 10 次；候选未保留这个索引约束，COUNT/页分别自然选择 `idx_finance_cost_statement`/`idx_finance_cost_backfill`，每次先输出约 3000 行、循环 10 次，再筛到当前订单。两侧页仍有临时表和排序。这个隔离诊断定位了候选的不利访问路径，下一步先对照候选恢复原索引约束的效果；单次计划不生成请求 p95，也不改变公开读路由或生产准入。
+
 ### 现有窄索引用于费用 COUNT：隔离实验未证明实用收益
 
 新增 `FinanceRecordCountCoveringIndexIntegrationTest`，真实执行 `details`/`advertisingFeeDetails`，仅在测试 JdbcTemplate 中对比当前强制 16 列索引、现有 11 列 `idx_finance_page` 及取消该提示的自然路径，不改应用 SQL 或增加索引。38 组独立预期覆盖权限、归属、广告佣金、编号、部分月及兼容路由，完整页面一致；通过空的后续页、独立 repo 但同原始 DataSource/holder/物理连接，证明两边实际 COUNT 未被终页推断或同快照缓存隐藏。实际记录 246 次 COUNT、96 次推断；每次均说明是否执行。两次运行各 65 次（2 声明＋63 继承）零失败/错误/跳过，独立规格和质量审查通过；保留继承测试的既存 JVM warning。
