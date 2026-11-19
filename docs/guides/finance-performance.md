@@ -367,17 +367,17 @@ root 独立解析两份 XML/JSON，并检查四个精确临时容器不存在，
 
 2026-11-15 的真实 MySQL＋Redis 隔离回归已复现 `fin_qp_records_au` 漏比较 `id/external_id/user_id`：三个单列提交后原生完整页已变化，事件仍为 0，版本仍为 READY/旧 R，暖 Redis 返回旧页；原三例均为预期业务失败，错误和跳过为 0。`id` 用例还复现了冷 PHP 页的权威总数不一致。A 在 B 独立提交前后保持同一只读 RR 旧快照，新请求看到当前源。常规 `repo.save` 不原位更新这三个身份列，因此这些维护 SQL 场景不构成已发生生产业务事故的证明。
 
-本地新增 `V160__finance_projection_record_identity_events.sql`：先从 `finance_query_partitions` 按公司去重追加 ALL 事件，使旧 guard 期间可能漏记的已生成结果停止复用；再只重建目标 UPDATE trigger，在原 OLD/NEW 两个条件中补齐三个 NULL-safe 身份比较。原有事件字段、范围分类和比较保留，不改写已有迁移、原始财务行或金额，不直接改 READY、修订或缓存载荷。
+早期隔离实验中的财务 V160 试验脚本：先从 `finance_query_partitions` 按公司去重追加 ALL 事件，使旧 guard 期间可能漏记的已生成结果停止复用；再只重建目标 UPDATE trigger，在原 OLD/NEW 两个条件中补齐三个 NULL-safe 身份比较。原有事件字段、范围分类和比较保留，不改写已有迁移、原始财务行或金额，不直接改 READY、修订或缓存载荷。
 
 新 guard 下覆盖类六项（三个业务场景及三个资源控制）、真实 Flyway 升级一项、原有三个兼容类 21＋14＋27 项，共 **69 次执行零失败、错误或跳过**。三个业务场景均观察到两个 OLD/NEW 事件、PENDING 阶段的当前完整页，以及真实 drain/build 后的新 READY/R 与暖页一致。独立升级测试从明确标注的可销毁 baseline159 应用仓库同一份 V160，首次 migrate=1、validate 成功、再次 migrate=0；旧 READY 先失效，真实重建后恢复。历史前缀、选定源字段与金额/原始 JSON 哈希、其余 74 个 trigger 定义保持；未生成旧分区的公司不伪造载荷。既存 Mockito/JDK、Netty fallback 和故意的 projection-deferred 告警单独保留。小型原件位于本地计划工作区 `evidence/20261115-record-identity-green-run1`。
 
-当前为本地验证结果，独立规格与质量审查均已通过；生产维护验收尚未执行，尚未在生产应用 V160。该修复覆盖上述三个逻辑身份字段，全部字符串字节变化、其他 Redis 依赖和整页五秒仍需独立证明。DDL 非原子，正式应用必须重新核对实际迁移号、历史及源码基线，遵守共享维护锁、门控、安全点和失败恢复协议。首次事实读路由与工作器继续 OFF。
+以上是试验脚本的历史验证。生产 V160 是商品采集，财务身份登记由生产 V161 一并实现。当前财务身份和币种测试从实际商品采集 V160 升级到 V161。
 
 ### Currency 字节变化登记与重建页精确总数
 
 后续隔离测试复现了另一处缺口：只通过维护 SQL 将 `USD` 改为 `usd`，源列 `utf8mb4_0900_ai_ci` 认为两者相等，但完整公开业务内容中的原币表示已经改变；旧 guard 没有事件，旧 READY/Redis 可以继续被复用。这个反例来自隔离维护路径，不代表已确认发生过生产事故；正常保存与筛选仍只接受原有三位大写币种。
 
-新增 V161 先为已有查询分区公司登记 ALL，再只替换 UPDATE trigger 中两处 currency 比较为 HEX 字节比较。独立真实 V160→V161 升级测试通过：migrate=1、validate 成功、再次 migrate=0；旧 history 前缀、源字段及其余74个trigger保持。原currency反例随后正确产生两个 OLD/NEW 事件、PENDING 与当前原生页，并拒绝复用旧Redis；但重建后又真实暴露 authoritative count=0、原生页=1 的错误，失败原件保留。
+生产 V161 先为已有查询分区公司登记 ALL，再替换 UPDATE trigger，补齐财务身份比较并将两处 currency 比较改为 HEX 字节比较。早期隔离财务试验版 V160→V161 升级测试通过：migrate=1、validate 成功、再次 migrate=0；旧 history 前缀、源字段及其余74个trigger保持。原currency反例随后正确产生两个 OLD/NEW 事件、PENDING 与当前原生页，并拒绝复用旧Redis；但重建后又真实暴露 authoritative count=0、原生页=1 的错误，失败原件保留。
 
 后置错误来自 workspace `exactTotal` 的 Java 严格币种比较与原生页的 SQL collation 不一致。修复保留规范三位大写 ASCII 的 Java 快速路径；异常表示用一条绑定参数的 `JSON_TABLE` 小关系在原只读 RR 内按源列 collation 精确求和，空匹配为0。不扫描源大账本，不更改金额算法、币种输入或 page-total 一致性保护。
 

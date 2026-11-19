@@ -12,7 +12,7 @@ import java.util.*;
 import static com.yingdao.aicommerce.finance.FinanceData.*;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Real isolated baseline-159 -> V160 upgrade using the repository migration file. */
+/** Real isolated baseline-160 -> V161 upgrade using the repository migration file. */
 @EnabledIfEnvironmentVariable(named="FINANCE_QA_JDBC",matches=".+")
 class FinanceProjectionRecordIdentityMigrationIntegrationTest {
     @TempDir Path temporary;
@@ -20,8 +20,9 @@ class FinanceProjectionRecordIdentityMigrationIntegrationTest {
     @Test void upgradesTheOldGuardAndInvalidatesEveryPreviouslyReadyCompany()throws Exception{
         var f=new FinanceConfigurationIntegrationTest();
         try{
-            f.migrateThrough(157);
+            f.migrateThrough(158);
             f.migration("V159__finance_first_settlement_order.sql");
+            f.migration("V160__product_capture_templates.sql");
             f.setup();
             String shop=f.connect(f.owner,false);
             var projections=new FinanceQueryProjections(f.repo,f.service,new FinanceAdSpendService(f.repo,f.service));
@@ -39,7 +40,7 @@ class FinanceProjectionRecordIdentityMigrationIntegrationTest {
             String oldRevision=String.valueOf(initialVersion.get("revision"));
 
             assertEquals(1,f.db.update("UPDATE finance_records SET external_id='new-number' WHERE id=?",recordId));
-            assertEquals(0,eventCount(f,f.owner.organizationId()),"The baseline-159 guard must reproduce the omitted identity event");
+            assertEquals(0,eventCount(f,f.owner.organizationId()),"The baseline-160 guard must reproduce the omitted identity event");
             assertEquals("READY",projections.version(f.owner,month).get("status"));
             assertTrue(projections.find(f.owner,month).isPresent());
 
@@ -47,16 +48,16 @@ class FinanceProjectionRecordIdentityMigrationIntegrationTest {
             var otherTriggers=triggersExceptTarget(f);
             int triggerCount=f.db.queryForObject("SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_schema=DATABASE()",Integer.class);
 
-            Path migration=Path.of("src/main/resources/db/migration/V160__finance_projection_record_identity_events.sql");
+            Path migration=Path.of("src/main/resources/db/migration/V161__finance_projection_currency_byte_events.sql");
             assertTrue(Files.exists(migration));
             Files.copy(migration,temporary.resolve(migration.getFileName()));
-            var flyway=Flyway.configure().dataSource(f.dataSource).locations("filesystem:"+temporary).baselineVersion("159").baselineDescription("isolated fixture baseline 159").load();
+            var flyway=Flyway.configure().dataSource(f.dataSource).locations("filesystem:"+temporary).baselineVersion("160").baselineDescription("isolated fixture baseline 160").load();
             flyway.baseline();
             var historyPrefix=history(f);
             assertEquals(1,flyway.migrate().migrationsExecuted);
             assertTrue(flyway.validateWithResult().validationSuccessful);
-            assertEquals("160",flyway.info().current().getVersion().getVersion());
-            assertEquals(historyPrefix,f.db.queryForList("SELECT installed_rank,version,description,type,script,checksum,success FROM flyway_schema_history WHERE version<>'160' ORDER BY installed_rank"));
+            assertEquals("161",flyway.info().current().getVersion().getVersion());
+            assertEquals(historyPrefix,f.db.queryForList("SELECT installed_rank,version,description,type,script,checksum,success FROM flyway_schema_history WHERE version<>'161' ORDER BY installed_rank"));
             assertEquals(0,flyway.migrate().migrationsExecuted);
 
             assertEquals(sourceBefore,f.db.queryForMap("SELECT id,organization_id,user_id,shop_id,platform,kind,external_id,record_date,currency,amount,source,SHA2(CAST(raw_json AS CHAR),256) raw_hash FROM finance_records WHERE id=?",recordId));
@@ -66,7 +67,7 @@ class FinanceProjectionRecordIdentityMigrationIntegrationTest {
             String trigger=f.db.queryForObject("SELECT action_statement FROM information_schema.triggers WHERE trigger_schema=DATABASE() AND trigger_name='fin_qp_records_au'",String.class);
             for(String comparison:List.of("OLD.id <=> NEW.id","OLD.external_id <=> NEW.external_id","OLD.user_id <=> NEW.user_id"))
                 assertEquals(2,occurrences(trigger,comparison),comparison+" must guard both OLD and NEW event projections");
-            for(String retained:List.of("OLD.organization_id <=> NEW.organization_id","OLD.shop_id <=> NEW.shop_id","OLD.kind <=> NEW.kind","OLD.record_date <=> NEW.record_date","OLD.order_id <=> NEW.order_id","OLD.statement_id <=> NEW.statement_id","OLD.currency <=> NEW.currency","OLD.source <=> NEW.source","OLD.status <=> NEW.status","OLD.category <=> NEW.category","OLD.amount <=> NEW.amount","OLD.revenue <=> NEW.revenue","OLD.impressions <=> NEW.impressions","OLD.clicks <=> NEW.clicks","OLD.conversions <=> NEW.conversions","OLD.raw_json <=> NEW.raw_json","OLD.platform <=> NEW.platform"))
+            for(String retained:List.of("OLD.organization_id <=> NEW.organization_id","OLD.shop_id <=> NEW.shop_id","OLD.kind <=> NEW.kind","OLD.record_date <=> NEW.record_date","OLD.order_id <=> NEW.order_id","OLD.statement_id <=> NEW.statement_id","HEX(OLD.currency) <=> HEX(NEW.currency)","OLD.source <=> NEW.source","OLD.status <=> NEW.status","OLD.category <=> NEW.category","OLD.amount <=> NEW.amount","OLD.revenue <=> NEW.revenue","OLD.impressions <=> NEW.impressions","OLD.clicks <=> NEW.clicks","OLD.conversions <=> NEW.conversions","OLD.raw_json <=> NEW.raw_json","OLD.platform <=> NEW.platform"))
                 assertEquals(2,occurrences(trigger,retained),retained+" must remain in both guards");
             assertEquals(2,occurrences(trigger,"'finance_records'"));
 

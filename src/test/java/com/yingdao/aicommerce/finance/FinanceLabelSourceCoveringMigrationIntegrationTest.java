@@ -37,7 +37,7 @@ class FinanceLabelSourceCoveringMigrationIntegrationTest {
         try{
             f.migrateThrough(157);
             f.migration("V159__finance_first_settlement_order.sql");
-            f.migration("V160__finance_projection_record_identity_events.sql");
+            f.migration("V160__product_capture_templates.sql");
             f.migration("V161__finance_projection_currency_byte_events.sql");
             f.setup();
             assertTrue(indexDefinition(f,INDEX).isEmpty(),"The isolated physical baseline must be V161 without the target index");

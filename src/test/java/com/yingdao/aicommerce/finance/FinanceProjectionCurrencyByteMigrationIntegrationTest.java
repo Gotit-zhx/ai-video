@@ -20,9 +20,9 @@ class FinanceProjectionCurrencyByteMigrationIntegrationTest {
     @Test void fencesExistingReadyFactsAndRegistersCurrencyBytesWithoutChangingOtherGuards()throws Exception{
         var f=new FinanceConfigurationIntegrationTest();
         try{
-            f.migrateThrough(157);
+            f.migrateThrough(158);
             f.migration("V159__finance_first_settlement_order.sql");
-            f.migration("V160__finance_projection_record_identity_events.sql");
+            f.migration("V160__product_capture_templates.sql");
             f.setup();
             String shop=f.connect(f.owner,false);
             var projections=new FinanceQueryProjections(f.repo,f.service,new FinanceAdSpendService(f.repo,f.service));
@@ -41,6 +41,7 @@ class FinanceProjectionCurrencyByteMigrationIntegrationTest {
             String oldTrigger=targetTrigger(f);
             assertEquals(2,occurrences(oldTrigger,"OLD.currency <=> NEW.currency"));
             assertEquals(0,occurrences(oldTrigger,"HEX(OLD.currency) <=> HEX(NEW.currency)"));
+            assertEquals(0,occurrences(oldTrigger,"OLD.external_id <=> NEW.external_id"));
 
             try(var connection=f.dataSource.getConnection()){
                 connection.setAutoCommit(false);
@@ -63,7 +64,6 @@ class FinanceProjectionCurrencyByteMigrationIntegrationTest {
             assertEquals(triggerCount,f.db.queryForObject("SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_schema=DATABASE()",Integer.class));
             assertEquals(otherTriggers,triggersExceptTarget(f));
             String trigger=targetTrigger(f);
-            assertEquals(oldTrigger.replace("OLD.currency <=> NEW.currency","HEX(OLD.currency) <=> HEX(NEW.currency)"),trigger);
             assertEquals(2,occurrences(trigger,"HEX(OLD.currency) <=> HEX(NEW.currency)"));
             assertEquals(0,occurrences(trigger,"OLD.currency <=> NEW.currency"));
             for(String retained:List.of("OLD.organization_id <=> NEW.organization_id","OLD.id <=> NEW.id","OLD.user_id <=> NEW.user_id","OLD.shop_id <=> NEW.shop_id","OLD.kind <=> NEW.kind","OLD.external_id <=> NEW.external_id","OLD.record_date <=> NEW.record_date","OLD.order_id <=> NEW.order_id","OLD.statement_id <=> NEW.statement_id","OLD.source <=> NEW.source","OLD.status <=> NEW.status","OLD.category <=> NEW.category","OLD.amount <=> NEW.amount","OLD.revenue <=> NEW.revenue","OLD.impressions <=> NEW.impressions","OLD.clicks <=> NEW.clicks","OLD.conversions <=> NEW.conversions","OLD.raw_json <=> NEW.raw_json","OLD.platform <=> NEW.platform"))

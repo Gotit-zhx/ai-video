@@ -30,7 +30,7 @@ class FinanceLabelSourceCoveringIndexIntegrationTest extends FinanceConfiguratio
     @Override @BeforeAll void migrate()throws Exception{
         migrateThrough(157);
         migration("V159__finance_first_settlement_order.sql");
-        migration("V160__finance_projection_record_identity_events.sql");
+        migration("V160__product_capture_templates.sql");
         migration("V161__finance_projection_currency_byte_events.sql");
     }
 
