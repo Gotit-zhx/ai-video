@@ -287,31 +287,49 @@ public class AiVideoTaskService {
         if (prompt.length() > 20000) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "视频提示词不能超过 20000 个字符");
         }
-        GeneralReferences references = generalReferences(files);
+        List<MultipartFile> uploads = files == null ? List.of() : files;
+        GeneralReferences references = generalReferences(uploads);
         validateGeneralReferenceBatch(references.images());
         validateGeneralMentions(prompt, references.images().size(), references.videos().size());
-        if (references.videos().isEmpty() && (command.videoClipStart() != null || command.videoClipEnd() != null)) throw new BusinessException(HttpStatus.BAD_REQUEST, "未上传视频，不能指定截取范围");
+        MultipartFile video = references.videos().isEmpty() ? null : references.videos().getFirst();
+        if (video == null && (command.videoClipStart() != null || command.videoClipEnd() != null)) throw new BusinessException(HttpStatus.BAD_REQUEST, "未上传视频，不能指定截取范围");
         int durationSeconds = normalizeDurationSeconds(command.durationSeconds());
-        String aspectRatio = normalizeAspectRatio(command.aspectRatio());
-        String resolution = normalizeResolution(command.resolution());
         String videoRoute = normalizeVideoRoute(command.videoRoute());
-        String name = resolveGeneralTaskName(command.name(), prompt, files);
-        String generationRules = json(Map.of(
+        String modelId = command.modelId() == null || command.modelId().isBlank() ? null : command.modelId().trim();
+        String aspectRatio;
+        String resolution;
+        if (modelId == null) {
+            aspectRatio = normalizeAspectRatio(command.aspectRatio());
+            resolution = normalizeResolution(command.resolution());
+        } else {
+            aspectRatio = command.aspectRatio() == null ? "adaptive" : command.aspectRatio().trim();
+            if (!GeneralVideoModel.ASPECT_RATIOS.contains(aspectRatio)) {
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "不支持的画幅比例");
+            }
+            resolution = command.resolution() == null ? "720p" : command.resolution().trim().toLowerCase(java.util.Locale.ROOT);
+            GeneralVideoModel model = videoGenerationService.requireGeneralVideoModel(principal.organizationId(), modelId);
+            if (!model.resolutions().contains(resolution)) {
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "所选模型不支持此分辨率");
+            }
+        }
+        String name = resolveGeneralTaskName(command.name(), prompt, uploads);
+        Map<String, Object> generationRules = new LinkedHashMap<>(Map.of(
                 "taskType", "GENERAL",
                 "durationSeconds", durationSeconds,
                 "aspectRatio", aspectRatio,
                 "resolution", resolution,
                 "videoRoute", videoRoute));
+        if (modelId != null) generationRules.put("videoModelId", modelId);
         AiVideoTask task = AiVideoTask.general(principal.organizationId(), name, "{}", durationSeconds,
-                aspectRatio, resolution, generationRules, json(Map.of("preserveReferences", true)),
+                aspectRatio, resolution, json(generationRules), json(Map.of("preserveReferences", true)),
                 principal.userId());
         taskMapper.insert(task);
         registerRollbackFileCleanup(task);
         try {
             AiVideoTaskItem item = references.images().isEmpty()
-                    ? createGeneralVideoItem(task, references.videos().getFirst())
+                    ? createGeneralItemWithoutImage(task, video)
                     : uploadDirectReferences(task, references.images(), null).getFirst();
-            if (!references.videos().isEmpty()) storeGeneralReferenceVideo(task, item, references.videos().getFirst(), command);
+            if (video != null) storeGeneralReferenceVideo(task, item, video, command);
             item.updateVideoPrompt(prompt);
             itemMapper.updateById(item);
             if (command.autoStart()) return startVideos(task);
@@ -324,8 +342,11 @@ public class AiVideoTaskService {
 
     record GeneralReferences(List<MultipartFile> images, List<MultipartFile> videos) {}
 
+    public GeneralVideoModel.Options generalVideoOptions(PlatformPrincipal principal) {
+        return videoGenerationService.generalVideoOptions(principal.organizationId());
+    }
+
     static GeneralReferences generalReferences(List<MultipartFile> files) {
-        if (files == null || files.isEmpty()) throw new BusinessException(HttpStatus.BAD_REQUEST, "请上传参考图片或视频");
         List<MultipartFile> images = new ArrayList<>(), videos = new ArrayList<>();
         long totalBytes = 0;
         for (MultipartFile file : files) {
@@ -355,9 +376,13 @@ public class AiVideoTaskService {
         }
     }
 
-    private AiVideoTaskItem createGeneralVideoItem(AiVideoTask task, MultipartFile video) {
-        AiVideoTaskItem item = new AiVideoTaskItem(task.getOrganizationId(), task.getId(), task.getName(),
-                "REF-001", safeFileName(video.getOriginalFilename()), "pending", generalVideoMime(video), video.getSize());
+    private AiVideoTaskItem createGeneralItemWithoutImage(AiVideoTask task, MultipartFile video) {
+        // The source columns are required even when this item has no uploaded media.
+        AiVideoTaskItem item = video == null
+                ? new AiVideoTaskItem(task.getOrganizationId(), task.getId(), task.getName(),
+                        "REF-001", "", "", "", 0)
+                : new AiVideoTaskItem(task.getOrganizationId(), task.getId(), task.getName(),
+                        "REF-001", safeFileName(video.getOriginalFilename()), "pending", generalVideoMime(video), video.getSize());
         itemMapper.insert(item);
         task.updateItemCount(1);
         taskMapper.updateById(task);
@@ -1469,7 +1494,7 @@ public class AiVideoTaskService {
         }
         String extracted = extractGeneralTaskName(prompt, files);
         if (!extracted.isBlank()) return extracted;
-        String fileName = originalFileBaseName(files.getFirst());
+        String fileName = files.isEmpty() ? "" : originalFileBaseName(files.getFirst());
         return fileName.isBlank() ? "通用生成" : truncateGeneralTaskName(fileName);
     }
 
@@ -1568,7 +1593,7 @@ public class AiVideoTaskService {
 
     private int normalizeDurationSeconds(Integer value) {
         int duration = value == null ? 6 : value;
-        if (duration != -1 && (duration < 4 || duration > 15)) {
+        if (duration != -1 && (duration < GeneralVideoModel.MIN_DURATION || duration > GeneralVideoModel.MAX_DURATION)) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "视频时长支持自动或 4–15 秒");
         }
         return duration;
@@ -2213,7 +2238,12 @@ public class AiVideoTaskService {
                                 String videoRoute, String voiceoverMode, String customVoiceover, String videoTitle) {}
     public record GeneralCreateCommand(String name, String prompt, Integer durationSeconds,
                                        String aspectRatio, String resolution, String videoRoute,
-                                       boolean autoStart, Double videoClipStart, Double videoClipEnd) {
+                                       boolean autoStart, Double videoClipStart, Double videoClipEnd, String modelId) {
+        public GeneralCreateCommand(String name, String prompt, Integer durationSeconds, String aspectRatio,
+                                    String resolution, String videoRoute, boolean autoStart, Double videoClipStart, Double videoClipEnd) {
+            this(name, prompt, durationSeconds, aspectRatio, resolution, videoRoute, autoStart, videoClipStart, videoClipEnd, null);
+        }
+
         public GeneralCreateCommand(String name, String prompt, Integer durationSeconds, String aspectRatio,
                                     String resolution, String videoRoute, boolean autoStart) {
             this(name, prompt, durationSeconds, aspectRatio, resolution, videoRoute, autoStart, null, null);

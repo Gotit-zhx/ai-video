@@ -4,6 +4,7 @@ import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.common.api.ApiResponse;
 import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.video.application.AiVideoTaskService;
+import com.yingdao.aicommerce.video.application.GeneralVideoModel;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
@@ -46,17 +47,18 @@ public class GeneralVideoTaskController {
             @RequestParam(required = false) @Size(max = 160) String name,
             @RequestParam @NotBlank @Size(max = 20000) String prompt,
             @RequestParam(defaultValue = "6") Integer durationSeconds,
-            @RequestParam(defaultValue = "9:16") @Pattern(regexp = "9:16|1:1|16:9") String aspectRatio,
-            @RequestParam(defaultValue = "720p") @Pattern(regexp = "720p|1080p|2K|4K") String resolution,
+            @RequestParam(defaultValue = "9:16") @Pattern(regexp = "adaptive|9:16|1:1|16:9|4:3|3:4|21:9") String aspectRatio,
+            @RequestParam(defaultValue = "720p") @Pattern(regexp = "480p|720p|1080p|2K|4[Kk]") String resolution,
             @RequestParam(defaultValue = "QUALITY") @Pattern(regexp = "QUALITY|SPEED") String videoRoute,
+            @RequestParam(required = false) @Size(max = 160) String modelId,
             @RequestParam(defaultValue = "false") boolean autoStart,
-            @RequestParam("files") List<MultipartFile> files,
+            @RequestParam(name = "files", required = false) List<MultipartFile> files,
             @RequestParam(required = false) Double videoClipStart,
             @RequestParam(required = false) Double videoClipEnd,
             @AuthenticationPrincipal PlatformPrincipal principal) {
-        validateRouteResolution(videoRoute, resolution);
+        if (modelId == null || modelId.isBlank()) validateRouteResolution(videoRoute, resolution);
         var task = service.createGeneral(new AiVideoTaskService.GeneralCreateCommand(name, prompt,
-                durationSeconds, aspectRatio, resolution, videoRoute, autoStart, videoClipStart, videoClipEnd), files, principal);
+                durationSeconds, aspectRatio, resolution, videoRoute, autoStart, videoClipStart, videoClipEnd, modelId), files, principal);
         return ApiResponse.created(AiVideoTaskController.TaskResponse.from(task));
     }
 
@@ -65,6 +67,11 @@ public class GeneralVideoTaskController {
             @AuthenticationPrincipal PlatformPrincipal principal) {
         return ApiResponse.ok(service.listGeneral(principal).stream()
                 .map(AiVideoTaskController.TaskResponse::from).toList());
+    }
+
+    @GetMapping("/options")
+    public ApiResponse<GeneralVideoModel.Options> options(@AuthenticationPrincipal PlatformPrincipal principal) {
+        return ApiResponse.ok(service.generalVideoOptions(principal));
     }
 
     @GetMapping("/{id}")
