@@ -390,6 +390,30 @@ class FinanceWorkspaceQueryIntegrationTest {
         }
     }
 
+    @Test void pendingReconciliationReusesOnlyTheRequiredProjectionFacts(){
+        fee("fee-before","PHP");
+        var date=LocalDate.of(2026,10,12);
+        fixture.repo.save(fixture.owner,new Entry(shop,"SHOPEE","BILL","qa-bill","","qa-bill","","SETTLED",
+            date,"USD",decimal("20.123456"),null,null,null,null,"API",Map.of()));
+        fixture.repo.save(fixture.owner,new Entry(shop,"SHOPEE","SETTLEMENT","qa-settlement","qa-order","qa-bill","ORDER","SETTLED",
+            date,"USD",decimal("20.123456"),null,null,null,null,"API",Map.of()));
+        build();
+        fee("fee-after","PHP");
+        fixture.db.update("UPDATE finance_records SET amount=? WHERE external_id='qa-settlement'",decimal("19.123456"));
+
+        var nativeRequest=new FinanceWorkspaceQueryService.Selection("reconciliation","BILL",false,true,"",1,1,"","","");
+        var browserRequest=new FinanceWorkspaceQueryService.Selection("reconciliation","BILL",false,true,"",1,1,"","","",true);
+        assertEquals("PENDING",projections.version(fixture.owner,month).get("status"));
+        var repaired=projections.repairedLedgerForPage(fixture.owner,month,"BILL",true).orElseThrow();
+        assertTrue(rows(repaired.facts().get("buckets")).isEmpty());
+        assertFalse(rows(repaired.facts().get("orders")).isEmpty());
+        assertTrue(repaired.rawCounts().stream().allMatch(row->"BILL".equals(row.get("kind"))));
+        var full=queries.query(fixture.owner,fixture.owner,month,nativeRequest);
+        var fast=queries.query(fixture.owner,fixture.owner,month,browserRequest);
+        for(String key:List.of("filters","currencies","records","productCosts","dateWindows","reportingMonths"))
+            assertEquals(fixture.repo.write(full.get(key)),fixture.repo.write(fast.get(key)),key);
+    }
+
     @Test void lightweightStatusDetectsNewPublishedRevisionAndNeverReadsFinancialPayloads(){
         fee("first","PHP");build();var first=queries.status(fixture.owner,month);
         var ready=projections.find(fixture.owner,month).orElseThrow();

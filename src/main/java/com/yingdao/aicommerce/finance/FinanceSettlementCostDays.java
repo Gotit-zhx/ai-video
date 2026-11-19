@@ -26,17 +26,15 @@ final class FinanceSettlementCostDays {
     }
 
     Patch calculate(Scope scope,Filter month,List<Window> windows){
-        var first=new Filter(month.start(),month.start(),"",month.platform(),"","day");
         var values=new ArrayList<Object[]>();
-        for(var window:windows){
-            var full=repo.inProjectionWindow(month,window.start(),window.end(),window.shops(),
-                ()->report.settlementDayFacts(scope,month));
-            append(values,scope,month,full,false);
-            if(window.start().equals(month.start())){
-                var firstRows=repo.inProjectionWindow(first,first.start(),first.end(),window.shops(),
-                    ()->report.settlementDayFacts(scope,first));
-                append(values,scope,month,firstRows,true);
-            }
+        if(windows.isEmpty())return new Patch(windows,values);
+        var full=repo.inProjectionWindows(month,windows,()->report.settlementDayFacts(scope,month));
+        append(values,scope,month,full,false);
+        if(windows.getFirst().start().equals(month.start())){
+            var first=new Filter(month.start(),month.start(),"",month.platform(),"","day");
+            var firstRows=repo.inProjectionWindow(first,first.start(),first.end(),windows.getFirst().shops(),
+                ()->report.settlementDayFacts(scope,first));
+            append(values,scope,month,firstRows,true);
         }
         return new Patch(windows,values);
     }
@@ -84,11 +82,7 @@ final class FinanceSettlementCostDays {
         }
         // The live repair retains the user's complete semantic period and all
         // its authorization/first-settlement predicates inside the same snapshot.
-        for(var window:pending){
-            var exact=repo.inProjectionWindow(filter,window.start(),window.end(),window.shops(),
-                ()->report.nativeSettlementRows(scope,filter));
-            result.addAll(exact);
-        }
+        if(!pending.isEmpty())result.addAll(repo.inProjectionWindows(filter,pending,()->report.nativeSettlementRows(scope,filter)));
         return result;
     }
 

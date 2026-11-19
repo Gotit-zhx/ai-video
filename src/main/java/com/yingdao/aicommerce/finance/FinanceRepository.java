@@ -18,11 +18,11 @@ public class FinanceRepository {
         amount=VALUES(amount),revenue=VALUES(revenue),impressions=VALUES(impressions),clicks=VALUES(clicks),
         conversions=VALUES(conversions),raw_json=VALUES(raw_json),updated_at=UTC_TIMESTAMP(6)
         """;
-    private static final Set<String> RAW_PAGE_COUNT_KINDS=Set.of("SETTLEMENT","FEE","PENDING","COST");
+    static final Set<String> RAW_PAGE_COUNT_KINDS=Set.of("SETTLEMENT","FEE","PENDING","COST");
     private final JdbcTemplate db; private final ObjectMapper json;
     private final ThreadLocal<Map<Query,Long>> pageCounts=new ThreadLocal<>();
     private final ThreadLocal<Long> authoritativePageTotal=new ThreadLocal<>();
-    private record ProjectionWindow(Filter semanticMonth,java.time.LocalDate start,java.time.LocalDate end,List<String> shops) {}
+    private record ProjectionWindow(Filter semanticMonth,List<FinanceSettlementCostDays.Window> slices) {}
     private final ThreadLocal<ProjectionWindow> projectionWindow=new ThreadLocal<>();
     public FinanceRepository(JdbcTemplate db,ObjectMapper json){this.db=db;this.json=json;}
     public JdbcTemplate jdbc(){return db;}
@@ -293,9 +293,17 @@ public class FinanceRepository {
     }
     <T>T inProjectionWindow(Filter semanticMonth,java.time.LocalDate start,java.time.LocalDate end,
                             Collection<String> shops,java.util.function.Supplier<T> action){
-        if(start.isBefore(semanticMonth.start())||end.isAfter(semanticMonth.end())||start.isAfter(end))
-            throw new IllegalArgumentException("Projection window is outside its semantic period");
-        var previous=projectionWindow.get();projectionWindow.set(new ProjectionWindow(semanticMonth,start,end,List.copyOf(shops)));
+        return inProjectionWindows(semanticMonth,List.of(new FinanceSettlementCostDays.Window(start,end,List.copyOf(shops))),action);
+    }
+    <T>T inProjectionWindows(Filter semantic,List<FinanceSettlementCostDays.Window> slices,java.util.function.Supplier<T> action){
+        var end=semantic.start().minusDays(1);
+        for(var slice:slices){
+            if(!slice.start().isAfter(end)||slice.start().isAfter(slice.end())||slice.end().isAfter(semantic.end()))
+                throw new IllegalArgumentException("Projection windows must be ordered, disjoint and within the semantic period");
+            end=slice.end();
+        }
+        if(slices.isEmpty())throw new IllegalArgumentException("Missing projection window");
+        var previous=projectionWindow.get();projectionWindow.set(new ProjectionWindow(semantic,List.copyOf(slices)));
         try{return action.get();}
         finally{if(previous==null)projectionWindow.remove();else projectionWindow.set(previous);}
     }
@@ -331,12 +339,17 @@ public class FinanceRepository {
         }
         var window=projectionWindow.get();
         if(dates&&window!=null&&window.semanticMonth().equals(f)){
-            w+=" AND "+p+"record_date>=? AND "+p+"record_date<=?";
-            a.add(Date.valueOf(window.start()));a.add(Date.valueOf(window.end()));
-            if(!window.shops().isEmpty()){
-                w+=" AND "+p+"shop_id IN ("+String.join(",",Collections.nCopies(window.shops().size(),"?"))+")";
-                a.addAll(window.shops());
+            var slices=new ArrayList<String>();
+            for(var slice:window.slices()){
+                String predicate=p+"record_date>=? AND "+p+"record_date<=?";
+                a.add(Date.valueOf(slice.start()));a.add(Date.valueOf(slice.end()));
+                if(!slice.shops().isEmpty()){
+                    predicate+=" AND "+p+"shop_id IN ("+String.join(",",Collections.nCopies(slice.shops().size(),"?"))+")";
+                    a.addAll(slice.shops());
+                }
+                slices.add("("+predicate+")");
             }
+            w+=" AND ("+String.join(" OR ",slices)+")";
         }
         return reporting?FinanceReportingMonths.constrain(s,new Query(w,a),f,alias):new Query(w,a);
     }
@@ -371,7 +384,7 @@ public class FinanceRepository {
     String dashboardIndex(Filter filter){
         var window=projectionWindow.get();
         boolean narrowShopWindow=window!=null&&window.semanticMonth().equals(filter)
-            &&!window.shops().isEmpty()&&window.shops().size()<=4;
+            &&window.slices().stream().allMatch(slice->!slice.shops().isEmpty()&&slice.shops().size()<=12);
         return filter.shopId().isBlank()&&!narrowShopWindow?"idx_finance_company_dashboard":"idx_finance_shop_dashboard";
     }
     private List<Map<String,Object>> readDashboardBuckets(Scope s,Filter f,boolean includeCreatedOrders,List<Map<String,Object>> advertising,
@@ -395,7 +408,8 @@ public class FinanceRepository {
         if(rawPageCounts!=null)for(var row:buckets){
             if(!RAW_PAGE_COUNT_KINDS.contains(text(row.get("kind"))))continue;
             rawPageCounts.add(Map.of("kind",row.get("kind"),"currency",row.get("currency"),
-                "records",row.get("records"),"basis","RECORD"));
+                "records",row.get("records"),"basis","RECORD","shop_id",row.get("shop_id"),
+                "record_date",row.get("record_date")));
         }
         // Advertising shows every posted fee, including tagged orders, without changing operating-profit exclusions.
         if(advertising!=null)buckets.stream().filter(FinanceAdvertisingReport::includes)
@@ -445,16 +459,20 @@ public class FinanceRepository {
         if(days<1||days>7)throw new IllegalArgumentException("Invalid aggregation window");
         var window=projectionWindow.get();
         boolean incremental=window!=null&&window.semanticMonth().equals(filter);
-        var first=incremental?window.start():filter.start();
-        var last=incremental?window.end():filter.end();
+        var first=incremental?window.slices().getFirst().start():filter.start();
+        var last=incremental?window.slices().getLast().end():filter.end();
         if(!first.plusDays(days-1).isBefore(last))return read.apply(query);
         var result=new ArrayList<Map<String,Object>>();
         for(var start=first;!start.isAfter(last);start=start.plusDays(days)){
             var end=start.plusDays(days-1);if(end.isAfter(last))end=last;
+            if(incremental&&!intersects(window.slices(),start,end))continue;
             var args=new ArrayList<>(query.args());args.add(Date.valueOf(start));args.add(Date.valueOf(end));
             result.addAll(read.apply(new Query(query.where()+" AND "+dateColumn+">=? AND "+dateColumn+"<=?",args)));
         }
         return result;
+    }
+    private static boolean intersects(List<FinanceSettlementCostDays.Window> slices,java.time.LocalDate start,java.time.LocalDate end){
+        return slices.stream().anyMatch(slice->!slice.start().isAfter(end)&&!slice.end().isBefore(start));
     }
     static List<Object> bucketKey(Map<String,Object> row){return java.util.stream.Stream.of("shop_id","record_date","kind","currency","category","status").map(row::get).toList();}
     public Map<String,Object> details(Scope s,Filter f,String kind,int page,int size){return details(s,f,kind,page,size,"");}
@@ -497,7 +515,7 @@ public class FinanceRepository {
         String source="finance_records FORCE INDEX ("+(lookup?"idx_finance_settled_order":kind!=null&&!kind.isBlank()?"idx_finance_company_kind_date":"idx_finance_company_dashboard")+")";
         // The exact total needs only the page key columns, including the
         // settlement filters and ad fee classification, rather than amounts.
-        String countSource=Set.of("SETTLEMENT","FEE","BILL").contains(text(kind))
+        String countSource=Set.of("SETTLEMENT","FEE","BILL").contains(text(kind))||allOrders&&!lookup
                 ?"finance_records FORCE INDEX(idx_finance_page)":source;
         String countSql="SELECT COUNT(*) FROM "+countSource+" WHERE "+where;
         var countArgs=List.copyOf(a);
@@ -629,7 +647,7 @@ public class FinanceRepository {
     }
     public List<String> billCurrencies(Scope s,Filter f){
         Query q=query(s,f);
-        return db.queryForList("SELECT DISTINCT currency FROM finance_records FORCE INDEX(idx_finance_page) WHERE "+q.where
+        return db.queryForList("SELECT DISTINCT currency FROM finance_records FORCE INDEX(idx_finance_company_kind_date) WHERE "+q.where
                 +" AND kind='BILL' ORDER BY currency",String.class,q.args.toArray());
     }
     public Map<String,Object> reconciliationPage(Scope s,Filter f,int page,int size){return reconciliationPage(s,f,page,size,"");}
@@ -640,7 +658,8 @@ public class FinanceRepository {
     private Map<String,Object> loadReconciliationPage(Scope s,Filter f,int page,int size,String numbers){
         Query q=FinanceRecordSearch.apply(query(s,f),"finance_records",numbers,true);int safeSize=Math.min(100,Math.max(1,size)),safePage=Math.max(1,page);
         var data=reconciliation(s,f,safeSize,(long)(safePage-1)*safeSize,numbers);
-        long total=pageTotal("SELECT COUNT(*) FROM finance_records FORCE INDEX(idx_finance_page) WHERE "+q.where+" AND kind='BILL'",
+        String countIndex=FinanceRecordSearch.numbers(numbers).isEmpty()?"idx_finance_company_kind_date":"idx_finance_page";
+        long total=pageTotal("SELECT COUNT(*) FROM finance_records FORCE INDEX("+countIndex+") WHERE "+q.where+" AND kind='BILL'",
                 q.args,safePage,safeSize,data.size());
         return Map.of("items",data,"total",total,"page",safePage,"pageSize",safeSize);
     }
@@ -680,11 +699,12 @@ public class FinanceRepository {
             JOIN finance_records b ON b.id=page.id
             LEFT JOIN LATERAL (
               SELECT SUM(t.amount) amount,COUNT(*) n,COUNT(t.amount) known
-              FROM finance_records t
+              FROM finance_records t FORCE INDEX(idx_finance_reconcile_tx)
               WHERE t.organization_id=b.organization_id AND t.user_id=b.user_id AND t.shop_id=b.shop_id
                 AND t.statement_id=b.external_id AND t.currency=b.currency AND t.kind='SETTLEMENT' AND t.source='API'
             ) x ON TRUE
-            LEFT JOIN finance_records api_bill ON api_bill.organization_id=b.organization_id AND api_bill.user_id=b.user_id
+            LEFT JOIN finance_records api_bill FORCE INDEX(idx_finance_reconcile_bill)
+              ON api_bill.organization_id=b.organization_id AND api_bill.user_id=b.user_id
               AND api_bill.shop_id=b.shop_id AND api_bill.external_id=b.external_id AND api_bill.currency=b.currency
               AND api_bill.kind='BILL' AND api_bill.source='API'
             ORDER BY b.record_date DESC,b.id
@@ -717,7 +737,7 @@ public class FinanceRepository {
             if(conditions.isEmpty())continue;
             String fxDate="COALESCE("+FinanceFxDates.trustedDate("finance_records")+",CASE WHEN JSON_EXTRACT(raw_json,'$._finance_reporting_month') IS NULL THEN record_date END)";
             for(var part:db.queryForList("SELECT shop_id,statement_id,currency,"+fxDate+" fx_date,SUM(amount) amount,COUNT(*) records,COUNT(amount) known_amounts"
-                +" FROM finance_records WHERE organization_id=? AND kind='SETTLEMENT' AND source='API' AND ("+String.join(" OR ",conditions)+")"
+                +" FROM finance_records FORCE INDEX(idx_finance_cost_statement) WHERE organization_id=? AND kind='SETTLEMENT' AND source='API' AND ("+String.join(" OR ",conditions)+")"
                 +" GROUP BY shop_id,statement_id,currency,fx_date",args.toArray())){
                 var target=wanted.get(List.of(text(part.get("shop_id")),text(part.get("statement_id")),text(part.get("currency"))));
                 if(target!=null)target.add(part);

@@ -2,6 +2,7 @@ package com.yingdao.aicommerce.finance;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import static com.yingdao.aicommerce.finance.FinanceData.*;
@@ -30,6 +31,31 @@ class FinanceProjectionWindowIntegrationTest extends FinanceConfigurationIntegra
         assertEquals(2,days.size());
         assertTrue(days.getFirst().args().contains(java.sql.Date.valueOf(month.end())),
             "Physical windows cannot change month correction coverage");
+    }
+
+    @Test void batchedWindowsKeepTheirShopAndDatePairingAndSkipUnchangedDays(){
+        String shop=seedMonth();
+        String group=service.saveGroup(owner,null,"Projection window");
+        String otherShop=groupedShop(owner,"10002",group);
+        db.update("UPDATE finance_records SET shop_id=?,record_date='2026-09-05' WHERE id='second'",otherShop);
+        var month=month("");
+        var first=month.start();
+        var last=first.plusDays(4);
+        var slices=List.of(new FinanceSettlementCostDays.Window(first,first,List.of(shop)),
+                new FinanceSettlementCostDays.Window(last,last,List.of(otherShop)));
+
+        var queries=new java.util.ArrayList<FinanceRepository.Query>();
+        BigDecimal amount=repo.inProjectionWindows(month,slices,()->{
+            repo.aggregateWindows(month,repo.query(owner,month),"record_date",1,query->{
+                queries.add(query);return List.of();
+            });
+            return total(month);
+        });
+        assertEquals(2,queries.size());
+        assertEquals(0,new BigDecimal("60").compareTo(amount));
+        var swapped=List.of(new FinanceSettlementCostDays.Window(first,first,List.of(otherShop)),
+                new FinanceSettlementCostDays.Window(last,last,List.of(shop)));
+        assertEquals(0,repo.inProjectionWindows(month,swapped,()->total(month)).signum());
     }
 
     @Test void nestedWindowsAndFailuresRestoreThePreviousReadBoundary(){

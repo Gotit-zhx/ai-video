@@ -81,7 +81,7 @@ public class FinanceWorkspaceQueryService {
             projections.requestSettlementCosts(scope,nativeFilter);
         if(!selected.view().equals("ads")){
             // Leave most of the page budget for the exact native query.
-            boolean quickFallback=selected.view().equals("settlements")||selected.interactivePage();
+            boolean quickFallback=selected.view().equals("settlements")||selected.interactivePage()||selected.allOrders();
             long waitBudget=quickFallback?INTERACTIVE_PENDING_WAIT_NANOS:PENDING_WAIT_NANOS;
             version=awaitProjection(scope,nativeFilter,version,waitBudget);
         }
@@ -180,8 +180,18 @@ public class FinanceWorkspaceQueryService {
         // and its append-only public-rate snapshot writes happen after it closes.
         Prepared prepared=repo.readSnapshot(180,()->{
             var all=nativeFilter(requested);
+            boolean browserReconciliation=expectedRevision==null&&selected.view().equals("reconciliation")&&selected.interactivePage();
+            // With no currency to select, preserve the existing full response
+            // for native-currency callers. Bill currencies and rows share the snapshot.
+            List<String> nativeBillCurrencies=browserReconciliation&&!selected.cny()&&requested.currency().isBlank()
+                ?repo.billCurrencies(scope,all):null;
+            boolean pageOnly=browserReconciliation&&(selected.cny()||!requested.currency().isBlank()
+                ||nativeBillCurrencies!=null&&!nativeBillCurrencies.isEmpty()&&!nativeBillCurrencies.getFirst().isBlank());
+            // Advertising support needs category-specific raw facets, so it
+            // retains the independent count query.
+            String countKind=selected.view().equals("ads-support")?"":selected.kind();
             var snapshot=expectedRevision!=null?projections.findForQuery(scope,all,primary).orElseThrow(ProjectionChanged::new)
-                :primary||selected.allOrders()?null:projections.repairedLedger(scope,all,true).orElse(null);
+                :primary||selected.allOrders()?null:projections.repairedLedgerForPage(scope,all,countKind,pageOnly).orElse(null);
             if(expectedRevision!=null&&!snapshot.revision().equals(expectedRevision))throw new ProjectionChanged();
             boolean unsearched=FinanceRecordSearch.numbers(selected.numbers()).isEmpty();
             boolean reuseNativeCount=snapshot==null&&unsearched&&(
@@ -189,13 +199,11 @@ public class FinanceWorkspaceQueryService {
             String currency=requested.currency();
             List<String> billCurrencies=List.of();
             if(selected.view().equals("reconciliation")){
-                billCurrencies=snapshot==null?repo.billCurrencies(scope,nativeFilter(requested)):snapshot.rawCounts().stream()
+                billCurrencies=nativeBillCurrencies!=null?nativeBillCurrencies:snapshot==null?repo.billCurrencies(scope,all):snapshot.rawCounts().stream()
                     .filter(row->"RECORD".equals(row.get("basis"))&&"BILL".equals(row.get("kind")))
                     .map(row->text(row.get("currency"))).distinct().sorted().toList();
                 if(currency.isBlank()&&!selected.cny()&&!billCurrencies.isEmpty())currency=billCurrencies.getFirst();
             }
-            boolean pageOnly=expectedRevision==null&&selected.view().equals("reconciliation")&&selected.interactivePage()
-                &&(selected.cny()||!currency.isBlank());
             var nativeCounts=new ArrayList<Map<String,Object>>();
             Map<String,Object> facts;
             if(primary||selected.allOrders())facts=Map.of();

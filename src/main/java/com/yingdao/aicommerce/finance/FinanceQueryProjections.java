@@ -13,8 +13,8 @@ import com.yingdao.aicommerce.finance.FinanceSettlementCostDays.Window;
 @Service
 public class FinanceQueryProjections {
     static final int SCHEMA_VERSION=1, EVENT_BATCH=2000;
-    private static final int MAX_REPAIR_EVENTS=256;
-    private static final int MAX_REPAIR_SHOP_DAYS=120;
+    private static final int MAX_REPAIR_EVENTS=512;
+    private static final int MAX_REPAIR_SHOP_DAYS=1024;
     private static final int SHOP_SCAN_LIMIT=24;
     private static final int ALL_SHOPS_DAY_WEIGHT=32;
     private final FinanceRepository repo;
@@ -33,6 +33,15 @@ public class FinanceQueryProjections {
     private record OrderKey(String shop,String order) {}
     private record BillPrefix(String user,String shop,String source) {}
     private record ShopDay(LocalDate day,String shop) {}
+    private record RepairWindows(List<Window> ledger,List<Window> orders) {}
+    private enum LedgerFields {
+        ALL(List.of("buckets","orders","advertising","rawCounts")),
+        OVERVIEW(List.of("buckets","orders","advertising")),
+        RECONCILIATION(List.of("orders","rawCounts")),
+        NONE(List.of());
+        final List<String> names;
+        LedgerFields(List<String> names){this.names=names;}
+    }
     private static final class Change {
         boolean all;
         final Map<ShopDay,Boolean> shopDays=new LinkedHashMap<>();
@@ -49,20 +58,24 @@ public class FinanceQueryProjections {
 
     /** Only complete committed facts are returned. The caller keeps its original fallback. */
     public Optional<Snapshot> find(Scope scope,Filter filter){
-        return find(scope,filter,true,true,true,false);
+        return find(scope,filter,LedgerFields.ALL,true,false,"");
     }
     Optional<Snapshot> findForDashboard(Scope scope,Filter filter){
-        return find(scope,filter,true,false,false,false);
+        return find(scope,filter,LedgerFields.OVERVIEW,false,false,"");
     }
     /** A page needs either dashboard facts/counts or the independent spend report, never both. */
     Optional<Snapshot> findForQuery(Scope scope,Filter filter,boolean primaryAdvertising){
-        return find(scope,filter,!primaryAdvertising,!primaryAdvertising,primaryAdvertising,false);
+        return find(scope,filter,primaryAdvertising?LedgerFields.NONE:LedgerFields.ALL,primaryAdvertising,false,"");
     }
     Optional<Snapshot> repairedLedger(Scope scope,Filter filter,boolean countsNeeded){
-        return find(scope,filter,true,countsNeeded,false,true);
+        return find(scope,filter,countsNeeded?LedgerFields.ALL:LedgerFields.OVERVIEW,false,true,"");
     }
-    private Optional<Snapshot> find(Scope scope,Filter filter,boolean dashboard,boolean countsNeeded,boolean independentSpend,boolean repair){
+    Optional<Snapshot> repairedLedgerForPage(Scope scope,Filter filter,String kind,boolean reconciliation){
+        return find(scope,filter,reconciliation?LedgerFields.RECONCILIATION:LedgerFields.ALL,false,true,kind);
+    }
+    private Optional<Snapshot> find(Scope scope,Filter filter,LedgerFields fields,boolean independentSpend,boolean repair,String countKind){
         return repo.readSnapshot(repair?180:15,()->{
+            boolean dashboard=fields!=LedgerFields.NONE;
             var months=months(filter);
             if(!repair&&hasRelevantEvents(scope,filter))return Optional.empty();
             LocalDate lastMonth=months.getLast();
@@ -81,7 +94,7 @@ public class FinanceQueryProjections {
             if(stored.size()!=months.size()||stored.stream().anyMatch(row->number(row.get("schema_version"))!=SCHEMA_VERSION
                     ||number(row.get("built_revision"))==0||!repair&&number(row.get("built_revision"))!=number(row.get("requested_revision"))
                     ||repair&&flag(row.get("full_rebuild"))||number(row.get("payload_present"))!=1))return Optional.empty();
-            var repairs=repair?pendingWindows(scope,filter,stored,false):Optional.of(List.<Window>of());
+            var repairs=repair?pendingWindows(scope,filter,stored,false):Optional.of(new RepairWindows(List.of(),List.of()));
             if(repairs.isEmpty())return Optional.empty();
             var buckets=new ArrayList<Map<String,Object>>();var orders=new ArrayList<Map<String,Object>>();
             var advertising=new ArrayList<Map<String,Object>>();var counts=new ArrayList<Map<String,Object>>();
@@ -91,8 +104,8 @@ public class FinanceQueryProjections {
                 LocalDate month=date(row.get("partition_month"));
                 boolean full=!filter.start().isAfter(month)&&!filter.end().isBefore(YearMonth.from(month).atEndOfMonth());
                 if(dashboard){
-                    var data=readLedger(row.get("full_month_json"),countsNeeded);
-                    var first=row.get("partial_first_day_json")==null?Map.<String,Object>of():readLedger(row.get("partial_first_day_json"),countsNeeded);
+                    var data=readLedger(row.get("full_month_json"),fields);
+                    var first=row.get("partial_first_day_json")==null?Map.<String,Object>of():readLedger(row.get("partial_first_day_json"),fields);
                     appendRange(buckets,rows(data.get("buckets")),rows(first.get("buckets")),filter,month,full);
                     appendRange(orders,rows(data.get("orders")),rows(first.get("orders")),filter,month,full);
                     appendRange(advertising,rows(data.get("advertising")),rows(first.get("advertising")),filter,month,full);
@@ -116,13 +129,15 @@ public class FinanceQueryProjections {
                 "orders",orders.stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
                 "advertising",advertising.stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
                 "reportingMonths",new FinanceReportingMonths(repo).coverage(scope,nativeFilter))):new LinkedHashMap<>();
-            counts.removeIf(row->!selected.contains(text(row.get("shop_id")))||!filter.currency().isBlank()&&!filter.currency().equals(text(row.get("currency"))));
+            counts.removeIf(row->!selected.contains(text(row.get("shop_id")))
+                ||!countKind.isBlank()&&!countKind.equals(row.get("kind"))
+                ||!filter.currency().isBlank()&&!filter.currency().equals(text(row.get("currency"))));
             var keys=new HashSet<String>();sources.forEach(row->keys.add(text(row.get("source_key"))));
             assignments.removeIf(row->!keys.contains(text(row.get("source_key"))));
             String revision=hash(scope.organizationId()+"|"+filter.platform()+"|"+String.join(",",revisions));
-            if(repair&&!repairs.get().isEmpty()){
+            if(repair&&!repairs.get().ledger().isEmpty()){
                 facts.put("rawCounts",counts);
-                facts=new LinkedHashMap<>(patchLedger(scope,nativeFilter,facts,repairs.get(),countsNeeded));
+                facts=new LinkedHashMap<>(repairLedger(scope,nativeFilter,facts,repairs.get(),fields,countKind));
                 counts.clear();counts.addAll(rows(facts.remove("rawCounts")));
             }
             if(!repair){
@@ -324,10 +339,10 @@ public class FinanceQueryProjections {
             """,scope.organizationId(),filter.platform(),period.getFirst(),period.getLast());
         if(partitions.size()!=period.size()||partitions.stream().anyMatch(row->number(row.get("settlement_cost_revision"))==0
                 ||flag(row.get("full_rebuild"))))return Optional.empty();
-        return pendingWindows(scope,filter,partitions,true).map(repairs->settlementDays.summarize(scope,filter,repairs));
+        return pendingWindows(scope,filter,partitions,true).map(repairs->settlementDays.summarize(scope,filter,repairs.orders()));
     }
 
-    private Optional<List<Window>> pendingWindows(Scope scope,Filter filter,List<Map<String,Object>> partitions,boolean costsOnly){
+    private Optional<RepairWindows> pendingWindows(Scope scope,Filter filter,List<Map<String,Object>> partitions,boolean costsOnly){
         var pending=repo.jdbc().queryForList("""
             SELECT event_scope,record_date,shop_id,order_id,record_id,statement_id,organization_id
             FROM finance_query_events FORCE INDEX(idx_finance_query_events_scope)
@@ -337,25 +352,30 @@ public class FinanceQueryProjections {
         var active=resolveChanges(pending,false,!costsOnly).get(scope.organizationId());
         if(active!=null&&active.all)return Optional.empty();
 
-        var repairs=new TreeMap<LocalDate,Set<String>>();
+        var ledger=new TreeMap<LocalDate,Set<String>>();
+        var orders=new TreeMap<LocalDate,Set<String>>();
         for(var partition:partitions){
             var key=new Key(scope.organizationId(),filter.platform(),date(partition.get("partition_month")));
-            var dirty=dirty(key,number(partition.get("settlement_cost_revision")));
+            var dirty=dirty(key,number(partition.get(costsOnly?"settlement_cost_revision":"built_revision")));
             if(number(partition.get("built_revision"))!=number(partition.get("requested_revision"))&&dirty.ledger().isEmpty())
                 return Optional.empty();
-            var affected=costsOnly?dirty.costs():dirty.ledger();
-            affected.forEach((day,shops)->shops.forEach(shop->addRepair(repairs,filter,day,shop)));
+            if(!costsOnly)dirty.ledger().forEach((day,shops)->shops.forEach(shop->addRepair(ledger,filter,day,shop)));
+            dirty.costs().forEach((day,shops)->shops.forEach(shop->addRepair(orders,filter,day,shop)));
         }
         if(active!=null)active.shopDays.forEach((day,affected)->{
-            if(!costsOnly||affected)addRepair(repairs,filter,day.day(),day.shop());
+            if(!costsOnly)addRepair(ledger,filter,day.day(),day.shop());
+            if(affected)addRepair(orders,filter,day.day(),day.shop());
         });
-        var windows=windows(repairs);
+        var repair=new RepairWindows(windows(ledger),windows(orders));
+        return withinRepairBudget(costsOnly?repair.orders():repair.ledger())?Optional.of(repair):Optional.empty();
+    }
+    private static boolean withinRepairBudget(List<Window> windows){
         long shopDays=0;
         for(var window:windows){
             long days=java.time.temporal.ChronoUnit.DAYS.between(window.start(),window.end())+1;
             shopDays+=days*(window.shops().isEmpty()?ALL_SHOPS_DAY_WEIGHT:window.shops().size());
         }
-        return shopDays>MAX_REPAIR_SHOP_DAYS?Optional.empty():Optional.of(windows);
+        return shopDays<=MAX_REPAIR_SHOP_DAYS;
     }
     private static boolean flag(Object value){return Boolean.TRUE.equals(value)||number(value)!=0;}
 
@@ -511,7 +531,8 @@ public class FinanceQueryProjections {
             return new Built(new SnapshotBodies(nativeFacts(scope,month),nativeFacts(scope,firstDay),ads),costs,started);
         }
 
-        var ledger=patchLedger(scope,month,read(previous.get("full_month_json")),ledgerWindows,true);
+        var ledger=repairLedger(scope,month,read(previous.get("full_month_json")),
+            new RepairWindows(ledgerWindows,windows(dirty.costs())),LedgerFields.ALL,"");
         var first=ledgerWindows.getFirst().start().equals(month.start())
             ?patchFirstDay(scope,key,firstDay,ledgerWindows.getFirst().shops()):null;
         var ads=patchSpend(scope,month,read(previous.get("spend_json")),dirty.ledger().keySet());
@@ -524,21 +545,17 @@ public class FinanceQueryProjections {
             SELECT partial_first_day_json FROM finance_query_partitions
             WHERE organization_id=? AND platform_filter=? AND partition_month=?
             """,String.class,key.organization,key.platform,key.month);
-        return patchLedger(scope,firstDay,read(saved),List.of(new Window(firstDay.start(),firstDay.end(),shops)),true);
+        return patchLedger(scope,firstDay,read(saved),List.of(new Window(firstDay.start(),firstDay.end(),shops)),LedgerFields.ALL,"");
     }
 
-    private Map<String,Object> patchLedger(Scope scope,Filter semantic,Map<String,Object> old,List<Window> windows,boolean countsNeeded){
-        var factKinds=countsNeeded?List.of("buckets","orders","advertising","rawCounts"):List.of("buckets","orders","advertising");
+    private Map<String,Object> patchLedger(Scope scope,Filter semantic,Map<String,Object> old,List<Window> windows,LedgerFields fields,String countKind){
         var ledger=new LinkedHashMap<>(old);
         var updatedRows=new LinkedHashMap<String,List<Map<String,Object>>>();
-        for(String name:factKinds)updatedRows.put(name,new ArrayList<>(rows(old.get(name)).stream()
+        for(String name:fields.names)updatedRows.put(name,new ArrayList<>(rows(old.get(name)).stream()
             .filter(row->!covered(windows,row)).toList()));
-        for(var window:windows){
-            var latest=repo.inProjectionWindow(semantic,window.start(),window.end(),window.shops(),()->countsNeeded
-                ?nativeFacts(scope,semantic):finance.buildNativeDashboardFacts(scope,semantic,false));
-            for(String name:factKinds)updatedRows.get(name).addAll(rows(latest.get(name)));
-            ledger.put("reportingMonths",latest.get("reportingMonths"));
-        }
+        var latest=repo.inProjectionWindows(semantic,windows,()->nativeFacts(scope,semantic,fields,countKind));
+        for(String name:fields.names)updatedRows.get(name).addAll(rows(latest.get(name)));
+        ledger.put("reportingMonths",latest.get("reportingMonths"));
         ledger.putAll(updatedRows);
         return ledger;
     }
@@ -546,6 +563,57 @@ public class FinanceQueryProjections {
     private static boolean covered(List<Window> windows,Map<String,Object> row){
         var day=date(row.get("record_date"));String shop=text(row.get("shop_id"));
         return windows.stream().anyMatch(window->window.includes(day,shop));
+    }
+
+    /** Amount-only events affect the ledger and bills without moving first settlements. */
+    private Map<String,Object> repairLedger(Scope scope,Filter filter,Map<String,Object> saved,
+                                           RepairWindows repair,LedgerFields fields,String countKind){
+        if(repair.ledger().equals(repair.orders()))
+            return patchLedger(scope,filter,saved,repair.ledger(),fields,countKind);
+
+        var counts=new ArrayList<Map<String,Object>>();
+        var ordinary=repo.inProjectionWindows(filter,repair.ledger(),()->{
+            if(fields==LedgerFields.RECONCILIATION)
+                return Map.<String,Object>of("rawCounts",recordCounts(scope,filter,countKind));
+            boolean reuseCounts=FinanceRepository.RAW_PAGE_COUNT_KINDS.contains(countKind);
+            var advertising=new ArrayList<Map<String,Object>>();
+            var buckets=repo.dashboardBuckets(scope,filter,false,advertising,reuseCounts?counts:null);
+            if(reuseCounts)counts.removeIf(row->!countKind.equals(row.get("kind")));
+            if(fields==LedgerFields.ALL&&(countKind.isBlank()||countKind.equals("BILL")))
+                counts.addAll(recordCounts(scope,filter,countKind));
+            return Map.<String,Object>of("buckets",FinanceService.dailyFactRows(buckets),
+                "advertising",FinanceService.dailyFactRows(advertising),"rawCounts",FinanceService.dailyFactRows(counts));
+        });
+        Map<String,Object> related=repair.orders().isEmpty()?Map.of():repo.inProjectionWindows(filter,repair.orders(),()->{
+            var orders=new FinanceCostReport(repo).dashboardFacts(scope,filter);
+            if(fields==LedgerFields.RECONCILIATION)return Map.<String,Object>of("orders",FinanceService.dailyFactRows(orders));
+            var buckets=new ArrayList<>(orders.stream().filter(row->number(row.get("records"))>0).toList());
+            buckets.addAll(repo.settledOrderBuckets(scope,filter,"REFUND"));
+            var orderCounts=new ArrayList<Map<String,Object>>();
+            if(fields==LedgerFields.ALL)for(String kind:List.of("ORDER","REFUND"))
+                if(countKind.isBlank()||countKind.equals(kind))orderCounts.addAll(settledCounts(scope,filter,kind));
+            return Map.<String,Object>of("orders",FinanceService.dailyFactRows(orders),
+                "buckets",FinanceService.dailyFactRows(buckets),"rawCounts",FinanceService.dailyFactRows(orderCounts));
+        });
+        var merged=new LinkedHashMap<>(saved);
+        for(String field:fields.names){
+            var untouched=new ArrayList<>(rows(saved.get(field)).stream().filter(row->!covered(
+                requiresOrderRepair(field,row)?repair.orders():repair.ledger(),row)).toList());
+            untouched.addAll(rows(ordinary.get(field)));
+            untouched.addAll(rows(related.get(field)));
+            merged.put(field,untouched);
+        }
+        merged.put("reportingMonths",new FinanceReportingMonths(repo).coverage(scope,filter));
+        return merged;
+    }
+
+    private static boolean requiresOrderRepair(String field,Map<String,Object> row){
+        return switch(field){
+            case "orders"->true;
+            case "buckets"->Set.of("ORDER","REFUND").contains(text(row.get("kind")));
+            case "rawCounts"->"SETTLED".equals(row.get("basis"));
+            default->false;
+        };
     }
 
     private Map<String,Object> patchSpend(Scope scope,Filter month,Map<String,Object> ads,Set<LocalDate> days){
@@ -577,20 +645,46 @@ public class FinanceQueryProjections {
     }
 
     private Map<String,Object> nativeFacts(Scope scope,Filter filter){
-        var result=new LinkedHashMap<>(finance.buildNativeDashboardFacts(scope,filter,false));
-        var counts=new ArrayList<Map<String,Object>>();var query=repo.query(scope,filter);
+        return nativeFacts(scope,filter,LedgerFields.ALL,"");
+    }
+    private Map<String,Object> nativeFacts(Scope scope,Filter filter,LedgerFields fields,String countKind){
+        if(fields==LedgerFields.OVERVIEW)return finance.buildNativeDashboardFacts(scope,filter,false);
+        if(FinanceRepository.RAW_PAGE_COUNT_KINDS.contains(countKind)){
+            // The operating range scan already has these exact list counts
+            // before shop order exclusions. Dirty rows can reuse that scan.
+            var counts=new ArrayList<Map<String,Object>>();
+            var result=new LinkedHashMap<>(finance.buildNativeDashboardFacts(scope,filter,false,counts));
+            counts.removeIf(row->!countKind.equals(row.get("kind")));
+            result.put("rawCounts",FinanceService.dailyFactRows(counts));
+            return result;
+        }
+        var result=new LinkedHashMap<>(fields==LedgerFields.RECONCILIATION?Map.of(
+            "orders",FinanceService.dailyFactRows(new FinanceCostReport(repo).dashboardFacts(scope,filter)),
+            "reportingMonths",new FinanceReportingMonths(repo).coverage(scope,filter)):
+            finance.buildNativeDashboardFacts(scope,filter,false));
+        var counts=new ArrayList<Map<String,Object>>();
         // These are raw-page facets: source restrictions and advertising fees are independent of operating exclusions.
-        String advertisingFee="CASE WHEN kind='FEE' AND "+FinanceAdvertisingReport.ledgerPredicate("finance_records")+" THEN 1 ELSE 0 END";
-        // Without a date-first hint MySQL can choose a shop/user-prefixed
-        // covering index and scan the company's entire historical ledger.
-        counts.addAll(repo.jdbc().queryForList("SELECT shop_id,record_date,kind,currency,source,'RECORD' basis,"+advertisingFee
-            +" advertising_fee,COUNT(*) records FROM finance_records FORCE INDEX("+repo.dashboardIndex(filter)+") WHERE "+query.where()+" GROUP BY shop_id,record_date,kind,currency,source,advertising_fee",query.args().toArray()));
+        if(!Set.of("ORDER","REFUND").contains(countKind))counts.addAll(recordCounts(scope,filter,countKind));
         for(String kind:List.of("ORDER","REFUND")){
-            var q=repo.query(scope,filter,"r");
-            counts.addAll(repo.jdbc().queryForList("SELECT r.shop_id,r.record_date,o.kind,r.currency,'API' source,0 advertising_fee,'SETTLED' basis,COUNT(*) records"
-                +repo.settledOrderRelation(scope,filter,kind,false)+" GROUP BY r.shop_id,r.record_date,o.kind,r.currency",q.args().toArray()));
+            if(!countKind.isBlank()&&!countKind.equals(kind))continue;
+            counts.addAll(settledCounts(scope,filter,kind));
         }
         result.put("rawCounts",FinanceService.dailyFactRows(counts));return result;
+    }
+    private List<Map<String,Object>> recordCounts(Scope scope,Filter filter,String kind){
+        var query=repo.query(scope,filter);
+        var args=new ArrayList<>(query.args());
+        if(!kind.isBlank())args.add(kind);
+        String index=kind.equals("BILL")?"idx_finance_company_kind_date":repo.dashboardIndex(filter);
+        String advertisingFee="CASE WHEN kind='FEE' AND "+FinanceAdvertisingReport.ledgerPredicate("finance_records")+" THEN 1 ELSE 0 END";
+        return repo.jdbc().queryForList("SELECT shop_id,record_date,kind,currency,source,'RECORD' basis,"+advertisingFee
+            +" advertising_fee,COUNT(*) records FROM finance_records FORCE INDEX("+index+") WHERE "+query.where()
+            +(kind.isBlank()?"":" AND kind=?")+" GROUP BY shop_id,record_date,kind,currency,source,advertising_fee",args.toArray());
+    }
+    private List<Map<String,Object>> settledCounts(Scope scope,Filter filter,String kind){
+        var q=repo.query(scope,filter,"r");
+        return repo.jdbc().queryForList("SELECT r.shop_id,r.record_date,o.kind,r.currency,'API' source,0 advertising_fee,'SETTLED' basis,COUNT(*) records"
+            +repo.settledOrderRelation(scope,filter,kind,false)+" GROUP BY r.shop_id,r.record_date,o.kind,r.currency",q.args().toArray());
     }
 
     private boolean hasRelevantEvents(Scope scope,Filter filter){
@@ -661,8 +755,8 @@ public class FinanceQueryProjections {
     }
     private static boolean inRange(Map<String,Object> row,Filter filter){LocalDate day=date(row.get("record_date"));return !day.isBefore(filter.start())&&!day.isAfter(filter.end());}
     private static LocalDate date(Object value){return LocalDate.parse(text(value).substring(0,10));}
-    private Map<String,Object> readLedger(Object value,boolean countsNeeded){
-        if(countsNeeded)return read(value);
+    private Map<String,Object> readLedger(Object value,LedgerFields fields){
+        if(fields==LedgerFields.ALL)return read(value);
         // Keep decimal text intact. MySQL JSON functions convert it to binary JSON.
         var result=new LinkedHashMap<String,Object>();
         try(var parser=json.createParser(text(value))){
@@ -671,8 +765,8 @@ public class FinanceQueryProjections {
                 if(field!=JsonToken.PROPERTY_NAME)throw new IllegalStateException("Invalid finance projection field");
                 String name=parser.currentName();
                 parser.nextToken();
-                if("rawCounts".equals(name))parser.skipChildren();
-                else result.put(name,ledgerField.readValue(parser));
+                if(fields.names.contains(name))result.put(name,ledgerField.readValue(parser));
+                else parser.skipChildren();
             }
         }
         return result;
