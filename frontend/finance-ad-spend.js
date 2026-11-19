@@ -16,23 +16,19 @@
     current(ctx,owner);
     const {el,table,filters}=ctx;
     const connected=new Map((ctx.accounts||[]).map(account=>[account.advertiser_id,account]));
-    const accounts=new Map((ctx.report.shopAccounts||[]).filter(r=>r.shop_id===shop.shop_id&&r.currency===shop.currency).map(r=>[r.account_id,r]));
-    const nativeCurrency=filters.currency||(filters.displayCurrency==='CNY'?'':shop.currency);
-    for(const account of connected.values()){
-      if(accounts.has(account.advertiser_id)||!ctx.adStoreIds(account).includes(shop.shop_id)
-          ||(nativeCurrency&&nativeCurrency!=='—'&&account.currency&&account.currency!==nativeCurrency))continue;
-      accounts.set(account.advertiser_id,{account_id:account.advertiser_id,currency:shop.currency==='—'?account.currency:shop.currency,
-        reason_amount:'尚未取得',reason_net_amount:'尚未取得'});
-    }
+    const hasAmount=(row,key)=>row[key]!=null||Number(row['known_'+key])>0;
+    const accounts=(ctx.report.shopAccounts||[]).filter(row=>row.shop_id===shop.shop_id&&row.currency===shop.currency
+      &&displayAmounts.some(key=>hasAmount(row,key)));
     const title=shop.shop_name+' · 广告账户明细';
     const dialog=ctx.dialog(title);
     dialog.d.dataset.adShopAccounts='';
     dialog.d.setAttribute('aria-label',title);
     dialog.foot.firstElementChild.textContent='关闭';
-    el('p',filters.start+' 至 '+filters.end+'。仅汇总已归属到该店及广告账户的投放消耗。',dialog.body,'fi-muted');
+    el('p',filters.start+' 至 '+filters.end+'。仅显示已取得且已归属到该店的广告账户消耗。',dialog.body,'fi-muted');
     table(dialog.body,['广告账户','广告账户 ID','币种',...displayAmounts.map(k=>labels[k])],
-      [...accounts.values()].map(row=>[connected.get(row.account_id)?.name||row.account_name||'账户名称未提供',
-        row.account_id,row.currency||'—',...displayAmounts.map(k=>amount(row,k))]),'当前范围没有该店的广告账户明细。');
+      accounts.map(row=>[connected.get(row.account_id)?.name||row.account_name||'账户名称未提供',
+        row.account_id,row.currency||'—',...displayAmounts.map(key=>hasAmount(row,key)?amount(row,key):'—')]),
+      '当前日期和币种下没有已取得的广告账户消耗。');
   }
   function render(parent,ctx){
     const {el,card,table,button,report}=ctx,main=el('section',null,parent,'fi-ad-spend');main.dataset.adSpendWorkspace='';main.dataset.updateKey='ad-spend-workspace';

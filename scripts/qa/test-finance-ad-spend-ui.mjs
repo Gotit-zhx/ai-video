@@ -18,6 +18,8 @@ spend.shops.push({...summary,shop_id:'UNASSIGNED',shop_name:'待分配店铺'});
 spend.shopAccounts=[
  {shop_id:'a',account_id:'100001',currency:'CNY',amount:7,net_amount:0},
  {shop_id:'a',account_id:'100003',account_name:'历史投放账户',currency:'CNY',amount:3,net_amount:null,known_net_amount:1,partial_net_amount:2},
+ {shop_id:'a',account_id:'100004',account_name:'零消耗账户',currency:'CNY',amount:0,net_amount:null,reason_net_amount:'尚未取得'},
+ {shop_id:'a',account_id:'100005',account_name:'无可确认金额账户',currency:'CNY',amount:null,net_amount:null,known_amount:0,partial_amount:0,reason_amount:'尚未取得'},
  {shop_id:'other',account_id:'100001',currency:'CNY',amount:99,net_amount:99},
  {shop_id:'a',account_id:'100001',currency:'USD',amount:80,net_amount:70}
 ];
@@ -66,9 +68,18 @@ try{
  assert.deepEqual([...accountsDialog.querySelectorAll('tbody tr')].map(r=>[...r.cells].map(c=>c.textContent)),[
    ['演示广告账户','100001','CNY','7.00','0.00'],
    ['历史投放账户','100003','CNY','3.00','2.00（已知部分）'],
-   ['已关联待同步账户','100002','CNY','尚未取得','尚未取得']
+   ['零消耗账户','100004','CNY','0.00','—']
  ]);
  accountsDialog.querySelector('.fi-dialog-foot button').click();assert(!accountsDialog.isConnected);
+ const originalShopAccounts=spend.shopAccounts;
+ spend.shopAccounts=originalShopAccounts.filter(r=>r.account_id==='100005');
+ w.FinanceWorkspace.enter('ads');await ready();
+ root.querySelector('[aria-label="演示菲律宾店的广告账户明细"]').click();
+ const emptyAccountsDialog=d.querySelector('dialog[data-ad-shop-accounts]');
+ assert(emptyAccountsDialog.open);assert.equal(emptyAccountsDialog.querySelectorAll('tbody tr').length,0);
+ assert.match(emptyAccountsDialog.querySelector('.fi-empty').textContent,/没有已取得的广告账户消耗/);
+ emptyAccountsDialog.querySelector('.fi-dialog-foot button').click();
+ spend.shopAccounts=originalShopAccounts;
  assert(!main.querySelector('[data-ad-spend-allocate]'),'read-only viewer has no assignment action');
  assert(root.querySelector('details[data-ad-spend-support]'));assert(!root.querySelector('details[data-ad-spend-support]').open);
  const originalFunding=spend.accountFunding;
