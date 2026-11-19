@@ -50,8 +50,19 @@ public class FinanceReadCache {
         this.redis=redis;this.json=json;this.clock=clock;this.executor=executor;
         ownedExecutor=owned?(ExecutorService)executor:null;
     }
-    public Map<String,Object> get(FinanceSnapshotCache.Key key,Supplier<Map<String,Object>> load){
+    public Map<String,Object> getPage(FinanceSnapshotCache.Key key,String view,String projectionRevision,String selection,Supplier<Map<String,Object>> load){
+        Objects.requireNonNull(view);Objects.requireNonNull(projectionRevision);Objects.requireNonNull(selection);
         String address=address(key);
+        if(address!=null){
+            int boundary=address.lastIndexOf(':');
+            address=address.substring(0,boundary+1)+"page:"+digest(view+"|"+projectionRevision+"|"+selection)+":"+address.substring(boundary+1);
+        }
+        return getAt(address,key,load);
+    }
+    public Map<String,Object> get(FinanceSnapshotCache.Key key,Supplier<Map<String,Object>> load){
+        return getAt(address(key),key,load);
+    }
+    private Map<String,Object> getAt(String address,FinanceSnapshotCache.Key key,Supplier<Map<String,Object>> load){
         if(address==null)return withoutFactRevision(load.get());
         var cached=read(address);
         if(cached!=null){

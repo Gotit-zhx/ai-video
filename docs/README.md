@@ -36,6 +36,7 @@
 
 | 主题 | 固定入口 |
 | --- | --- |
+| TikTok 广告字段、V155/V156 联合验证及源码生效 | [2026-11-13 验收](releases/finance/finance-tiktok-metadata-20261113.md) |
 | 广告展示、公开 BC 权限及业务日历史汇率 | [2026-11-11 验收](releases/finance/finance-ad-history-fx-20261111.md) |
 | 原始十一列刷单费模板 / 当日上午验收 | [finance-brush-original-template-20261105.md](finance-brush-original-template-20261105.md) |
 | 全部源订单与已结算视图 | [finance-source-orders-20261105.md](finance-source-orders-20261105.md) |

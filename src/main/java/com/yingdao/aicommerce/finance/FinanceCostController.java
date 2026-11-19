@@ -64,6 +64,7 @@ public class FinanceCostController {
         }
     }
     @GetMapping("/costs") public ApiResponse<?> costs(@RequestParam(required=false) String shopId,@RequestParam(defaultValue="") String groupId,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.costs(service.authorize(p),shopId,groupId));}
+    @GetMapping("/costs/context") public ApiResponse<?> costContext(@RequestParam(required=false) String shopId,@RequestParam(defaultValue="") String groupId,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.context(service.authorize(p),shopId,groupId));}
     @GetMapping("/costs/summary") public ApiResponse<?> costSummary(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var scope=service.authorize(p);String shopId=q.getOrDefault("shopId","");if(!shopId.isBlank())service.ownedShop(scope,shopId);
         return ApiResponse.ok(workspace.costSummary(scope,costFilter(q),q.getOrDefault("kind","SETTLED_ORDER"),q.get("displayCurrency"),q.get("fxSnapshot")));

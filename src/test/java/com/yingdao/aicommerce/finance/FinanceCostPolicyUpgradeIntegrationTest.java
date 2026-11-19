@@ -103,21 +103,20 @@ class FinanceCostPolicyUpgradeIntegrationTest extends FinanceCostPlatformSkuInte
         assertEquals(12,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='COST_POLICY_REBUILD'",Integer.class));
     }
     @Test void firstPolicySchedulingInvalidatesExistingProjectionAndRollbackKeepsItAtomic(){
-        // Same event-inbox contract as V155; this fixture intentionally has no projection worker.
-        db.execute("CREATE TABLE finance_query_events(event_id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,organization_id CHAR(36) NOT NULL,event_scope VARCHAR(8) NOT NULL,shop_id CHAR(36),source_table VARCHAR(64) NOT NULL)");
-        try{
-            String shop=policyShop("policy-events");
-            assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_query_events WHERE organization_id=? AND event_scope='ALL' AND source_table='finance_cost_policy'",Integer.class,owner.organizationId()));
-            repo.transaction(()->{new FinanceOrderCosts(repo).requestShop(owner.organizationId(),shop);return null;});
-            assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_query_events",Integer.class),"a repeated request must not append another policy event");
-            policyShop("same-company-events");
-            assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_query_events",Integer.class),"another shop in the same company must not repeat the policy invalidation");
-            db.update("DELETE FROM finance_workspace_audit WHERE entity_type IN ('COST_POLICY_REBUILD','COST_POLICY_INVALIDATE')");
-            db.update("UPDATE finance_cost_rebuilds SET status='DONE',cursor_id='retained' WHERE shop_id=?",shop);
-            new TransactionTemplate(tx).execute(status->{new FinanceOrderCosts(repo).seedAndFill();status.setRollbackOnly();return null;});
-            assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_query_events",Integer.class),"failed scheduling must not publish an invalidation event");
-            assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='COST_POLICY_REBUILD'",Integer.class));
-            assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='COST_POLICY_INVALIDATE'",Integer.class));
-        }finally{db.execute("DROP TABLE finance_query_events");}
+        // The shared fixture now installs the real V155/V156 inbox and source triggers.
+        // Distinguish policy invalidation from ordinary connection/configuration events.
+        java.util.function.IntSupplier policyEvents=()->db.queryForObject("SELECT COUNT(*) FROM finance_query_events WHERE organization_id=? AND event_scope='ALL' AND source_table='finance_cost_policy'",Integer.class,owner.organizationId());
+        String shop=policyShop("policy-events");
+        assertEquals(1,policyEvents.getAsInt());
+        repo.transaction(()->{new FinanceOrderCosts(repo).requestShop(owner.organizationId(),shop);return null;});
+        assertEquals(1,policyEvents.getAsInt(),"a repeated request must not append another policy event");
+        policyShop("same-company-events");
+        assertEquals(1,policyEvents.getAsInt(),"another shop in the same company must not repeat the policy invalidation");
+        db.update("DELETE FROM finance_workspace_audit WHERE entity_type IN ('COST_POLICY_REBUILD','COST_POLICY_INVALIDATE')");
+        db.update("UPDATE finance_cost_rebuilds SET status='DONE',cursor_id='retained' WHERE shop_id=?",shop);
+        new TransactionTemplate(tx).execute(status->{new FinanceOrderCosts(repo).seedAndFill();status.setRollbackOnly();return null;});
+        assertEquals(1,policyEvents.getAsInt(),"failed scheduling must not publish an invalidation event");
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='COST_POLICY_REBUILD'",Integer.class));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='COST_POLICY_INVALIDATE'",Integer.class));
     }
 }

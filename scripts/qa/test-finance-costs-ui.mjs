@@ -9,7 +9,7 @@ w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
 w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
 const shops=[{id:'baby',name:'母婴测试店',group_id:'baby-group',platform:'TIKTOK_SHOP',region:'PH'},{id:'other',name:'其他测试店',group_id:'other-group',platform:'SHOPEE',region:'TH'}];
 const groups=[{id:'baby-group',name:'母婴组'},{id:'other-group',name:'其他组'}];
-w.api=async(path,options={})=>{assert(!options.method||options.method==='GET','design must never write financial data');requests.push(path);if(path.startsWith('/api/v1/finance/workspace/costs?'))return {data:null};assert.equal(path,'/api/v1/finance/shops','cost design must not load dashboards or platform APIs');return {data:{items:shops,groups,sync:[]}};};
+w.api=async(path,options={})=>{assert(!options.method||options.method==='GET','design must never write financial data');requests.push(path);if(path.startsWith('/api/v1/finance/workspace/costs/context?')||path.startsWith('/api/v1/finance/workspace/costs?'))return {data:null};assert.equal(path,'/api/v1/finance/shops','cost design must not load dashboards or platform APIs');return {data:{items:shops,groups,sync:[]}};};
 for(const name of ['incremental-dom.js','incremental-charts.js','finance-costs.js','finance-workspace.js'])w.eval(await fs.readFile(new URL('../../frontend/'+name,import.meta.url),'utf8'));
 const preview={shopId:'baby',groupId:'baby-group',groupName:'母婴组',sourceName:'成本测试.xlsx',suggestedWarehouse:'菲律宾仓',sampleOrders:4,
   costs:[{sku:'BABY-BPants-XXL',warehouse:'菲律宾仓',prices:{'2026-09':10}},{sku:'BABY-BPants-XXL*2',warehouse:'菲律宾仓',prices:{'2026-09':21}},{sku:'BABY-BPants-XXL',warehouse:'泰国仓',prices:{'2026-09':12}}],

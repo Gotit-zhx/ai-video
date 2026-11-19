@@ -1,6 +1,6 @@
 # 历史发布与验收记录
 
-更新日期：2026-11-07。按业务领域保存仍有追溯价值的发布、故障修复和验收证据。记录中的活动镜像、数量、测试与未完成项都适用于该次时间，不代表今天的部署。当前版本及发布规则见[运维指南](../guides/operations.md)，业务入口见[业务说明](../business/README.md)。
+更新日期：2026-11-13。按业务领域保存仍有追溯价值的发布、故障修复和验收证据。记录中的活动镜像、数量、测试与未完成项都适用于该次时间，不代表今天的部署。当前版本及发布规则见[运维指南](../guides/operations.md)，业务入口见[业务说明](../business/README.md)。
 
 生产固定引用的最新十一份规则/验收文档仍位于 `docs/` 根目录，见[当前入口](../README.md#当前生产规则与验收)。历史 helper 可能仍被线上 Compose 链依赖，本次只移动文档。
 
@@ -8,6 +8,15 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [财务 BI 10 月全平台上线跟进](finance/finance-bi-followup-20261119.md) | 全平台投影水位、九页生产复测及后续回退优化 |
+| [财务 BI 查询优化生产上线](finance/finance-bi-production-20261119.md) | V161–V164 生效、历史分区构建进度及九页线上冒烟 |
+| [财务 BI 首次结算成本与店铺日期增量验收](finance/finance-bi-incremental-20261119.md) | 同口径成本投影、店铺日期修补、真实脱敏负载及九页结果 |
+| [财务 BI 投影追赶及大样本验收](finance/finance-bi-scale-20261119.md) | 持续写入、冷 Redis 五路并发、回退精确性与九页结果 |
+| [财务 BI 九页延迟基线与首轮改造验收](finance/finance-bi-latency-20261119.md) | 线上逐页样本、冷 Redis 并发复测和候选改造记录 |
+| [finance-workspace-performance-20261113.md](finance/finance-workspace-performance-20261113.md) | 财务专页后端分阶段生效、真实只读对照及尚未完成的前端/5秒验收 |
+| [finance-shopee-ads-reconciliation-20261113.md](finance/finance-shopee-ads-reconciliation-20261113.md) | Shopee 两店金额核对、首次回补缺日保护及验证边界 |
+| [finance-tiktok-metadata-20261113.md](finance/finance-tiktok-metadata-20261113.md) | V156 源码生效、原广告资料摘要保护、实际页面及商家重授边界 |
+| [finance-tiktok-metadata-20261112.md](finance/finance-tiktok-metadata-20261112.md) | TikTok 系列资料首次实现和本地验证记录 |
 | [pr60-62-integration-20261112.md](finance/pr60-62-integration-20261112.md) | #60–#62 合并复核、成本仓提示与广告过期检查点恢复；#63 保留草稿 |
 | [finance-shopee-ads-activation-20261112.md](finance/finance-shopee-ads-activation-20261112.md) | Shopee Ads 正式配置、V154 和源码激活；店铺授权及真实回补待验证 |
 | [finance-ad-automation-20261109.md](finance/finance-ad-automation-20261109.md) | v2026.11.9 广告自动化发布准备、V148 独立维护及验收顺序 |

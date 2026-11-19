@@ -19,6 +19,19 @@ import java.util.Set;
 
 @Component
 public class ShopeeOfficialClient implements MarketplaceAccess.Client {
+    /** Preserve provider error identity independently of its human-readable message. */
+    public static final class ApiFailure extends MarketplaceApiException {
+        private final String errorCode;
+        private final boolean hasWarning;
+        private ApiFailure(String errorCode, String message, boolean hasWarning) {
+            super(message);
+            this.errorCode = errorCode;
+            this.hasWarning = hasWarning;
+        }
+        public String errorCode() { return errorCode; }
+        public boolean hasWarning() { return hasWarning; }
+    }
+
     public static final String AUTH_SUBJECT_SHOP = "SHOP";
     public static final String AUTH_SUBJECT_MERCHANT = "MERCHANT";
     public static final String AUTH_PATH = "/auth";
@@ -360,8 +373,10 @@ public class ShopeeOfficialClient implements MarketplaceAccess.Client {
     private Map<String, Object> checked(Map<String, Object> response, String path) {
         String error = text(response, "error");
         if (error != null && !error.isBlank()) {
-            throw new MarketplaceApiException("Shopee 官方接口 " + path + " 失败："
-                    + http.safeBody(fallback(text(response, "message"), error)));
+            String code = error.matches("[A-Za-z0-9_.]{1,160}") ? error : "unrecognized_error";
+            String warning = text(response, "warning");
+            throw new ApiFailure(code, "Shopee 官方接口 " + path + " 失败："
+                    + http.safeBody(fallback(text(response, "message"), error)), warning != null && !warning.isBlank());
         }
         return response;
     }

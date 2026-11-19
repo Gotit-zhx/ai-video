@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import {createAdvertisingFixture} from './fixtures/finance-advertising.mjs';
+import {advertisingWorkspaceResponse,createAdvertisingFixture} from './fixtures/finance-advertising.mjs';
 const {JSDOM}=await import(process.env.JSDOM_MODULE||'jsdom');
 const dom=new JSDOM('<main id="finance-page"></main>',{url:'https://example.test/#finance-overview',runScripts:'outside-only',pretendToBeVisual:true});
 const w=dom.window,d=w.document,root=d.querySelector('main'),fixture=createAdvertisingFixture(),reads=[];
@@ -16,6 +16,10 @@ w.api=async(path,options={})=>{
  if(endpoint==='/overview'){const data=fixture.overview(q);data.fx={id:'history-fixed',mode:'HISTORICAL',basis:'按业务日期历史汇率',provider:'Historical QA'};return {data};}
  if(endpoint==='/records')return {data:fixture.records(q)};
  if(endpoint==='/ads')return {data:fixture.accounts};
+ if(endpoint==='/workspace/query'){
+   const result=spend(q);if(slowSpend){slowSpend=false;await new Promise(r=>releaseSpend=r);}
+   return {data:advertisingWorkspaceResponse(fixture,q,{adAccounts:fixture.accounts,adSpend:result})};
+ }
  if(endpoint==='/advertising/spend'){const result=spend(q);if(slowSpend){slowSpend=false;await new Promise(r=>releaseSpend=r);}return {data:result};}
  if(endpoint==='/fx/market'){const result=structuredClone(market);if(holdMarket){holdMarket=false;await new Promise(r=>releaseMarket=r);}if(failMarket)throw Error('rate provider unavailable');return {data:result};}
  throw Error('Unexpected API '+endpoint);
@@ -36,7 +40,7 @@ try{
  const start=d.querySelector('[aria-label="开始日期"]');start.value='2026-09-30';start.dispatchEvent(new w.Event('change'));await ready();assert.equal(reads.filter(r=>r.endpoint==='/overview').at(-1).q.fxSnapshot,'','a new business-date range must resolve its own historical snapshot');
  const month=d.querySelector('[aria-label="统计月份（店铺当地）"]');month.value='2026-10';month.dispatchEvent(new w.Event('change'));await ready();assert.equal(reads.filter(r=>r.endpoint==='/overview').at(-1).q.fxSnapshot,'','month shortcuts must also resolve a fresh historical scope');
  root.querySelector('[data-metric="AD"]').click();assert.equal(w.location.hash,'#finance-ads');await enter('ads');
- const checkSpending=()=>{assert.equal(root.querySelectorAll('[data-ad-spend-workspace]').length,1);assert.equal(root.querySelectorAll('[data-ad-currency]').length,2);assert.equal(root.querySelectorAll('[data-ad-currency="PHP"]').length,1);assert.equal(root.querySelectorAll('[data-ad-currency="THB"]').length,1);assert.equal(root.querySelectorAll('[data-ad-spend-support] .fi-metric').length,0,'ledger checks must not repeat a second row of large cards');assert(root.querySelector('[data-ad-spend-support]').textContent.includes('广告费用（已入账）'));const headers=[...root.querySelectorAll('[data-ad-spend-workspace]>.fi-card table thead')][0].textContent;assert(headers.includes('广告消耗（投放报表）'));assert(headers.includes('净广告消耗'));};
+ const checkSpending=()=>{assert.equal(root.querySelectorAll('[data-ad-spend-workspace]').length,1);assert.equal(root.querySelectorAll('[data-ad-currency]').length,2);assert.equal(root.querySelectorAll('[data-ad-currency="PHP"]').length,1);assert.equal(root.querySelectorAll('[data-ad-currency="THB"]').length,1);assert.equal(root.querySelectorAll('[data-ad-spend-support] .fi-metric').length,0,'ledger checks must not repeat a second row of large cards');assert(root.querySelector('[data-ad-spend-support]').textContent.includes('广告费用（已入账）'));const headers=[...root.querySelectorAll('[data-ad-spend-workspace]>.fi-card table thead')][0].textContent;assert(headers.includes('广告消耗（投放 / 账单参考）'));assert(headers.includes('净广告消耗'));};
  checkSpending();for(let i=0;i<3;i++)await enter('ads');checkSpending();
  const groups=[...root.querySelectorAll('[data-ad-currency]')];assert(groups.find(n=>n.dataset.adCurrency==='PHP').textContent.includes('101.00'));assert(groups.find(n=>n.dataset.adCurrency==='THB').textContent.includes('202.00'));assert(!root.querySelector('[data-ad-spend-workspace]').textContent.includes('303.00'),'different currencies must not be summed');
  slowSpend=true;w.FinanceWorkspace.enter('ads');await wait(()=>releaseSpend);await enter('overview');releaseSpend();await new Promise(r=>setTimeout(r,15));assert.equal(root.querySelectorAll('[data-ad-spend-workspace]').length,0,'a late spending response cannot restore the advertising page');

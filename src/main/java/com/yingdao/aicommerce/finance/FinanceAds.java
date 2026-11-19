@@ -104,6 +104,7 @@ public class FinanceAds {
             """,storage.organizationId(),storage.userId(),id,first(advertiser,"name"),shopId,currency,encrypted,gmvStoreId,gmvStoreId.isBlank()?"DISABLED":"READY",first(advertiser,"timezone"));
         repo.jdbc().update("UPDATE finance_ad_streams SET next_at=UTC_TIMESTAMP(6),failures=0 WHERE organization_id=? AND advertiser_id=?",s.organizationId(),id);
         funding.reauthorized(s,id,token);
+        FinanceAdMetadataSync.reauthorized(repo,s,id);
     }
     public void pause(Scope s,String id,boolean enabled){
         if(enabled){
@@ -115,7 +116,7 @@ public class FinanceAds {
             UPDATE finance_ad_accounts SET enabled=?,status=?,lease_token=NULL,lease_until=NULL,
               next_at=GREATEST(next_at,UTC_TIMESTAMP(6)) WHERE organization_id=? AND advertiser_id=?
             """,enabled,enabled?"READY":"PAUSED",s.organizationId(),id)!=1)throw bad("广告账户不存在");
-            funding.revoke(s,id);return null;});
+            funding.revoke(s,id);FinanceAdMetadataSync.paused(repo,s,id,enabled);return null;});
     }
     static Long metricCount(Map<String,Object> metrics,String key){
         BigDecimal value=decimal(metrics.get(key));

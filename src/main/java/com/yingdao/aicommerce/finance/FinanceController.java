@@ -16,6 +16,8 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 @RequestMapping("/api/v1/finance")
 public class FinanceController {
     final FinanceService service;final FinanceRepository repo;final FinanceImport imports;final FinanceAds ads;final FinanceFields fields;final FinanceAdAuthorization adAuthorization;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private FinanceWorkspaceQueryService workspaceQueries;
     public FinanceController(FinanceService service,FinanceRepository repo,FinanceImport imports,FinanceAds ads){
         this(service,repo,imports,ads,null);
     }
@@ -44,7 +46,14 @@ public class FinanceController {
                 LocalDate.parse(q.getOrDefault("end",month.atEndOfMonth().toString())),q.get("shopId"),q.get("platform"),q.get("currency"),q.get("granularity"),q.get("groupId"));}
         catch(java.time.format.DateTimeParseException e){throw bad("日期格式不正确");}
     }
-    @GetMapping("/overview") public ApiResponse<?> overview(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(service.dashboard(s(p),filter(q),"CNY".equals(q.get("displayCurrency")),q.get("fxSnapshot")));}
+    @GetMapping("/overview") public ApiResponse<?> overview(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
+        var scope=s(p);
+        var requested=filter(q);
+        boolean cny="CNY".equals(q.get("displayCurrency"));
+        String snapshot=q.get("fxSnapshot");
+        return ApiResponse.ok(workspaceQueries==null?service.dashboard(scope,requested,cny,snapshot):
+            workspaceQueries.overview(scope,requested,cny,snapshot));
+    }
     @GetMapping("/fx/market") public ApiResponse<?> market(@AuthenticationPrincipal PlatformPrincipal p){
         s(p);return ApiResponse.ok(service.exchangeRates().market());
     }

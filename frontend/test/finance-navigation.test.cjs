@@ -20,3 +20,28 @@ test('permission changes take effect without relying on a workspace reload',()=>
   assert.equal(render({permissions:['finance:view']}).group.hidden,false);
   assert.equal(render({permissions:[]}).group.hidden,true);
 });
+
+test('an authenticated finance deep link waits for its deferred script before routing',async()=>{
+  const start=source.indexOf('async function showDashboard(user)');
+  const end=source.indexOf("  if (window.location.hash.startsWith('#knowledge-')",start);
+  const dashboard=source.slice(start,end)+'\n}';
+  const calls=[],user={organizationId:'org',userId:'reader',permissions:['finance:view']};
+  let loadScripts;
+  const workspaceScriptsReady=new Promise(resolve=>{loadScripts=resolve;});
+  const element={setAttribute(){}};
+  const context=vm.createContext({
+    currentUser:null,sessionExpiryActive:false,document:{querySelector:()=>element},
+    loginView:{},dashboardView:{},loginError:{},productPermissionLabel:()=>'',applyFeatureAccess(){},
+    canAccessFinance:()=>true,window:{location:{hash:'#finance-settlements'}},workspaceScriptsReady,user,
+    switchWorkspace:workspace=>calls.push(workspace),
+  });
+  vm.runInContext(dashboard,context);
+  let complete=false;
+  const routing=vm.runInContext('showDashboard(user)',context).then(()=>{complete=true;});
+  await Promise.resolve();
+  assert.equal(complete,false);
+  context.FinanceWorkspace={allowed:()=>true,enter:route=>calls.push(route)};
+  loadScripts();
+  await routing;
+  assert.deepEqual(calls,['finance','settlements']);
+});

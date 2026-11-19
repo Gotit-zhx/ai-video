@@ -5,13 +5,34 @@
   const el=(tag,text,parent,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;parent?.append(n);return n;};
   const money=v=>v==null?'—':Number(v).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
   const status={QUEUED:'排队中',PARSING:'校验中',PREPARED:'自动匹配中',READY:'已完成',FAILED:'处理失败',EXPIRED:'请重新上传',REMOVE_QUEUED:'移除中'};
+  const initialScope=options=>({start:options.filters?.start||options.dates?.start||'',end:options.filters?.end||options.dates?.end||'',
+    groupId:options.filters?.groupId||'',shopId:options.filters?.shopId||'',platform:options.filters?.platform||'',
+    fileId:'',matchStatus:'',numbers:'',page:1});
+  const requestSpec=(scope,detailsOnly=false)=>{
+    const q=Object.fromEntries(Object.entries(scope).filter(([,value])=>value!==''));if(detailsOnly)q.detailsOnly='true';
+    const params=new URLSearchParams(q);return {key:params.toString(),path:'/label-costs?'+params};
+  };
+  function prefetchInitial({request,filters,dates,signal}={}){
+    const scope=initialScope({filters,dates});if(scope.groupId||scope.shopId||scope.platform)return null;
+    const spec=requestSpec(scope),controller=new AbortController();let state='open',outcome=null;
+    const cleanupRoot=()=>signal?.removeEventListener('abort',rootAbort);
+    const cancel=reason=>{if(['cancelled','done'].includes(state))return;state='cancelled';outcome=null;controller.abort(reason||new Error('贴单账单预取已取消'));cleanupRoot();};
+    const rootAbort=()=>cancel(signal.reason);if(signal){if(signal.aborted)cancel(signal.reason);else signal.addEventListener('abort',rootAbort,{once:true});}
+    const ready=Promise.resolve().then(()=>request(spec.path,{signal:controller.signal})).then(
+      data=>{if(state!=='cancelled')outcome={data};},error=>{if(state!=='cancelled')outcome={error};});
+    return {key:spec.key,cancel,take(key,childSignal){
+      if(state!=='open'||key!==spec.key){if(state==='open')cancel();return null;}state='taken';
+      const childAbort=()=>cancel(childSignal.reason);if(childSignal){if(childSignal.aborted)cancel(childSignal.reason);else childSignal.addEventListener('abort',childAbort,{once:true});}
+      return ready.then(()=>{const result=outcome;outcome=null;if(state!=='cancelled')state='done';cleanupRoot();childSignal?.removeEventListener('abort',childAbort);
+        if(!result)throw controller.signal.reason||new Error('贴单账单预取已取消');if(result.error)throw result.error;return result.data;});
+    }};
+  }
   function mount(root,options){
     const {request,groups=[],shops=[],canManage=false}=options;
     let disposed=false,timer=null,sequence=0,data=null,controller=null,periodKey='';
-    const scope={start:options.filters?.start||options.dates?.start||'',end:options.filters?.end||options.dates?.end||'',
-      groupId:options.filters?.groupId||'',shopId:options.filters?.shopId||'',platform:options.filters?.platform||'',
-      fileId:'',matchStatus:'',numbers:'',page:1};
-    const dispose=()=>{disposed=true;sequence++;clearTimeout(timer);controller?.abort();disposers.delete(dispose);};disposers.add(dispose);
+    const active=()=>options.isActive?.()!==false;
+    const scope=initialScope(options);
+    const dispose=()=>{disposed=true;sequence++;clearTimeout(timer);controller?.abort();options.initialLabelPrefetch?.cancel();disposers.delete(dispose);};disposers.add(dispose);
     root.replaceChildren();
     const toolbar=el('div',null,root,'fq-toolbar'),heading=el('div',null,toolbar);
     el('h3','月度贴单账单',heading);el('p','上传仓库账单，按平台订单号自动绑定。金额固定为人民币，原表 0 元按实际 0 元统计。',heading,'fi-muted');
@@ -143,27 +164,28 @@
       if(globalThis.IncrementalDOM)IncrementalDOM.patch(content,next);else content.replaceChildren(...next.childNodes);
     }
     async function refresh({detailsOnly=false,quiet=false}={}){
+      if(disposed||!active())return;
       clearTimeout(timer);controller?.abort();const current=new AbortController();controller=current;
       const run=++sequence,key=JSON.stringify([scope.start,scope.end,scope.groupId,scope.shopId,scope.platform]);
       const partial=Boolean(detailsOnly&&data&&periodKey===key);
       content.setAttribute('aria-busy','true');loading.hidden=quiet;
       const timeout=setTimeout(()=>current.abort(new Error('明细读取超时，请点击刷新重试')),30000);
       try{
-        const q=Object.fromEntries(Object.entries(scope).filter(([,v])=>v!==''));if(partial)q.detailsOnly='true';
-        const incoming=await request('/label-costs?'+new URLSearchParams(q),{signal:current.signal});
-        if(disposed||run!==sequence||!root.isConnected)return;
+        const spec=requestSpec(scope,partial),leased=run===1&&!detailsOnly?options.initialLabelPrefetch?.take(spec.key,current.signal):null;
+        const incoming=await (leased||request(spec.path,{signal:current.signal}));
+        if(disposed||run!==sequence||!root.isConnected||!active())return;
         data=partial?{...data,...incoming}:incoming;if(!partial)periodKey=key;feedback.textContent='';draw();
         if(data.processing||data.files.some(f=>['QUEUED','PARSING','PREPARED','REMOVE_QUEUED'].includes(f.status)))
-          timer=setTimeout(()=>{if(root.isConnected&&!disposed)refresh({quiet:true}).catch(e=>{feedback.textContent=e.message;});else dispose();},3000);
+          timer=setTimeout(()=>{if(root.isConnected&&!disposed&&active())refresh({quiet:true}).catch(e=>{feedback.textContent=e.message;});else if(!root.isConnected)dispose();},3000);
       }catch(error){
-        if(disposed||run!==sequence)return;
+        if(disposed||run!==sequence||!active())return;
         if(root.isConnected)
-          timer=setTimeout(()=>{if(root.isConnected&&!disposed)refresh({quiet:true}).catch(e=>{feedback.textContent=e.message;});else dispose();},10000);
+          timer=setTimeout(()=>{if(root.isConnected&&!disposed&&active())refresh({quiet:true}).catch(e=>{feedback.textContent=e.message;});else if(!root.isConnected)dispose();},10000);
         throw current.signal.aborted?current.signal.reason:error;
       }finally{clearTimeout(timeout);if(run===sequence){content.setAttribute('aria-busy','false');loading.hidden=true;}}
     }
     draw();refresh().catch(e=>{feedback.textContent=e.message;});
     return {dispose,upload};
   }
-  globalThis.FinanceLabelCosts={mount,reset(){[...disposers].forEach(fn=>fn());document.querySelectorAll('.fl-dialog').forEach(n=>n.remove());}};
+  globalThis.FinanceLabelCosts={mount,prefetchInitial,initialRequest:options=>requestSpec(initialScope(options)),reset(){[...disposers].forEach(fn=>fn());document.querySelectorAll('.fl-dialog').forEach(n=>n.remove());}};
 })();
