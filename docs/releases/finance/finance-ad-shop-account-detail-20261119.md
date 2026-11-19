@@ -22,3 +22,7 @@
 - 广告消耗工作台和广告分析 DOM 回归通过。通过合成数据验证未同步账户、两项均未知、真实零值、已知部分、空状态以及跨店和币种隔离。
 - 线上核对菲律宾店和泰国店的原币明细。两店均保留真实零值行，三笔已对账的消耗金额与改动前一致。HTTPS 资源、财务查询鉴权及应用健康核对通过。本次前端变更无需重启或运行数据库集成测试。
 - 运维回执位于 `/opt/heyi/dev/operations/finance-ad-known-accounts-20261119.eh8pdjtt/verified.json` 和同目录的 `ui-verified.json`。
+
+## Shopee 净广告消耗缺省显示
+
+2026-11-19 更新广告分析界面。Shopee 净额的「接口未返回净消耗」显示为「-」。回归通过，覆盖真实零值、已知部分、汇率缺失和 TikTok 行。线上核对了 Shopee 净额卡片、分组表、店铺表及消耗明细表。共享服务器只更新前端源码，验收回执位于 `/opt/heyi/dev/operations/finance-shopee-net-placeholder-20261119.6czj_t64/`。

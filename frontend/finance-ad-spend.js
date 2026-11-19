@@ -7,9 +7,12 @@
   const states={PENDING:'待分配',PARTIAL:'余款待分配',CONFIRMED:'已核实分配',OFFICIAL:'来源已归店',REVIEW:'来源变化待复核',SOURCE_REVIEW:'账户来源待核实 · 未叠加'};
   const numeric=v=>v==null||v===''?'未提供':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:2});
   const moneyText=v=>v==null||v===''?'未提供':Number(v).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
-  function amount(row,key){
+  function amount(row,key,platform=row.platform){
     if(row[key]!=null)return moneyText(row[key]);
-    return Number(row['known_'+key])>0?moneyText(row['partial_'+key])+'（已知部分）':row['reason_'+key]||'未提供';
+    if(Number(row['known_'+key])>0)return moneyText(row['partial_'+key])+'（已知部分）';
+    const reason=row['reason_'+key];
+    if(platform==='SHOPEE'&&key==='net_amount'&&reason==='接口未返回净消耗')return '-';
+    return reason||'未提供';
   }
   function current(ctx,owner){if(!ctx.allowed()||ctx.company()!==owner)throw Error('当前登录公司或权限已变化，请重新打开此页面');}
   function shopAccountDetails(ctx,shop,owner){
@@ -37,10 +40,12 @@
     el('p',report.referenceDescription||'Shopee 账单参考金额 = 全店 CPC 日报消耗 − 已识别 GMS 同日消耗；不是原始扣款流水。缺失 GMS 的日期待补齐，不当作零扣减。',main,'fi-muted');
     const totals=el('div',null,main,'fi-ad-currency-groups');
     for(const total of report.totals||[]){
+      const platforms=new Set((report.groups||[]).filter(r=>r.currency===total.currency&&Number(r.records)>0).map(r=>r.platform));
+      const platform=ctx.filters.platform||(platforms.size===1?[...platforms][0]:undefined);
       const group=el('section',null,totals,'fi-ad-currency');group.dataset.adCurrency=total.currency;group.dataset.updateKey='ad-currency:'+total.currency;
       el('h2',total.currency+' · '+labels.amount,group,'fi-ad-currency-heading');
       const cards=el('div',null,group,'fi-metrics');
-      for(const k of [...displayAmounts,...(Number(total.reference_records)>0?['all_shop_amount','gms_amount']:[])]){const box=el('div',null,cards,'fi-metric');box.dataset.adAmount=k;el('span',labels[k],box,'fi-metric-label');el('strong',amount(total,k),box);el('small',total.currency,box);}
+      for(const k of [...displayAmounts,...(Number(total.reference_records)>0?['all_shop_amount','gms_amount']:[])]){const box=el('div',null,cards,'fi-metric');box.dataset.adAmount=k;el('span',labels[k],box,'fi-metric-label');el('strong',amount(total,k,platform),box);el('small',total.currency,box);}
     }
     if(!(report.totals||[]).length)el('p','当前范围没有已取得的投放消耗，不能解释为实际零消耗。',main,'fi-empty');
     if(report.overlapExcluded)el('p','已排除 '+numeric(report.overlapExcluded)+' 条重叠来源：同身份同日的 Shopee 官方店铺日来源优先；其他平台相同系列资金明细优先，账户汇总与系列明细不叠加。来源覆盖尚需核对，不能视为全量已完成对账。',main,'fi-muted');
