@@ -161,7 +161,7 @@
 | [video-brightness-20261020.md](video/video-brightness-20261020.md) | Natural Exposure and Fabric for Video Reference Images |
 | [structure-analysis-recovery-20260917.md](video/structure-analysis-recovery-20260917.md) | 结构识别临时故障恢复 |
 | [seedance-mini-20261027.md](video/seedance-mini-20261027.md) | Seedance 2.0 Mini release |
-| [general-video-text-only-20261119.md](video/general-video-text-only-20261119.md) | 通用生成纯文生视频本地验证 |
+| [general-video-text-only-20261119.md](video/general-video-text-only-20261119.md) | 通用生成纯文生视频上线记录 |
 | [production-retry-storage-fix-20260917.md](video/production-retry-storage-fix-20260917.md) | 线上重试失败修复（2026-09-17） |
 | [production-retry-image-audit-20260917.md](video/production-retry-image-audit-20260917.md) | 正式任务自动重试与图片加载核查（2026-09-17） |
 | [preview-pipeline-continuation-20260917.md](video/preview-pipeline-continuation-20260917.md) | 图片预览及视频恢复衔接修复 |
