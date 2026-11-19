@@ -230,6 +230,37 @@ public final class FinanceCostReport {
             +" LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=x.order_record_id"
             +FinanceLabelCosts.join("x.organization_id","x.shop_id","x.reference")+" GROUP BY x.shop_id",q.args().toArray());
     }
+    // Each variant repeats the same DISTINCT as the original settlement scope.
+    List<Map<String,Object>> settlementDayFacts(Scope scope,Filter filter){
+        var q=repo.query(scope,filter,"r");
+        return repo.aggregateWindows(filter,q,"r.record_date",1,part->repo.jdbc().queryForList("""
+            SELECT x.shop_id,x.record_date,x.filter_currency,
+            """+AGGREGATE+"""
+            FROM (
+                SELECT DISTINCT o.id order_record_id,r.organization_id,r.shop_id,r.order_id reference,r.record_date,
+                    CASE WHEN variants.by_currency=1 THEN r.currency ELSE '' END filter_currency
+                FROM finance_records r FORCE INDEX(idx_finance_company_kind_date)
+                LEFT JOIN finance_records o FORCE INDEX(idx_finance_settled_order)
+                  ON o.organization_id=r.organization_id AND o.shop_id=r.shop_id
+                  AND o.kind='ORDER' AND o.source='API' AND o.order_id=r.order_id
+                CROSS JOIN (SELECT 0 by_currency UNION ALL SELECT 1) variants
+                WHERE (variants.by_currency=0 OR r.currency<>'') AND
+                """+firstSettlement("r",false)+" AND "+part.where()+"""
+            ) x LEFT JOIN finance_order_costs c ON c.order_record_id=x.order_record_id
+            LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=x.order_record_id
+            """+FinanceLabelCosts.join("x.organization_id","x.shop_id","x.reference")
+                +" GROUP BY x.shop_id,x.record_date,x.filter_currency",part.args().toArray()));
+    }
+
+    List<Map<String,Object>> nativeSettlementRows(Scope scope,Filter filter){
+        var q=repo.query(scope,filter,"r");
+        return repo.aggregateWindows(filter,q,"r.record_date",1,part->summaryRows("SETTLEMENT",part));
+    }
+
+    Map<String,Object> settlementSummaryFromDays(Scope scope,List<Map<String,Object>> chunks){
+        return summarizeDays(scope,"SETTLEMENT",chunks);
+    }
+
     private Map<String,Object> summary(Scope scope,Filter filter,String selected,FinanceRepository.Query q){
         // These relations assign each deduplicated order to one first-settlement
         // day. Refund-occurrence and explicit-bill relations can span days and
@@ -240,15 +271,18 @@ public final class FinanceCostReport {
             // DISTINCT retains order identities, much wider than daily dashboard
             // buckets; one-day partitions keep its temporary tables bounded.
             var chunks=repo.aggregateWindows(filter,q,"r.record_date",1,part->summaryRows(selected,part));
-            var byShop=new LinkedHashMap<String,Map<String,Object>>();
-            for(var row:chunks){
-                var shop=byShop.computeIfAbsent(text(row.get("shop_id")),id->new LinkedHashMap<>(Map.of("shop_id",id)));
-                for(String field:COST_SUMS){var value=decimal(row.get(field));if(value!=null)shop.merge(field,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));else shop.putIfAbsent(field,null);}
-                var amount=decimal(row.get("amount_cny"));if(amount!=null)shop.merge("amount_cny",amount,(a,b)->((BigDecimal)a).add((BigDecimal)b));
-            }
-            byShop.values().forEach(row->{if(number(row.get("pending_count"))>0)row.put("amount_cny",null);});
-            return summary(scope,selected,new ArrayList<>(byShop.values()));
+            return summarizeDays(scope,selected,chunks);
         });
+    }
+    private Map<String,Object> summarizeDays(Scope scope,String selected,List<Map<String,Object>> chunks){
+        var byShop=new LinkedHashMap<String,Map<String,Object>>();
+        for(var row:chunks){
+            var shop=byShop.computeIfAbsent(text(row.get("shop_id")),id->new LinkedHashMap<>(Map.of("shop_id",id)));
+            for(String field:COST_SUMS){var value=decimal(row.get(field));if(value!=null)shop.merge(field,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));else shop.putIfAbsent(field,null);}
+            var amount=decimal(row.get("amount_cny"));if(amount!=null)shop.merge("amount_cny",amount,(a,b)->((BigDecimal)a).add((BigDecimal)b));
+        }
+        byShop.values().forEach(row->{if(number(row.get("pending_count"))>0)row.put("amount_cny",null);});
+        return summary(scope,selected,new ArrayList<>(byShop.values()));
     }
     private Map<String,Object> summary(Scope scope,String selected,List<Map<String,Object>> perShop){
         var total=new LinkedHashMap<String,Object>();

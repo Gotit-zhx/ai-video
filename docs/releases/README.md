@@ -8,6 +8,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [财务 BI 首次结算成本与店铺日期增量验收](finance/finance-bi-incremental-20261119.md) | 同口径成本投影、店铺日期修补、真实脱敏负载及九页结果 |
 | [财务 BI 投影追赶及大样本验收](finance/finance-bi-scale-20261119.md) | 持续写入、冷 Redis 五路并发、回退精确性与九页结果 |
 | [财务 BI 九页延迟基线与首轮改造验收](finance/finance-bi-latency-20261119.md) | 线上逐页样本、冷 Redis 并发复测和候选改造记录 |
 | [finance-workspace-performance-20261113.md](finance/finance-workspace-performance-20261113.md) | 财务专页后端分阶段生效、真实只读对照及尚未完成的前端/5秒验收 |

@@ -66,7 +66,9 @@ public class FinanceWorkspaceQueryService {
         var result=nativeOverviews.read(new OverviewRead(scope,filter,cny,fxSnapshot),()->{
             var all=nativeFilter(filter);
             projections.request(scope,all);
-            var facts=finance.buildNativeDashboardFacts(scope,all,false);
+            var repaired=projections.repairedLedger(scope,all,false);
+            var facts=repaired.map(FinanceQueryProjections.Snapshot::facts)
+                .orElseGet(()->finance.buildNativeDashboardFacts(scope,all,false));
             return finance.dashboardFromFacts(scope,filter,cny,fxSnapshot,false,facts);
         });
         return finance.withCalculations(scope,filter,result);
@@ -75,6 +77,8 @@ public class FinanceWorkspaceQueryService {
         Selection selected=validated(selection);
         Filter nativeFilter=nativeFilter(filter);
         var version=projections.version(scope,nativeFilter);
+        if(selected.view().equals("settlements")&&selected.kind().equals("SETTLEMENT")&&"READY".equals(version.get("status")))
+            projections.requestSettlementCosts(scope,nativeFilter);
         if(!selected.view().equals("ads")){
             // Leave most of the page budget for the exact native query.
             boolean quickFallback=selected.view().equals("settlements")||selected.interactivePage();
@@ -175,7 +179,9 @@ public class FinanceWorkspaceQueryService {
         // All mutable financial reads/counts share one MVCC snapshot. Public FX I/O
         // and its append-only public-rate snapshot writes happen after it closes.
         Prepared prepared=repo.readSnapshot(180,()->{
-            var snapshot=expectedRevision==null?null:projections.findForQuery(scope,nativeFilter(requested),primary).orElseThrow(ProjectionChanged::new);
+            var all=nativeFilter(requested);
+            var snapshot=expectedRevision!=null?projections.findForQuery(scope,all,primary).orElseThrow(ProjectionChanged::new)
+                :primary||selected.allOrders()?null:projections.repairedLedger(scope,all,true).orElse(null);
             if(expectedRevision!=null&&!snapshot.revision().equals(expectedRevision))throw new ProjectionChanged();
             boolean unsearched=FinanceRecordSearch.numbers(selected.numbers()).isEmpty();
             boolean reuseNativeCount=snapshot==null&&unsearched&&(
@@ -188,17 +194,17 @@ public class FinanceWorkspaceQueryService {
                     .map(row->text(row.get("currency"))).distinct().sorted().toList();
                 if(currency.isBlank()&&!selected.cny()&&!billCurrencies.isEmpty())currency=billCurrencies.getFirst();
             }
-            boolean pageOnly=snapshot==null&&selected.view().equals("reconciliation")&&selected.interactivePage()
+            boolean pageOnly=expectedRevision==null&&selected.view().equals("reconciliation")&&selected.interactivePage()
                 &&(selected.cny()||!currency.isBlank());
             var nativeCounts=new ArrayList<Map<String,Object>>();
             Map<String,Object> facts;
             if(primary||selected.allOrders())facts=Map.of();
-            else if(snapshot!=null)facts=snapshot.facts();
             else if(pageOnly){
-                var all=nativeFilter(requested);
-                facts=Map.of("orders",FinanceService.dailyFactRows(new FinanceCostReport(repo).dashboardFacts(scope,all)),
-                             "reportingMonths",new FinanceReportingMonths(repo).coverage(scope,all));
+                facts=snapshot!=null?Map.of("orders",snapshot.facts().get("orders"),"reportingMonths",snapshot.facts().get("reportingMonths"))
+                    :Map.of("orders",FinanceService.dailyFactRows(new FinanceCostReport(repo).dashboardFacts(scope,all)),
+                            "reportingMonths",new FinanceReportingMonths(repo).coverage(scope,all));
             }
+            else if(snapshot!=null)facts=snapshot.facts();
             else if(reuseNativeCount)facts=finance.buildNativeDashboardFacts(scope,nativeFilter(requested),false,nativeCounts);
             else facts=finance.buildNativeDashboardFacts(scope,nativeFilter(requested),false);
             if(!selected.view().equals("reconciliation")&&!primary&&!selected.allOrders()&&currency.isBlank()&&!selected.cny())currency=java.util.stream.Stream.concat(
@@ -216,8 +222,11 @@ public class FinanceWorkspaceQueryService {
             records.put("dateBasis",FinanceCalendar.contract());
             if(selected.view().equals("ads-support")&&selected.kind().equals("FEE"))records.put("advertisingOnly",true);
             if(!selected.allOrders()&&!selected.view().equals("ads-support")
-                    &&!"SETTLED_ORDER".equals(FinanceCostReport.scopeKind(selected.view().equals("reconciliation")?"RECONCILIATION":selected.kind(),false)))
-                records.put("productCosts",new FinanceCostReport(repo).summary(scope,filter,selected.kind()));
+                    &&!"SETTLED_ORDER".equals(FinanceCostReport.scopeKind(selected.view().equals("reconciliation")?"RECONCILIATION":selected.kind(),false))){
+                var projected=selected.view().equals("settlements")&&selected.kind().equals("SETTLEMENT")
+                    ?projections.settlementCosts(scope,filter):Optional.<Map<String,Object>>empty();
+                records.put("productCosts",projected.orElseGet(()->new FinanceCostReport(repo).summary(scope,filter,selected.kind())));
+            }
             if(selected.cny()&&selected.view().equals("reconciliation"))repo.reconciliationFxDays(scope,rows(records.get("items")));
             return new Prepared(snapshot,facts,Map.of(),filter,records,billCurrencies,pageOnly);
         });
@@ -255,8 +264,9 @@ public class FinanceWorkspaceQueryService {
             }
             out.put("records",records);if(selected.allOrders())out.put("orderScope","ALL");
         }
-        var model=new LinkedHashMap<String,Object>();model.put("status",snapshot==null?"PENDING":"READY");
-        model.put("revision",snapshot==null?"":snapshot.revision());model.put("generatedAt",snapshot==null?null:snapshot.generatedAt().toString());
+        boolean ready=snapshot!=null&&!snapshot.refreshing();
+        var model=new LinkedHashMap<String,Object>();model.put("status",ready?"READY":"PENDING");
+        model.put("revision",ready?snapshot.revision():"");model.put("generatedAt",ready?snapshot.generatedAt().toString():null);
         model.put("coverage","已入库数据；未同步、待补齐及未知金额不视为零");
         out.put("readModel",model);out.put("updatedAt",java.time.Instant.now().toString());return out;
     }

@@ -28,6 +28,140 @@ class FinanceProjectionBaselineIntegrationTest {
         fee("first","2026-10-01","11.123456");fee("other","2026-10-07","7");
         projections.request(f.owner,month);drain();
     }
+    @Test void projectedSettlementCostsPreserveCurrencyDeduplicationAndCrossMonthMoves(){
+        String first=settlement("old-php","order-cross","2026-10-02","PHP");
+        settlement("old-thb","order-cross","2026-10-02","THB");
+        settlement("duplicate","order-cross","2026-10-02","PHP");
+        settlement("later","order-cross","2026-10-14","PHP");
+        settlement("only-last","order-second","2026-10-29","PHP");
+        var september=new Filter(LocalDate.of(2026,9,1),LocalDate.of(2026,9,30),"","","","day");
+        projections.request(f.owner,september);
+        projections.request(f.owner,new Filter(month.start(),month.end(),"","SHOPEE","","day"));
+        drain();
+        for(int i=0;i<3;i++)assertTrue(projections.buildNext());
+
+        var report=new FinanceCostReport(f.repo);
+        for(var filter:List.of(month,new Filter(month.start(),month.end(),shop,"SHOPEE","PHP","day"),
+                new Filter(month.start(),month.end(),shop,"","THB","day"))){
+            var expected=report.summary(f.owner,filter,"SETTLEMENT");
+            var actual=projectedCosts(filter);
+            assertEquals(expected,actual);
+        }
+        assertEquals(2,number(map(projectedCosts(month).get("total")).get("order_count")));
+
+        // Replacing one of several ties changes the first day for every other
+        // transaction on that order, including its other currency.
+        f.db.update("UPDATE finance_records SET record_date='2026-09-30' WHERE id=?",first);
+        for(var filter:List.of(month,september))
+            assertEquals(report.summary(f.owner,filter,"SETTLEMENT"),projectedCosts(filter));
+        assertEquals(1,number(map(projectedCosts(month).get("total")).get("order_count")));
+        drain();
+        assertEquals(report.summary(f.owner,month,"SETTLEMENT"),projectedCosts(month));
+        assertEquals(report.summary(f.owner,september,"SETTLEMENT"),projectedCosts(september));
+        assertTrue(projections.buildNext());assertTrue(projections.buildNext());
+        assertEquals(report.summary(f.owner,month,"SETTLEMENT"),projectedCosts(month));
+        assertEquals(report.summary(f.owner,september,"SETTLEMENT"),projectedCosts(september));
+    }
+
+    @Test void settlementDayOneRespectsConfirmedMonthAndLegacyBaselineBackfill(){
+        f.db.update("UPDATE finance_connections SET platform='TIKTOK_SHOP' WHERE id=?",shop);
+        f.db.update("""
+            INSERT INTO finance_reporting_months
+              (organization_id,shop_id,order_id,statement_id,reporting_month,source,reason,confirmed_by)
+            VALUES(?,?, 'corrected-order','archive-statement','2026-10-01','TEST','fixture','qa')
+            """,f.owner.organizationId(),shop);
+        f.repo.save(f.owner,new Entry(shop,"TIKTOK_SHOP","SETTLEMENT","corrected","corrected-order","archive-statement",
+            "ORDER","SETTLED",LocalDate.of(2026,9,28),"PHP",decimal("23.187613"),null,null,null,null,"API",Map.of()));
+        f.repo.save(f.owner,new Entry(shop,"TIKTOK_SHOP","SETTLEMENT","ordinary","ordinary-order","ordinary-statement",
+            "ORDER","SETTLED",month.start(),"PHP",decimal("3.187613"),null,null,null,null,"API",Map.of()));
+        drain();assertTrue(projections.buildNext());
+        var stableLedger=payload();
+        f.db.update("UPDATE finance_query_partitions SET settlement_cost_revision=0");
+        f.db.update("DELETE FROM finance_query_settlement_cost_days");
+        assertTrue(f.repo.readSnapshot(()->projections.settlementCosts(f.owner,month)).isEmpty());
+
+        projections.requestSettlementCosts(f.owner,month);assertTrue(projections.buildNext());
+
+        assertEquals(stableLedger,payload(),"Legacy upgrade backfills only the missing settlement projection");
+        var partial=new Filter(month.start(),month.start().plusDays(10),"","","","day");
+        var costs=new FinanceCostReport(f.repo);
+        assertEquals(costs.summary(f.owner,month,"SETTLEMENT"),projectedCosts(month));
+        assertEquals(costs.summary(f.owner,partial,"SETTLEMENT"),projectedCosts(partial));
+        assertEquals(2,number(map(projectedCosts(month).get("total")).get("order_count")));
+        assertEquals(1,number(map(projectedCosts(partial).get("total")).get("order_count")));
+        assertTrue(f.repo.readSnapshot(()->projections.settlementCosts(f.other,month)).isEmpty());
+    }
+
+    @Test void unsettledCostJobAndLabelGenerationChangesAreResolvedInTheReadingSnapshot(){
+        var order=new Entry(shop,"SHOPEE","ORDER","historical-order","job-order","","","COMPLETED",
+            LocalDate.of(2026,9,15),"PHP",decimal("10.123456"),null,null,null,null,"API",Map.of());
+        f.repo.save(f.owner,order);
+        String record=FinanceData.id(f.owner,order);
+        settlement("cost-settlement","job-order","2026-10-07","PHP");
+        f.db.update("""
+            INSERT INTO finance_order_costs(order_record_id,organization_id,shop_id,order_id,record_date,
+                status,amount_cny,known_amount_cny,line_count,matched_lines,source_hash,data_json)
+            VALUES(?,?,?,'job-order','2026-09-15','READY',999999999999.123456,999999999999.123456,1,1,REPEAT('9',64),JSON_OBJECT())
+            """,record,f.owner.organizationId(),shop);
+        f.db.update("DELETE FROM finance_order_cost_jobs WHERE order_record_id=?",record);
+        drain();assertTrue(projections.buildNext());
+
+        var report=new FinanceCostReport(f.repo);
+        assertEquals(report.summary(f.owner,month,"SETTLEMENT"),projectedCosts(month));
+        assertEquals(decimal("999999999999.123456"),decimal(map(projectedCosts(month).get("total")).get("amount_cny")));
+
+        f.db.update("INSERT INTO finance_order_cost_jobs(order_record_id,organization_id,shop_id,priority) VALUES(?,?,?,1)",
+            record,f.owner.organizationId(),shop);
+        assertEquals(report.summary(f.owner,month,"SETTLEMENT"),projectedCosts(month));
+        assertNull(map(projectedCosts(month).get("total")).get("amount_cny"));
+        drain();assertTrue(projections.buildNext());
+        assertEquals(report.summary(f.owner,month,"SETTLEMENT"),projectedCosts(month));
+
+        f.db.update("INSERT INTO finance_label_state(organization_id,active_generation) VALUES(?, 'new-generation')",f.owner.organizationId());
+        assertTrue(f.repo.readSnapshot(()->projections.settlementCosts(f.owner,month)).isEmpty(),"A full label generation invalidation requires exact native fallback");
+    }
+
+    @Test void repairedLedgerMatchesNativeDuringAndAfterEventDrain(){
+        assertTrue(projections.buildNext());
+        change("other","18.123456");
+        fee("new","2026-10-08","7.654321");
+        assertHidden();
+        for(boolean drained:List.of(false,true)){
+            if(drained)drain();
+            var read=projections.repairedLedger(f.owner,month,true).orElseThrow();
+            assertTrue(read.refreshing());
+            assertEquals(canonical(f.service.buildNativeDashboardFacts(f.owner,month,false)),canonical(read.facts()));
+            long fees=read.rawCounts().stream().filter(row->"FEE".equals(row.get("kind")))
+                .mapToLong(row->number(row.get("records"))).sum();
+            assertEquals(3,fees);
+        }
+    }
+
+    @Test void feeChangesIdentifyOnlyTheirShopAndDateAndLeaveSettlementDaysIntact(){
+        settlement("first-settlement","settlement-order","2026-10-07","PHP");
+        drain();assertTrue(projections.buildNext());
+        var costs=f.db.queryForList("SELECT * FROM finance_query_settlement_cost_days ORDER BY record_date,shop_id,filter_currency");
+        assertFalse(costs.isEmpty());
+        change("other","20");drain();
+        var dirty=f.db.queryForMap("SELECT shop_id,record_date,cost_revision FROM finance_query_dirty_shop_days");
+        assertEquals(shop,dirty.get("shop_id"));
+        assertEquals("2026-10-07",text(dirty.get("record_date")));
+        assertEquals(0,number(dirty.get("cost_revision")));
+        assertTrue(projections.buildNext());
+        assertEquals(costs,f.db.queryForList("SELECT * FROM finance_query_settlement_cost_days ORDER BY record_date,shop_id,filter_currency"));
+    }
+
+    private Map<String,Object> projectedCosts(Filter filter){
+        return f.repo.readSnapshot(()->projections.settlementCosts(f.owner,filter)).orElseThrow();
+    }
+
+    private String settlement(String id,String order,String day,String currency){
+        var entry=new Entry(shop,"SHOPEE","SETTLEMENT",id,order,"","ORDER","SETTLED",
+            LocalDate.parse(day),currency,decimal("16.124321"),null,null,null,null,"API",Map.of());
+        f.repo.save(f.owner,entry);
+        return FinanceData.id(f.owner,entry);
+    }
+
     @Test void adjacentUpdatesPreserveTheCleanPartialFirstDayBody(){
         assertTrue(projections.buildNext());
         String first=f.db.queryForObject("SELECT partial_first_day_json FROM finance_query_partitions",String.class);

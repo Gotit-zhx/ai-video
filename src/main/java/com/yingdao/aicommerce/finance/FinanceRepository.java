@@ -22,7 +22,7 @@ public class FinanceRepository {
     private final JdbcTemplate db; private final ObjectMapper json;
     private final ThreadLocal<Map<Query,Long>> pageCounts=new ThreadLocal<>();
     private final ThreadLocal<Long> authoritativePageTotal=new ThreadLocal<>();
-    private record ProjectionWindow(Filter semanticMonth,java.time.LocalDate start,java.time.LocalDate end) {}
+    private record ProjectionWindow(Filter semanticMonth,java.time.LocalDate start,java.time.LocalDate end,List<String> shops) {}
     private final ThreadLocal<ProjectionWindow> projectionWindow=new ThreadLocal<>();
     public FinanceRepository(JdbcTemplate db,ObjectMapper json){this.db=db;this.json=json;}
     public JdbcTemplate jdbc(){return db;}
@@ -289,9 +289,13 @@ public class FinanceRepository {
         return inProjectionWindow(semanticMonth,scanDay,scanDay,action);
     }
     <T>T inProjectionWindow(Filter semanticMonth,java.time.LocalDate start,java.time.LocalDate end,java.util.function.Supplier<T> action){
+        return inProjectionWindow(semanticMonth,start,end,List.of(),action);
+    }
+    <T>T inProjectionWindow(Filter semanticMonth,java.time.LocalDate start,java.time.LocalDate end,
+                            Collection<String> shops,java.util.function.Supplier<T> action){
         if(start.isBefore(semanticMonth.start())||end.isAfter(semanticMonth.end())||start.isAfter(end))
             throw new IllegalArgumentException("Projection window is outside its semantic period");
-        var previous=projectionWindow.get();projectionWindow.set(new ProjectionWindow(semanticMonth,start,end));
+        var previous=projectionWindow.get();projectionWindow.set(new ProjectionWindow(semanticMonth,start,end,List.copyOf(shops)));
         try{return action.get();}
         finally{if(previous==null)projectionWindow.remove();else projectionWindow.set(previous);}
     }
@@ -329,6 +333,10 @@ public class FinanceRepository {
         if(dates&&window!=null&&window.semanticMonth().equals(f)){
             w+=" AND "+p+"record_date>=? AND "+p+"record_date<=?";
             a.add(Date.valueOf(window.start()));a.add(Date.valueOf(window.end()));
+            if(!window.shops().isEmpty()){
+                w+=" AND "+p+"shop_id IN ("+String.join(",",Collections.nCopies(window.shops().size(),"?"))+")";
+                a.addAll(window.shops());
+            }
         }
         return reporting?FinanceReportingMonths.constrain(s,new Query(w,a),f,alias):new Query(w,a);
     }
@@ -360,6 +368,12 @@ public class FinanceRepository {
         // Keep every partition, raw count and marketing exclusion in the same MVCC snapshot.
         return readSnapshot(180,()->readDashboardBuckets(s,f,includeCreatedOrders,advertising,rawPageCounts));
     }
+    String dashboardIndex(Filter filter){
+        var window=projectionWindow.get();
+        boolean narrowShopWindow=window!=null&&window.semanticMonth().equals(filter)
+            &&!window.shops().isEmpty()&&window.shops().size()<=4;
+        return filter.shopId().isBlank()&&!narrowShopWindow?"idx_finance_company_dashboard":"idx_finance_shop_dashboard";
+    }
     private List<Map<String,Object>> readDashboardBuckets(Scope s,Filter f,boolean includeCreatedOrders,List<Map<String,Object>> advertising,
                                                           List<Map<String,Object>> rawPageCounts){
         Query q=query(s,f);
@@ -371,7 +385,7 @@ public class FinanceRepository {
               COUNT(impressions) known_impressions,COUNT(clicks) known_clicks,COUNT(conversions) known_conversions,SUM(amount) amount,
               SUM(revenue) revenue,SUM(impressions) impressions,SUM(clicks) clicks,SUM(conversions) conversions
             FROM finance_records FORCE INDEX (
-            """+(f.shopId().isBlank()?"idx_finance_company_dashboard":"idx_finance_shop_dashboard")+") WHERE "
+            """+dashboardIndex(f)+") WHERE "
                 +range.where+" AND NOT(kind='BILL' AND source='IMPORT')"
                 +(includeCreatedOrders?"":" AND kind NOT IN ('ORDER','REFUND')")
                 +" GROUP BY shop_id,record_date,kind,currency,"
