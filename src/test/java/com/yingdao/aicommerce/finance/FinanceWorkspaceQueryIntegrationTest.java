@@ -160,8 +160,27 @@ class FinanceWorkspaceQueryIntegrationTest {
         assertEquals("PENDING",map(result.get("readModel")).get("status"));
     }
 
+    private void shopeeGmsDaily(int... days) {
+        String org = fixture.owner.organizationId();
+        String revision = hash("workspace-test-gms");
+        fixture.db.update("""
+            INSERT INTO finance_shopee_ad_grants(organization_id,external_shop_id,user_id,partner_id,token_group_id,
+                name,currency,timezone,authorization_subject_type,authorization_subject_id,access_token_encrypted)
+            VALUES(?,'10001',?,'test-partner','test-group','Test shop','PHP','Asia/Manila','SHOP','10001','test-token')
+            """, org, fixture.owner.userId());
+        fixture.db.update("""
+            INSERT INTO finance_shopee_gms_sync(organization_id,external_shop_id,campaign_ids_json,campaign_revision,status)
+            VALUES(?,'10001',JSON_ARRAY('test-campaign'),?,'SUCCESS')
+            """, org, revision);
+        for (int day : days) fixture.db.update("""
+            INSERT INTO finance_shopee_gms_daily(organization_id,external_shop_id,record_date,currency,amount,campaign_revision,source_json)
+            VALUES(?,'10001',?,'PHP',1,?,'{}')
+            """, org, LocalDate.of(2026, 10, day), revision);
+    }
+
     @Test void pendingAdvertisingPrimaryReturnsTheExactNativePeriodWithoutWaitingForTheGlobalProjection(){
-        fixture.db.update("INSERT INTO finance_shopee_ad_daily(organization_id,external_shop_id,source_key,record_date,currency,amount,source_json) VALUES(?,'10001',?,'2026-10-03','PHP',7,'{}'),(?,'10001',?,'2026-10-31','PHP',9,'{}')",
+        shopeeGmsDaily(3,31);
+        fixture.db.update("INSERT INTO finance_shopee_ad_daily(organization_id,external_shop_id,source_key,record_date,currency,amount,source_json) VALUES(?,'10001',?,'2026-10-03','PHP',8,'{}'),(?,'10001',?,'2026-10-31','PHP',10,'{}')",
             fixture.owner.organizationId(),hash("pending-ad-early"),fixture.owner.organizationId(),hash("pending-ad-late"));
         projections.request(fixture.owner,month);
         assertEquals("PENDING",projections.version(fixture.owner,month).get("status"));
@@ -349,7 +368,8 @@ class FinanceWorkspaceQueryIntegrationTest {
     }
     @Test void advertisingColdPageDoesNotReadUnrelatedDashboardPayloads(){
         fee("unrelated-ledger","PHP");
-        fixture.db.update("INSERT INTO finance_shopee_ad_daily(organization_id,external_shop_id,source_key,record_date,currency,amount,source_json) VALUES(?,'10001',?,'2026-10-03','PHP',9,'{}')",fixture.owner.organizationId(),hash("cold-ad-source"));
+        shopeeGmsDaily(3);
+        fixture.db.update("INSERT INTO finance_shopee_ad_daily(organization_id,external_shop_id,source_key,record_date,currency,amount,source_json) VALUES(?,'10001',?,'2026-10-03','PHP',10,'{}')",fixture.owner.organizationId(),hash("cold-ad-source"));
         build();
         var result=budgetedWorkspace(false,true).query(fixture.owner,fixture.owner,month,select("ads","AD",false,1,""));
         assertEquals("READY",map(result.get("readModel")).get("status"));
