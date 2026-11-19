@@ -36,9 +36,9 @@ class FlywayProductionChainMySqlTest {
                 """);
 
         var candidate = Flyway.configure().dataSource(dataSource).load();
-        assertEquals(4, candidate.migrate().migrationsExecuted);
+        assertEquals(5, candidate.migrate().migrationsExecuted);
         assertTrue(candidate.validateWithResult().validationSuccessful);
-        assertEquals("164", candidate.info().current().getVersion().getVersion());
+        assertEquals("165", candidate.info().current().getVersion().getVersion());
         var historyAfter = history(jdbc);
         assertEquals(historyBefore, historyAfter.subList(0, historyBefore.size()));
         assertEquals("retained template", jdbc.queryForObject(
