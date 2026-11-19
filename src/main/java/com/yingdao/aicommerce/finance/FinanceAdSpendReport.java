@@ -112,6 +112,7 @@ final class FinanceAdSpendReport {
         var groupRows=summaries(prepared,"platform","group_id","group_name","currency");
         for(var store:storeRows)if(groupRows.stream().noneMatch(g->g.get("platform").equals(store.get("platform"))&&g.get("group_id").equals(store.get("group_id")))){var empty=new LinkedHashMap<>(store);empty.remove("shop_id");empty.remove("shop_name");empty.put("shop_count",0);groupRows.add(empty);}
         var result=new LinkedHashMap<String,Object>();result.put("totals",summaries(prepared,"currency"));result.put("groups",groupRows);result.put("shops",storeRows);result.put("overlapExcluded",excluded);result.put("overlapUnresolved",unresolved);
+        result.put("shopAccounts",shopAccountSummaries(prepared));
         result.put("referenceBasis",FinanceShopeeGmsApi.BASIS);result.put("referenceDescription",FinanceShopeeGmsApi.DESCRIPTION);
         var needle=text(search).trim().toLowerCase(Locale.ROOT);
         result.put("items",prepared.stream().filter(r->(status==null||status.isBlank()||status.equals("PENDING")?status==null||status.isBlank()||"UNASSIGNED".equals(r.get("shop_id"))||"SOURCE_REVIEW".equals(r.get("assignment_status")):status.equals(r.get("assignment_status")))&&(needle.isBlank()||List.of("campaign_id","campaign_name","account_id","account_name","shop_name").stream().anyMatch(k->text(r.get(k)).toLowerCase(Locale.ROOT).contains(needle)))).toList());
@@ -131,11 +132,29 @@ final class FinanceAdSpendReport {
         result.put("scopeRecords",prepared.size());return result;
     }
     static List<String> accountMoney(Map<String,Object> row){var keys=new ArrayList<>(FinanceAdFunding.AMOUNTS);if(row.containsKey("tax_amount"))keys.add("tax_amount");return keys;}
+    private static List<Map<String,Object>> shopAccountSummaries(List<Map<String,Object>> prepared) {
+        var rows = new ArrayList<Map<String,Object>>();
+        var names = new HashMap<String,String>();
+        for (var row : prepared) {
+            String account = text(row.get("account_id"));
+            if (!"TIKTOK_SHOP".equals(row.get("platform")) || "UNASSIGNED".equals(row.get("shop_id"))
+                    || account.isBlank() || account.startsWith("manual:")) continue;
+            rows.add(row);
+            String name = text(row.get("account_name"));
+            if (!name.isBlank()) names.putIfAbsent(account, name);
+        }
+        var result = summaries(rows, List.of("amount", "net_amount"), "shop_id", "account_id", "currency");
+        for (var row : result) row.put("account_name", names.getOrDefault(row.get("account_id"), ""));
+        return result;
+    }
     static List<Map<String,Object>> summaries(List<Map<String,Object>> rows,String...keys){
+        return summaries(rows, FinanceAdFunding.AMOUNTS, keys);
+    }
+    private static List<Map<String,Object>> summaries(List<Map<String,Object>> rows,List<String> moneyFields,String...keys){
         var groups=new LinkedHashMap<List<String>,List<Map<String,Object>>>();for(var r:rows)groups.computeIfAbsent(Arrays.stream(keys).map(k->text(r.get(k))).toList(),k->new ArrayList<>()).add(r);
         var result=new ArrayList<Map<String,Object>>();groups.forEach((key,items)->{
             var r=new LinkedHashMap<String,Object>();for(int i=0;i<keys.length;i++)r.put(keys[i],key.get(i));r.put("records",items.size());r.put("shop_count",items.stream().map(x->text(x.get("shop_id"))).filter(x->!x.equals("UNASSIGNED")).distinct().count());r.put("pending_records",items.stream().filter(x->"UNASSIGNED".equals(x.get("shop_id"))||"IDENTITY_REQUIRED".equals(x.get("overlap_status"))).count());r.put("source_review_records",items.stream().filter(x->"IDENTITY_REQUIRED".equals(x.get("overlap_status"))).count());
-            var fields=new ArrayList<>(FinanceAdFunding.AMOUNTS);if(items.stream().anyMatch(x->x.containsKey("tax_amount")))fields.add("tax_amount");
+            var fields=new ArrayList<>(moneyFields);if(items.stream().anyMatch(x->x.containsKey("tax_amount")))fields.add("tax_amount");
             for(String k:fields){long count=items.stream().filter(x->x.get(k)!=null&&!"IDENTITY_REQUIRED".equals(x.get("overlap_status"))).count();var sum=items.stream().filter(x->!"IDENTITY_REQUIRED".equals(x.get("overlap_status"))).map(x->decimal(x.get(k))).filter(Objects::nonNull).reduce(BigDecimal.ZERO,BigDecimal::add);r.put("known_"+k,count);r.put(k,count==items.size()?sum:null);r.put("partial_"+k,sum);
                 if(count<items.size()){var reasons=items.stream().filter(x->x.get(k)==null).map(x->text(x.get("reason_"+k))).filter(x->!x.isBlank()).distinct().toList();r.put("reason_"+k,reasons.size()==1?reasons.getFirst():"来源未完整提供");}}
             var reference=items.stream().filter(x->FinanceShopeeGmsApi.BASIS.equals(x.get("reference_basis"))).toList();r.put("reference_records",(long)reference.size());

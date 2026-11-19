@@ -145,8 +145,8 @@ class FinanceShopeeGmsIntegrationTest {
             for(var entry=zip.getNextEntry();entry!=null;entry=zip.getNextEntry())if(entry.getName().matches("xl/worksheets/sheet[123]\\.xml")){
                 var doc=javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(new java.io.ByteArrayInputStream(zip.readAllBytes()));
                 var cells=((org.w3c.dom.Element)doc.getElementsByTagName("row").item(1)).getElementsByTagName("c");
-                int amount=entry.getName().endsWith("sheet1.xml")?6:entry.getName().endsWith("sheet2.xml")?7:18;
-                int gms=entry.getName().endsWith("sheet1.xml")?10:entry.getName().endsWith("sheet2.xml")?11:30;
+                int amount=entry.getName().endsWith("sheet1.xml")?3:entry.getName().endsWith("sheet2.xml")?4:12;
+                int gms=entry.getName().endsWith("sheet1.xml")?7:entry.getName().endsWith("sheet2.xml")?8:24;
                 assertEquals(0,new BigDecimal("100").compareTo(new BigDecimal(cells.item(amount).getTextContent())));
                 assertEquals(0,new BigDecimal(cells.item(gms).getTextContent()).signum());checked++;
             }

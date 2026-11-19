@@ -8,7 +8,10 @@
 
 | 文档 | 内容 |
 | --- | --- |
-| [财务 BI 10 月全平台上线跟进](finance/finance-bi-followup-20261119.md) | 全平台投影水位、九页生产复测及后续回退优化 |
+| [财务 BI 全月写入下的回退查询](finance/finance-bi-indexed-fallback-20261119.md) | 店铺与业务日索引、订单精确计数与九页真实脱敏写入复测 |
+| [TikTok 店铺广告账户明细](finance/finance-ad-shop-account-detail-20261119.md) | 店铺内按账户核对已归属消耗及生产界面验收 |
+| [订单成本筛选](finance/order-cost-filters-20261114.md) | 全部分组和店铺、查询与导出范围及生产验证 |
+| [财务 BI 10 月全平台上线跟进](finance/finance-bi-followup-20261119.md) | 全平台投影水位、V165 上线、九页生产复测及隔离压测 |
 | [财务 BI 查询优化生产上线](finance/finance-bi-production-20261119.md) | V161–V164 生效、历史分区构建进度及九页线上冒烟 |
 | [财务 BI 首次结算成本与店铺日期增量验收](finance/finance-bi-incremental-20261119.md) | 同口径成本投影、店铺日期修补、真实脱敏负载及九页结果 |
 | [财务 BI 投影追赶及大样本验收](finance/finance-bi-scale-20261119.md) | 持续写入、冷 Redis 五路并发、回退精确性与九页结果 |

@@ -7,6 +7,7 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 /** A single, scope-consistent response for each financial workspace. */
 @Service
 public class FinanceWorkspaceQueryService {
+    private static final String AD_SPEND_CACHE_FORMAT="shop-account-details-v1";
     private static final long PENDING_WAIT_NANOS=java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
     private static final long INTERACTIVE_PENDING_WAIT_NANOS=java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(250);
     private static final long PENDING_POLL_NANOS=java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(100);
@@ -65,7 +66,7 @@ public class FinanceWorkspaceQueryService {
     private Map<String,Object> nativeOverview(Scope scope,Filter filter,boolean cny,String fxSnapshot){
         var result=nativeOverviews.read(new OverviewRead(scope,filter,cny,fxSnapshot),()->{
             var all=nativeFilter(filter);
-            projections.request(scope,all);
+            projections.requestMissing(scope,all);
             var repaired=projections.repairedLedger(scope,all,false);
             var facts=repaired.map(FinanceQueryProjections.Snapshot::facts)
                 .orElseGet(()->finance.buildNativeDashboardFacts(scope,all,false));
@@ -79,9 +80,9 @@ public class FinanceWorkspaceQueryService {
         var version=projections.version(scope,nativeFilter);
         if(selected.view().equals("settlements")&&selected.kind().equals("SETTLEMENT")&&"READY".equals(version.get("status")))
             projections.requestSettlementCosts(scope,nativeFilter);
-        if(!selected.view().equals("ads")){
+        if(!selected.view().equals("ads")&&!selected.allOrders()){
             // Leave most of the page budget for the exact native query.
-            boolean quickFallback=selected.view().equals("settlements")||selected.interactivePage()||selected.allOrders();
+            boolean quickFallback=selected.view().equals("settlements")||selected.interactivePage();
             long waitBudget=quickFallback?INTERACTIVE_PENDING_WAIT_NANOS:PENDING_WAIT_NANOS;
             version=awaitProjection(scope,nativeFilter,version,waitBudget);
         }
@@ -167,7 +168,7 @@ public class FinanceWorkspaceQueryService {
     private Map<String,Object> fallback(Scope scope,Filter f,Selection selected){
         return nativeWorkspace.read(new WorkspaceRead(scope,f,selected),()->{
             // Enqueue outside the read-only snapshot; failures never publish fake empty facts.
-            projections.request(scope,nativeFilter(f));
+            projections.requestMissing(scope,nativeFilter(f));
             return build(scope,f,selected,null);
         });
     }
@@ -190,7 +191,7 @@ public class FinanceWorkspaceQueryService {
             // Advertising support needs category-specific raw facets, so it
             // retains the independent count query.
             String countKind=selected.view().equals("ads-support")?"":selected.kind();
-            var snapshot=expectedRevision!=null?projections.findForQuery(scope,all,primary).orElseThrow(ProjectionChanged::new)
+            var snapshot=expectedRevision!=null?(selected.allOrders()?projections.findForOrderCounts(scope,all):projections.findForQuery(scope,all,primary)).orElseThrow(ProjectionChanged::new)
                 :primary||selected.allOrders()?null:projections.repairedLedgerForPage(scope,all,countKind,pageOnly).orElse(null);
             if(expectedRevision!=null&&!snapshot.revision().equals(expectedRevision))throw new ProjectionChanged();
             boolean unsearched=FinanceRecordSearch.numbers(selected.numbers()).isEmpty();
@@ -256,7 +257,7 @@ public class FinanceWorkspaceQueryService {
             // Reuse the existing bounded/compressed fact cache; page changes only slice
             // its immutable result. A published revision or selection picks a new key.
             var periodKey=new FinanceSnapshotCache.Key(companyScope(scope.organizationId()),requested,selected.cny(),
-                "workspace-spend:"+hash(repo.write(List.of(snapshot==null?"":snapshot.revision(),selected.fxSnapshot(),selected.search(),selected.assignment()))),false);
+                "workspace-spend:"+AD_SPEND_CACHE_FORMAT+":"+hash(repo.write(List.of(snapshot==null?"":snapshot.revision(),selected.fxSnapshot(),selected.search(),selected.assignment()))),false);
             var report=new LinkedHashMap<>(cache!=null&&snapshot!=null?cache.facts(periodKey,calculate):calculate.get());
             for(String stamp:List.of("_financeDataRevision","_financeFactsBuilt"))if(report.containsKey(stamp))out.put(stamp,report.remove(stamp));
             var items=rows(report.get("items"));int offset=(int)Math.min(items.size(),(selected.spendPage()-1L)*50);
@@ -310,7 +311,7 @@ public class FinanceWorkspaceQueryService {
         &&currency.charAt(1)>='A'&&currency.charAt(1)<='Z'&&currency.charAt(2)>='A'&&currency.charAt(2)<='Z';}
     private static Filter nativeFilter(Filter f){return new Filter(f.start(),f.end(),f.shopId(),f.platform(),"",f.granularity(),f.groupId());}
     private String selectionKey(Selection s){
-        return s.view().equals("ads")?repo.write(List.of(s.spendPage(),s.search(),s.assignment())):
+        return s.view().equals("ads")?repo.write(List.of(AD_SPEND_CACHE_FORMAT,s.spendPage(),s.search(),s.assignment())):
             repo.write(List.of(s.kind(),s.allOrders(),s.page(),s.spendPage(),s.numbers(),s.search(),s.assignment()));
     }
     private static Selection validated(Selection s){

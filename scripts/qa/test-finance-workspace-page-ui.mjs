@@ -27,6 +27,7 @@ const btn=text=>[...d.querySelectorAll('button')].find(n=>n.textContent.trim()==
 try{
   w.FinanceWorkspace.enter('fees');await ready();
   assert.equal(reads.length,1);assert.equal(reads[0].pathname,'/api/v1/finance/workspace/query');
+  assert.equal(reads[0].searchParams.get('interactivePage'),'true','fees use the bounded interactive projection wait');
   assert(d.querySelector('tbody tr'),'fee rows appear from the same response as the summary');
   assert(d.body.textContent.includes('结算金额计算中'));assert(d.body.textContent.includes('商品成本计算中'));
   const draft=d.querySelector('.fi-number-search textarea');draft.value='unsent user draft';

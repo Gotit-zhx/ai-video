@@ -271,7 +271,7 @@
   function navigate(route){location.hash='finance-'+route;}
   function cleanup(){qianyiCleanup?.();qianyiCleanup=null;mountedSelection='';root.classList.remove('fi-selection-pending');clearInterval(clockTimer);clockTimer=null;charts.forEach(c=>c.dispose());charts=[];observer?.disconnect();themeObserver?.disconnect();observer=themeObserver=null;mountedView='';}
   function reset(){shopeeEpoch++;adSupportExpanded=false;adSpendSearch='';adSpendAssignment='';adSpendPage=1;shopMonthFilter='ALL';shopSearch='';qianyiSelection={};orderScope='ALL';active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();resetMarketFx();resetCostExports();globalThis.FinanceFeeExports?.reset();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();numberQueries={};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
-  function leave(){shopeeEpoch++;document.querySelectorAll('[data-shopee-authorization]').forEach(d=>d.remove());active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();stopMarketFx();leaveCostExports();}
+  function leave(){shopeeEpoch++;document.querySelectorAll('[data-shopee-authorization], [data-ad-shop-accounts]').forEach(d=>d.remove());active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();stopMarketFx();leaveCostExports();}
   async function refreshWhenIdle(){
     if(!active)return;
     if(document.hidden||document.querySelector('.fi-dialog[open]')){refreshTimer=setTimeout(refreshWhenIdle,15000);return;}
@@ -1047,7 +1047,7 @@
       return [account.name+' · '+account.advertiser_id,adOwnership(account),account.currency,adSyncStatus(account),account.last_success_at?new Date(account.last_success_at).toLocaleString('zh-CN',{timeZone:displayZone}):'尚未完成',controls];
     }),accounts.length?'当前分组没有广告账户。':'尚未连接广告账户。复制广告授权链接，由账户管理员打开并授权，数据将在「广告分析」展示。',displayed.map(a=>a.advertiser_id));
   }
-  function adSpendContext(){const epoch=shopeeEpoch;return {isActive:()=>active&&epoch===shopeeEpoch,el,card,table,button,dialog,field,select,request,json,notify,allowed,canManage,platformBadge,authorizationLink,shopeeAds:data?.adSpend?.shopeeAds,
+  function adSpendContext(){const epoch=shopeeEpoch;return {isActive:()=>active&&epoch===shopeeEpoch,el,card,table,button,dialog,field,select,request,json,notify,allowed,canManage,platformBadge,adStoreIds,authorizationLink,shopeeAds:data?.adSpend?.shopeeAds,
     company:()=>typeof currentUser==='undefined'?null:currentUser?.organizationId,shops:data?.shops||[],accounts:data?.adAccounts||[],fundingAccounts:(data?.adAccounts||[]).filter(a=>adAccountInScope(a)||(data?.adSpend?.accountFunding||[]).some(r=>r.account_id===a.advertiser_id)),filters:{...filters},report:data?.adSpend,search:adSpendSearch,assignment:adSpendAssignment,reload:()=>load(),selectFilters,
     query:(search,status)=>{adSpendSearch=search.trim();adSpendAssignment=status;adSpendPage=1;return load();},page:delta=>{adSpendPage+=delta;return load();}};}
   function adsView(parent,records){
@@ -1593,7 +1593,7 @@
         activeLoadKey=selectionKey();
         const kind=selectedKind;
         const response=await read(view==='overview'?'/overview?'+query():
-          '/workspace/query?'+query({view:view==='ads'&&!window.FinanceAdSpend?'ads-support':view,kind,page:selectedPage,numbers,orderScope,...(view==='fee-records'?{interactivePage:true}:{}),...(view==='ads'?{search:spendSelection.search,assignment:spendSelection.assignment,spendPage:spendSelection.page}:{})})).catch(async error=>{
+          '/workspace/query?'+query({view:view==='ads'&&!window.FinanceAdSpend?'ads-support':view,kind,page:selectedPage,numbers,orderScope,...(view==='fees'||view==='fee-records'?{interactivePage:true}:{}),...(view==='ads'?{search:spendSelection.search,assignment:spendSelection.assignment,spendPage:spendSelection.page}:{})})).catch(async error=>{
             if(view!=='ads'||!window.FinanceAdSpend||signal.aborted)throw error;
             const [shops,accounts]=await Promise.all([read('/shops'),read('/ads').catch(()=>[])]);
             return {shops:shops.items,groups:shops.groups||[],sync:[],currencies:[],filters:{...selection},adAccounts:accounts,adSpendError:true};

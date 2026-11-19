@@ -6,6 +6,7 @@ const dom=new JSDOM('<main id="finance-page"></main>',{url:'https://example.test
 const w=dom.window,d=w.document,root=d.querySelector('main'),fixture=createAdvertisingFixture(),writes=[],reads=[];
 fixture.shops[1].external_shop_id='SHOP_123';
 fixture.shops[0].external_shop_id='700001';
+fixture.accounts.push({advertiser_id:'100002',name:'已关联待同步账户',currency:'CNY',stores:[{active:true,match_status:'MATCHED',shop_id:'a'}]});
 w.currentUser={organizationId:'qa',userId:'reader',permissions:['finance:view']};w.matchMedia=()=>({matches:false});w.ResizeObserver=class{observe(){}disconnect(){}};
 w.echarts={init:()=>({setOption(){},resize(){},dispose(){}})};w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
 const summary={platform:'TIKTOK_SHOP',group_id:'baby',group_name:'母婴组',currency:'CNY',amount:10,cash_amount:0,credit_amount:9,grant_amount:1,records:2,shop_count:1,pending_records:1,net_amount:9};
@@ -13,6 +14,13 @@ const spend={totals:[summary],groups:[summary,{...summary,platform:'SHOPEE',grou
 spend.items[0].official_store_ids=['700001','700002'];
 spend.items[0].metadata_status='NEEDS_AUTHORIZATION';spend.items[0].metadata_error='系列资料读取被拒绝（错误码 40001）';
 spend.items[0].metadata_endpoint='/campaign/get/; /adgroup/get/';spend.items[0].campaign_objective='PRODUCT_SALES';
+spend.shops.push({...summary,shop_id:'UNASSIGNED',shop_name:'待分配店铺'});
+spend.shopAccounts=[
+ {shop_id:'a',account_id:'100001',currency:'CNY',amount:7,net_amount:0},
+ {shop_id:'a',account_id:'100003',account_name:'历史投放账户',currency:'CNY',amount:3,net_amount:null,known_net_amount:1,partial_net_amount:2},
+ {shop_id:'other',account_id:'100001',currency:'CNY',amount:99,net_amount:99},
+ {shop_id:'a',account_id:'100001',currency:'USD',amount:80,net_amount:70}
+];
 let failSpend=false,resumeHeld;
 w.api=async(path,options={})=>{const u=new URL(path,'https://example.test'),q=Object.fromEntries(u.searchParams),endpoint=u.pathname.replace('/api/v1/finance','');reads.push({endpoint,q});
  if(options.method&&options.method!=='GET')writes.push({endpoint,options});
@@ -41,10 +49,26 @@ try{
  assert(main.querySelector('[data-ad-metadata-status]')?.textContent.includes('授权'),'new permissions still require merchant authorization');
  assert(main.textContent.includes('PRODUCT_SALES'),'documented objective stays visible without inventing a financial type');
  assert.deepEqual([...main.querySelectorAll('h3')].map(n=>n.textContent),['分组广告消耗','店铺广告消耗','店铺消耗明细']);
- for(const t of main.querySelectorAll('table'))for(const label of ['现金消耗','信用额度消耗','广告费用赠款消耗'])assert([...t.querySelectorAll('th')].some(n=>n.textContent.includes(label)),label);
- assert.deepEqual([...main.querySelectorAll('table')][2].querySelector('thead tr')&&[...[...main.querySelectorAll('table')][2].querySelectorAll('thead th')].slice(0,8).map(n=>n.textContent),['日期','平台','店铺','展示币种','现金消耗','信用额度消耗','广告费用赠款消耗','广告消耗（投放 / 账单参考）'],'the first visible detail columns prioritize ownership and spending');
- assert([...main.querySelectorAll(':scope > .fi-card table')].slice(0,3).every(t=>t.textContent.includes('净广告消耗')));assert(main.querySelector('details[data-ad-funding]'));assert(!main.querySelector('details[data-ad-funding]').open);assert(main.textContent.includes('账户日报核对'));assert(main.textContent.includes('接口未拆分'));
- assert(main.textContent.includes('Shopee'));assert(main.textContent.includes('TikTok'));assert(main.textContent.includes('未提供'));assert(main.textContent.includes('待分配店铺'));assert(main.textContent.includes('9012345678901234'));
+ for(const label of ['现金消耗','信用额度消耗','广告费用赠款消耗'])assert(![...main.querySelectorAll('th,.fi-metric-label')].some(n=>n.textContent===label),label);
+ assert.deepEqual([...main.querySelectorAll('[data-ad-amount]')].map(n=>n.dataset.adAmount),['amount','net_amount']);
+ assert.deepEqual([...[...main.querySelectorAll('table')][2].querySelectorAll('thead th')].slice(0,6).map(n=>n.textContent),['日期','平台','店铺','展示币种','广告消耗（投放 / 账单参考）','净广告消耗'],'the first visible detail columns prioritize ownership and spending');
+ assert([...main.querySelectorAll(':scope > .fi-card table')].slice(0,3).every(t=>t.textContent.includes('净广告消耗')));assert(main.querySelector('details[data-ad-funding]'));assert(!main.querySelector('details[data-ad-funding]').open);assert(main.textContent.includes('账户日报核对'));
+ assert(main.textContent.includes('Shopee'));assert(main.textContent.includes('TikTok'));assert(main.textContent.includes('待分配店铺'));assert(main.textContent.includes('9012345678901234'));
+ const shopTable=main.querySelectorAll('table')[1];
+ const accountColumn=[...shopTable.tHead.rows[0].cells].findIndex(n=>n.textContent==='广告账户明细');
+ assert(accountColumn>=0);
+ assert.equal(shopTable.tBodies[0].rows[1].cells[accountColumn].textContent,'—','Shopee has no account detail action');
+ assert.equal(shopTable.tBodies[0].rows[2].cells[accountColumn].textContent,'—','unassigned costs have no account detail action');
+ shopTable.tBodies[0].rows[0].cells[accountColumn].querySelector('button').click();
+ const accountsDialog=d.querySelector('dialog[data-ad-shop-accounts]');
+ assert(accountsDialog?.open,'a read-only viewer can open TikTok shop account details');
+ assert(accountsDialog.querySelector('h3').textContent.includes('演示菲律宾店'));
+ assert.deepEqual([...accountsDialog.querySelectorAll('tbody tr')].map(r=>[...r.cells].map(c=>c.textContent)),[
+   ['演示广告账户','100001','CNY','7.00','0.00'],
+   ['历史投放账户','100003','CNY','3.00','2.00（已知部分）'],
+   ['已关联待同步账户','100002','CNY','尚未取得','尚未取得']
+ ]);
+ accountsDialog.querySelector('.fi-dialog-foot button').click();assert(!accountsDialog.isConnected);
  assert(!main.querySelector('[data-ad-spend-allocate]'),'read-only viewer has no assignment action');
  assert(root.querySelector('details[data-ad-spend-support]'));assert(!root.querySelector('details[data-ad-spend-support]').open);
  const originalFunding=spend.accountFunding;

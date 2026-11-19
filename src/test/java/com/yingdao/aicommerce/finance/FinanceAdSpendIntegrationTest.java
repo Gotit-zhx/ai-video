@@ -30,7 +30,7 @@ class FinanceAdSpendIntegrationTest {
         var controller=new FinanceAdSpendController(spend,fixture.controller());byte[] bytes=controller.export(Map.of("start","2026-10-01","end","2026-10-31","currency","USD"),fixture.principal()).getBody();
         var factory=javax.xml.parsers.DocumentBuilderFactory.newInstance();factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl",true);
         try(var zip=new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(bytes))){for(var entry=zip.getNextEntry();entry!=null;entry=zip.getNextEntry())if(entry.getName().equals("xl/worksheets/sheet3.xml")){
-            var doc=factory.newDocumentBuilder().parse(new java.io.ByteArrayInputStream(zip.readAllBytes()));var cells=((org.w3c.dom.Element)doc.getElementsByTagName("row").item(1)).getElementsByTagName("c");var value=(org.w3c.dom.Element)cells.item(19);assertFalse(value.hasAttribute("t"));assertEquals(0,new BigDecimal("8").compareTo(new BigDecimal(value.getTextContent())));
+            var doc=factory.newDocumentBuilder().parse(new java.io.ByteArrayInputStream(zip.readAllBytes()));var cells=((org.w3c.dom.Element)doc.getElementsByTagName("row").item(1)).getElementsByTagName("c");var value=(org.w3c.dom.Element)cells.item(13);assertFalse(value.hasAttribute("t"));assertEquals(0,new BigDecimal("8").compareTo(new BigDecimal(value.getTextContent())));
         }}
         assertEquals(1,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_records",Integer.class));assertEquals(new BigDecimal("10.000000"),fixture.db.queryForObject("SELECT amount FROM finance_records",BigDecimal.class));
     }
@@ -51,7 +51,7 @@ class FinanceAdSpendIntegrationTest {
         var controller=new FinanceAdSpendController(spend,fixture.controller());var q=Map.of("start","2026-10-01","end","2026-10-31","currency","USD","page","2");
         var response=map(controller.list(q,fixture.principal()).data());assertEquals(600,response.get("total"));assertEquals(50,rows(response.get("items")).size());
         byte[] bytes=controller.export(q,fixture.principal()).getBody();var files=new HashMap<String,String>();try(var zip=new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(bytes))){for(var entry=zip.getNextEntry();entry!=null;entry=zip.getNextEntry())files.put(entry.getName(),new String(zip.readAllBytes(),java.nio.charset.StandardCharsets.UTF_8));}
-        assertTrue(files.get("xl/workbook.xml").contains("店铺消耗明细"));String detail=files.get("xl/worksheets/sheet3.xml");assertEquals(601,detail.split("<row",-1).length-1);assertTrue(detail.contains("<t xml:space=\"preserve\">9012345678901234</t>")||detail.contains("<t>9012345678901234</t>"));assertTrue(detail.contains("信用额度消耗"));
+        assertTrue(files.get("xl/workbook.xml").contains("店铺消耗明细"));String detail=files.get("xl/worksheets/sheet3.xml");assertEquals(601,detail.split("<row",-1).length-1);assertTrue(detail.contains("<t xml:space=\"preserve\">9012345678901234</t>")||detail.contains("<t>9012345678901234</t>"));assertFalse(detail.contains("信用额度消耗"));
     }
     @Test void originManagementAndCompanySwitchGuardsProtectNewWriteRoutes(){
         var policy=org.mockito.Mockito.mock(com.yingdao.aicommerce.saas.application.OrganizationAccessPolicy.class);

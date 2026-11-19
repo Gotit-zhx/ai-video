@@ -19,6 +19,9 @@ public class FinanceRepository {
         conversions=VALUES(conversions),raw_json=VALUES(raw_json),updated_at=UTC_TIMESTAMP(6)
         """;
     static final Set<String> RAW_PAGE_COUNT_KINDS=Set.of("SETTLEMENT","FEE","PENDING","COST");
+    private static final int MAX_INDEXED_SHOP_DAYS=1024;
+    private static final int SHOP_DAY_BATCH=128;
+    private static final int MAX_VISIBLE_SHOP_IDS=512;
     private final JdbcTemplate db; private final ObjectMapper json;
     private final ThreadLocal<Map<Query,Long>> pageCounts=new ThreadLocal<>();
     private final ThreadLocal<Long> authoritativePageTotal=new ThreadLocal<>();
@@ -317,6 +320,10 @@ public class FinanceRepository {
         return query(s,f,alias,reporting,true);
     }
     Query query(Scope s,Filter f,String alias,boolean reporting,boolean dates) {
+        return query(s,f,alias,reporting,dates,true,null);
+    }
+    private Query query(Scope s,Filter f,String alias,boolean reporting,boolean dates,boolean physicalWindows,
+                        List<String> allowedShops) {
         String p=alias.isEmpty()?"":alias+".";
         String w=" "+p+"organization_id=?";
         List<Object> a=new ArrayList<>(List.of(s.organizationId()));
@@ -326,19 +333,24 @@ public class FinanceRepository {
             if(!pair[1].isEmpty()){w+=" AND "+p+pair[0]+"=?";a.add(pair[1]);}
         }
         String record=alias.isEmpty()?"finance_records":alias;
-        // Resolve each ledger shop by its globally unique primary key, then verify company visibility.
-        w+=" AND ("+record+".shop_id='UNASSIGNED' OR EXISTS"
-                +" (SELECT 1 FROM finance_connections fc FORCE INDEX(PRIMARY) WHERE fc.id="+record
-                +".shop_id AND fc.organization_id=? AND fc.status<>'REMOVED'))";
-        a.add(s.organizationId());
-        if(!f.groupId().isBlank()){
-            String group=record+".shop_id IN (SELECT fg.id FROM finance_connections fg WHERE fg.organization_id=? AND fg.status<>'REMOVED' AND ";
+        if(allowedShops==null){
+            w+=" AND ("+record+".shop_id='UNASSIGNED' OR EXISTS"
+                    +" (SELECT 1 FROM finance_connections fc FORCE INDEX(PRIMARY) WHERE fc.id="+record
+                    +".shop_id AND fc.organization_id=? AND fc.status<>'REMOVED'))";
             a.add(s.organizationId());
-            if("UNGROUPED".equals(f.groupId()))w+=" AND ("+record+".shop_id='UNASSIGNED' OR "+group+"fg.group_id IS NULL))";
-            else {w+=" AND "+group+"fg.group_id=?)";a.add(f.groupId());}
+            if(!f.groupId().isBlank()){
+                String group=record+".shop_id IN (SELECT fg.id FROM finance_connections fg WHERE fg.organization_id=? AND fg.status<>'REMOVED' AND ";
+                a.add(s.organizationId());
+                if("UNGROUPED".equals(f.groupId()))w+=" AND ("+record+".shop_id='UNASSIGNED' OR "+group+"fg.group_id IS NULL))";
+                else {w+=" AND "+group+"fg.group_id=?)";a.add(f.groupId());}
+            }
+        }else if(allowedShops.isEmpty())w+=" AND 1=0";
+        else{
+            w+=" AND "+record+".shop_id IN ("+String.join(",",Collections.nCopies(allowedShops.size(),"?"))+")";
+            a.addAll(allowedShops);
         }
         var window=projectionWindow.get();
-        if(dates&&window!=null&&window.semanticMonth().equals(f)){
+        if(dates&&physicalWindows&&window!=null&&window.semanticMonth().equals(f)){
             var slices=new ArrayList<String>();
             for(var slice:window.slices()){
                 String predicate=p+"record_date>=? AND "+p+"record_date<=?";
@@ -352,6 +364,24 @@ public class FinanceRepository {
             w+=" AND ("+String.join(" OR ",slices)+")";
         }
         return reporting?FinanceReportingMonths.constrain(s,new Query(w,a),f,alias):new Query(w,a);
+    }
+    private List<String> shopsInReadSnapshot(Scope scope,Filter filter){
+        var transaction=org.springframework.transaction.support.TransactionSynchronizationManager.getCurrentTransactionIsolationLevel();
+        var source=db.getDataSource();
+        if(!org.springframework.transaction.support.TransactionSynchronizationManager.isCurrentTransactionReadOnly()
+                ||!Objects.equals(transaction,org.springframework.transaction.TransactionDefinition.ISOLATION_REPEATABLE_READ)
+                ||source==null||!org.springframework.transaction.support.TransactionSynchronizationManager.hasResource(source))return null;
+        // A page and its counts can reuse one authorization lookup only while
+        // the shop visibility and ledger rows share the same snapshot.
+        var args=new ArrayList<Object>(List.of(scope.organizationId()));
+        String sql="SELECT id FROM finance_connections WHERE organization_id=? AND status<>'REMOVED'";
+        boolean ungrouped=filter.groupId().equals("UNGROUPED");
+        if(ungrouped)sql+=" AND group_id IS NULL";
+        else if(!filter.groupId().isBlank()){sql+=" AND group_id=?";args.add(filter.groupId());}
+        var shops=new ArrayList<>(db.queryForList(sql+" LIMIT "+(MAX_VISIBLE_SHOP_IDS+1),String.class,args.toArray()));
+        if(shops.size()>MAX_VISIBLE_SHOP_IDS)return null;
+        if(ungrouped||filter.groupId().isBlank())shops.add("UNASSIGNED");
+        return shops;
     }
     static String visible(String alias){
         return "("+alias+".shop_id='UNASSIGNED' OR EXISTS (SELECT 1 FROM finance_connections fc WHERE fc.id="+alias
@@ -389,20 +419,20 @@ public class FinanceRepository {
     }
     private List<Map<String,Object>> readDashboardBuckets(Scope s,Filter f,boolean includeCreatedOrders,List<Map<String,Object>> advertising,
                                                           List<Map<String,Object>> rawPageCounts){
-        Query q=query(s,f);
-        var buckets=dailyAggregate(f,q,"finance_records.record_date",range->db.queryForList("""
+        String aggregate="""
             SELECT shop_id,record_date,kind,currency,
               CASE WHEN kind='FEE' THEN category ELSE '' END category,
               CASE WHEN kind='ORDER' THEN status ELSE '' END status,
               COUNT(*) records,COUNT(amount) known_amounts,COUNT(revenue) known_revenues,
               COUNT(impressions) known_impressions,COUNT(clicks) known_clicks,COUNT(conversions) known_conversions,SUM(amount) amount,
               SUM(revenue) revenue,SUM(impressions) impressions,SUM(clicks) clicks,SUM(conversions) conversions
-            FROM finance_records FORCE INDEX (
-            """+dashboardIndex(f)+") WHERE "
-                +range.where+" AND NOT(kind='BILL' AND source='IMPORT')"
+            FROM %s WHERE %s AND NOT(kind='BILL' AND source='IMPORT')
+            """
                 +(includeCreatedOrders?"":" AND kind NOT IN ('ORDER','REFUND')")
                 +" GROUP BY shop_id,record_date,kind,currency,"
-                +"CASE WHEN kind='FEE' THEN category ELSE '' END,CASE WHEN kind='ORDER' THEN status ELSE '' END",range.args.toArray()));
+                +"CASE WHEN kind='FEE' THEN category ELSE '' END,CASE WHEN kind='ORDER' THEN status ELSE '' END";
+        var buckets=aggregateRecords(s,f,"",dashboardIndex(f),7,(source,range)->db.queryForList(
+            aggregate.formatted(source,range.where()),range.args().toArray()));
         // Exact list totals include tagged orders. Capture the count before
         // applying the operating rules. Imported bills have a separate basis.
         if(rawPageCounts!=null)for(var row:buckets){
@@ -445,6 +475,62 @@ public class FinanceRepository {
         return FinanceFxDates.split(buckets.stream().filter(row->number(row.get("records"))>0).toList(),
             corrections.stream().filter(row->number(row.get("fx_operating"))==1).toList(),
             FinanceFxDates.LEDGER_KEYS,FinanceFxDates.LEDGER_SUMS,"records","fx_date");
+    }
+
+    private List<List<String>> indexedShopDays(Filter filter){
+        var window=projectionWindow.get();
+        if(window==null||!window.semanticMonth().equals(filter))return List.of();
+        var shopDays=new ArrayList<List<String>>();
+        for(var slice:window.slices()){
+            if(slice.shops().isEmpty())return List.of();
+            for(var day=slice.start();!day.isAfter(slice.end());day=day.plusDays(1)){
+                if(shopDays.size()+slice.shops().size()>MAX_INDEXED_SHOP_DAYS)return List.of();
+                for(String shop:slice.shops())shopDays.add(List.of(day.toString(),shop));
+            }
+        }
+        return shopDays;
+    }
+
+    List<Map<String,Object>> aggregateRecords(Scope scope,Filter filter,String alias,String rangeIndex,int days,
+            java.util.function.BiFunction<String,Query,List<Map<String,Object>>> read){
+        String table=alias.isBlank()?"finance_records":"finance_records "+alias;
+        String record=alias.isBlank()?"finance_records":alias;
+        var shopDays=indexedShopDays(filter);
+        var allowedShops=shopsInReadSnapshot(scope,filter);
+        if(shopDays.isEmpty()){
+            Query base=query(scope,filter,alias,true,true,true,allowedShops);
+            String date=record+".record_date";
+            java.util.function.Function<Query,List<Map<String,Object>>> scan=
+                range->read.apply(table+" FORCE INDEX("+rangeIndex+")",range);
+            if(days==0)return scan.apply(base);
+            return days==7?dailyAggregate(filter,base,date,scan):aggregateWindows(filter,base,date,days,scan);
+        }
+
+        String source="""
+            (SELECT DISTINCT dirty_day,dirty_shop
+             FROM JSON_TABLE(CAST(? AS JSON),'$[*]' COLUMNS(
+               dirty_day DATE PATH '$[0]',
+               dirty_shop VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci PATH '$[1]'
+             )) pairs) dirty
+            STRAIGHT_JOIN %s FORCE INDEX (idx_finance_shop_dashboard)
+              ON %s.shop_id=dirty.dirty_shop AND %s.record_date=dirty.dirty_day
+            """.formatted(table,record,record);
+        // Each pair is disjoint and probes the leading company, shop and date
+        // index columns. The complete calendar/permission predicates still apply.
+        Query query=query(scope,filter,alias,true,true,false,allowedShops);
+        var result=new ArrayList<Map<String,Object>>();
+        for(int offset=0;offset<shopDays.size();){
+            int end=Math.min(offset+SHOP_DAY_BATCH,shopDays.size());
+            // Keep a business day in one batch so SQL collation deduplication
+            // applies to every reference to the same day.
+            while(end<shopDays.size()&&shopDays.get(end-1).getFirst().equals(shopDays.get(end).getFirst()))end++;
+            var args=new ArrayList<Object>();
+            args.add(write(shopDays.subList(offset,end)));
+            args.addAll(query.args());
+            result.addAll(read.apply(source,new Query(query.where(),args)));
+            offset=end;
+        }
+        return result;
     }
     /** Daily groups are disjoint across windows. Bound the MySQL aggregate's working
      * set without increasing global memory or spilling a whole month to disk.
@@ -495,7 +581,7 @@ public class FinanceRepository {
         if(text(kind).isBlank())return reportDetails(s,f,page,size,numbers);
         if(!allOrders&&Set.of("ORDER","REFUND").contains(text(kind)))return settledOrderDetails(s,f,kind,page,size,numbers);
         boolean lookup=allOrders&&!FinanceRecordSearch.numbers(numbers).isEmpty();
-        Query base=query(s,f,"",!allOrders,!lookup);
+        Query base=query(s,f,"",!allOrders,!lookup,true,lookup?null:shopsInReadSnapshot(s,f));
         Query q=lookup?FinanceRecordSearch.orders(base,"finance_records.order_id",numbers)
                 :FinanceRecordSearch.apply(base,"finance_records",numbers,true);
         String where=q.where;List<Object>a=new ArrayList<>(q.args);

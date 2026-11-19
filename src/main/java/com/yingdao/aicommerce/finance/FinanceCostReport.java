@@ -67,6 +67,9 @@ public final class FinanceCostReport {
           THEN COALESCE(SUM(c.amount_cny),0) END amount_cny
         """;
     static String related(String kind){
+        return related(kind,"finance_records r FORCE INDEX(idx_finance_company_kind_date)");
+    }
+    private static String related(String kind,String settlementSource){
         if("SAMPLE_SETTLED".equals(kind))return related("SETTLED_ORDER")
             +"o.platform='TIKTOK_SHOP' AND (JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.order_type'))='SELLER_FUND_FREE_SAMPLE'"
             +" OR LOWER(JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.is_sample_order')))='true') AND ";
@@ -102,12 +105,12 @@ public final class FinanceCostReport {
         boolean settlement=kind.equals("SETTLEMENT");
         return """
             SELECT DISTINCT o.id order_record_id,r.organization_id,r.shop_id,%s reference
-            FROM finance_records r %s LEFT JOIN finance_records o %s
+            FROM %s LEFT JOIN finance_records o %s
               ON o.organization_id=r.organization_id AND o.shop_id=r.shop_id
               AND o.kind='ORDER' AND o.source='API' AND o.order_id=r.order_id
             WHERE r.kind='%s' AND
             """.formatted(settlement?"r.order_id":"COALESCE(NULLIF(r.order_id,''),r.external_id)",
-                settlement?"FORCE INDEX(idx_finance_company_kind_date)":"",
+                settlement?settlementSource:"finance_records r",
                 settlement?"FORCE INDEX(idx_finance_settled_order)":"",kind)
                 +(kind.equals("PENDING")?"1=0":settlement?firstSettlement("r",false):hasSettlement("r","r.order_id"))+" AND "+FinanceOrderCharges.normalOrder("r")+" AND ";
     }
@@ -119,20 +122,19 @@ public final class FinanceCostReport {
     }
     /** Read first-settled orders and their cost snapshots once for every dashboard metric. */
     List<Map<String,Object>> dashboardFacts(Scope scope,Filter filter){
-        var q=repo.query(scope,filter,"r");
-        var facts=repo.aggregateWindows(filter,q,"r.record_date",1,part->repo.jdbc().queryForList("""
+        var facts=repo.aggregateRecords(scope,filter,"r","idx_finance_company_kind_date",1,(source,part)->repo.jdbc().queryForList("""
             SELECT r.shop_id,r.record_date,o.record_date fx_date,r.currency settlement_currency,o.currency,'ORDER' kind,'' category,
               o.status,COUNT(o.id) records,COUNT(o.amount) known_amounts,COUNT(o.revenue) known_revenues,
               SUM(o.amount) amount,SUM(o.revenue) revenue,SUM(o.impressions) impressions,
               SUM(o.clicks) clicks,SUM(o.conversions) conversions,
             """+AGGREGATE.replace("x.order_record_id","o.id")+"""
-            FROM finance_records r FORCE INDEX(idx_finance_company_kind_date)
+            FROM %s
             LEFT JOIN finance_records o FORCE INDEX(idx_finance_settled_order)
               ON o.organization_id=r.organization_id AND o.shop_id=r.shop_id AND o.order_id=r.order_id
               AND o.kind='ORDER' AND o.source='API'
             LEFT JOIN finance_order_costs c ON c.order_record_id=o.id
             LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=o.id
-            """+FinanceLabelCosts.join("r.organization_id","r.shop_id","r.order_id")+" WHERE "+firstSettlement("r",true)+" AND "+part.where()
+            """.formatted(source)+FinanceLabelCosts.join("r.organization_id","r.shop_id","r.order_id")+" WHERE "+firstSettlement("r",true)+" AND "+part.where()
                 +" GROUP BY r.shop_id,r.record_date,o.record_date,r.currency,o.currency,o.status",part.args().toArray()));
         var sums=new LinkedHashSet<>(FinanceFxDates.LEDGER_SUMS);sums.addAll(COST_SUMS);sums.add("amount_cny");
         return FinanceFxDates.split(facts,FinanceFxDates.costs(repo,scope,filter,"SETTLED_ORDER"),FinanceFxDates.COST_KEYS,new ArrayList<>(sums),"order_count","cost_fx_date");
@@ -225,27 +227,29 @@ public final class FinanceCostReport {
         return summary(scope,selected,summaryRows(selected,q));
     }
     private List<Map<String,Object>> summaryRows(String selected,FinanceRepository.Query q){
-        return repo.jdbc().queryForList("SELECT x.shop_id,"+AGGREGATE+" FROM ("+related(selected)+q.where()+") x"
+        return summarizeRelation(related(selected),q);
+    }
+    private List<Map<String,Object>> summarizeRelation(String relation,FinanceRepository.Query q){
+        return repo.jdbc().queryForList("SELECT x.shop_id,"+AGGREGATE+" FROM ("+relation+q.where()+") x"
             +" LEFT JOIN finance_order_costs c ON c.order_record_id=x.order_record_id"
             +" LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=x.order_record_id"
             +FinanceLabelCosts.join("x.organization_id","x.shop_id","x.reference")+" GROUP BY x.shop_id",q.args().toArray());
     }
     // Each variant repeats the same DISTINCT as the original settlement scope.
     List<Map<String,Object>> settlementDayFacts(Scope scope,Filter filter){
-        var q=repo.query(scope,filter,"r");
-        return repo.aggregateWindows(filter,q,"r.record_date",1,part->repo.jdbc().queryForList("""
+        return repo.aggregateRecords(scope,filter,"r","idx_finance_company_kind_date",1,(source,part)->repo.jdbc().queryForList("""
             SELECT x.shop_id,x.record_date,x.filter_currency,
             """+AGGREGATE+"""
             FROM (
                 SELECT DISTINCT o.id order_record_id,r.organization_id,r.shop_id,r.order_id reference,r.record_date,
                     CASE WHEN variants.by_currency=1 THEN r.currency ELSE '' END filter_currency
-                FROM finance_records r FORCE INDEX(idx_finance_company_kind_date)
+                FROM %s
                 LEFT JOIN finance_records o FORCE INDEX(idx_finance_settled_order)
                   ON o.organization_id=r.organization_id AND o.shop_id=r.shop_id
                   AND o.kind='ORDER' AND o.source='API' AND o.order_id=r.order_id
                 CROSS JOIN (SELECT 0 by_currency UNION ALL SELECT 1) variants
                 WHERE (variants.by_currency=0 OR r.currency<>'') AND
-                """+firstSettlement("r",false)+" AND "+part.where()+"""
+                """.formatted(source)+firstSettlement("r",false)+" AND "+part.where()+"""
             ) x LEFT JOIN finance_order_costs c ON c.order_record_id=x.order_record_id
             LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=x.order_record_id
             """+FinanceLabelCosts.join("x.organization_id","x.shop_id","x.reference")
@@ -253,8 +257,8 @@ public final class FinanceCostReport {
     }
 
     List<Map<String,Object>> nativeSettlementRows(Scope scope,Filter filter){
-        var q=repo.query(scope,filter,"r");
-        return repo.aggregateWindows(filter,q,"r.record_date",1,part->summaryRows("SETTLEMENT",part));
+        return repo.aggregateRecords(scope,filter,"r","idx_finance_company_kind_date",1,
+            (source,part)->summarizeRelation(related("SETTLEMENT",source),part));
     }
 
     Map<String,Object> settlementSummaryFromDays(Scope scope,List<Map<String,Object>> chunks){
@@ -446,10 +450,11 @@ public final class FinanceCostReport {
                 SELECT x.record_id,%s FROM (
                   SELECT DISTINCT r.id record_id,r.organization_id,r.shop_id,o.id order_record_id,
                     COALESCE(NULLIF(o.order_id,''),NULLIF(t.order_id,''),NULLIF(r.order_id,''),r.external_id) reference
-                  FROM finance_records r LEFT JOIN finance_records t
+                  FROM finance_records r FORCE INDEX(PRIMARY)
+                  LEFT JOIN finance_records t FORCE INDEX(idx_finance_cost_statement)
                     ON r.kind='BILL' AND t.organization_id=r.organization_id AND t.shop_id=r.shop_id
                     AND t.kind='SETTLEMENT' AND t.source='API' AND t.statement_id=r.external_id
-                  LEFT JOIN finance_records o ON o.organization_id=r.organization_id AND o.shop_id=r.shop_id
+                  LEFT JOIN finance_records o FORCE INDEX(idx_finance_settled_order) ON o.organization_id=r.organization_id AND o.shop_id=r.shop_id
                     AND o.kind='ORDER' AND o.source='API'
                     AND o.order_id=CASE WHEN r.kind='BILL' THEN t.order_id ELSE r.order_id END
                   WHERE r.organization_id=? AND r.id IN (%s) AND (%s)
