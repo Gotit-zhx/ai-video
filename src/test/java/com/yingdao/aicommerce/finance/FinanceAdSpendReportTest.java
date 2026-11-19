@@ -20,6 +20,7 @@ class FinanceAdSpendReportTest {
     Map<String,Object> apiRecord(String kind){return new LinkedHashMap<>(Map.of("id","api","shop_id","a","platform","TIKTOK_SHOP","kind",kind,"record_date","2026-10-02","currency","USD","amount",new BigDecimal("10"),"source","API"));}
     @Test void shopeeShopDailyTotalDoesNotAddImportedCampaignsOrOtherPlatforms(){
         var official=new LinkedHashMap<String,Object>(Map.of("source_key","cpc","platform","SHOPEE","shop_id","s1","record_date","2026-10-02","currency","USD","amount",new BigDecimal("25"),"account_id","10001","source","API_SHOPEE_CPC"));
+        official.put("gms_amount",BigDecimal.ZERO);official.put("gms_currency","USD"); // Explicit complete zero, never inferred by production.
         var imported=new LinkedHashMap<>(official);imported.put("source_key","import");imported.put("source","IMPORT_FUNDING");imported.put("campaign_id","campaign");imported.put("amount",new BigDecimal("10"));
         var shops=List.<Map<String,Object>>of(Map.of("id","s1","platform","SHOPEE","name","Shop","group_id","g","group_name","Group","external_shop_id","10001"));
         var f=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,31),"","SHOPEE","USD","day");
@@ -126,16 +127,16 @@ class FinanceAdSpendReportTest {
     @Test void shopeeShopScopedSourceUsesExactPlatformShopIdAndKeepsMissingFundingUnknown(){
         var imported=FinanceAdSpendImport.parse(List.of(List.of("date","ad_id","expense","currency"),List.of("2026-10-02","9012345678901234","9.00","USD")),"SHOPEE","SHOP_123","Shop source",false);
         var actual=new ArrayList<Map<String,Object>>(shops);var shop=new LinkedHashMap<>(actual.get(2));shop.put("external_shop_id","SHOP_123");actual.set(2,shop);
-        var detail=rows(FinanceAdSpendReport.build(imported,List.of(),actual,filter,null,"","").get("items")).getFirst();assertEquals("c",detail.get("shop_id"));assertNull(detail.get("cash_amount"));assertEquals(new BigDecimal("9.00"),detail.get("amount"));
+        var detail=rows(FinanceAdSpendReport.build(imported,List.of(),actual,filter,null,"","").get("items")).getFirst();assertEquals("c",detail.get("shop_id"));assertNull(detail.get("cash_amount"));assertNull(detail.get("amount"));assertEquals(new BigDecimal("9.00"),detail.get("source_reported_amount"));
     }
     @Test void campaignLevelApiRowsAreNotDiscardedAsTheirOwnAccountSummary(){
         var record=new LinkedHashMap<String,Object>(Map.of("id","api","shop_id","c","platform","SHOPEE","kind","AD","record_date","2026-10-02","currency","USD","amount",new BigDecimal("9"),"source","API"));
         var normalized=FinanceAdSpendReport.api(record,Map.of("shop_id","SHOP_123","ad_id","9012345678901234","ad_name","Product promotion"));
-        assertEquals("9012345678901234",normalized.get("campaign_id"));assertEquals("SHOP_123",normalized.get("account_id"));assertEquals(BigDecimal.valueOf(9),rows(report(List.of(normalized),List.of()).get("totals")).getFirst().get("amount"));
+        assertEquals("9012345678901234",normalized.get("campaign_id"));assertEquals("SHOP_123",normalized.get("account_id"));assertNull(rows(report(List.of(normalized),List.of()).get("totals")).getFirst().get("amount"));assertEquals(BigDecimal.valueOf(9),rows(report(List.of(normalized),List.of()).get("items")).getFirst().get("source_reported_amount"));
     }
     @Test void accountIdentityMissingFromOneApiFactIsNotOverlapWithItself(){
         var source=source("api","SHOPEE","c","9");source.put("account_id","");source.put("campaign_id","");source.put("source","API_BASIC");
-        assertEquals(BigDecimal.valueOf(9),rows(report(List.of(source),List.of()).get("totals")).getFirst().get("amount"));
+        assertNull(rows(report(List.of(source),List.of()).get("totals")).getFirst().get("amount"));assertEquals(BigDecimal.valueOf(9),rows(report(List.of(source),List.of()).get("items")).getFirst().get("source_reported_amount"));
     }
     @Test void exactManualSplitKeepsResidualAndThreeFundingControls(){
         var r=imported().getFirst();String key=text(r.get("source_key")),fingerprint=FinanceAdSpendReport.fingerprint(r);

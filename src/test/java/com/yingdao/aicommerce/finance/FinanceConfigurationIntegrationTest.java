@@ -33,9 +33,9 @@ class FinanceConfigurationIntegrationTest {
     final Filter filter=new Filter(LocalDate.of(2026,10,21),LocalDate.of(2026,10,21),"","","PHP","day");
     PlatformPrincipal principal(){return new PlatformPrincipal("u","org","heyi","admin","admin","",true,List.of("ADMIN"),List.of());}
     int migratedThrough;
-    @BeforeAll void migrate()throws Exception{migrateThrough(157);migration("V159__finance_first_settlement_order.sql");migration("V160__finance_projection_record_identity_events.sql");migration("V161__finance_projection_currency_byte_events.sql");migration("V162__finance_label_source_count_covering.sql");migration("V163__finance_settlement_cost_projection.sql");migration("V164__finance_settlement_cost_scope_variants.sql");}
+    @BeforeAll void migrate()throws Exception{migrateThrough(158);migration("V159__finance_first_settlement_order.sql");migration("V160__finance_projection_record_identity_events.sql");migration("V161__finance_projection_currency_byte_events.sql");migration("V162__finance_label_source_count_covering.sql");migration("V163__finance_settlement_cost_projection.sql");migration("V164__finance_settlement_cost_scope_variants.sql");}
     void migrateThrough(int version)throws Exception{
-        assertTrue(Set.of(154,155,156,157).contains(version));migratedThrough=version;
+        assertTrue(Set.of(154,155,156,157,158).contains(version));migratedThrough=version;
         assertTrue(System.getenv("FINANCE_QA_JDBC").matches("jdbc:mysql://[^/]+/finance_qa_[a-f0-9]+\\?.*"),"Only disposable finance_qa schemas are permitted");
         var ds=new com.zaxxer.hikari.HikariDataSource();dataSource=ds;
         ds.setJdbcUrl(System.getenv("FINANCE_QA_JDBC"));ds.setUsername(System.getenv("FINANCE_QA_USER"));ds.setPassword(System.getenv("FINANCE_QA_PASSWORD"));
@@ -84,6 +84,7 @@ class FinanceConfigurationIntegrationTest {
         if(version>=155)migration("V155__finance_query_projections.sql");
         if(version>=156)migration("V156__finance_ad_campaign_metadata.sql");
         if(version>=157)migration("V157__finance_projection_baseline_revisions.sql");
+        if(version>=158)migration("V158__finance_shopee_gms_reference.sql");
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_cost_sources",Integer.class));
         assertEquals(1,db.queryForObject("SELECT legacy_merged FROM finance_cost_sources WHERE id='old2'",Integer.class));
         assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_cost_books",Integer.class),"legacy snapshots remain for audit");

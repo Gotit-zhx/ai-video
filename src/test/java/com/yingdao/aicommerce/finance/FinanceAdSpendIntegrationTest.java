@@ -64,7 +64,7 @@ class FinanceAdSpendIntegrationTest {
     @Test void shopeeNativeExpenseImportAutomaticallyUsesItsExactCompanyShopSource(){
         String sourceShop=fixture.groupedShop(fixture.owner,"SHOP_123",fixture.service.saveGroup(fixture.owner,null,"Shopee source"));
         var entries=FinanceAdSpendImport.parse(List.of(List.of("date","ad_id","expense","currency"),List.of("2026-10-02","9012345678901234","9.00","USD")),"SHOPEE","SHOP_123","Shopee source",false);
-        spend.saveImport(fixture.owner,"actor",entries,"shopee.csv");var result=rows(spend.report(fixture.owner,filter,false,"","","").get("items")).getFirst();assertEquals(sourceShop,result.get("shop_id"));assertNull(result.get("cash_amount"));assertEquals(new BigDecimal("9.000000"),result.get("amount"));
+        spend.saveImport(fixture.owner,"actor",entries,"shopee.csv");var result=rows(spend.report(fixture.owner,filter,false,"","","").get("items")).getFirst();assertEquals(sourceShop,result.get("shop_id"));assertNull(result.get("cash_amount"));assertNull(result.get("amount"));assertEquals(new BigDecimal("9.000000"),result.get("source_reported_amount"));
         assertEquals(0,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_records",Integer.class));
     }
     @Test void exactAssignmentsAreScopedVersionedAndReadAfterAllocationBeforeShopFilter(){
