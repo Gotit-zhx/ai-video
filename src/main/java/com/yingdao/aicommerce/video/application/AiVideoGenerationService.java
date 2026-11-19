@@ -1,6 +1,7 @@
 package com.yingdao.aicommerce.video.application;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.saas.application.ModelConfigService;
 import com.yingdao.aicommerce.saas.application.ModelConfigService.RuntimeModelConnection;
 import com.yingdao.aicommerce.storage.OssStorageService;
@@ -24,6 +25,7 @@ import com.yingdao.aicommerce.video.mapper.VideoScriptMapper;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -63,6 +65,7 @@ public class AiVideoGenerationService {
     private static final int MAX_GRID_REGENERATIONS = 2;
     static final String GRID_REJECTED = "VIDEO_GRID_REJECTED: ";
     static final String REVIEW_PAUSED = "VIDEO_REVIEW_PAUSED: ";
+    private static final String VIDEO_RETURN_RETRY = "厂商已完成，视频回传待重试：";
     private static final String INTERRUPTED_NOT_SENT = "提交服务重启中断，厂商未返回任务 ID；系统已自动重新提交";
     private static final long[] AUTOMATIC_RETRY_DELAYS_SECONDS = {30L, 90L, 300L};
     private static final List<String> ACTIVE_VIDEO_JOB_STATUSES = List.of("SUBMITTING", "QUEUED", "RUNNING", "REVIEWING");
@@ -79,6 +82,8 @@ public class AiVideoGenerationService {
     private final ObjectMapper objectMapper;
     private final Executor executor;
     private final int maxConcurrentVideoSubmissions;
+    @Value("${app.ai-video-task-storage:/data/ai-video-tasks}")
+    private String taskStorageRoot;
     private final Instant serviceStartedAt = Instant.now();
     private final Set<String> queuedSubmissions = ConcurrentHashMap.newKeySet();
     private final Set<String> pollingJobs = ConcurrentHashMap.newKeySet();
@@ -460,9 +465,41 @@ public class AiVideoGenerationService {
     }
 
     private List<RuntimeModelConnection> videoRoutes(AiVideoTask task) {
-        // Both historical QUALITY/SPEED selections now use the same Seedance model.
-        return modelConfigs.videoConnections(task.getOrganizationId()).stream()
+        String modelId = task.getSelectedVideoModelId();
+        return modelId == null ? dayanRoutes(task.getOrganizationId()) : generalVideoRoutes(task.getOrganizationId(), modelId);
+    }
+
+    private List<RuntimeModelConnection> dayanRoutes(String organizationId) {
+        return modelConfigs.videoConnections(organizationId).stream()
                 .filter(route -> "DAYAN".equals(route.provider()))
+                .toList();
+    }
+
+    public GeneralVideoModel.Options generalVideoOptions(String organizationId) {
+        Set<String> available = new HashSet<>();
+        for (RuntimeModelConnection route : dayanRoutes(organizationId)) {
+            available.addAll(providers.require(route.provider()).availableModels(route));
+        }
+        return new GeneralVideoModel.Options(GeneralVideoModel.SUPPORTED.stream()
+                .filter(model -> available.contains(model.id())).toList(),
+                GeneralVideoModel.ASPECT_RATIOS, GeneralVideoModel.MIN_DURATION, GeneralVideoModel.MAX_DURATION);
+    }
+
+    public GeneralVideoModel requireGeneralVideoModel(String organizationId, String modelId) {
+        GeneralVideoModel model = GeneralVideoModel.SUPPORTED.stream()
+                .filter(option -> option.id().equals(modelId)).findFirst()
+                .orElseThrow(() -> new BusinessException(HttpStatus.BAD_REQUEST, "不支持的视频生成模型"));
+        if (generalVideoRoutes(organizationId, modelId).isEmpty()) {
+            throw new BusinessException(HttpStatus.CONFLICT, "当前企业的生成线路不可使用所选模型");
+        }
+        return model;
+    }
+
+    private List<RuntimeModelConnection> generalVideoRoutes(String organizationId, String modelId) {
+        return dayanRoutes(organizationId).stream()
+                .filter(route -> providers.require(route.provider()).availableModels(route).contains(modelId))
+                .map(route -> new RuntimeModelConnection(route.id(), route.baseUrl(), modelId,
+                        route.apiFormat(), route.provider(), route.apiKey()))
                 .toList();
     }
 
@@ -478,7 +515,8 @@ public class AiVideoGenerationService {
     }
 
     private String missingRouteMessage(AiVideoTask task) {
-        return "Seedance 2.0 Mini 视频线路尚未配置或启用";
+        return task.getSelectedVideoModelId() == null ? "Seedance 2.0 Mini 视频线路尚未配置或启用"
+                : "当前企业的生成线路不可使用所选模型";
     }
 
     private void submitNext(String runId, String taskId, String itemId) {
@@ -523,12 +561,14 @@ public class AiVideoGenerationService {
                                       RuntimeModelConnection connection, int attempt) {
         String taskId = task.getId();
         String itemId = item.getId();
-        int duration = -1;
+        boolean useRequestedOptions = task.getSelectedVideoModelId() != null;
+        int duration = useRequestedOptions ? task.getDurationSeconds() : -1;
+        String aspectRatio = useRequestedOptions ? task.getAspectRatio() : "adaptive";
         String requestedResolution = task.getResolution() == null || task.getResolution().isBlank()
                 ? "720p" : task.getResolution();
         VideoGenerationProvider provider = providers.require(connection.provider());
-        String resolution = provider.effectiveResolution(requestedResolution);
-        AiVideoGenerationJob job = reserveSubmissionSlot(runId, task, item, attempt, connection, duration, resolution);
+        String resolution = useRequestedOptions ? requestedResolution : provider.effectiveResolution(requestedResolution);
+        AiVideoGenerationJob job = reserveSubmissionSlot(runId, task, item, attempt, connection, duration, aspectRatio, resolution);
         if (job == null) {
             item.startVideo();
             itemMapper.updateById(item);
@@ -536,15 +576,20 @@ public class AiVideoGenerationService {
         }
         boolean qualityRetry = gridRejectionCount(runId, itemId) > 0;
         try {
-            String prompt = task.isGeneral() ? generalReferencePrompt(item.getVideoPromptText())
-                    : task.isDirectReferenceVideo() ? directReferencePrompt(task, item) : item.getVideoPromptText();
+            String prompt = item.getVideoPromptText();
             if (!task.isGeneral()) {
-                if (!task.isDirectReferenceVideo()) prompt = usesIndividualFrames(task) ? individualFramesSafetyPrompt(prompt, task.getAspectRatio()) : gridStoryboardSafetyPrompt(prompt, task.getAspectRatio());
+                if (task.isDirectReferenceVideo()) {
+                    prompt = directReferencePrompt(task, item);
+                } else {
+                    prompt = usesIndividualFrames(task) ? individualFramesSafetyPrompt(prompt, task.getAspectRatio()) : gridStoryboardSafetyPrompt(prompt, task.getAspectRatio());
+                }
                 prompt = finalAudioPerformancePrompt(prompt, task, objectMapper);
             }
+            List<Reference> media = references(task, item, connection, provider);
+            if (task.isGeneral() && !media.isEmpty()) prompt = generalReferencePrompt(prompt);
             prompt = strengthenSingleScenePrompt(prompt, gridRejectionCount(runId, itemId));
-            GenerationRequest request = new GenerationRequest(prompt, references(task, item, connection, provider),
-                    duration, task.getAspectRatio(), resolution, audioReference(task));
+            GenerationRequest request = new GenerationRequest(prompt, media,
+                    duration, aspectRatio, resolution, audioReference(task), useRequestedOptions);
             paceSubmission(connection.provider());
             job.sending();
             jobMapper.updateById(job);
@@ -604,10 +649,10 @@ public class AiVideoGenerationService {
 
     private synchronized AiVideoGenerationJob reserveSubmissionSlot(String runId, AiVideoTask task, AiVideoTaskItem item,
                                                                      int attempt, RuntimeModelConnection connection,
-                                                                     int duration, String resolution) {
+                                                                     int duration, String aspectRatio, String resolution) {
         if (!hasSubmissionCapacity(task.getOrganizationId())) return null;
         AiVideoGenerationJob job = new AiVideoGenerationJob(runId, task.getOrganizationId(), task.getId(), item.getId(), attempt,
-                connection.id(), connection.provider(), connection.modelId(), duration, "adaptive", resolution);
+                connection.id(), connection.provider(), connection.modelId(), duration, aspectRatio, resolution);
         jobMapper.insert(job);
         return job;
     }
@@ -869,7 +914,9 @@ public class AiVideoGenerationService {
                     .eq(AiVideoTaskAsset::getItemId, itemId));
             long images = all.stream().filter(a -> "VIDEO_REFERENCE_IMAGE".equals(a.getAssetType())).count();
             long videos = all.stream().filter(a -> "VIDEO_REFERENCE_VIDEO".equals(a.getAssetType())).count();
-            if (images + videos == 0 || images > 9 || videos > 1) throw new IllegalStateException("请上传最多 9 张图片和 1 条视频参考");
+            if (images > AiVideoTaskService.MAX_VIDEO_REFERENCE_IMAGES || videos > 1) {
+                throw new IllegalStateException("参考素材最多支持 9 张图片和 1 条视频");
+            }
             return;
         }
         List<AiVideoTaskAsset> references = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
@@ -880,7 +927,6 @@ public class AiVideoGenerationService {
         if (references.size() > AiVideoTaskService.MAX_VIDEO_REFERENCE_IMAGES) {
             throw new IllegalStateException("参考图不能超过 " + AiVideoTaskService.MAX_VIDEO_REFERENCE_IMAGES + " 张");
         }
-        if (task.isGeneral()) return;
         long primaryCount = references.stream().filter(AiVideoTaskAsset::isPrimaryReference).count();
         if (primaryCount != 1) {
             throw new IllegalStateException("每组必须指定且只能指定一张主参考图");
@@ -1057,14 +1103,16 @@ public class AiVideoGenerationService {
         if ("REVIEWING".equals(job.getStatus())) { reviewSavedVideo(job); return; }
         RuntimeModelConnection connection = modelConfigs.connectionById(job.getOrganizationId(), job.getModelConfigId()).orElse(null);
         if (connection == null) return;
-        boolean providerCompleted = false;
+        boolean recoveringVideo = job.getErrorMessage() != null && job.getErrorMessage().startsWith(VIDEO_RETURN_RETRY);
+        boolean providerCompleted = recoveringVideo;
         try {
             QueryResult result = providers.require(job.getProvider()).query(connection, job.getProviderTaskId());
             job.captureQueryExchange(result.requestJson(), result.responseJson());
             if ("SUCCEEDED".equals(result.status())) {
                 providerCompleted = true;
                 if (result.outputUrl() == null || result.outputUrl().isBlank()) {
-                    job.running("RUNNING", Instant.now().plusSeconds(pollSeconds(job.getProvider())));
+                    job.retryDownload(VIDEO_RETURN_RETRY + "等待厂商返回成片地址",
+                            Instant.now().plusSeconds(pollSeconds(job.getProvider())));
                     jobMapper.updateById(job);
                     return;
                 }
@@ -1079,19 +1127,25 @@ public class AiVideoGenerationService {
                 }
                 Map<String, Object> usage = new LinkedHashMap<>(result.usage() == null ? Map.of() : result.usage());
                 usage.put("reviewCandidateAssetId", candidate.getId());
+                if (recoveringVideo) usage.put("recoveredVideoReturn", true);
                 job.awaitingReview(result.outputUrl(), result.cost(), json(usage));
                 jobMapper.updateById(job);
                 reviewSavedVideo(job);
             } else if ("FAILED".equals(result.status())) {
-                boolean qualityRetry = gridRejectionCount(job.getRunId(), job.getItemId()) > 0;
+                boolean qualityRetry = !recoveringVideo && gridRejectionCount(job.getRunId(), job.getItemId()) > 0;
                 String failure = result.errorMessage() == null || result.errorMessage().isBlank() ? "厂商生成失败" : result.errorMessage();
-                job.failed("ACCEPTED", qualityRetry ? REVIEW_PAUSED + "首帧重做生成失败：" + failure : failure);
+                if (recoveringVideo) failure = REVIEW_PAUSED + "原厂商成片无法回传：" + failure;
+                if (qualityRetry) failure = REVIEW_PAUSED + "首帧重做生成失败：" + failure;
+                job.failed("ACCEPTED", failure);
                 jobMapper.updateById(job);
-                if (qualityRetry) {
+                if (recoveringVideo || qualityRetry) {
                     AiVideoTaskItem item = itemMapper.selectById(job.getItemId());
                     if (item != null) { item.videoFail(job.getErrorMessage()); itemMapper.updateById(item); }
                     refreshTask(job.getTaskId());
                 } else submitNext(job.getRunId(), job.getTaskId(), job.getItemId());
+            } else if (recoveringVideo) {
+                job.retryDownload(job.getErrorMessage(), Instant.now().plusSeconds(pollSeconds(job.getProvider())));
+                jobMapper.updateById(job);
             } else {
                 job.running(result.status(), Instant.now().plusSeconds(pollSeconds(job.getProvider())));
                 jobMapper.updateById(job);
@@ -1109,7 +1163,7 @@ public class AiVideoGenerationService {
                 job.captureQueryExchange(providerException.getRequestJson(), providerException.getResponseJson());
             }
             String message = providerCompleted
-                    ? "厂商已完成，视频回传待重试：" + readable(exception)
+                    ? VIDEO_RETURN_RETRY + readable(exception)
                     : "查询厂商任务待重试：" + readable(exception);
             job.retryDownload(message,
                     Instant.now().plusSeconds(pollSeconds(job.getProvider())));
@@ -1145,6 +1199,7 @@ public class AiVideoGenerationService {
         if (task == null || item == null) return;
         AiVideoTaskAsset candidate = reviewAsset(job, "VIDEO_REVIEW_CANDIDATE");
         Map<String, Object> usage = readMap(job.getUsageJson());
+        boolean recoveredVideo = Boolean.TRUE.equals(usage.get("recoveredVideoReturn"));
         try {
             if (candidate == null || firstFrameAudit == null || reviewFinalizer == null) {
                 throw new IllegalStateException("视频审核依赖或已保存候选不可用");
@@ -1184,19 +1239,22 @@ public class AiVideoGenerationService {
             if (audit.passed()) {
                 job.succeeded(job.getOutputUrl(), job.getCostAmount(), json(usage));
             } else {
-                int rejections = gridRejectionCount(job.getRunId(), job.getItemId()) + 1;
-                String message = audit.rejected()
-                        ? GRID_REJECTED + "首帧出现九宫格、分屏或拼贴：" + audit.reason()
+                String message;
+                if (audit.rejected() && !recoveredVideo) {
+                    int rejections = gridRejectionCount(job.getRunId(), job.getItemId()) + 1;
+                    message = GRID_REJECTED + "首帧出现九宫格、分屏或拼贴：" + audit.reason()
                             + (rejections <= MAX_GRID_REGENERATIONS
                                 ? "；已安排加强提示词后自动重做（" + rejections + "/" + MAX_GRID_REGENERATIONS + "）"
-                                : "；自动重做已达上限，视频和首帧已保留，请检查后手动处理")
-                        : REVIEW_PAUSED + "首帧审核未能确认通过：" + audit.reason() + "；视频和已截首帧已保留，未再次付费生成";
+                                : "；自动重做已达上限，视频和首帧已保留，请检查后手动处理");
+                } else {
+                    message = REVIEW_PAUSED + "首帧审核未能确认通过：" + audit.reason() + "；视频和已截首帧已保留，未再次付费生成";
+                }
                 job.succeeded(job.getOutputUrl(), job.getCostAmount(), json(usage));
                 job.failed("ACCEPTED", message);
             }
             Path temporaryVideo = null;
             Object direct = readMap(candidate.getPromptText()).get("directDownloadUrl");
-            if (audit.passed() && direct instanceof String url && AiVideoTaskService.isProviderVideoUrl(url)
+            if (audit.passed() && !recoveredVideo && direct instanceof String url && AiVideoTaskService.isProviderVideoUrl(url)
                     && !AiVideoTaskService.isProviderVideoUrl(candidate.getFilePath())
                     && (ossStorage == null || !ossStorage.isOssLocation(candidate.getFilePath()))) {
                 temporaryVideo = Path.of(candidate.getFilePath());
@@ -1225,6 +1283,8 @@ public class AiVideoGenerationService {
     private GeneratedVideo download(AiVideoGenerationJob job, RuntimeModelConnection connection,
                                     VideoGenerationProvider provider, String url) throws Exception {
         AiVideoTaskItem item = itemMapper.selectById(job.getItemId());
+        Path directory = videoDownloadDirectory(job, item);
+        Files.createDirectories(directory);
         HttpRequest.Builder requestBuilder = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofMinutes(5)).GET();
         if (provider.requiresAuthenticatedDownload()) {
             requestBuilder.header("Authorization", "Bearer " + connection.apiKey());
@@ -1236,8 +1296,6 @@ public class AiVideoGenerationService {
             throw new IllegalStateException("下载厂商视频失败：HTTP " + response.statusCode());
         }
         long declaredLength = response.headers().firstValueAsLong("content-length").orElse(-1L);
-        Path directory = Path.of(item.getSourceFilePath()).toAbsolutePath().normalize().getParent();
-        Files.createDirectories(directory);
         Path temporary = directory.resolve("video-" + job.getId() + ".part");
         Path output = directory.resolve("video-" + job.getId() + ".mp4");
         try {
@@ -1260,6 +1318,19 @@ public class AiVideoGenerationService {
         } finally {
             Files.deleteIfExists(temporary);
         }
+    }
+
+    private Path videoDownloadDirectory(AiVideoGenerationJob job, AiVideoTaskItem item) {
+        if (item == null) throw new IllegalStateException("视频任务项不存在");
+        String sourcePath = item.getSourceFilePath();
+        if (sourcePath != null && !sourcePath.isBlank()) {
+            return Path.of(sourcePath).toAbsolutePath().normalize().getParent();
+        }
+        // Text-only tasks have no source file. Use the same layout as uploaded task items.
+        Path root = Path.of(taskStorageRoot).toAbsolutePath().normalize();
+        Path directory = root.resolve(job.getOrganizationId()).resolve(job.getTaskId()).resolve(job.getItemId()).normalize();
+        if (directory.equals(root) || !directory.startsWith(root)) throw new IllegalStateException("视频任务目录无效");
+        return directory;
     }
 
     private synchronized void refreshTask(String taskId) {

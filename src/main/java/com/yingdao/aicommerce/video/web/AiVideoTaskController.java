@@ -320,7 +320,8 @@ public class AiVideoTaskController {
                     task.isDirectReferenceVideo(), AiVideoTaskService.MAX_VIDEO_REFERENCE_IMAGES,
                     task.getMusicMode(), task.getMusicFileName(), task.getMusicContentType(), task.getMusicSizeBytes(),
                     task.getStatus(), task.getProgress(),
-                    task.getTotalItems(), task.getCompletedItems(), task.getModelId(), task.getErrorMessage(),
+                    task.getTotalItems(), task.getCompletedItems(),
+                    task.getModelId() == null ? task.getSelectedVideoModelId() : task.getModelId(), task.getErrorMessage(),
                     task.getCreatedAt(), task.getUpdatedAt(), task.getCompletedAt());
         }
     }

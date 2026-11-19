@@ -13,6 +13,54 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
 
 class SeedanceMiniContractTest {
+    @Test
+    void discoversModelsWithTheCurrentKeyAndSubmitsTheExplicitSettings() throws Exception {
+        String standard = "doubao-seedance-2-0-260128";
+        var catalogRequests = new AtomicInteger();
+        var captured = new AtomicReference<String>();
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/models", exchange -> {
+            catalogRequests.incrementAndGet();
+            String catalog = "Bearer alternate".equals(exchange.getRequestHeaders().getFirst("Authorization"))
+                    ? "{\"data\":[{\"id\":\"" + standard + "\"}]}"
+                    : "{\"data\":[{\"id\":\"" + DayanVideoGenerationProvider.MODEL + "\"}]}";
+            byte[] response = catalog.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.createContext("/api/v3/contents/generations/tasks", exchange -> {
+            captured.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            byte[] response = "{\"id\":\"task-selected\",\"status\":\"queued\"}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+        try {
+            var provider = new DayanVideoGenerationProvider(new ObjectMapper());
+            var original = connection(server, "/api/v3");
+            assertEquals(Set.of(DayanVideoGenerationProvider.MODEL), provider.availableModels(original));
+            assertEquals(Set.of(DayanVideoGenerationProvider.MODEL), provider.availableModels(original));
+            assertEquals(1, catalogRequests.get());
+            var selected = new RuntimeModelConnection(original.id(), original.baseUrl(), standard,
+                    original.apiFormat(), original.provider(), "alternate");
+            assertEquals(Set.of(standard), provider.availableModels(selected));
+            assertEquals(2, catalogRequests.get());
+
+            provider.submit(selected, new VideoGenerationProvider.GenerationRequest(
+                    "日出", List.of(), 12, "21:9", "4k", null, true));
+            var body = new ObjectMapper().readTree(captured.get());
+            assertEquals(standard, body.path("model").asText());
+            assertEquals("21:9", body.path("ratio").asText());
+            assertEquals("4k", body.path("resolution").asText());
+            assertEquals(12, body.path("duration").asInt());
+            assertEquals(1, body.path("content").size());
+        } finally {
+            server.stop(0);
+        }
+    }
+
     @Test void retryReusesIdempotencyKeyAndPreservesExplicitOptionsAndAudioRole() throws Exception {
         var keys = new ArrayList<String>();
         var calls = new AtomicInteger();
