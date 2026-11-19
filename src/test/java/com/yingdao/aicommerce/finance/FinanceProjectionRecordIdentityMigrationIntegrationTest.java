@@ -23,6 +23,9 @@ class FinanceProjectionRecordIdentityMigrationIntegrationTest {
             f.migrateThrough(158);
             f.migration("V159__finance_first_settlement_order.sql");
             f.migration("V160__product_capture_templates.sql");
+            // The current reader needs the settlement-cost tables. These migrations leave the V160 trigger intact.
+            f.migration("V163__finance_settlement_cost_projection.sql");
+            f.migration("V164__finance_settlement_cost_scope_variants.sql");
             f.setup();
             String shop=f.connect(f.owner,false);
             var projections=new FinanceQueryProjections(f.repo,f.service,new FinanceAdSpendService(f.repo,f.service));
