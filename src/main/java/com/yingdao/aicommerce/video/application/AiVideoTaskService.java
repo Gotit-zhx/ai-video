@@ -294,18 +294,34 @@ public class AiVideoTaskService {
         MultipartFile video = references.videos().isEmpty() ? null : references.videos().getFirst();
         if (video == null && (command.videoClipStart() != null || command.videoClipEnd() != null)) throw new BusinessException(HttpStatus.BAD_REQUEST, "未上传视频，不能指定截取范围");
         int durationSeconds = normalizeDurationSeconds(command.durationSeconds());
-        String aspectRatio = normalizeAspectRatio(command.aspectRatio());
-        String resolution = normalizeResolution(command.resolution());
         String videoRoute = normalizeVideoRoute(command.videoRoute());
+        String modelId = command.modelId() == null || command.modelId().isBlank() ? null : command.modelId().trim();
+        String aspectRatio;
+        String resolution;
+        if (modelId == null) {
+            aspectRatio = normalizeAspectRatio(command.aspectRatio());
+            resolution = normalizeResolution(command.resolution());
+        } else {
+            aspectRatio = command.aspectRatio() == null ? "adaptive" : command.aspectRatio().trim();
+            if (!GeneralVideoModel.ASPECT_RATIOS.contains(aspectRatio)) {
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "不支持的画幅比例");
+            }
+            resolution = command.resolution() == null ? "720p" : command.resolution().trim().toLowerCase(java.util.Locale.ROOT);
+            GeneralVideoModel model = videoGenerationService.requireGeneralVideoModel(principal.organizationId(), modelId);
+            if (!model.resolutions().contains(resolution)) {
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "所选模型不支持此分辨率");
+            }
+        }
         String name = resolveGeneralTaskName(command.name(), prompt, uploads);
-        String generationRules = json(Map.of(
+        Map<String, Object> generationRules = new LinkedHashMap<>(Map.of(
                 "taskType", "GENERAL",
                 "durationSeconds", durationSeconds,
                 "aspectRatio", aspectRatio,
                 "resolution", resolution,
                 "videoRoute", videoRoute));
+        if (modelId != null) generationRules.put("videoModelId", modelId);
         AiVideoTask task = AiVideoTask.general(principal.organizationId(), name, "{}", durationSeconds,
-                aspectRatio, resolution, generationRules, json(Map.of("preserveReferences", true)),
+                aspectRatio, resolution, json(generationRules), json(Map.of("preserveReferences", true)),
                 principal.userId());
         taskMapper.insert(task);
         registerRollbackFileCleanup(task);
@@ -325,6 +341,10 @@ public class AiVideoTaskService {
     }
 
     record GeneralReferences(List<MultipartFile> images, List<MultipartFile> videos) {}
+
+    public GeneralVideoModel.Options generalVideoOptions(PlatformPrincipal principal) {
+        return videoGenerationService.generalVideoOptions(principal.organizationId());
+    }
 
     static GeneralReferences generalReferences(List<MultipartFile> files) {
         List<MultipartFile> images = new ArrayList<>(), videos = new ArrayList<>();
@@ -1573,7 +1593,7 @@ public class AiVideoTaskService {
 
     private int normalizeDurationSeconds(Integer value) {
         int duration = value == null ? 6 : value;
-        if (duration != -1 && (duration < 4 || duration > 15)) {
+        if (duration != -1 && (duration < GeneralVideoModel.MIN_DURATION || duration > GeneralVideoModel.MAX_DURATION)) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "视频时长支持自动或 4–15 秒");
         }
         return duration;
@@ -2218,7 +2238,12 @@ public class AiVideoTaskService {
                                 String videoRoute, String voiceoverMode, String customVoiceover, String videoTitle) {}
     public record GeneralCreateCommand(String name, String prompt, Integer durationSeconds,
                                        String aspectRatio, String resolution, String videoRoute,
-                                       boolean autoStart, Double videoClipStart, Double videoClipEnd) {
+                                       boolean autoStart, Double videoClipStart, Double videoClipEnd, String modelId) {
+        public GeneralCreateCommand(String name, String prompt, Integer durationSeconds, String aspectRatio,
+                                    String resolution, String videoRoute, boolean autoStart, Double videoClipStart, Double videoClipEnd) {
+            this(name, prompt, durationSeconds, aspectRatio, resolution, videoRoute, autoStart, videoClipStart, videoClipEnd, null);
+        }
+
         public GeneralCreateCommand(String name, String prompt, Integer durationSeconds, String aspectRatio,
                                     String resolution, String videoRoute, boolean autoStart) {
             this(name, prompt, durationSeconds, aspectRatio, resolution, videoRoute, autoStart, null, null);

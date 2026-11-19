@@ -124,6 +124,26 @@ class GeneralVideoTaskServiceTest {
     }
 
     @Test
+    void savesSelectedRatesAndRejectsUnsupportedResolutionBeforeWritingATask() {
+        Fixture fixture = fixture();
+        GeneralVideoModel mini = GeneralVideoModel.SUPPORTED.getFirst();
+        when(fixture.videoGenerationService.requireGeneralVideoModel("org-1", mini.id())).thenReturn(mini);
+
+        assertThrows(BusinessException.class, () -> fixture.service.createGeneral(
+                new AiVideoTaskService.GeneralCreateCommand(null, "日出", 12, "3:4", "1080p",
+                        "QUALITY", false, null, null, mini.id()), List.of(), principal()));
+        verify(fixture.taskMapper, never()).insert(any(AiVideoTask.class));
+
+        AiVideoTask task = fixture.service.createGeneral(
+                new AiVideoTaskService.GeneralCreateCommand(null, "日出", 12, "3:4", "480p",
+                        "QUALITY", false, null, null, mini.id()), List.of(), principal());
+        assertEquals(mini.id(), task.getSelectedVideoModelId());
+        assertEquals("3:4", task.getAspectRatio());
+        assertEquals("480p", task.getResolution());
+        assertEquals(12, task.getDurationSeconds());
+    }
+
+    @Test
     void rejectsMediaMentionsAndClipRangesWhenUploadsAreAbsent() {
         Fixture fixture = fixture();
 

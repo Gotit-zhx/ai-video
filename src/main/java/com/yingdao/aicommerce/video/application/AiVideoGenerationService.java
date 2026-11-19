@@ -1,6 +1,7 @@
 package com.yingdao.aicommerce.video.application;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.saas.application.ModelConfigService;
 import com.yingdao.aicommerce.saas.application.ModelConfigService.RuntimeModelConnection;
 import com.yingdao.aicommerce.storage.OssStorageService;
@@ -24,6 +25,7 @@ import com.yingdao.aicommerce.video.mapper.VideoScriptMapper;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -460,9 +462,41 @@ public class AiVideoGenerationService {
     }
 
     private List<RuntimeModelConnection> videoRoutes(AiVideoTask task) {
-        // Both historical QUALITY/SPEED selections now use the same Seedance model.
-        return modelConfigs.videoConnections(task.getOrganizationId()).stream()
+        String modelId = task.getSelectedVideoModelId();
+        return modelId == null ? dayanRoutes(task.getOrganizationId()) : generalVideoRoutes(task.getOrganizationId(), modelId);
+    }
+
+    private List<RuntimeModelConnection> dayanRoutes(String organizationId) {
+        return modelConfigs.videoConnections(organizationId).stream()
                 .filter(route -> "DAYAN".equals(route.provider()))
+                .toList();
+    }
+
+    public GeneralVideoModel.Options generalVideoOptions(String organizationId) {
+        Set<String> available = new HashSet<>();
+        for (RuntimeModelConnection route : dayanRoutes(organizationId)) {
+            available.addAll(providers.require(route.provider()).availableModels(route));
+        }
+        return new GeneralVideoModel.Options(GeneralVideoModel.SUPPORTED.stream()
+                .filter(model -> available.contains(model.id())).toList(),
+                GeneralVideoModel.ASPECT_RATIOS, GeneralVideoModel.MIN_DURATION, GeneralVideoModel.MAX_DURATION);
+    }
+
+    public GeneralVideoModel requireGeneralVideoModel(String organizationId, String modelId) {
+        GeneralVideoModel model = GeneralVideoModel.SUPPORTED.stream()
+                .filter(option -> option.id().equals(modelId)).findFirst()
+                .orElseThrow(() -> new BusinessException(HttpStatus.BAD_REQUEST, "不支持的视频生成模型"));
+        if (generalVideoRoutes(organizationId, modelId).isEmpty()) {
+            throw new BusinessException(HttpStatus.CONFLICT, "当前企业的生成线路不可使用所选模型");
+        }
+        return model;
+    }
+
+    private List<RuntimeModelConnection> generalVideoRoutes(String organizationId, String modelId) {
+        return dayanRoutes(organizationId).stream()
+                .filter(route -> providers.require(route.provider()).availableModels(route).contains(modelId))
+                .map(route -> new RuntimeModelConnection(route.id(), route.baseUrl(), modelId,
+                        route.apiFormat(), route.provider(), route.apiKey()))
                 .toList();
     }
 
@@ -478,7 +512,8 @@ public class AiVideoGenerationService {
     }
 
     private String missingRouteMessage(AiVideoTask task) {
-        return "Seedance 2.0 Mini 视频线路尚未配置或启用";
+        return task.getSelectedVideoModelId() == null ? "Seedance 2.0 Mini 视频线路尚未配置或启用"
+                : "当前企业的生成线路不可使用所选模型";
     }
 
     private void submitNext(String runId, String taskId, String itemId) {
@@ -523,12 +558,14 @@ public class AiVideoGenerationService {
                                       RuntimeModelConnection connection, int attempt) {
         String taskId = task.getId();
         String itemId = item.getId();
-        int duration = -1;
+        boolean useRequestedOptions = task.getSelectedVideoModelId() != null;
+        int duration = useRequestedOptions ? task.getDurationSeconds() : -1;
+        String aspectRatio = useRequestedOptions ? task.getAspectRatio() : "adaptive";
         String requestedResolution = task.getResolution() == null || task.getResolution().isBlank()
                 ? "720p" : task.getResolution();
         VideoGenerationProvider provider = providers.require(connection.provider());
-        String resolution = provider.effectiveResolution(requestedResolution);
-        AiVideoGenerationJob job = reserveSubmissionSlot(runId, task, item, attempt, connection, duration, resolution);
+        String resolution = useRequestedOptions ? requestedResolution : provider.effectiveResolution(requestedResolution);
+        AiVideoGenerationJob job = reserveSubmissionSlot(runId, task, item, attempt, connection, duration, aspectRatio, resolution);
         if (job == null) {
             item.startVideo();
             itemMapper.updateById(item);
@@ -549,7 +586,7 @@ public class AiVideoGenerationService {
             if (task.isGeneral() && !media.isEmpty()) prompt = generalReferencePrompt(prompt);
             prompt = strengthenSingleScenePrompt(prompt, gridRejectionCount(runId, itemId));
             GenerationRequest request = new GenerationRequest(prompt, media,
-                    duration, task.getAspectRatio(), resolution, audioReference(task));
+                    duration, aspectRatio, resolution, audioReference(task), useRequestedOptions);
             paceSubmission(connection.provider());
             job.sending();
             jobMapper.updateById(job);
@@ -609,10 +646,10 @@ public class AiVideoGenerationService {
 
     private synchronized AiVideoGenerationJob reserveSubmissionSlot(String runId, AiVideoTask task, AiVideoTaskItem item,
                                                                      int attempt, RuntimeModelConnection connection,
-                                                                     int duration, String resolution) {
+                                                                     int duration, String aspectRatio, String resolution) {
         if (!hasSubmissionCapacity(task.getOrganizationId())) return null;
         AiVideoGenerationJob job = new AiVideoGenerationJob(runId, task.getOrganizationId(), task.getId(), item.getId(), attempt,
-                connection.id(), connection.provider(), connection.modelId(), duration, "adaptive", resolution);
+                connection.id(), connection.provider(), connection.modelId(), duration, aspectRatio, resolution);
         jobMapper.insert(job);
         return job;
     }

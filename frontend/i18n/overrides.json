@@ -439,6 +439,28 @@
     "Jana video daripada prom. Imej dan video adalah pilihan.",
     "Bumuo ng video mula sa prompt. Opsyonal ang mga larawan at video."
   ],
+  "生成模型": [
+    "Model", "Model", "โมเดล", "Mô hình", "Model", "Modelo"
+  ],
+  "正在读取生成选项…": [
+    "Loading generation options…", "Memuat opsi pembuatan…", "กำลังโหลดตัวเลือกการสร้าง…",
+    "Đang tải tùy chọn tạo video…", "Memuatkan pilihan penjanaan…", "Nilo-load ang mga opsyon sa pagbuo…"
+  ],
+  "当前企业没有可用的生成模型。": [
+    "No generation models are available for this company.", "Tidak ada model yang tersedia untuk perusahaan ini.",
+    "บริษัทนี้ไม่มีโมเดลสำหรับสร้างวิดีโอ", "Công ty này chưa có mô hình khả dụng.",
+    "Tiada model penjanaan tersedia untuk syarikat ini.", "Walang magagamit na modelo para sa kumpanyang ito."
+  ],
+  "当前企业的生成线路不可使用所选模型": [
+    "The selected model is unavailable for this company", "Model yang dipilih tidak tersedia untuk perusahaan ini",
+    "บริษัทนี้ไม่สามารถใช้โมเดลที่เลือกได้", "Công ty này không thể sử dụng mô hình đã chọn",
+    "Model yang dipilih tidak tersedia untuk syarikat ini", "Hindi available sa kumpanyang ito ang napiling modelo"
+  ],
+  "所选模型不支持此分辨率": [
+    "The selected model does not support this resolution", "Model yang dipilih tidak mendukung resolusi ini",
+    "โมเดลที่เลือกไม่รองรับความละเอียดนี้", "Mô hình đã chọn không hỗ trợ độ phân giải này",
+    "Model yang dipilih tidak menyokong resolusi ini", "Hindi sinusuportahan ng napiling modelo ang resolusyong ito"
+  ],
   "JPG、PNG、WEBP、GIF，最多 9 张，单图 20 MB，合计 90 MB": [
     "JPG, PNG, WEBP, GIF. Up to 9 images, 20 MB each and 90 MB total.",
     "JPG, PNG, WEBP, GIF. Maksimal 9 gambar, 20 MB per gambar dan 90 MB total.",
