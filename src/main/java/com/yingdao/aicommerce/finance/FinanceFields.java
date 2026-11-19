@@ -300,6 +300,7 @@ public final class FinanceFields {
             FinanceProductSkus.put(row,FinanceProductSkus.fromOrder(platform,raw));
             var identities=FinanceProductSkus.identities(platform,raw);
             row.put("product_spu_values",identities.stream().map(item->text(item.get("productId"))).filter(id->!id.isBlank()).distinct().toList());
+            row.put("platform_sku_values",identities.stream().map(item->text(item.get("skuId"))).filter(id->!id.isBlank()).distinct().toList());
             if(identities.stream().anyMatch(item->text(item.get("sellerSku")).isBlank()))
                 row.put("product_sku_details",identities);
             Object items=raw.get(platform.equals("SHOPEE")?"item_list":"line_items");
