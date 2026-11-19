@@ -36,6 +36,7 @@ import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class GeneralVideoTaskServiceTest {
@@ -86,6 +87,55 @@ class GeneralVideoTaskServiceTest {
         assertThrows(BusinessException.class, () -> AiVideoTaskService.validateGeneralMentions("@视频2", 2, 1));
         assertThrows(BusinessException.class, () -> AiVideoTaskService.validateGeneralMentions("@视频1", 2, 0));
         assertTrue(AiVideoGenerationService.generalReferencePrompt("@图片1 模仿 @视频1").contains("唯一的视频素材"));
+    }
+
+    @Test
+    void savesTextOnlyTaskWithOneReadyItemAndAllowsManualStart() {
+        Fixture fixture = fixture();
+        String prompt = "  镜头推向山间日出\n云雾逐渐散开  ";
+
+        AiVideoTask task = fixture.service.createGeneral(
+                new AiVideoTaskService.GeneralCreateCommand(null, prompt, -1,
+                        "adaptive", "720p", "QUALITY", false), null, principal());
+
+        assertEquals("镜头推向山间日出 云雾逐渐散开", task.getName());
+        assertEquals("READY", task.getStatus());
+        assertEquals(1, task.getTotalItems());
+        ArgumentCaptor<AiVideoTaskItem> item = ArgumentCaptor.forClass(AiVideoTaskItem.class);
+        verify(fixture.itemMapper).updateById(item.capture());
+        assertEquals(prompt, item.getValue().getVideoPromptText());
+        assertEquals("", item.getValue().getSourceFilePath());
+        verifyNoInteractions(fixture.assetMapper, fixture.videoGenerationService);
+
+        fixture.service.startGeneral(task.getId(), principal());
+        verify(fixture.videoGenerationService).start(task);
+    }
+
+    @Test
+    void startsTextOnlyTaskImmediatelyAndUsesFallbackNameWhenNeeded() {
+        Fixture fixture = fixture();
+
+        AiVideoTask task = fixture.service.createGeneral(
+                new AiVideoTaskService.GeneralCreateCommand(null, "！！！", -1,
+                        "adaptive", "720p", "QUALITY", true), List.of(), principal());
+
+        assertEquals("通用生成", task.getName());
+        verify(fixture.videoGenerationService).start(task);
+    }
+
+    @Test
+    void rejectsMediaMentionsAndClipRangesWhenUploadsAreAbsent() {
+        Fixture fixture = fixture();
+
+        for (String prompt : List.of("使用 @图片1", "使用 @视频1")) {
+            assertThrows(BusinessException.class, () -> fixture.service.createGeneral(
+                    new AiVideoTaskService.GeneralCreateCommand(null, prompt, -1,
+                            "adaptive", "720p", "QUALITY", false), null, principal()));
+        }
+        assertThrows(BusinessException.class, () -> fixture.service.createGeneral(
+                new AiVideoTaskService.GeneralCreateCommand(null, "一段视频", -1,
+                        "adaptive", "720p", "QUALITY", false, 0.0, 5.0), null, principal()));
+        verify(fixture.taskMapper, never()).insert(any(AiVideoTask.class));
     }
 
     @Test

@@ -287,15 +287,17 @@ public class AiVideoTaskService {
         if (prompt.length() > 20000) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "视频提示词不能超过 20000 个字符");
         }
-        GeneralReferences references = generalReferences(files);
+        List<MultipartFile> uploads = files == null ? List.of() : files;
+        GeneralReferences references = generalReferences(uploads);
         validateGeneralReferenceBatch(references.images());
         validateGeneralMentions(prompt, references.images().size(), references.videos().size());
-        if (references.videos().isEmpty() && (command.videoClipStart() != null || command.videoClipEnd() != null)) throw new BusinessException(HttpStatus.BAD_REQUEST, "未上传视频，不能指定截取范围");
+        MultipartFile video = references.videos().isEmpty() ? null : references.videos().getFirst();
+        if (video == null && (command.videoClipStart() != null || command.videoClipEnd() != null)) throw new BusinessException(HttpStatus.BAD_REQUEST, "未上传视频，不能指定截取范围");
         int durationSeconds = normalizeDurationSeconds(command.durationSeconds());
         String aspectRatio = normalizeAspectRatio(command.aspectRatio());
         String resolution = normalizeResolution(command.resolution());
         String videoRoute = normalizeVideoRoute(command.videoRoute());
-        String name = resolveGeneralTaskName(command.name(), prompt, files);
+        String name = resolveGeneralTaskName(command.name(), prompt, uploads);
         String generationRules = json(Map.of(
                 "taskType", "GENERAL",
                 "durationSeconds", durationSeconds,
@@ -309,9 +311,9 @@ public class AiVideoTaskService {
         registerRollbackFileCleanup(task);
         try {
             AiVideoTaskItem item = references.images().isEmpty()
-                    ? createGeneralVideoItem(task, references.videos().getFirst())
+                    ? createGeneralItemWithoutImage(task, video)
                     : uploadDirectReferences(task, references.images(), null).getFirst();
-            if (!references.videos().isEmpty()) storeGeneralReferenceVideo(task, item, references.videos().getFirst(), command);
+            if (video != null) storeGeneralReferenceVideo(task, item, video, command);
             item.updateVideoPrompt(prompt);
             itemMapper.updateById(item);
             if (command.autoStart()) return startVideos(task);
@@ -325,7 +327,6 @@ public class AiVideoTaskService {
     record GeneralReferences(List<MultipartFile> images, List<MultipartFile> videos) {}
 
     static GeneralReferences generalReferences(List<MultipartFile> files) {
-        if (files == null || files.isEmpty()) throw new BusinessException(HttpStatus.BAD_REQUEST, "请上传参考图片或视频");
         List<MultipartFile> images = new ArrayList<>(), videos = new ArrayList<>();
         long totalBytes = 0;
         for (MultipartFile file : files) {
@@ -355,9 +356,13 @@ public class AiVideoTaskService {
         }
     }
 
-    private AiVideoTaskItem createGeneralVideoItem(AiVideoTask task, MultipartFile video) {
-        AiVideoTaskItem item = new AiVideoTaskItem(task.getOrganizationId(), task.getId(), task.getName(),
-                "REF-001", safeFileName(video.getOriginalFilename()), "pending", generalVideoMime(video), video.getSize());
+    private AiVideoTaskItem createGeneralItemWithoutImage(AiVideoTask task, MultipartFile video) {
+        // The source columns are required even when this item has no uploaded media.
+        AiVideoTaskItem item = video == null
+                ? new AiVideoTaskItem(task.getOrganizationId(), task.getId(), task.getName(),
+                        "REF-001", "", "", "", 0)
+                : new AiVideoTaskItem(task.getOrganizationId(), task.getId(), task.getName(),
+                        "REF-001", safeFileName(video.getOriginalFilename()), "pending", generalVideoMime(video), video.getSize());
         itemMapper.insert(item);
         task.updateItemCount(1);
         taskMapper.updateById(task);
@@ -1469,7 +1474,7 @@ public class AiVideoTaskService {
         }
         String extracted = extractGeneralTaskName(prompt, files);
         if (!extracted.isBlank()) return extracted;
-        String fileName = originalFileBaseName(files.getFirst());
+        String fileName = files.isEmpty() ? "" : originalFileBaseName(files.getFirst());
         return fileName.isBlank() ? "通用生成" : truncateGeneralTaskName(fileName);
     }
 

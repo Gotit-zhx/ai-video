@@ -46,11 +46,11 @@ public class GeneralVideoTaskController {
             @RequestParam(required = false) @Size(max = 160) String name,
             @RequestParam @NotBlank @Size(max = 20000) String prompt,
             @RequestParam(defaultValue = "6") Integer durationSeconds,
-            @RequestParam(defaultValue = "9:16") @Pattern(regexp = "9:16|1:1|16:9") String aspectRatio,
+            @RequestParam(defaultValue = "9:16") @Pattern(regexp = "adaptive|9:16|1:1|16:9") String aspectRatio,
             @RequestParam(defaultValue = "720p") @Pattern(regexp = "720p|1080p|2K|4K") String resolution,
             @RequestParam(defaultValue = "QUALITY") @Pattern(regexp = "QUALITY|SPEED") String videoRoute,
             @RequestParam(defaultValue = "false") boolean autoStart,
-            @RequestParam("files") List<MultipartFile> files,
+            @RequestParam(name = "files", required = false) List<MultipartFile> files,
             @RequestParam(required = false) Double videoClipStart,
             @RequestParam(required = false) Double videoClipEnd,
             @AuthenticationPrincipal PlatformPrincipal principal) {

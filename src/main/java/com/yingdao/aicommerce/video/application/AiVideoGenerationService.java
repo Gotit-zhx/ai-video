@@ -536,14 +536,19 @@ public class AiVideoGenerationService {
         }
         boolean qualityRetry = gridRejectionCount(runId, itemId) > 0;
         try {
-            String prompt = task.isGeneral() ? generalReferencePrompt(item.getVideoPromptText())
-                    : task.isDirectReferenceVideo() ? directReferencePrompt(task, item) : item.getVideoPromptText();
+            String prompt = item.getVideoPromptText();
             if (!task.isGeneral()) {
-                if (!task.isDirectReferenceVideo()) prompt = usesIndividualFrames(task) ? individualFramesSafetyPrompt(prompt, task.getAspectRatio()) : gridStoryboardSafetyPrompt(prompt, task.getAspectRatio());
+                if (task.isDirectReferenceVideo()) {
+                    prompt = directReferencePrompt(task, item);
+                } else {
+                    prompt = usesIndividualFrames(task) ? individualFramesSafetyPrompt(prompt, task.getAspectRatio()) : gridStoryboardSafetyPrompt(prompt, task.getAspectRatio());
+                }
                 prompt = finalAudioPerformancePrompt(prompt, task, objectMapper);
             }
+            List<Reference> media = references(task, item, connection, provider);
+            if (task.isGeneral() && !media.isEmpty()) prompt = generalReferencePrompt(prompt);
             prompt = strengthenSingleScenePrompt(prompt, gridRejectionCount(runId, itemId));
-            GenerationRequest request = new GenerationRequest(prompt, references(task, item, connection, provider),
+            GenerationRequest request = new GenerationRequest(prompt, media,
                     duration, task.getAspectRatio(), resolution, audioReference(task));
             paceSubmission(connection.provider());
             job.sending();
@@ -869,7 +874,9 @@ public class AiVideoGenerationService {
                     .eq(AiVideoTaskAsset::getItemId, itemId));
             long images = all.stream().filter(a -> "VIDEO_REFERENCE_IMAGE".equals(a.getAssetType())).count();
             long videos = all.stream().filter(a -> "VIDEO_REFERENCE_VIDEO".equals(a.getAssetType())).count();
-            if (images + videos == 0 || images > 9 || videos > 1) throw new IllegalStateException("请上传最多 9 张图片和 1 条视频参考");
+            if (images > AiVideoTaskService.MAX_VIDEO_REFERENCE_IMAGES || videos > 1) {
+                throw new IllegalStateException("参考素材最多支持 9 张图片和 1 条视频");
+            }
             return;
         }
         List<AiVideoTaskAsset> references = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
@@ -880,7 +887,6 @@ public class AiVideoGenerationService {
         if (references.size() > AiVideoTaskService.MAX_VIDEO_REFERENCE_IMAGES) {
             throw new IllegalStateException("参考图不能超过 " + AiVideoTaskService.MAX_VIDEO_REFERENCE_IMAGES + " 张");
         }
-        if (task.isGeneral()) return;
         long primaryCount = references.stream().filter(AiVideoTaskAsset::isPrimaryReference).count();
         if (primaryCount != 1) {
             throw new IllegalStateException("每组必须指定且只能指定一张主参考图");

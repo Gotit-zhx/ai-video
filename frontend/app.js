@@ -13660,7 +13660,7 @@ function generalVideoTaskCard(task) {
 function renderGeneralVideoTasks() {
   const grid = document.querySelector("#general-video-task-grid");
   if (!generalVideoTasks.length) {
-    IncrementalDOM.html(grid, `<div class="general-video-empty"><strong>还没有通用生成任务</strong><span>上传参考图并写下画面描述，第一条任务会出现在这里。</span></div>`);
+    IncrementalDOM.html(grid, `<div class="general-video-empty"><strong>还没有通用生成任务</strong></div>`);
     return;
   }
   IncrementalDOM.html(grid, generalVideoTasks.map(generalVideoTaskCard).join(""));
@@ -13945,8 +13945,8 @@ document.querySelector("#general-video-form").addEventListener("submit", async e
     status.className = "general-form-status is-error";
     return;
   }
-  if ((!generalVideoReferences.length && !generalVideoReference) || generalVideoReferences.length > limit) {
-    status.textContent = generalVideoReferences.length ? `最多使用 ${limit} 张图片。` : "请至少上传 1 张图片或 1 条视频。";
+  if (generalVideoReferences.length > limit) {
+    status.textContent = `最多使用 ${limit} 张图片。`;
     status.className = "general-form-status is-error";
     return;
   }
@@ -13966,7 +13966,7 @@ document.querySelector("#general-video-form").addEventListener("submit", async e
   }
   button.disabled = true;
   button.innerHTML = `正在创建 <span class="button-spinner" aria-hidden="true"></span>`;
-  status.textContent = "正在上传参考图并创建任务…";
+  status.textContent = "正在创建";
   status.className = "general-form-status";
   try {
     const result = await generalVideoApi("", { method: "POST", body: payload });
