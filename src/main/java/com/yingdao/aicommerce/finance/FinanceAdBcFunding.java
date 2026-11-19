@@ -10,6 +10,7 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 final class FinanceAdBcFunding {
     private final FinanceAds ads;
     private final FinanceRepository repo;
+    private static final long HISTORY_VERSION=1;
     private static final Set<String> FINANCE_ROLES=Set.of("MANAGER","ANALYST");
     private static final List<String> MONEY=List.of("amount","cash_amount","grant_amount","tax_amount");
     private static final class ChangedReport extends RuntimeException {}
@@ -40,7 +41,9 @@ final class FinanceAdBcFunding {
         var claimed=repo.jdbc().queryForList("SELECT * FROM finance_ad_bc_sync WHERE organization_id=? AND credential_key=? AND lease_token=? AND lease_until>UTC_TIMESTAMP(6)",group.organization,group.key,lease);
         if(claimed.isEmpty())return;var state=claimed.getFirst();
         // Refresh BC access between complete days; a large day must not restart every six hours.
-        boolean discovery=state.get("bc_json")==null||!instant(state.get("discovery_next_at")).isAfter(Instant.now())&&!read(state.get("checkpoint_json")).containsKey("run");
+        var known=read(state.get("bc_json"));
+        boolean discovery=state.get("bc_json")==null||!read(state.get("checkpoint_json")).containsKey("run")&&
+                (!instant(state.get("discovery_next_at")).isAfter(Instant.now())||number(known.get("history_version"))<HISTORY_VERSION);
         try{if(discovery)discover(group,state,lease);else cost(group,state,lease);}
         catch(RuntimeException failure){failed(group,state,lease,discovery,failure);}
     }
@@ -104,10 +107,13 @@ final class FinanceAdBcFunding {
             String status=financial?"SYNCING":bcs.isEmpty()?"NEEDS_BC_ACCESS":"NEEDS_FINANCE_ROLE";
             String message=financial?roleWarning(bcs):bcs.isEmpty()?"当前授权未返回可访问的 Business Center；请核对 BC 访问关系及 Read Business Center 授权。":"当前可访问 BC 未返回 Finance Manager 或 Finance Analyst 角色；请由 BC 管理员配置财务角色。";
             var cp=restart(read(state.get("checkpoint_json")));
+            var previous=read(state.get("bc_json"));
+            if(financial&&(number(previous.get("history_version"))<HISTORY_VERSION||!readableBcs(rows(previous.get("list"))).containsAll(readableBcs(bcs))))cp.put("history_required",true);
+            long discoveryDelay=financial&&roleWarning(bcs)==null?21600:3600;
             repo.jdbc().update("UPDATE finance_ad_bc_sync SET bc_json=?,discovery_page=1,discovery_stage_json=NULL,discovery_next_at=?,checkpoint_json=? WHERE organization_id=? AND credential_key=?",
-                    repo.write(Map.of("list",bcs)),Timestamp.from(Instant.now().plusSeconds(financial?21600:86400)),cp.isEmpty()?null:repo.write(cp),g.organization,g.key);
+                    repo.write(Map.of("list",bcs,"history_version",HISTORY_VERSION)),Timestamp.from(Instant.now().plusSeconds(discoveryDelay)),cp.isEmpty()?null:repo.write(cp),g.organization,g.key);
             repo.jdbc().update("DELETE FROM finance_ad_bc_stage WHERE organization_id=? AND credential_key=?",g.organization,g.key);
-            release(g,lease,status,message,financial?30:86400,false);return null;
+            release(g,lease,status,message,financial?30:discoveryDelay,false);return null;
         });
     }
     private void cost(Group g,Map<String,Object> state,String lease){
@@ -117,7 +123,12 @@ final class FinanceAdBcFunding {
         var cp=read(state.get("checkpoint_json"));
         Instant now=Instant.now();var zones=g.accounts.values().stream().map(a->ZoneId.of(text(a.get("timezone")))).distinct().toList();
         LocalDate today=latestDay(now,zones);
-        if(cp.isEmpty()){
+        if(Boolean.TRUE.equals(cp.remove("history_required"))){
+            LocalDate from=today.minusDays(89),until=today;
+            if(cp.containsKey("from")){var unfinished=LocalDate.parse(text(cp.get("from")));if(unfinished.isBefore(from))from=unfinished;}
+            if(cp.containsKey("until")){var unfinished=LocalDate.parse(text(cp.get("until")));if(unfinished.isAfter(until))until=unfinished;}
+            cp.put("from",from.toString());cp.put("until",until.toString());
+        }else if(cp.isEmpty()){
             boolean nightly=nightly(state.get("last_success_at")==null?null:instant(state.get("last_success_at")),now,zones);
             cp.put("from",today.minusDays(state.get("last_success_at")==null?89:nightly?30:6).toString());cp.put("until",today.toString());
         }
@@ -201,9 +212,10 @@ final class FinanceAdBcFunding {
     }
     private static void rememberPagination(Map<String,Object> cp,Page p){cp.put("expected_total",p.total);cp.put("expected_pages",p.pages);}
     private static void clearPage(Map<String,Object> cp){cp.put("page",1);cp.remove("seen");cp.remove("expected_total");cp.remove("expected_pages");}
-    private static Map<String,Object> restart(Map<String,Object> cp){var result=new LinkedHashMap<String,Object>();for(String key:List.of("from","until"))if(cp.containsKey(key))result.put(key,cp.get(key));return result;}
+    private static Map<String,Object> restart(Map<String,Object> cp){var result=new LinkedHashMap<String,Object>();for(String key:List.of("from","until","history_required"))if(cp.containsKey(key))result.put(key,cp.get(key));return result;}
     private Map<String,Object> read(Object json){return json==null?new LinkedHashMap<>():new LinkedHashMap<>(repo.read(text(json)));}
-    private static String roleWarning(List<Map<String,Object>> bcs){return bcs.stream().anyMatch(b->!FINANCE_ROLES.contains(text(b.get("finance_role"))))?"部分 BC 未返回财务角色；仅采集已确认财务角色的 BC，资金覆盖仍待核对。":null;}
+    private static Set<String> readableBcs(List<Map<String,Object>> bcs){var ids=new HashSet<String>();for(var bc:bcs)if(FINANCE_ROLES.contains(text(bc.get("finance_role"))))ids.add(text(bc.get("bc_id")));return ids;}
+    private static String roleWarning(List<Map<String,Object>> bcs){return bcs.stream().anyMatch(b->!FINANCE_ROLES.contains(text(b.get("finance_role"))))?"部分可见 BC 未返回财务角色；仅查询已确认财务角色的 BC。请核对实际付款 BC 及其 Finance Analyst 或 Finance Manager 角色，尚未确认这些 BC 与本广告账户的付款关系。":null;}
     private void release(Group g,String lease,String status,String message,long delay,boolean success){
         repo.jdbc().update("UPDATE finance_ad_bc_sync SET status=?,error_message=?,failures=0,next_at=?,last_success_at=CASE WHEN ? THEN UTC_TIMESTAMP(6) ELSE last_success_at END,lease_token=NULL,lease_until=NULL WHERE organization_id=? AND credential_key=? AND lease_token=?",status,message,Timestamp.from(Instant.now().plusSeconds(delay)),success,g.organization,g.key,lease);
     }
@@ -243,6 +255,7 @@ final class FinanceAdBcFunding {
         repo.jdbc().update("INSERT IGNORE INTO finance_ad_bc_sync(organization_id,credential_key) VALUES(?,?)",s.organizationId(),key);
         var state=repo.jdbc().queryForList("SELECT checkpoint_json FROM finance_ad_bc_sync WHERE organization_id=? AND credential_key=?",s.organizationId(),key).getFirst();
         var cp=restart(read(state.get("checkpoint_json")));
+        cp.put("history_required",true);
         repo.jdbc().update("UPDATE finance_ad_bc_sync SET status='READY',error_message=NULL,failures=0,next_at=UTC_TIMESTAMP(6),discovery_next_at=UTC_TIMESTAMP(6),discovery_page=1,discovery_stage_json=NULL,checkpoint_json=?,lease_token=NULL,lease_until=NULL WHERE organization_id=? AND credential_key=?",cp.isEmpty()?null:repo.write(cp),s.organizationId(),key);
         repo.jdbc().update("DELETE FROM finance_ad_bc_stage WHERE organization_id=? AND credential_key=?",s.organizationId(),key);
         repo.jdbc().update("UPDATE finance_ad_accounts SET funding_credential_key=? WHERE organization_id=? AND advertiser_id=?",key,s.organizationId(),advertiser);
@@ -279,10 +292,18 @@ final class FinanceAdBcFunding {
         repo.jdbc().queryForList("SELECT advertiser_id,COUNT(*) records,COUNT(DISTINCT record_date) returned_days,MIN(record_date) first_day,MAX(record_date) last_day FROM finance_ad_bc_costs WHERE "+where+" GROUP BY advertiser_id",args.toArray()).forEach(r->facts.put(text(r.get("advertiser_id")),r));
         for(var account:accounts){
             String id=text(account.get("advertiser_id"));var state=states.getOrDefault(id,Map.of());var item=new LinkedHashMap<String,Object>();
-            String status=Boolean.FALSE.equals(account.get("enabled"))?"PAUSED":text(state.get("status"));if(status.isBlank())status="READY";
-            item.put("source","API_BC_COST");item.put("status",status);item.put("error_message",state.get("error_message"));item.put("last_success_at",state.get("last_success_at"));item.put("next_at",state.get("next_at"));
-            boolean missingRole=rows(read(state.get("bc_json")).get("list")).stream().anyMatch(b->!FINANCE_ROLES.contains(text(b.get("finance_role"))));
-            item.put("permissionRequired",status.startsWith("NEEDS_")||missingRole);var coverage=facts.getOrDefault(id,Map.of());
+            String syncStatus=Boolean.FALSE.equals(account.get("enabled"))?"PAUSED":text(state.get("status"));if(syncStatus.isBlank())syncStatus="READY";
+            var bcs=rows(read(state.get("bc_json")).get("list"));long readable=readableBcs(bcs).size();boolean missingRole=readable<bcs.size();
+            var coverage=facts.getOrDefault(id,Map.of());boolean hasRecords=number(coverage.get("records"))>0;
+            String status=syncStatus,message=text(state.get("error_message"));
+            if(syncStatus.equals("SUCCESS")){
+                if(missingRole){status="PARTIAL_ACCESS";message=roleWarning(bcs);}
+                else if(!hasRecords)status="NO_DATA";
+                if(!hasRecords)message=(message.isBlank()?"":message+" ")+"当前查询范围未取得该广告账户的资金费用记录；请核对实际付款 BC、账户访问关系及报表日期，空响应不代表零消耗。";
+            }
+            item.put("source","API_BC_COST");item.put("status",status);item.put("sync_status",syncStatus);item.put("error_message",message.isBlank()?null:message);item.put("last_success_at",state.get("last_success_at"));item.put("next_at",state.get("next_at"));
+            item.put("permissionRequired",status.startsWith("NEEDS_")||missingRole);
+            item.put("readable_bc_count",readable);item.put("missing_finance_role_bc_count",bcs.size()-readable);item.put("coverage_status",hasRecords?"HAS_RECORDS":"NO_RECORDS");
             item.put("records",number(coverage.get("records")));item.put("returned_days",number(coverage.get("returned_days")));item.put("first_day",coverage.get("first_day"));item.put("last_day",coverage.get("last_day"));
             item.put("coverage_basis","仅统计已返回账户费用记录的日期；空响应不表示零消耗或资金完整。");account.put("funding",item);
         }
