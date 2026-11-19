@@ -308,10 +308,14 @@ public class FinanceService {
     }
     /** Original currency-neutral algorithm. Projection workers share its surrounding MVCC transaction. */
     Map<String,Object> buildNativeDashboardFacts(Scope s,Filter all,boolean live){
+        return buildNativeDashboardFacts(s,all,live,null);
+    }
+    Map<String,Object> buildNativeDashboardFacts(Scope s,Filter all,boolean live,List<Map<String,Object>> rawPageCounts){
         var costReport=new FinanceCostReport(repo);
         return repo.readSnapshot(180,()->{
             var advertising=new ArrayList<Map<String,Object>>();
-            var buckets=new ArrayList<>(repo.dashboardBuckets(s,all,live,live?null:advertising));
+            var buckets=new ArrayList<>(rawPageCounts==null?repo.dashboardBuckets(s,all,live,live?null:advertising):
+                repo.dashboardBuckets(s,all,live,live?null:advertising,rawPageCounts));
             var orders=costReport.dashboardFacts(s,all);
             if(!live){
                 buckets.removeIf(row->Set.of("ORDER","REFUND").contains(text(row.get("kind"))));

@@ -8,14 +8,23 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 @Service
 public class FinanceWorkspaceQueryService {
     private static final long PENDING_WAIT_NANOS=java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
-    private static final long SETTLEMENT_PENDING_WAIT_NANOS=java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(250);
+    private static final long INTERACTIVE_PENDING_WAIT_NANOS=java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(250);
     private static final long PENDING_POLL_NANOS=java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(100);
     @FunctionalInterface interface PendingWait {void await(long nanos)throws InterruptedException;}
     public record Selection(String view,String kind,boolean allOrders,boolean cny,String fxSnapshot,
-                            int page,int spendPage,String numbers,String search,String assignment){}
+                            int page,int spendPage,String numbers,String search,String assignment,boolean interactivePage){
+        public Selection(String view,String kind,boolean allOrders,boolean cny,String fxSnapshot,
+                         int page,int spendPage,String numbers,String search,String assignment){
+            this(view,kind,allOrders,cny,fxSnapshot,page,spendPage,numbers,search,assignment,false);
+        }
+    }
     final FinanceRepository repo;final FinanceService finance;final FinanceAdSpendService spend;
     final FinanceQueryProjections projections;final FinanceAds ads;final FinanceReadCache cache;
     final java.util.function.LongSupplier nanoTime;final PendingWait pendingWait;
+    private record OverviewRead(Scope scope,Filter filter,boolean cny,String fxSnapshot){}
+    private record WorkspaceRead(Scope scope,Filter filter,Selection selection){}
+    private final FinanceQueryReadBatch<OverviewRead,Map<String,Object>> nativeOverviews=new FinanceQueryReadBatch<>();
+    private final FinanceQueryReadBatch<WorkspaceRead,Map<String,Object>> nativeWorkspace=new FinanceQueryReadBatch<>();
     @org.springframework.beans.factory.annotation.Autowired(required=false) private FinanceShopeeAds shopeeAds;
     @org.springframework.beans.factory.annotation.Autowired
     public FinanceWorkspaceQueryService(FinanceRepository repo,FinanceService finance,FinanceAdSpendService spend,
@@ -31,10 +40,7 @@ public class FinanceWorkspaceQueryService {
     Map<String,Object> overview(Scope scope,Filter filter,boolean cny,String fxSnapshot){
         Filter nativeFilter=nativeFilter(filter);
         var version=projections.version(scope,nativeFilter);
-        if(!"READY".equals(version.get("status"))){
-            projections.request(scope,nativeFilter);
-            return nativeOverview(scope,filter,cny,fxSnapshot);
-        }
+        if(!"READY".equals(version.get("status")))return nativeOverview(scope,filter,cny,fxSnapshot);
 
         String revision=text(version.get("revision"));
         java.util.function.Supplier<Map<String,Object>> load=()->{
@@ -57,16 +63,22 @@ public class FinanceWorkspaceQueryService {
         }
     }
     private Map<String,Object> nativeOverview(Scope scope,Filter filter,boolean cny,String fxSnapshot){
-        var facts=finance.buildNativeDashboardFacts(scope,nativeFilter(filter),false);
-        return finance.withCalculations(scope,filter,finance.dashboardFromFacts(scope,filter,cny,fxSnapshot,false,facts));
+        var result=nativeOverviews.read(new OverviewRead(scope,filter,cny,fxSnapshot),()->{
+            var all=nativeFilter(filter);
+            projections.request(scope,all);
+            var facts=finance.buildNativeDashboardFacts(scope,all,false);
+            return finance.dashboardFromFacts(scope,filter,cny,fxSnapshot,false,facts);
+        });
+        return finance.withCalculations(scope,filter,result);
     }
     public Map<String,Object> query(Scope scope,Scope personal,Filter filter,Selection selection){
         Selection selected=validated(selection);
         Filter nativeFilter=nativeFilter(filter);
         var version=projections.version(scope,nativeFilter);
         if(!selected.view().equals("ads")){
-            // Leave most of the interactive budget for the exact native settlement query.
-            long waitBudget=selected.view().equals("settlements")?SETTLEMENT_PENDING_WAIT_NANOS:PENDING_WAIT_NANOS;
+            // Leave most of the page budget for the exact native query.
+            boolean quickFallback=selected.view().equals("settlements")||selected.interactivePage();
+            long waitBudget=quickFallback?INTERACTIVE_PENDING_WAIT_NANOS:PENDING_WAIT_NANOS;
             version=awaitProjection(scope,nativeFilter,version,waitBudget);
         }
         Map<String,Object> result;
@@ -149,12 +161,15 @@ public class FinanceWorkspaceQueryService {
         return shops.stream().filter(shop->FinanceGroups.matches(shop,filter)).map(shop->text(shop.get("id"))).toList();
     }
     private Map<String,Object> fallback(Scope scope,Filter f,Selection selected){
-        // Enqueue outside the read-only snapshot; failures never publish fake empty facts.
-        projections.request(scope,nativeFilter(f));
-        return build(scope,f,selected,null);
+        return nativeWorkspace.read(new WorkspaceRead(scope,f,selected),()->{
+            // Enqueue outside the read-only snapshot; failures never publish fake empty facts.
+            projections.request(scope,nativeFilter(f));
+            return build(scope,f,selected,null);
+        });
     }
     private record Prepared(FinanceQueryProjections.Snapshot snapshot,Map<String,Object> facts,
-                            Map<String,Object> nativeSpend,Filter filter,Map<String,Object> records){}
+                            Map<String,Object> nativeSpend,Filter filter,Map<String,Object> records,List<String> billCurrencies,
+                            boolean reconciliationPageOnly){}
     private Map<String,Object> build(Scope scope,Filter requested,Selection selected,String expectedRevision){
         boolean primary=selected.view().equals("ads");
         // All mutable financial reads/counts share one MVCC snapshot. Public FX I/O
@@ -162,42 +177,62 @@ public class FinanceWorkspaceQueryService {
         Prepared prepared=repo.readSnapshot(180,()->{
             var snapshot=expectedRevision==null?null:projections.findForQuery(scope,nativeFilter(requested),primary).orElseThrow(ProjectionChanged::new);
             if(expectedRevision!=null&&!snapshot.revision().equals(expectedRevision))throw new ProjectionChanged();
-            var facts=primary||selected.allOrders()?Map.<String,Object>of():snapshot==null?
-                finance.buildNativeDashboardFacts(scope,nativeFilter(requested),false):snapshot.facts();
+            boolean unsearched=FinanceRecordSearch.numbers(selected.numbers()).isEmpty();
+            boolean reuseNativeCount=snapshot==null&&unsearched&&(
+                selected.view().equals("settlements")&&!selected.kind().equals("BILL")||selected.view().equals("fees"));
             String currency=requested.currency();
-            if(selected.view().equals("reconciliation")&&currency.isBlank()&&!selected.cny()){
-                var billCurrencies=snapshot==null?repo.billCurrencies(scope,nativeFilter(requested)):snapshot.rawCounts().stream()
+            List<String> billCurrencies=List.of();
+            if(selected.view().equals("reconciliation")){
+                billCurrencies=snapshot==null?repo.billCurrencies(scope,nativeFilter(requested)):snapshot.rawCounts().stream()
                     .filter(row->"RECORD".equals(row.get("basis"))&&"BILL".equals(row.get("kind")))
                     .map(row->text(row.get("currency"))).distinct().sorted().toList();
-                currency=billCurrencies.isEmpty()?"":billCurrencies.getFirst();
+                if(currency.isBlank()&&!selected.cny()&&!billCurrencies.isEmpty())currency=billCurrencies.getFirst();
             }
+            boolean pageOnly=snapshot==null&&selected.view().equals("reconciliation")&&selected.interactivePage()
+                &&(selected.cny()||!currency.isBlank());
+            var nativeCounts=new ArrayList<Map<String,Object>>();
+            Map<String,Object> facts;
+            if(primary||selected.allOrders())facts=Map.of();
+            else if(snapshot!=null)facts=snapshot.facts();
+            else if(pageOnly){
+                var all=nativeFilter(requested);
+                facts=Map.of("orders",FinanceService.dailyFactRows(new FinanceCostReport(repo).dashboardFacts(scope,all)),
+                             "reportingMonths",new FinanceReportingMonths(repo).coverage(scope,all));
+            }
+            else if(reuseNativeCount)facts=finance.buildNativeDashboardFacts(scope,nativeFilter(requested),false,nativeCounts);
+            else facts=finance.buildNativeDashboardFacts(scope,nativeFilter(requested),false);
             if(!selected.view().equals("reconciliation")&&!primary&&!selected.allOrders()&&currency.isBlank()&&!selected.cny())currency=java.util.stream.Stream.concat(
                 rows(facts.get("buckets")).stream(),rows(facts.get("advertising")).stream()).map(r->text(r.get("currency"))).distinct().sorted().findFirst().orElse("");
             var filter=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),currency,requested.granularity(),requested.groupId());
-            if(primary)return new Prepared(snapshot,facts,snapshot==null?spend.buildNativeSpendFacts(scope,nativeFilter(requested)):snapshot.spendFacts(),filter,Map.of());
+            if(primary)return new Prepared(snapshot,facts,snapshot==null?spend.buildNativeSpendFacts(scope,nativeFilter(requested)):snapshot.spendFacts(),filter,Map.of(),billCurrencies,false);
             java.util.function.Supplier<Map<String,Object>> read=()->selected.view().equals("reconciliation")?
                 repo.reconciliationPage(scope,filter,selected.page(),50,selected.numbers()):
                 selected.view().equals("ads-support")&&selected.kind().equals("FEE")?
                 repo.advertisingFeeDetails(scope,filter,selected.page(),50,selected.numbers()):
                 repo.details(scope,filter,selected.kind(),selected.page(),50,selected.numbers(),selected.allOrders());
-            boolean countReady=snapshot!=null&&FinanceRecordSearch.numbers(selected.numbers()).isEmpty();
-            var records=new LinkedHashMap<>(countReady?repo.withAuthoritativePageTotal(exactTotal(snapshot.rawCounts(),filter,selected),read):read.get());
+            boolean countReady=unsearched&&(snapshot!=null||reuseNativeCount);
+            var records=new LinkedHashMap<>(countReady?repo.withAuthoritativePageTotal(
+                exactTotal(snapshot==null?nativeCounts:snapshot.rawCounts(),filter,selected),read):read.get());
             records.put("dateBasis",FinanceCalendar.contract());
             if(selected.view().equals("ads-support")&&selected.kind().equals("FEE"))records.put("advertisingOnly",true);
             if(!selected.allOrders()&&!selected.view().equals("ads-support")
                     &&!"SETTLED_ORDER".equals(FinanceCostReport.scopeKind(selected.view().equals("reconciliation")?"RECONCILIATION":selected.kind(),false)))
                 records.put("productCosts",new FinanceCostReport(repo).summary(scope,filter,selected.kind()));
             if(selected.cny()&&selected.view().equals("reconciliation"))repo.reconciliationFxDays(scope,rows(records.get("items")));
-            return new Prepared(snapshot,facts,Map.of(),filter,records);
+            return new Prepared(snapshot,facts,Map.of(),filter,records,billCurrencies,pageOnly);
         });
         var snapshot=prepared.snapshot();
         var quote=!primary&&selected.cny()?finance.exchangeRates().historical(selected.fxSnapshot(),requested.start(),requested.end()):null;
         var out=new LinkedHashMap<>(primary||selected.allOrders()?context(scope,requested,selected,snapshot):
             finance.dashboardFromFacts(scope,prepared.filter(),selected.cny(),selected.fxSnapshot(),false,prepared.facts(),quote));
         out.remove("_financeDataRevision");out.remove("_financeFactsBuilt");
-        if(selected.view().equals("reconciliation"))out.put("currencies",snapshot==null?repo.billCurrencies(scope,nativeFilter(requested)):
-            snapshot.rawCounts().stream().filter(row->"RECORD".equals(row.get("basis"))&&"BILL".equals(row.get("kind")))
-                .map(row->text(row.get("currency"))).distinct().sorted().toList());
+        if(prepared.reconciliationPageOnly()){
+            // This browser contract renders reconciliation rows and their common
+            // filtering/cost context. The general API still returns all summaries.
+            out.keySet().retainAll(Set.of("filters","fx","shops","groups","dateBasis","dateWindows",
+                "reportingMonths","reportingMonthNotice","sync","updatedAt","productCosts"));
+        }
+        if(selected.view().equals("reconciliation"))out.put("currencies",prepared.billCurrencies());
         if(primary){
             java.util.function.Supplier<Map<String,Object>> calculate=()->spend.reportFromNative(scope,prepared.nativeSpend(),requested,selected.cny(),selected.fxSnapshot(),selected.search(),selected.assignment());
             // Summary, allocation and FX work belongs to the period, not to each page.
@@ -267,7 +302,8 @@ public class FinanceWorkspaceQueryService {
         String kind=text(s.kind());if(kind.isBlank()||view.equals("reconciliation"))kind=kinds.getFirst();
         if(!kinds.contains(kind))throw bad("此页面不支持所选记录类型");
         return new Selection(view,kind,view.equals("orders")&&kind.equals("ORDER")&&s.allOrders(),s.cny(),text(s.fxSnapshot()),
-            Math.max(1,s.page()),Math.max(1,s.spendPage()),text(s.numbers()),text(s.search()),text(s.assignment()));
+            Math.max(1,s.page()),Math.max(1,s.spendPage()),text(s.numbers()),text(s.search()),text(s.assignment()),
+            Set.of("reconciliation","fees").contains(view)&&s.interactivePage());
     }
     private static final class ProjectionChanged extends RuntimeException {}
 }

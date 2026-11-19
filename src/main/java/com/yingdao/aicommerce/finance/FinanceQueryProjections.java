@@ -22,7 +22,8 @@ public class FinanceQueryProjections {
     public record Snapshot(Map<String,Object> facts,Map<String,Object> spendFacts,List<Map<String,Object>> rawCounts,
                            Instant generatedAt,String revision,boolean refreshing) {}
     private record Key(String organization,String platform,LocalDate month) {}
-    private record Built(Map<String,Object> facts,Instant snapshotStarted) {}
+    private record Built(SnapshotBodies bodies,Instant snapshotStarted) {}
+    private record SnapshotBodies(Map<String,Object> ledger,Map<String,Object> firstDay,Map<String,Object> spend) {}
     private record OrderKey(String shop,String order) {}
     private record BillPrefix(String user,String shop,String source) {}
     private static final class Change {boolean all;final Set<LocalDate> days=new TreeSet<>();}
@@ -180,7 +181,13 @@ public class FinanceQueryProjections {
     /** Claim concrete visible IDs. A MAX(event_id) watermark would lose late commits. */
     int drainEvents(){
         return repo.transaction(()->{
-            var events=repo.jdbc().queryForList("SELECT * FROM finance_query_events ORDER BY event_id LIMIT "+EVENT_BATCH+" FOR UPDATE SKIP LOCKED");
+            // Discover the batch without a range lock. A locking scan to the
+            // end of this append-only index can deadlock with ledger triggers
+            // appending more than one event per transaction.
+            var candidates=repo.jdbc().queryForList("SELECT event_id FROM finance_query_events ORDER BY event_id LIMIT "+EVENT_BATCH,Long.class);
+            if(candidates.isEmpty())return 0;
+            var events=repo.jdbc().queryForList("SELECT * FROM finance_query_events FORCE INDEX(PRIMARY) WHERE event_id IN ("
+                +placeholders(candidates.size())+") ORDER BY event_id FOR UPDATE SKIP LOCKED",candidates.toArray());
             if(events.isEmpty())return 0;
             var changed=new LinkedHashMap<String,Change>();
             var orders=new LinkedHashMap<String,Set<OrderKey>>();
@@ -246,7 +253,7 @@ public class FinanceQueryProjections {
             // full invalidation may supersede their baseline. A bounded index probe prioritizes that
             // company's invalidations; other companies and small normal bursts still build.
             // Missing baselines lead; saved snapshots then take fair turns by oldest snapshot start.
-            var ready=repo.jdbc().queryForList("SELECT p.* FROM finance_query_partitions p WHERE p.built_revision<>p.requested_revision AND p.next_attempt_at<=UTC_TIMESTAMP(6) AND (p.lease_until IS NULL OR p.lease_until<UTC_TIMESTAMP(6)) AND NOT EXISTS(SELECT 1 FROM finance_query_events e WHERE e.organization_id=p.organization_id ORDER BY e.event_id LIMIT 1 OFFSET "+EVENT_BATCH+") ORDER BY (p.built_revision>0),p.generated_at,p.requested_at,p.organization_id,p.partition_month,p.platform_filter LIMIT 1 FOR UPDATE SKIP LOCKED");
+            var ready=repo.jdbc().queryForList("SELECT p.organization_id,p.platform_filter,p.partition_month,p.requested_revision FROM finance_query_partitions p WHERE p.built_revision<>p.requested_revision AND p.next_attempt_at<=UTC_TIMESTAMP(6) AND (p.lease_until IS NULL OR p.lease_until<UTC_TIMESTAMP(6)) AND NOT EXISTS(SELECT 1 FROM finance_query_events e WHERE e.organization_id=p.organization_id ORDER BY e.event_id LIMIT 1 OFFSET "+EVENT_BATCH+") ORDER BY (p.built_revision>0),p.generated_at,p.requested_at,p.organization_id,p.partition_month,p.platform_filter LIMIT 1 FOR UPDATE SKIP LOCKED");
             if(ready.isEmpty())return Map.<String,Object>of();
             var row=new LinkedHashMap<>(ready.getFirst());String token=UUID.randomUUID().toString();
             repo.jdbc().update("UPDATE finance_query_partitions SET lease_token=?,lease_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 5 MINUTE) WHERE organization_id=? AND platform_filter=? AND partition_month=?",token,row.get("organization_id"),row.get("platform_filter"),row.get("partition_month"));
@@ -257,17 +264,26 @@ public class FinanceQueryProjections {
         try{
             var snapshot=repo.readSnapshot(180,()->{
                 Instant started=Instant.now();
-                return new Built(build(key,claimed),started);
+                var previous=repo.jdbc().queryForMap("""
+                    SELECT full_month_json,spend_json,full_rebuild,
+                           CASE WHEN partial_first_day_json IS NULL THEN 0 ELSE 1 END first_day_present
+                    FROM finance_query_partitions
+                    WHERE organization_id=? AND platform_filter=? AND partition_month=? AND lease_token=?
+                    """,key.organization,key.platform,key.month,claimed.get("lease_token"));
+                return new Built(build(key,previous),started);
             });
-            var built=snapshot.facts();long revision=number(claimed.get("requested_revision"));
-            String full=json.writeValueAsString(normalize(built.get("full"))),first=json.writeValueAsString(normalize(built.get("first"))),ads=json.writeValueAsString(normalize(built.get("spend")));
+            var built=snapshot.bodies();long revision=number(claimed.get("requested_revision"));
+            String full=json.writeValueAsString(normalize(built.ledger()));
+            String first=built.firstDay()==null?null:json.writeValueAsString(normalize(built.firstDay()));
+            String ads=json.writeValueAsString(normalize(built.spend()));
             repo.transaction(()->{
                 // R is an internal baseline; readers still require built_revision=requested_revision.
                 // A later full invalidation and later dirty days must survive this lease.
                 int published=repo.jdbc().update("UPDATE finance_query_partitions SET full_month_json=?,built_revision=?,schema_version=?,generated_at=?,full_rebuild=(full_rebuild_revision>?),lease_token=NULL,lease_until=NULL,failures=0,error_code=NULL WHERE organization_id=? AND platform_filter=? AND partition_month=? AND lease_token=? AND lease_until>UTC_TIMESTAMP(6) AND requested_revision>=? AND built_revision<=?",
                     full,revision,SCHEMA_VERSION,java.sql.Timestamp.from(snapshot.snapshotStarted()),revision,key.organization,key.platform,key.month,claimed.get("lease_token"),revision,revision);
                 if(published==1){
-                    repo.jdbc().update("UPDATE finance_query_partitions SET partial_first_day_json=? WHERE organization_id=? AND platform_filter=? AND partition_month=?",first,key.organization,key.platform,key.month);
+                    if(first!=null)
+                        repo.jdbc().update("UPDATE finance_query_partitions SET partial_first_day_json=? WHERE organization_id=? AND platform_filter=? AND partition_month=?",first,key.organization,key.platform,key.month);
                     repo.jdbc().update("UPDATE finance_query_partitions SET spend_json=? WHERE organization_id=? AND platform_filter=? AND partition_month=?",ads,key.organization,key.platform,key.month);
                     repo.jdbc().update("DELETE FROM finance_query_dirty_days WHERE organization_id=? AND platform_filter=? AND partition_month=? AND requested_revision<=?",key.organization,key.platform,key.month,revision);
                 }
@@ -282,32 +298,64 @@ public class FinanceQueryProjections {
         return true;
     }
 
-    private Map<String,Object> build(Key key,Map<String,Object> previous){
-        Scope scope=companyScope(key.organization);var month=monthFilter(key);var firstDay=new Filter(key.month,key.month,"",key.platform,"","day");
+    private SnapshotBodies build(Key key,Map<String,Object> previous){
+        Scope scope=companyScope(key.organization);var month=monthFilter(key);
+        var firstDay=new Filter(key.month,key.month,"",key.platform,"","day");
         // The compact partial-month strategy is valid only when corrections are anchored on month day one.
         var invalid=repo.jdbc().queryForList("SELECT r.id FROM finance_reporting_months m JOIN finance_records r FORCE INDEX(idx_finance_marketing_order) ON r.organization_id=m.organization_id AND r.shop_id=m.shop_id AND r.order_id=m.order_id AND r.statement_id=m.statement_id WHERE m.organization_id=? AND m.reporting_month=? AND r.kind IN ('SETTLEMENT','FEE') AND r.source='API' AND r.platform='TIKTOK_SHOP' AND JSON_EXTRACT(r.raw_json,'$._finance_reporting_month') IS NOT NULL AND r.record_date<>m.reporting_month LIMIT 1",key.organization,key.month);
         if(!invalid.isEmpty())throw new IllegalStateException("Reporting month anchor requires source repair");
-        Map<String,Object> full,first,ads;
-        if(Boolean.TRUE.equals(previous.get("full_rebuild"))||number(previous.get("full_rebuild"))!=0||previous.get("full_month_json")==null){
-            full=nativeFacts(scope,month);first=nativeFacts(scope,firstDay);ads=spend.buildNativeSpendFacts(scope,month);
-        }else{
-            full=new LinkedHashMap<>(read(previous.get("full_month_json")));first=new LinkedHashMap<>(read(previous.get("partial_first_day_json")));ads=new LinkedHashMap<>(read(previous.get("spend_json")));
-            var days=repo.jdbc().queryForList("SELECT record_date FROM finance_query_dirty_days WHERE organization_id=? AND platform_filter=? AND partition_month=? ORDER BY record_date",java.sql.Date.class,key.organization,key.platform,key.month);
-            if(days.isEmpty())throw new IllegalStateException("Dirty partition has no affected days");
-            for(var sqlDay:days){
-                LocalDate day=sqlDay.toLocalDate();
-                var changed=repo.inProjectionWindow(month,day,()->nativeFacts(scope,month));
-                for(String name:List.of("buckets","orders","advertising","rawCounts"))full.put(name,replaceDay(rows(full.get(name)),rows(changed.get(name)),day));
-                full.put("reportingMonths",changed.get("reportingMonths"));
-                if(day.equals(key.month))first=nativeFacts(scope,firstDay);
-                var dayFilter=new Filter(day,day,"",key.platform,"","day");var newSpend=spend.buildNativeSpendFacts(scope,dayFilter);
-                var removed=new HashSet<String>();rows(ads.get("sources")).stream().filter(r->day.equals(date(r.get("record_date")))).forEach(r->removed.add(text(r.get("source_key"))));
-                var assignments=new ArrayList<>(rows(ads.get("assignments")).stream().filter(r->!removed.contains(text(r.get("source_key")))).toList());assignments.addAll(rows(newSpend.get("assignments")));
-                ads.put("sources",replaceDay(rows(ads.get("sources")),rows(newSpend.get("sources")),day));ads.put("assignments",assignments);ads.put("shops",newSpend.get("shops"));
-            }
+        boolean rebuild=Boolean.TRUE.equals(previous.get("full_rebuild"))||number(previous.get("full_rebuild"))!=0
+            ||previous.get("full_month_json")==null||previous.get("spend_json")==null||number(previous.get("first_day_present"))!=1;
+        var days=rebuild?List.<LocalDate>of():repo.jdbc().queryForList("""
+            SELECT record_date FROM finance_query_dirty_days
+            WHERE organization_id=? AND platform_filter=? AND partition_month=? ORDER BY record_date
+            """,java.sql.Date.class,key.organization,key.platform,key.month).stream().map(java.sql.Date::toLocalDate).toList();
+        if(!rebuild&&days.isEmpty())throw new IllegalStateException("Dirty partition has no affected days");
+        if(rebuild||days.size()==key.month.lengthOfMonth()){
+            var ads=spend.buildNativeSpendFacts(scope,month);
+            checkSpendLimit(ads);
+            return new SnapshotBodies(nativeFacts(scope,month),nativeFacts(scope,firstDay),ads);
         }
-        if(rows(ads.get("sources")).size()>FinanceAdSpendService.MAX_RECORDS)throw new IllegalStateException("Projection source limit exceeded");
-        return Map.of("full",full,"first",first,"spend",ads);
+
+        var full=read(previous.get("full_month_json"));var ads=read(previous.get("spend_json"));
+        var replacedDays=new HashSet<>(days);
+        var affectedKeys=new HashSet<String>();
+        var unchangedSources=new ArrayList<Map<String,Object>>();
+        for(var row:rows(ads.get("sources"))){
+            if(replacedDays.contains(date(row.get("record_date"))))affectedKeys.add(text(row.get("source_key")));
+            else unchangedSources.add(row);
+        }
+        var assignments=new ArrayList<>(rows(ads.get("assignments")).stream()
+            .filter(row->!affectedKeys.contains(text(row.get("source_key")))).toList());
+        var factKinds=List.of("buckets","orders","advertising","rawCounts");
+        var ledger=new LinkedHashMap<>(full);
+        var updatedRows=new LinkedHashMap<String,List<Map<String,Object>>>();
+        for(String name:factKinds)updatedRows.put(name,new ArrayList<>(rows(full.get(name)).stream()
+            .filter(row->!replacedDays.contains(date(row.get("record_date")))).toList()));
+        List<Map<String,Object>> shops=List.of();
+        for(int index=0;index<days.size();){
+            LocalDate from=days.get(index++),to=from;
+            while(index<days.size()&&days.get(index).equals(to.plusDays(1)))to=days.get(index++);
+            var latest=repo.inProjectionWindow(month,from,to,()->nativeFacts(scope,month));
+            for(String name:factKinds)updatedRows.get(name).addAll(rows(latest.get(name)));
+            ledger.put("reportingMonths",latest.get("reportingMonths"));
+            var window=new Filter(from,to,"",key.platform,"","day");
+            var refreshedSpend=spend.buildNativeSpendFacts(scope,window);
+            unchangedSources.addAll(rows(refreshedSpend.get("sources")));
+            assignments.addAll(rows(refreshedSpend.get("assignments")));
+            shops=rows(refreshedSpend.get("shops"));
+        }
+        ledger.putAll(updatedRows);
+        ads.put("sources",unchangedSources);
+        ads.put("assignments",assignments);
+        ads.put("shops",shops);
+        checkSpendLimit(ads);
+        return new SnapshotBodies(ledger,replacedDays.contains(key.month)?nativeFacts(scope,firstDay):null,ads);
+    }
+
+    private static void checkSpendLimit(Map<String,Object> ads){
+        if(rows(ads.get("sources")).size()>FinanceAdSpendService.MAX_RECORDS)
+            throw new IllegalStateException("Projection source limit exceeded");
     }
 
     private Map<String,Object> nativeFacts(Scope scope,Filter filter){
@@ -394,9 +442,6 @@ public class FinanceQueryProjections {
         if(!whole)target.addAll(first.stream().filter(row->inRange(row,filter)).toList());
     }
     private static boolean inRange(Map<String,Object> row,Filter filter){LocalDate day=date(row.get("record_date"));return !day.isBefore(filter.start())&&!day.isAfter(filter.end());}
-    private static List<Map<String,Object>> replaceDay(List<Map<String,Object>> before,List<Map<String,Object>> after,LocalDate day){
-        var result=new ArrayList<>(before.stream().filter(row->!day.equals(date(row.get("record_date")))).toList());result.addAll(after);return result;
-    }
     private static LocalDate date(Object value){return LocalDate.parse(text(value).substring(0,10));}
     private Map<String,Object> readLedger(Object value,boolean countsNeeded){
         if(countsNeeded)return read(value);

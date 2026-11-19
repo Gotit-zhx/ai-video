@@ -99,14 +99,17 @@ public final class FinanceCostReport {
             """+firstSettlement("t",true)+" AND ";
         // Confirmed settlements require a nonempty order_id. Selecting a redundant
         // external_id fallback would force a clustered-row read for every order.
+        boolean settlement=kind.equals("SETTLEMENT");
         return """
             SELECT DISTINCT o.id order_record_id,r.organization_id,r.shop_id,%s reference
-            FROM finance_records r LEFT JOIN finance_records o
+            FROM finance_records r %s LEFT JOIN finance_records o %s
               ON o.organization_id=r.organization_id AND o.shop_id=r.shop_id
               AND o.kind='ORDER' AND o.source='API' AND o.order_id=r.order_id
             WHERE r.kind='%s' AND
-            """.formatted(kind.equals("SETTLEMENT")?"r.order_id":"COALESCE(NULLIF(r.order_id,''),r.external_id)",kind)
-                +(kind.equals("PENDING")?"1=0":kind.equals("SETTLEMENT")?firstSettlement("r",false):hasSettlement("r","r.order_id"))+" AND "+FinanceOrderCharges.normalOrder("r")+" AND ";
+            """.formatted(settlement?"r.order_id":"COALESCE(NULLIF(r.order_id,''),r.external_id)",
+                settlement?"FORCE INDEX(idx_finance_company_kind_date)":"",
+                settlement?"FORCE INDEX(idx_finance_settled_order)":"",kind)
+                +(kind.equals("PENDING")?"1=0":settlement?firstSettlement("r",false):hasSettlement("r","r.order_id"))+" AND "+FinanceOrderCharges.normalOrder("r")+" AND ";
     }
     public Map<String,Object> summary(Scope scope,Filter filter,String kind){
         String selected=scopeKind(kind,false);

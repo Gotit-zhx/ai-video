@@ -1580,7 +1580,7 @@
         data=response;filters.currency=data.filters.currency||'';filters.fxSnapshot=data.fx?.id||'';
         recordView(shell(next),run,response.records);
       }else if(view==='reconciliation'){
-        const response=await read('/workspace/query?'+query({view:'reconciliation',page:selectedPage,numbers}));if(run!==generation||!active)return;
+        const response=await read('/workspace/query?'+query({view:'reconciliation',page:selectedPage,numbers,interactivePage:true}));if(run!==generation||!active)return;
         data=response;filters.currency=data.filters.currency||'';filters.fxSnapshot=data.fx?.id||'';
         reconciliation(shell(next),{...response.records,...response});
       }else if(view!=='shops'){
@@ -1593,7 +1593,7 @@
         activeLoadKey=selectionKey();
         const kind=selectedKind;
         const response=await read(view==='overview'?'/overview?'+query():
-          '/workspace/query?'+query({view:view==='ads'&&!window.FinanceAdSpend?'ads-support':view,kind,page:selectedPage,numbers,orderScope,...(view==='ads'?{search:spendSelection.search,assignment:spendSelection.assignment,spendPage:spendSelection.page}:{})})).catch(async error=>{
+          '/workspace/query?'+query({view:view==='ads'&&!window.FinanceAdSpend?'ads-support':view,kind,page:selectedPage,numbers,orderScope,...(view==='fee-records'?{interactivePage:true}:{}),...(view==='ads'?{search:spendSelection.search,assignment:spendSelection.assignment,spendPage:spendSelection.page}:{})})).catch(async error=>{
             if(view!=='ads'||!window.FinanceAdSpend||signal.aborted)throw error;
             const [shops,accounts]=await Promise.all([read('/shops'),read('/ads').catch(()=>[])]);
             return {shops:shops.items,groups:shops.groups||[],sync:[],currencies:[],filters:{...selection},adAccounts:accounts,adSpendError:true};

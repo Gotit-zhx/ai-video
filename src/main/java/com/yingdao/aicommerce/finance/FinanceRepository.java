@@ -18,10 +18,11 @@ public class FinanceRepository {
         amount=VALUES(amount),revenue=VALUES(revenue),impressions=VALUES(impressions),clicks=VALUES(clicks),
         conversions=VALUES(conversions),raw_json=VALUES(raw_json),updated_at=UTC_TIMESTAMP(6)
         """;
+    private static final Set<String> RAW_PAGE_COUNT_KINDS=Set.of("SETTLEMENT","FEE","PENDING","COST");
     private final JdbcTemplate db; private final ObjectMapper json;
     private final ThreadLocal<Map<Query,Long>> pageCounts=new ThreadLocal<>();
     private final ThreadLocal<Long> authoritativePageTotal=new ThreadLocal<>();
-    private record ProjectionWindow(Filter semanticMonth,java.time.LocalDate day) {}
+    private record ProjectionWindow(Filter semanticMonth,java.time.LocalDate start,java.time.LocalDate end) {}
     private final ThreadLocal<ProjectionWindow> projectionWindow=new ThreadLocal<>();
     public FinanceRepository(JdbcTemplate db,ObjectMapper json){this.db=db;this.json=json;}
     public JdbcTemplate jdbc(){return db;}
@@ -45,7 +46,7 @@ public class FinanceRepository {
             try{return action.get();}finally{if(owner)pageCounts.remove();}
         });
     }
-    /** A clean projection may supply one exact count only in the same read snapshot. */
+    /** A verified exact total is only valid inside the same read snapshot. */
     <T>T withAuthoritativePageTotal(long total,java.util.function.Supplier<T> action){
         if(total<0)throw new IllegalArgumentException("Page total must be nonnegative");
         if(pageCounts.get()==null
@@ -285,10 +286,12 @@ public class FinanceRepository {
     }
     public record Query(String where,List<Object> args) {}
     <T>T inProjectionWindow(Filter semanticMonth,java.time.LocalDate scanDay,java.util.function.Supplier<T> action){
-        Objects.requireNonNull(semanticMonth);Objects.requireNonNull(scanDay);Objects.requireNonNull(action);
-        if(scanDay.isBefore(semanticMonth.start())||scanDay.isAfter(semanticMonth.end()))
-            throw new IllegalArgumentException("Projection day is outside its semantic period");
-        var previous=projectionWindow.get();projectionWindow.set(new ProjectionWindow(semanticMonth,scanDay));
+        return inProjectionWindow(semanticMonth,scanDay,scanDay,action);
+    }
+    <T>T inProjectionWindow(Filter semanticMonth,java.time.LocalDate start,java.time.LocalDate end,java.util.function.Supplier<T> action){
+        if(start.isBefore(semanticMonth.start())||end.isAfter(semanticMonth.end())||start.isAfter(end))
+            throw new IllegalArgumentException("Projection window is outside its semantic period");
+        var previous=projectionWindow.get();projectionWindow.set(new ProjectionWindow(semanticMonth,start,end));
         try{return action.get();}
         finally{if(previous==null)projectionWindow.remove();else projectionWindow.set(previous);}
     }
@@ -325,7 +328,7 @@ public class FinanceRepository {
         var window=projectionWindow.get();
         if(dates&&window!=null&&window.semanticMonth().equals(f)){
             w+=" AND "+p+"record_date>=? AND "+p+"record_date<=?";
-            a.add(Date.valueOf(window.day()));a.add(Date.valueOf(window.day()));
+            a.add(Date.valueOf(window.start()));a.add(Date.valueOf(window.end()));
         }
         return reporting?FinanceReportingMonths.constrain(s,new Query(w,a),f,alias):new Query(w,a);
     }
@@ -350,10 +353,15 @@ public class FinanceRepository {
         return dashboardBuckets(s,f,includeCreatedOrders,null);
     }
     List<Map<String,Object>> dashboardBuckets(Scope s,Filter f,boolean includeCreatedOrders,List<Map<String,Object>> advertising){
-        // Keep every partition and the marketing exclusion in the same MVCC snapshot.
-        return readSnapshot(180,()->readDashboardBuckets(s,f,includeCreatedOrders,advertising));
+        return dashboardBuckets(s,f,includeCreatedOrders,advertising,null);
     }
-    private List<Map<String,Object>> readDashboardBuckets(Scope s,Filter f,boolean includeCreatedOrders,List<Map<String,Object>> advertising){
+    List<Map<String,Object>> dashboardBuckets(Scope s,Filter f,boolean includeCreatedOrders,List<Map<String,Object>> advertising,
+                                               List<Map<String,Object>> rawPageCounts){
+        // Keep every partition, raw count and marketing exclusion in the same MVCC snapshot.
+        return readSnapshot(180,()->readDashboardBuckets(s,f,includeCreatedOrders,advertising,rawPageCounts));
+    }
+    private List<Map<String,Object>> readDashboardBuckets(Scope s,Filter f,boolean includeCreatedOrders,List<Map<String,Object>> advertising,
+                                                          List<Map<String,Object>> rawPageCounts){
         Query q=query(s,f);
         var buckets=dailyAggregate(f,q,"finance_records.record_date",range->db.queryForList("""
             SELECT shop_id,record_date,kind,currency,
@@ -368,6 +376,13 @@ public class FinanceRepository {
                 +(includeCreatedOrders?"":" AND kind NOT IN ('ORDER','REFUND')")
                 +" GROUP BY shop_id,record_date,kind,currency,"
                 +"CASE WHEN kind='FEE' THEN category ELSE '' END,CASE WHEN kind='ORDER' THEN status ELSE '' END",range.args.toArray()));
+        // Exact list totals include tagged orders. Capture the count before
+        // applying the operating rules. Imported bills have a separate basis.
+        if(rawPageCounts!=null)for(var row:buckets){
+            if(!RAW_PAGE_COUNT_KINDS.contains(text(row.get("kind"))))continue;
+            rawPageCounts.add(Map.of("kind",row.get("kind"),"currency",row.get("currency"),
+                "records",row.get("records"),"basis","RECORD"));
+        }
         // Advertising shows every posted fee, including tagged orders, without changing operating-profit exclusions.
         if(advertising!=null)buckets.stream().filter(FinanceAdvertisingReport::includes)
                 .forEach(row->advertising.add(new LinkedHashMap<>(row)));
@@ -414,10 +429,14 @@ public class FinanceRepository {
     List<Map<String,Object>> aggregateWindows(Filter filter,Query query,String dateColumn,int days,
             java.util.function.Function<Query,List<Map<String,Object>>> read){
         if(days<1||days>7)throw new IllegalArgumentException("Invalid aggregation window");
-        if(!filter.start().plusDays(days-1).isBefore(filter.end()))return read.apply(query);
+        var window=projectionWindow.get();
+        boolean incremental=window!=null&&window.semanticMonth().equals(filter);
+        var first=incremental?window.start():filter.start();
+        var last=incremental?window.end():filter.end();
+        if(!first.plusDays(days-1).isBefore(last))return read.apply(query);
         var result=new ArrayList<Map<String,Object>>();
-        for(var start=filter.start();!start.isAfter(filter.end());start=start.plusDays(days)){
-            var end=start.plusDays(days-1);if(end.isAfter(filter.end()))end=filter.end();
+        for(var start=first;!start.isAfter(last);start=start.plusDays(days)){
+            var end=start.plusDays(days-1);if(end.isAfter(last))end=last;
             var args=new ArrayList<>(query.args());args.add(Date.valueOf(start));args.add(Date.valueOf(end));
             result.addAll(read.apply(new Query(query.where()+" AND "+dateColumn+">=? AND "+dateColumn+"<=?",args)));
         }
@@ -462,7 +481,11 @@ public class FinanceRepository {
         // MySQL can otherwise choose a user-prefixed skip scan for ORDER counts,
         // even when the company/type/date index is available.
         String source="finance_records FORCE INDEX ("+(lookup?"idx_finance_settled_order":kind!=null&&!kind.isBlank()?"idx_finance_company_kind_date":"idx_finance_company_dashboard")+")";
-        String countSql="SELECT COUNT(*) FROM "+source+" WHERE "+where;
+        // The exact total needs only the page key columns, including the
+        // settlement filters and ad fee classification, rather than amounts.
+        String countSource=Set.of("SETTLEMENT","FEE","BILL").contains(text(kind))
+                ?"finance_records FORCE INDEX(idx_finance_page)":source;
+        String countSql="SELECT COUNT(*) FROM "+countSource+" WHERE "+where;
         var countArgs=List.copyOf(a);
         // The 16-part aggregate index loses its PK sort/covering flags in MySQL
         // 8.4; the narrower page index retains the complete (date DESC,id) order.
@@ -592,7 +615,7 @@ public class FinanceRepository {
     }
     public List<String> billCurrencies(Scope s,Filter f){
         Query q=query(s,f);
-        return db.queryForList("SELECT DISTINCT currency FROM finance_records WHERE "+q.where
+        return db.queryForList("SELECT DISTINCT currency FROM finance_records FORCE INDEX(idx_finance_page) WHERE "+q.where
                 +" AND kind='BILL' ORDER BY currency",String.class,q.args.toArray());
     }
     public Map<String,Object> reconciliationPage(Scope s,Filter f,int page,int size){return reconciliationPage(s,f,page,size,"");}
@@ -603,7 +626,7 @@ public class FinanceRepository {
     private Map<String,Object> loadReconciliationPage(Scope s,Filter f,int page,int size,String numbers){
         Query q=FinanceRecordSearch.apply(query(s,f),"finance_records",numbers,true);int safeSize=Math.min(100,Math.max(1,size)),safePage=Math.max(1,page);
         var data=reconciliation(s,f,safeSize,(long)(safePage-1)*safeSize,numbers);
-        long total=pageTotal("SELECT COUNT(*) FROM finance_records FORCE INDEX(idx_finance_company_kind_date) WHERE "+q.where+" AND kind='BILL'",
+        long total=pageTotal("SELECT COUNT(*) FROM finance_records FORCE INDEX(idx_finance_page) WHERE "+q.where+" AND kind='BILL'",
                 q.args,safePage,safeSize,data.size());
         return Map.of("items",data,"total",total,"page",safePage,"pageSize",safeSize);
     }

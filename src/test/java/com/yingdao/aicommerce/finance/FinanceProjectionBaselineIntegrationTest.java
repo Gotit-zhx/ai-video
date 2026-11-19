@@ -28,6 +28,20 @@ class FinanceProjectionBaselineIntegrationTest {
         fee("first","2026-10-01","11.123456");fee("other","2026-10-07","7");
         projections.request(f.owner,month);drain();
     }
+    @Test void adjacentUpdatesPreserveTheCleanPartialFirstDayBody(){
+        assertTrue(projections.buildNext());
+        String first=f.db.queryForObject("SELECT partial_first_day_json FROM finance_query_partitions",String.class);
+        change("other","8.123456");
+        fee("adjacent","2026-10-08","13.123456");
+        drain();
+        assertEquals(2,dirtyCount());
+        assertHidden();
+
+        assertTrue(projections.buildNext());
+        assertEquals(first,f.db.queryForObject("SELECT partial_first_day_json FROM finance_query_partitions",String.class));
+        assertReadyAndNative();
+        assertEquals(0,dirtyCount());
+    }
     @Test void fullBuildSavesHiddenBaselineAndSnapshotStartWhenDayChangesDuringRead(){
         long revision=revision("requested_revision");var observed=new AtomicReference<Instant>();
         race(()->{observed.set(Instant.now());change("first","20");drain();});
@@ -140,6 +154,32 @@ class FinanceProjectionBaselineIntegrationTest {
         assertTrue(f.db.queryForObject("SELECT COUNT(*) FROM finance_query_events",Integer.class)>0);
         drain();assertTrue(projections.buildNext());assertReadyAndNative();
     }
+    @Test void ledgerCanAppendAnEntireBatchWhileVisibleEventIdsAreLocked(){
+        assertTrue(projections.buildNext());
+        change("first","15");
+        int visible=f.db.queryForObject("SELECT COUNT(*) FROM finance_query_events",Integer.class);
+        var appended=new AtomicBoolean();
+        var jdbc=new JdbcTemplate(f.dataSource){
+            @Override public List<Map<String,Object>> queryForList(String sql,Object...args){
+                var rows=super.queryForList(sql,args);
+                if(sql.startsWith("SELECT * FROM finance_query_events")&&appended.compareAndSet(false,true)){
+                    try{
+                        CompletableFuture.runAsync(()->f.repo.transaction(()->{
+                            change("first","21");change("other","81");return null;
+                        })).get(4,TimeUnit.SECONDS);
+                    }catch(Exception failure){throw new AssertionError("Event claim blocked a ledger commit",failure);}
+                }
+                return rows;
+            }
+        };
+        var repo=new FinanceRepository(jdbc,new ObjectMapper());
+
+        assertEquals(visible,new FinanceQueryProjections(repo,f.service,new FinanceAdSpendService(repo,f.service)).drainEvents());
+        assertTrue(appended.get());
+        assertEquals(4,f.db.queryForObject("SELECT COUNT(*) FROM finance_query_events",Integer.class));
+        assertHidden();drain();assertTrue(projections.buildNext());assertReadyAndNative();
+    }
+
     @Test void eventDrainRollbackRestoresRevisionsAndDoesNotAcknowledgeVisibleIds(){
         assertTrue(projections.buildNext());change("first","15");
         var before=f.db.queryForList("SELECT * FROM finance_query_partitions");var events=f.db.queryForList("SELECT * FROM finance_query_events ORDER BY event_id");

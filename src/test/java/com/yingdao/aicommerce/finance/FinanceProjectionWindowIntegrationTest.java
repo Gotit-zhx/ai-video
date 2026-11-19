@@ -16,6 +16,22 @@ class FinanceProjectionWindowIntegrationTest extends FinanceConfigurationIntegra
         assertEquals(0,new BigDecimal("10").compareTo(total(partial)),"Partial calendar month must exclude month-only corrections");
     }
 
+    @Test void adjacentDirtyDaysKeepTheOriginalMonthScopeAndVisitOnlyAffectedWindows(){
+        var month=month(seedMonth());
+        var days=new java.util.ArrayList<FinanceRepository.Query>();
+        var end=month.start().plusDays(1);
+        var amount=repo.inProjectionWindow(month,month.start(),end,()->{
+            repo.aggregateWindows(month,repo.query(owner,month),"record_date",1,query->{
+                days.add(query);return java.util.List.of();
+            });
+            return total(month);
+        });
+        assertEquals(0,new BigDecimal("60").compareTo(amount));
+        assertEquals(2,days.size());
+        assertTrue(days.getFirst().args().contains(java.sql.Date.valueOf(month.end())),
+            "Physical windows cannot change month correction coverage");
+    }
+
     @Test void nestedWindowsAndFailuresRestoreThePreviousReadBoundary(){
         String shop=seedMonth();var month=month(shop);
         repo.inProjectionWindow(month,month.start(),()->{
