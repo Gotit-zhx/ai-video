@@ -133,7 +133,8 @@ class FinanceShopeeGmsIntegrationTest {
         assertNull(sync.get("checkpoint_json"));assertNotNull(sync.get("last_success_at"));assertEquals("[]",sync.get("campaign_ids_json"));
         assertEquals(3,ads.fixture.db.queryForObject("SELECT COUNT(*) FROM finance_shopee_gms_daily",Integer.class));
         assertEquals(BigDecimal.ZERO,ads.fixture.db.queryForObject("SELECT SUM(amount) FROM finance_shopee_gms_daily",BigDecimal.class).stripTrailingZeros());
-        assertEquals(3,ads.fixture.db.queryForObject("SELECT COUNT(*) FROM finance_query_events WHERE event_scope='DAY'",Integer.class));
+        assertEquals(3,ads.fixture.db.queryForObject("SELECT COUNT(*) FROM finance_query_events WHERE event_scope='DAY' AND source_table='finance_shopee_gms_daily'",Integer.class));
+        assertEquals(1,ads.fixture.db.queryForObject("SELECT COUNT(*) FROM finance_query_events WHERE event_scope='DAY' AND source_table='finance_shopee_ad_daily'",Integer.class));
         String evidence=ads.fixture.db.queryForObject("SELECT source_json FROM finance_shopee_gms_daily WHERE record_date='2026-10-01'",String.class);assertTrue(evidence.contains("ads_error_product_gms_campaign_not_found"));assertTrue(evidence.contains("SHOPEE_GMS_NO_CAMPAIGN_ZERO_V1"));
         var filter=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,1),"","SHOPEE","PHP","day");
         var spend=new FinanceAdSpendService(ads.fixture.repo,ads.fixture.service);var report=spend.report(ads.fixture.owner,filter,false,"","","");
