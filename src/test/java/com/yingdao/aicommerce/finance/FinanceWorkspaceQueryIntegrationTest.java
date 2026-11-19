@@ -28,6 +28,37 @@ class FinanceWorkspaceQueryIntegrationTest {
     FinanceWorkspaceQueryService.Selection select(String view,String kind,boolean all,int page,String numbers){return new FinanceWorkspaceQueryService.Selection(view,kind,all,false,"",page,1,numbers,"","");}
     void fee(String id,String currency){fixture.repo.save(fixture.owner,new Entry(shop,"SHOPEE","FEE",id,"","","pay_per_sale","SETTLED",LocalDate.of(2026,10,3),currency,decimal("12.123456"),null,null,null,null,"API",Map.of()));}
     void build(){projections.request(fixture.owner,month);while(projections.drainEvents()>0){}for(int i=0;i<12&&projections.buildNext();i++){}assertTrue(projections.find(fixture.owner,month).isPresent());}
+    @Test void overviewReusesPublishedFactsAndKeepsCurrencyAndTenantIsolation(){
+        fee("visible-php","PHP");fee("visible-usd","USD");
+        fixture.repo.save(fixture.owner,new Entry(shop,"SHOPEE","FEE","precise-fee","","","pay_per_sale","SETTLED",
+            LocalDate.of(2026,10,3),"PHP",decimal("99999999999999999.123456"),null,null,null,null,"API",Map.of()));
+        String foreign=fixture.connect(fixture.other,false);
+        fixture.repo.save(fixture.other,new Entry(foreign,"SHOPEE","FEE","foreign-fee","","","pay_per_sale","SETTLED",
+            LocalDate.of(2026,10,3),"PHP",decimal("987.654321"),null,null,null,null,"API",Map.of()));
+        build();
+
+        for(boolean cny:List.of(false,true)){
+            var nativeResult=fixture.service.buildDashboard(fixture.owner,month,cny,"",false);
+            var projected=queries.overview(fixture.owner,month,cny,"");
+            assertEquals("READY",map(projected.get("readModel")).get("status"));
+            for(String key:List.of("filters","totals","fees","trend","profit","advertising","productCosts","dateWindows"))
+                assertEquals(fixture.repo.write(nativeResult.get(key)),fixture.repo.write(projected.get(key)),key);
+            assertEquals(List.of(shop),rows(projected.get("shops")).stream().map(row->text(row.get("id"))).toList());
+        }
+
+        var payload=projections.findForDashboard(fixture.owner,month).orElseThrow();
+        assertTrue(payload.rawCounts().isEmpty());
+        assertTrue(rows(payload.spendFacts().get("sources")).isEmpty());
+    }
+    @Test void dirtyOverviewReadsCurrentAuthoritativeFacts(){
+        fee("before-projection","PHP");build();
+        fixture.service.dashboard(fixture.owner,month,false,"");
+        fee("after-projection","PHP");
+        var current=queries.overview(fixture.owner,month,false,"");
+        assertNull(current.get("readModel"));
+        assertEquals(2,number(rows(current.get("totals")).stream()
+            .filter(row->"FEE".equals(row.get("kind"))).findFirst().orElseThrow().get("records")));
+    }
     @Test void readyFeePageReusesOriginalFinancialAlgorithmAndExactCount(){
         for(int i=0;i<65;i++)fee("fee-"+i,"PHP");fee("usd","USD");build();
         var expected=fixture.service.buildDashboard(fixture.owner,month,false,"",false);
@@ -92,6 +123,22 @@ class FinanceWorkspaceQueryIntegrationTest {
         verify(scoped,times(19)).version(eq(fixture.owner),eq(month),anyLong());
         verify(scoped,never()).version(eq(fixture.other),any());
         verify(scoped,never()).version(eq(fixture.other),any(),anyLong());
+    }
+    @Test void settlementPendingWaitLeavesTimeForTheCurrentExactPage(){
+        fixture.repo.save(fixture.owner,new Entry(shop,"SHOPEE","SETTLEMENT","pending-settlement","qa-order","qa-statement",
+            "","SETTLED",LocalDate.of(2026,10,3),"PHP",decimal("21.123456"),decimal("28.123456"),null,null,null,"API",Map.of()));
+        var elapsed=new java.util.concurrent.atomic.AtomicLong();
+        var spend=new FinanceAdSpendService(fixture.repo,fixture.service);
+        var bounded=new FinanceWorkspaceQueryService(fixture.repo,fixture.service,spend,projections,
+            mock(FinanceAds.class),null,elapsed::get,elapsed::addAndGet);
+        var result=bounded.query(fixture.owner,fixture.owner,month,select("settlements","SETTLEMENT",false,1,""));
+        assertEquals(Duration.ofMillis(250).toNanos(),elapsed.get());
+        assertEquals("PENDING",map(result.get("readModel")).get("status"));
+        var expected=fixture.repo.details(fixture.owner,new Filter(month.start(),month.end(),"","","PHP","day"),"SETTLEMENT",1,50,"",false);
+        var records=map(result.get("records"));
+        assertEquals(fixture.repo.write(expected.get("items")),fixture.repo.write(records.get("items")));
+        assertEquals(expected.get("total"),records.get("total"));
+        assertEquals(1,number(records.get("total")));
     }
     @Test void pendingAdvertisingPrimaryReturnsTheExactNativePeriodWithoutWaitingForTheGlobalProjection(){
         fixture.db.update("INSERT INTO finance_shopee_ad_daily(organization_id,external_shop_id,source_key,record_date,currency,amount,source_json) VALUES(?,'10001',?,'2026-10-03','PHP',7,'{}'),(?,'10001',?,'2026-10-31','PHP',9,'{}')",

@@ -178,7 +178,7 @@ public class FinanceService {
         java.util.function.Supplier<Map<String,Object>> load=()->buildDashboard(s,requested,cny,snapshotId,false);
         return withCalculations(s,requested,sharedSnapshots==null?snapshots.get(key,load):sharedSnapshots.get(key,load));
     }
-    private Map<String,Object> withCalculations(Scope s,Filter f,Map<String,Object> result){
+    Map<String,Object> withCalculations(Scope s,Filter f,Map<String,Object> result){
         if(sharedSnapshots==null)return result;
         var selected=rows(result.get("shops")).stream().filter(shop->FinanceGroups.matches(shop,f)).map(shop->text(shop.get("id"))).toList();
         var copy=new LinkedHashMap<>(result);copy.put("settlementCalculation",sharedSnapshots.settlementCalculation(s,selected));return copy;

@@ -1,3 +1,5 @@
+const workspaceScriptsReady = document.readyState === "complete" ? Promise.resolve() :
+  new Promise(resolve => document.addEventListener("DOMContentLoaded", resolve, { once: true }));
 const loginView = document.querySelector("#login-view");
 const dashboardView = document.querySelector("#dashboard-view");
 const loginForm = document.querySelector("#login-form");
@@ -982,6 +984,10 @@ async function showDashboard(user) {
   document.querySelector("#current-organization").textContent = `${user.organizationName || "企业工作空间"}${user.organizationCode ? ` · ${user.organizationCode}` : ""}`;
   document.querySelector("#current-permission-state").textContent = productPermissionLabel();
   applyFeatureAccess();
+  if (window.location.hash.startsWith('#finance-') && canAccessFinance() && !globalThis.FinanceWorkspace) {
+    await workspaceScriptsReady;
+    if (currentUser !== user) return;
+  }
   if (window.location.hash.startsWith('#finance-') && globalThis.FinanceWorkspace?.allowed()) {
     switchWorkspace('finance'); globalThis.FinanceWorkspace.enter(window.location.hash.slice(9)); return;
   }

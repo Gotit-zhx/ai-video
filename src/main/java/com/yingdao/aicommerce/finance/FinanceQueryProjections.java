@@ -1,6 +1,7 @@
 package com.yingdao.aicommerce.finance;
 
 import org.springframework.stereotype.Service;
+import tools.jackson.core.JsonToken;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.json.JsonMapper;
 import java.time.*;
@@ -15,6 +16,8 @@ public class FinanceQueryProjections {
     private final FinanceService finance;
     private final FinanceAdSpendService spend;
     private final JsonMapper json=JsonMapper.builder().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
+    private final tools.jackson.databind.ObjectReader ledgerField=json.readerFor(Object.class)
+        .without(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
 
     public record Snapshot(Map<String,Object> facts,Map<String,Object> spendFacts,List<Map<String,Object>> rawCounts,
                            Instant generatedAt,String revision,boolean refreshing) {}
@@ -31,20 +34,32 @@ public class FinanceQueryProjections {
 
     /** Only complete committed facts are returned. The caller keeps its original fallback. */
     public Optional<Snapshot> find(Scope scope,Filter filter){
-        return find(scope,filter,true,true);
+        return find(scope,filter,true,true,true);
+    }
+    Optional<Snapshot> findForDashboard(Scope scope,Filter filter){
+        return find(scope,filter,true,false,false);
     }
     /** A page needs either dashboard facts/counts or the independent spend report, never both. */
     Optional<Snapshot> findForQuery(Scope scope,Filter filter,boolean primaryAdvertising){
-        return find(scope,filter,!primaryAdvertising,primaryAdvertising);
+        return find(scope,filter,!primaryAdvertising,!primaryAdvertising,primaryAdvertising);
     }
-    private Optional<Snapshot> find(Scope scope,Filter filter,boolean dashboard,boolean independentSpend){
+    private Optional<Snapshot> find(Scope scope,Filter filter,boolean dashboard,boolean countsNeeded,boolean independentSpend){
         return repo.readSnapshot(15,()->{
             var months=months(filter);
             if(hasRelevantEvents(scope,filter))return Optional.empty();
+            LocalDate lastMonth=months.getLast();
+            // Only the last month can include day one while using a partial-month basis.
+            boolean firstDayNeeded=dashboard&&!filter.start().isAfter(lastMonth)
+                &&filter.end().isBefore(YearMonth.from(lastMonth).atEndOfMonth());
             String columns="partition_month,schema_version,built_revision,requested_revision,generated_at,CASE WHEN full_month_json IS NOT NULL AND partial_first_day_json IS NOT NULL AND spend_json IS NOT NULL THEN 1 ELSE 0 END payload_present"
-                +(dashboard?",full_month_json,partial_first_day_json":"")+(independentSpend?",spend_json":"");
+                +(dashboard?",full_month_json":"")
+                +(firstDayNeeded?",CASE WHEN partition_month=? THEN partial_first_day_json END AS partial_first_day_json":"")
+                +(independentSpend?",spend_json":"");
+            var args=new ArrayList<Object>();
+            if(firstDayNeeded)args.add(lastMonth);
+            args.addAll(List.of(scope.organizationId(),filter.platform(),months.getFirst(),lastMonth));
             var stored=repo.jdbc().queryForList("SELECT "+columns+" FROM finance_query_partitions WHERE organization_id=? AND platform_filter=? AND partition_month BETWEEN ? AND ? ORDER BY partition_month",
-                scope.organizationId(),filter.platform(),months.getFirst(),months.getLast());
+                args.toArray());
             if(stored.size()!=months.size()||stored.stream().anyMatch(row->number(row.get("schema_version"))!=SCHEMA_VERSION
                     ||number(row.get("built_revision"))==0||number(row.get("built_revision"))!=number(row.get("requested_revision"))
                     ||number(row.get("payload_present"))!=1))return Optional.empty();
@@ -56,7 +71,8 @@ public class FinanceQueryProjections {
                 LocalDate month=date(row.get("partition_month"));
                 boolean full=!filter.start().isAfter(month)&&!filter.end().isBefore(YearMonth.from(month).atEndOfMonth());
                 if(dashboard){
-                    var data=read(row.get("full_month_json"));var first=read(row.get("partial_first_day_json"));
+                    var data=readLedger(row.get("full_month_json"),countsNeeded);
+                    var first=row.get("partial_first_day_json")==null?Map.<String,Object>of():readLedger(row.get("partial_first_day_json"),countsNeeded);
                     appendRange(buckets,rows(data.get("buckets")),rows(first.get("buckets")),filter,month,full);
                     appendRange(orders,rows(data.get("orders")),rows(first.get("orders")),filter,month,full);
                     appendRange(advertising,rows(data.get("advertising")),rows(first.get("advertising")),filter,month,full);
@@ -382,6 +398,22 @@ public class FinanceQueryProjections {
         var result=new ArrayList<>(before.stream().filter(row->!day.equals(date(row.get("record_date")))).toList());result.addAll(after);return result;
     }
     private static LocalDate date(Object value){return LocalDate.parse(text(value).substring(0,10));}
+    private Map<String,Object> readLedger(Object value,boolean countsNeeded){
+        if(countsNeeded)return read(value);
+        // Keep decimal text intact. MySQL JSON functions convert it to binary JSON.
+        var result=new LinkedHashMap<String,Object>();
+        try(var parser=json.createParser(text(value))){
+            if(parser.nextToken()!=JsonToken.START_OBJECT)throw new IllegalStateException("Invalid finance projection payload");
+            for(JsonToken field=parser.nextToken();field!=JsonToken.END_OBJECT;field=parser.nextToken()){
+                if(field!=JsonToken.PROPERTY_NAME)throw new IllegalStateException("Invalid finance projection field");
+                String name=parser.currentName();
+                parser.nextToken();
+                if("rawCounts".equals(name))parser.skipChildren();
+                else result.put(name,ledgerField.readValue(parser));
+            }
+        }
+        return result;
+    }
     private Map<String,Object> read(Object value){return map(json.readValue(text(value),Map.class));}
     private static Object normalize(Object value){
         if(value instanceof java.sql.Date day)return day.toLocalDate().toString();

@@ -8,6 +8,7 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 @Service
 public class FinanceWorkspaceQueryService {
     private static final long PENDING_WAIT_NANOS=java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+    private static final long SETTLEMENT_PENDING_WAIT_NANOS=java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(250);
     private static final long PENDING_POLL_NANOS=java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(100);
     @FunctionalInterface interface PendingWait {void await(long nanos)throws InterruptedException;}
     public record Selection(String view,String kind,boolean allOrders,boolean cny,String fxSnapshot,
@@ -27,11 +28,47 @@ public class FinanceWorkspaceQueryService {
         this.repo=repo;this.finance=finance;this.spend=spend;this.projections=projections;this.ads=ads;this.cache=cache;
         this.nanoTime=nanoTime;this.pendingWait=pendingWait;
     }
+    Map<String,Object> overview(Scope scope,Filter filter,boolean cny,String fxSnapshot){
+        Filter nativeFilter=nativeFilter(filter);
+        var version=projections.version(scope,nativeFilter);
+        if(!"READY".equals(version.get("status"))){
+            projections.request(scope,nativeFilter);
+            return nativeOverview(scope,filter,cny,fxSnapshot);
+        }
+
+        String revision=text(version.get("revision"));
+        java.util.function.Supplier<Map<String,Object>> load=()->{
+            var snapshot=projections.findForDashboard(scope,nativeFilter)
+                .filter(found->found.revision().equals(revision)).orElseThrow(ProjectionChanged::new);
+            var result=new LinkedHashMap<>(finance.dashboardFromFacts(scope,filter,cny,fxSnapshot,false,snapshot.facts()));
+            // A verified projection has its own revision. The response cache tracks
+            // the existing Redis invalidation version independently.
+            result.remove("_financeDataRevision");
+            result.remove("_financeFactsBuilt");
+            result.put("readModel",Map.of("status","READY","revision",revision,"generatedAt",snapshot.generatedAt().toString()));
+            return result;
+        };
+        try{
+            var result=cache==null?load.get():cache.getPage(
+                new FinanceSnapshotCache.Key(scope,filter,cny,text(fxSnapshot),false),"overview",revision,"",load);
+            return finance.withCalculations(scope,filter,result);
+        }catch(ProjectionChanged changed){
+            return nativeOverview(scope,filter,cny,fxSnapshot);
+        }
+    }
+    private Map<String,Object> nativeOverview(Scope scope,Filter filter,boolean cny,String fxSnapshot){
+        var facts=finance.buildNativeDashboardFacts(scope,nativeFilter(filter),false);
+        return finance.withCalculations(scope,filter,finance.dashboardFromFacts(scope,filter,cny,fxSnapshot,false,facts));
+    }
     public Map<String,Object> query(Scope scope,Scope personal,Filter filter,Selection selection){
         Selection selected=validated(selection);
         Filter nativeFilter=nativeFilter(filter);
         var version=projections.version(scope,nativeFilter);
-        if(!selected.view().equals("ads"))version=awaitProjection(scope,nativeFilter,version);
+        if(!selected.view().equals("ads")){
+            // Leave most of the interactive budget for the exact native settlement query.
+            long waitBudget=selected.view().equals("settlements")?SETTLEMENT_PENDING_WAIT_NANOS:PENDING_WAIT_NANOS;
+            version=awaitProjection(scope,nativeFilter,version,waitBudget);
+        }
         Map<String,Object> result;
         if("READY".equals(version.get("status"))){
             String revision=text(version.get("revision"));
@@ -51,12 +88,12 @@ public class FinanceWorkspaceQueryService {
         }
         return copy;
     }
-    private Map<String,Object> awaitProjection(Scope scope,Filter filter,Map<String,Object> version){
+    private Map<String,Object> awaitProjection(Scope scope,Filter filter,Map<String,Object> version,long waitBudget){
         if(!"PENDING".equals(version.get("status")))return version;
         requireActiveRequest();
         long started=nanoTime.getAsLong();
         while("PENDING".equals(version.get("status"))){
-            long remaining=PENDING_WAIT_NANOS-(nanoTime.getAsLong()-started);
+            long remaining=waitBudget-(nanoTime.getAsLong()-started);
             if(remaining<=0){requireActiveRequest();return version;}
             try{pendingWait.await(Math.min(PENDING_POLL_NANOS,remaining));}
             catch(InterruptedException interrupted){
@@ -65,19 +102,19 @@ public class FinanceWorkspaceQueryService {
             }
             requireActiveRequest();
             long elapsed=nanoTime.getAsLong()-started;
-            if(elapsed>=PENDING_WAIT_NANOS){requireActiveRequest();return version;}
-            long pollRemaining=PENDING_WAIT_NANOS-elapsed;
+            if(elapsed>=waitBudget){requireActiveRequest();return version;}
+            long pollRemaining=waitBudget-elapsed;
             Map<String,Object> polled;
             try{polled=projections.version(scope,filter,Math.max(1,(pollRemaining+999_999L)/1_000_000L));}
             catch(FinanceQueryProjections.PollDeadlineElapsed expired){requireActiveRequest();return version;}
             catch(org.springframework.dao.QueryTimeoutException timeout){
                 requireActiveRequest();
-                if(nanoTime.getAsLong()-started>=PENDING_WAIT_NANOS)return version;
+                if(nanoTime.getAsLong()-started>=waitBudget)return version;
                 var unavailable=new com.yingdao.aicommerce.common.exception.BusinessException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,"财务投影状态查询超时，请稍后重试");
                 unavailable.initCause(timeout);throw unavailable;
             }
             requireActiveRequest();
-            if(nanoTime.getAsLong()-started>=PENDING_WAIT_NANOS){requireActiveRequest();return version;}
+            if(nanoTime.getAsLong()-started>=waitBudget){requireActiveRequest();return version;}
             version=polled;
         }
         requireActiveRequest();
