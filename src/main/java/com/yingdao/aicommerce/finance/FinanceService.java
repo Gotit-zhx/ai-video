@@ -224,21 +224,20 @@ public class FinanceService {
         var reportingMonths=rows(facts.get("reportingMonths"));
         String trendGranularity=reportingMonths.stream().anyMatch(r->Boolean.TRUE.equals(r.get("included")))?"month":requested.granularity();
         var buckets=rows(facts.get("buckets"));
-        var allRanking=aggregate(buckets,"shop_id","kind");
-        List<String> codes=java.util.stream.Stream.concat(allRanking.stream(),(live?List.<Map<String,Object>>of():rows(facts.get("advertising"))).stream())
+        List<String> codes=java.util.stream.Stream.concat(buckets.stream(),(live?List.<Map<String,Object>>of():rows(facts.get("advertising"))).stream())
                 .map(r->text(r.get("currency"))).distinct().sorted().toList();
         String currency=requested.currency().isBlank()?(cny||codes.isEmpty()?"":codes.getFirst()):requested.currency();
         Filter f=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),currency,requested.granularity(),requested.groupId());
-        var ranking=allRanking.stream().filter(r->currency.isBlank()||currency.equals(text(r.get("currency")))).toList();
-        List<Map<String,Object>> totals=nativeTotals(ranking);
+        var selected=currency.isBlank()?buckets:buckets.stream().filter(r->currency.equals(text(r.get("currency")))).toList();
         FinanceFx.Quote quote=cny?(resolvedQuote==null?fx.historical(snapshotId,requested.start(),requested.end()):resolvedQuote):null;
-        if(cny)totals=FinanceFx.groups(buckets.stream().filter(r->currency.isBlank()||currency.equals(text(r.get("currency")))).toList(),quote,"kind");
+        var converted=cny?new FinanceFx.Grouping(selected,quote):null;
+        var ranking=cny?converted.groups("shop_id","kind"):aggregate(selected,"shop_id","kind");
+        var totals=cny?converted.groups("kind"):nativeTotals(ranking);
         LinkedHashMap<String,Map<String,Object>> points=new LinkedHashMap<>();
         for(LocalDate d=f.start();!live&&!d.isAfter(f.end());d=d.plusDays(1)){
             String key=bucket(d,trendGranularity);points.computeIfAbsent(key,k->{var m=new LinkedHashMap<String,Object>();m.put("period",k);return m;});
         }
-        var selected=buckets.stream().filter(r->currency.isBlank()||currency.equals(text(r.get("currency")))).toList();
-        var daily=live?List.<Map<String,Object>>of():cny?FinanceFx.groups(selected,quote,"record_date","kind"):aggregate(selected,"record_date","kind");
+        var daily=live?List.<Map<String,Object>>of():cny?converted.groups("record_date","kind"):aggregate(selected,"record_date","kind");
         daily=FinanceProfitReport.withGross(daily,"record_date");
         var incompletePoints=new HashSet<String>();
         for(var row:daily){
@@ -261,11 +260,13 @@ public class FinanceService {
         if(!live)out.put("advertising",FinanceAdvertisingReport.build(rows(facts.get("advertising")),rows(out.get("shops")),f,cny,quote,trendGranularity));
         out.put("dateBasis",FinanceCalendar.contract());
         out.put("dateWindows",FinanceCalendar.windows(f,rows(out.get("shops"))));
-        var fees=live?List.<Map<String,Object>>of():aggregate(selected.stream().filter(r->"FEE".equals(r.get("kind"))).toList(),"category","kind");
-        var statuses=aggregate(selected.stream().filter(r->"ORDER".equals(r.get("kind"))).toList(),"status","kind");
-        out.put("ranking",FinanceProfitReport.withGross(cny?FinanceFx.groups(selected,quote,"shop_id","kind"):ranking,"shop_id"));
-        out.put("fees",(cny?FinanceFx.groups(selected.stream().filter(r->"FEE".equals(r.get("kind"))).toList(),quote,"category","kind"):fees).stream().filter(r->"FEE".equals(r.get("kind"))).toList());
-        out.put("statuses",cny?FinanceFx.groups(selected.stream().filter(r->"ORDER".equals(r.get("kind"))).toList(),quote,"status","kind"):statuses);out.put("sync",syncStates(s,requested));
+        var fees=cny?converted.groupsOfKind("FEE","category","kind"):
+            live?List.<Map<String,Object>>of():aggregate(selected.stream().filter(r->"FEE".equals(r.get("kind"))).toList(),"category","kind");
+        var statuses=cny?converted.groupsOfKind("ORDER","status","kind"):
+            aggregate(selected.stream().filter(r->"ORDER".equals(r.get("kind"))).toList(),"status","kind");
+        out.put("ranking",FinanceProfitReport.withGross(ranking,"shop_id"));
+        out.put("fees",fees);
+        out.put("statuses",statuses);out.put("sync",syncStates(s,requested));
         out.put("updatedAt",Instant.now().toString());
         var productCosts=costReport.dashboardSummary(s,f,rows(facts.get("orders")));
         productCosts.put("labelConfiguration",new FinanceOrderCharges(repo).labelConfiguration(s,rows(out.get("shops")),rows(productCosts.get("shops"))));

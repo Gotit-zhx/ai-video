@@ -65,7 +65,7 @@ public class FinanceWorkspaceQueryService {
     private Map<String,Object> nativeOverview(Scope scope,Filter filter,boolean cny,String fxSnapshot){
         var result=nativeOverviews.read(new OverviewRead(scope,filter,cny,fxSnapshot),()->{
             var all=nativeFilter(filter);
-            projections.request(scope,all);
+            projections.requestMissing(scope,all);
             var repaired=projections.repairedLedger(scope,all,false);
             var facts=repaired.map(FinanceQueryProjections.Snapshot::facts)
                 .orElseGet(()->finance.buildNativeDashboardFacts(scope,all,false));
@@ -79,9 +79,9 @@ public class FinanceWorkspaceQueryService {
         var version=projections.version(scope,nativeFilter);
         if(selected.view().equals("settlements")&&selected.kind().equals("SETTLEMENT")&&"READY".equals(version.get("status")))
             projections.requestSettlementCosts(scope,nativeFilter);
-        if(!selected.view().equals("ads")){
+        if(!selected.view().equals("ads")&&!selected.allOrders()){
             // Leave most of the page budget for the exact native query.
-            boolean quickFallback=selected.view().equals("settlements")||selected.interactivePage()||selected.allOrders();
+            boolean quickFallback=selected.view().equals("settlements")||selected.interactivePage();
             long waitBudget=quickFallback?INTERACTIVE_PENDING_WAIT_NANOS:PENDING_WAIT_NANOS;
             version=awaitProjection(scope,nativeFilter,version,waitBudget);
         }
@@ -167,7 +167,7 @@ public class FinanceWorkspaceQueryService {
     private Map<String,Object> fallback(Scope scope,Filter f,Selection selected){
         return nativeWorkspace.read(new WorkspaceRead(scope,f,selected),()->{
             // Enqueue outside the read-only snapshot; failures never publish fake empty facts.
-            projections.request(scope,nativeFilter(f));
+            projections.requestMissing(scope,nativeFilter(f));
             return build(scope,f,selected,null);
         });
     }
@@ -190,7 +190,7 @@ public class FinanceWorkspaceQueryService {
             // Advertising support needs category-specific raw facets, so it
             // retains the independent count query.
             String countKind=selected.view().equals("ads-support")?"":selected.kind();
-            var snapshot=expectedRevision!=null?projections.findForQuery(scope,all,primary).orElseThrow(ProjectionChanged::new)
+            var snapshot=expectedRevision!=null?(selected.allOrders()?projections.findForOrderCounts(scope,all):projections.findForQuery(scope,all,primary)).orElseThrow(ProjectionChanged::new)
                 :primary||selected.allOrders()?null:projections.repairedLedgerForPage(scope,all,countKind,pageOnly).orElse(null);
             if(expectedRevision!=null&&!snapshot.revision().equals(expectedRevision))throw new ProjectionChanged();
             boolean unsearched=FinanceRecordSearch.numbers(selected.numbers()).isEmpty();

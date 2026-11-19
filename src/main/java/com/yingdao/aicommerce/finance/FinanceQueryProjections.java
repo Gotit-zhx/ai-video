@@ -38,6 +38,7 @@ public class FinanceQueryProjections {
         ALL(List.of("buckets","orders","advertising","rawCounts")),
         OVERVIEW(List.of("buckets","orders","advertising")),
         RECONCILIATION(List.of("orders","rawCounts")),
+        ORDER_COUNTS(List.of("rawCounts")),
         NONE(List.of());
         final List<String> names;
         LedgerFields(List<String> names){this.names=names;}
@@ -66,6 +67,9 @@ public class FinanceQueryProjections {
     /** A page needs either dashboard facts/counts or the independent spend report, never both. */
     Optional<Snapshot> findForQuery(Scope scope,Filter filter,boolean primaryAdvertising){
         return find(scope,filter,primaryAdvertising?LedgerFields.NONE:LedgerFields.ALL,primaryAdvertising,false,"");
+    }
+    Optional<Snapshot> findForOrderCounts(Scope scope,Filter filter){
+        return find(scope,filter,LedgerFields.ORDER_COUNTS,false,false,"ORDER");
     }
     Optional<Snapshot> repairedLedger(Scope scope,Filter filter,boolean countsNeeded){
         return find(scope,filter,countsNeeded?LedgerFields.ALL:LedgerFields.OVERVIEW,false,true,"");
@@ -125,7 +129,7 @@ public class FinanceQueryProjections {
             var selected=selectedShops(shops,filter);
             var nativeFilter=new Filter(filter.start(),filter.end(),filter.shopId(),filter.platform(),"","day",filter.groupId());
             // Platform is already part of the persistent key, so UNASSIGNED remains valid for a named platform.
-            Map<String,Object> facts=dashboard?new LinkedHashMap<>(Map.of("buckets",buckets.stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
+            Map<String,Object> facts=dashboard&&fields!=LedgerFields.ORDER_COUNTS?new LinkedHashMap<>(Map.of("buckets",buckets.stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
                 "orders",orders.stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
                 "advertising",advertising.stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
                 "reportingMonths",new FinanceReportingMonths(repo).coverage(scope,nativeFilter))):new LinkedHashMap<>();
@@ -198,8 +202,20 @@ public class FinanceQueryProjections {
 
     /** Enqueue only absent partitions; normal reads never rewrite a clean revision. */
     public void request(Scope scope,Filter filter){
-        for(LocalDate month:months(filter))repo.jdbc().update("INSERT IGNORE INTO finance_query_partitions(organization_id,platform_filter,partition_month) VALUES(?,?,?)",
-            scope.organizationId(),filter.platform(),month);
+        for(LocalDate month:months(filter))createPartition(scope,filter.platform(),month);
+    }
+    void requestMissing(Scope scope,Filter filter){
+        var requested=months(filter);
+        // A metadata read does not wait on the lease publisher's row lock.
+        var existing=new HashSet<>(repo.jdbc().queryForList("""
+            SELECT partition_month FROM finance_query_partitions
+            WHERE organization_id=? AND platform_filter=? AND partition_month BETWEEN ? AND ?
+            """,java.sql.Date.class,scope.organizationId(),filter.platform(),requested.getFirst(),requested.getLast()));
+        for(LocalDate month:requested)if(!existing.contains(java.sql.Date.valueOf(month)))createPartition(scope,filter.platform(),month);
+    }
+    private void createPartition(Scope scope,String platform,LocalDate month){
+        repo.jdbc().update("INSERT IGNORE INTO finance_query_partitions(organization_id,platform_filter,partition_month) VALUES(?,?,?)",
+            scope.organizationId(),platform,month);
     }
 
     /** Enqueue the two default business months, with every company's previous month first. */
@@ -366,7 +382,7 @@ public class FinanceQueryProjections {
             if(!costsOnly)addRepair(ledger,filter,day.day(),day.shop());
             if(affected)addRepair(orders,filter,day.day(),day.shop());
         });
-        var repair=new RepairWindows(windows(ledger),windows(orders));
+        var repair=new RepairWindows(windows(ledger,false),windows(orders));
         return withinRepairBudget(costsOnly?repair.orders():repair.ledger())?Optional.of(repair):Optional.empty();
     }
     private static boolean withinRepairBudget(List<Window> windows){
@@ -490,22 +506,29 @@ public class FinanceQueryProjections {
     }
 
     private static List<Window> windows(SortedMap<LocalDate,Set<String>> days){
+        return windows(days,true);
+    }
+    private static List<Window> windows(SortedMap<LocalDate,Set<String>> days,boolean denseScan){
         var entries=new ArrayList<>(days.entrySet());var windows=new ArrayList<Window>();
         for(int index=0;index<entries.size();){
             var entry=entries.get(index++);
             LocalDate from=entry.getKey(),to=from;
-            var shops=physicalShops(entry.getValue());
+            var shops=physicalShops(entry.getValue(),denseScan);
             while(index<entries.size()&&entries.get(index).getKey().equals(to.plusDays(1))
-                    &&shops.equals(physicalShops(entries.get(index).getValue())))to=entries.get(index++).getKey();
+                    &&shops.equals(physicalShops(entries.get(index).getValue(),denseScan)))to=entries.get(index++).getKey();
             windows.add(new Window(from,to,shops));
         }
         return windows;
     }
 
-    private static List<String> physicalShops(Set<String> shops){
-        // Dense changes are cheaper as one covering date scan, even though
-        // requests retain the exact store scope for narrower repairs.
-        return shops.contains("")||shops.size()>SHOP_SCAN_LIMIT?List.of():List.copyOf(shops);
+    private static List<String> physicalShops(Set<String> shops,boolean denseScan){
+        // Beyond the indexed shop-day budget, keep the covering date scan.
+        return shops.contains("")||denseScan&&shops.size()>SHOP_SCAN_LIMIT?List.of():List.copyOf(shops);
+    }
+
+    private static List<Window> buildWindows(SortedMap<LocalDate,Set<String>> days){
+        var exact=windows(days,false);
+        return withinRepairBudget(exact)?exact:windows(days);
     }
 
     private Built build(Key key,Map<String,Object> previous,boolean costsOnly,Instant started){
@@ -519,11 +542,12 @@ public class FinanceQueryProjections {
         long costRevision=number(previous.get("settlement_cost_revision"));
         var fullWindow=new Window(month.start(),month.end(),List.of());
         var dirty=rebuild||costsOnly?new Dirty(new TreeMap<>(),new TreeMap<>()):dirty(key,costRevision);
-        var costWindows=rebuild||costsOnly||costRevision==0?List.of(fullWindow):windows(dirty.costs());
+        var orderWindows=buildWindows(dirty.costs());
+        var costWindows=rebuild||costsOnly||costRevision==0?List.of(fullWindow):orderWindows;
         var costs=settlementDays.calculate(scope,month,costWindows);
         if(costsOnly)return new Built(null,costs,started);
 
-        var ledgerWindows=rebuild?List.of(fullWindow):windows(dirty.ledger());
+        var ledgerWindows=rebuild?List.of(fullWindow):buildWindows(dirty.ledger());
         if(ledgerWindows.isEmpty())throw new IllegalStateException("Dirty partition has no affected days");
         if(ledgerWindows.equals(List.of(fullWindow))){
             var ads=spend.buildNativeSpendFacts(scope,month);
@@ -532,7 +556,7 @@ public class FinanceQueryProjections {
         }
 
         var ledger=repairLedger(scope,month,read(previous.get("full_month_json")),
-            new RepairWindows(ledgerWindows,windows(dirty.costs())),LedgerFields.ALL,"");
+            new RepairWindows(ledgerWindows,orderWindows),LedgerFields.ALL,"");
         var first=ledgerWindows.getFirst().start().equals(month.start())
             ?patchFirstDay(scope,key,firstDay,ledgerWindows.getFirst().shops()):null;
         var ads=patchSpend(scope,month,read(previous.get("spend_json")),dirty.ledger().keySet());
@@ -550,9 +574,10 @@ public class FinanceQueryProjections {
 
     private Map<String,Object> patchLedger(Scope scope,Filter semantic,Map<String,Object> old,List<Window> windows,LedgerFields fields,String countKind){
         var ledger=new LinkedHashMap<>(old);
+        var shopsByDay=shopsByDay(windows);
         var updatedRows=new LinkedHashMap<String,List<Map<String,Object>>>();
         for(String name:fields.names)updatedRows.put(name,new ArrayList<>(rows(old.get(name)).stream()
-            .filter(row->!covered(windows,row)).toList()));
+            .filter(row->!covered(shopsByDay,row)).toList()));
         var latest=repo.inProjectionWindows(semantic,windows,()->nativeFacts(scope,semantic,fields,countKind));
         for(String name:fields.names)updatedRows.get(name).addAll(rows(latest.get(name)));
         ledger.put("reportingMonths",latest.get("reportingMonths"));
@@ -560,9 +585,18 @@ public class FinanceQueryProjections {
         return ledger;
     }
 
-    private static boolean covered(List<Window> windows,Map<String,Object> row){
-        var day=date(row.get("record_date"));String shop=text(row.get("shop_id"));
-        return windows.stream().anyMatch(window->window.includes(day,shop));
+    private static Map<LocalDate,Set<String>> shopsByDay(List<Window> windows){
+        var byDay=new HashMap<LocalDate,Set<String>>();
+        for(var window:windows){
+            var shops=Set.copyOf(window.shops());
+            for(var day=window.start();!day.isAfter(window.end());day=day.plusDays(1))byDay.put(day,shops);
+        }
+        return byDay;
+    }
+
+    private static boolean covered(Map<LocalDate,Set<String>> shopsByDay,Map<String,Object> row){
+        var shops=shopsByDay.get(date(row.get("record_date")));
+        return shops!=null&&(shops.isEmpty()||shops.contains(text(row.get("shop_id"))));
     }
 
     /** Amount-only events affect the ledger and bills without moving first settlements. */
@@ -596,9 +630,11 @@ public class FinanceQueryProjections {
                 "buckets",FinanceService.dailyFactRows(buckets),"rawCounts",FinanceService.dailyFactRows(orderCounts));
         });
         var merged=new LinkedHashMap<>(saved);
+        var shopsByLedgerDay=shopsByDay(repair.ledger());
+        var shopsByOrderDay=shopsByDay(repair.orders());
         for(String field:fields.names){
             var untouched=new ArrayList<>(rows(saved.get(field)).stream().filter(row->!covered(
-                requiresOrderRepair(field,row)?repair.orders():repair.ledger(),row)).toList());
+                requiresOrderRepair(field,row)?shopsByOrderDay:shopsByLedgerDay,row)).toList());
             untouched.addAll(rows(ordinary.get(field)));
             untouched.addAll(rows(related.get(field)));
             merged.put(field,untouched);
@@ -672,14 +708,15 @@ public class FinanceQueryProjections {
         result.put("rawCounts",FinanceService.dailyFactRows(counts));return result;
     }
     private List<Map<String,Object>> recordCounts(Scope scope,Filter filter,String kind){
-        var query=repo.query(scope,filter);
-        var args=new ArrayList<>(query.args());
-        if(!kind.isBlank())args.add(kind);
         String index=kind.equals("BILL")?"idx_finance_company_kind_date":repo.dashboardIndex(filter);
         String advertisingFee="CASE WHEN kind='FEE' AND "+FinanceAdvertisingReport.ledgerPredicate("finance_records")+" THEN 1 ELSE 0 END";
-        return repo.jdbc().queryForList("SELECT shop_id,record_date,kind,currency,source,'RECORD' basis,"+advertisingFee
-            +" advertising_fee,COUNT(*) records FROM finance_records FORCE INDEX("+index+") WHERE "+query.where()
-            +(kind.isBlank()?"":" AND kind=?")+" GROUP BY shop_id,record_date,kind,currency,source,advertising_fee",args.toArray());
+        return repo.aggregateRecords(scope,filter,"",index,0,(source,query)->{
+            var args=new ArrayList<>(query.args());
+            if(!kind.isBlank())args.add(kind);
+            return repo.jdbc().queryForList("SELECT shop_id,record_date,kind,currency,source,'RECORD' basis,"+advertisingFee
+                +" advertising_fee,COUNT(*) records FROM "+source+" WHERE "+query.where()
+                +(kind.isBlank()?"":" AND kind=?")+" GROUP BY shop_id,record_date,kind,currency,source,advertising_fee",args.toArray());
+        });
     }
     private List<Map<String,Object>> settledCounts(Scope scope,Filter filter,String kind){
         var q=repo.query(scope,filter,"r");

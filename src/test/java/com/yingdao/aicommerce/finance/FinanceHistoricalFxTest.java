@@ -44,6 +44,26 @@ class FinanceHistoricalFxTest {
         assertNull(result.get("amount"));assertEquals(decimal("70.000000"),result.get("known_amount"));
         assertEquals(decimal("1"),result.get("known_amounts"));assertEquals(List.of("2026-10-12"),quote.metadata().get("missingDates"));
     }
+    @Test void sharedRollupsKeepPerRowRoundingAndDistinguishUnknownFromZero(){
+        var first=LocalDate.of(2026,10,9);
+        var second=first.plusDays(3);
+        var quote=new FinanceFx.Quote("history",Instant.EPOCH,Map.of(),
+            Map.of(first,new FinanceFx.Day(first,Map.of("USD",decimal("1.5")))));
+        var rows=List.<Map<String,Object>>of(
+            Map.of("record_date",first.toString(),"kind","FEE","category","service","currency","USD","amount",decimal("0.000001"),"known_amounts",1),
+            Map.of("record_date",first.toString(),"kind","FEE","category","service","currency","USD","amount",decimal("0.000001"),"known_amounts",1),
+            Map.of("record_date",second.toString(),"kind","FEE","category","service","currency","USD","amount",decimal("2"),"known_amounts",1),
+            Map.of("record_date",second.toString(),"kind","FEE","category","service","currency","USD","amount",BigDecimal.ZERO,"known_amounts",1));
+        var converted=new FinanceFx.Grouping(rows,quote);
+        var days=converted.groups("record_date","kind");
+        assertEquals(decimal("0.000004"),days.getFirst().get("amount"));
+        assertNull(days.getLast().get("amount"));
+        assertEquals(decimal("0.000000"),days.getLast().get("known_amount"));
+        var fee=converted.groupsOfKind("FEE","category").getFirst();
+        assertEquals(decimal("0.000004"),fee.get("known_amount"));
+        assertEquals(decimal("3"),fee.get("known_amounts"));
+        assertFalse((boolean)fee.get("fx_complete"));
+    }
     @Test void costProjectionUsesFirstSettlementDayRatherThanOneScalarRate(){
         var first=LocalDate.of(2026,10,9);var second=first.plusDays(3);
         var quote=new FinanceFx.Quote("history",Instant.EPOCH,Map.of(),Map.of(

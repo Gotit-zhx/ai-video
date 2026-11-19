@@ -314,6 +314,25 @@ class FinanceWorkspaceQueryIntegrationTest {
         assertEquals(1,number(map(result.get("records")).get("total")));assertEquals("ALL",result.get("orderScope"));
         assertEquals("",map(result.get("filters")).get("currency"));
     }
+    @Test void allOrdersUseOnlyTheirExactProjectionCountsOrCurrentNativeRows(){
+        var day=month.start().plusDays(3);
+        for(String source:List.of("API","IMPORT"))fixture.repo.save(fixture.owner,new Entry(shop,"SHOPEE","ORDER",
+            "month-"+source,"month-order","","","COMPLETED",day,"PHP",decimal("10"),null,null,null,null,source,Map.of()));
+        fee("unrelated-fee","PHP");build();
+        var raw=projections.findForOrderCounts(fixture.owner,month).orElseThrow();
+        assertTrue(rows(raw.facts().get("buckets")).isEmpty());
+        assertFalse(raw.rawCounts().isEmpty());
+        assertTrue(raw.rawCounts().stream().allMatch(row->"ORDER".equals(row.get("kind"))));
+        var request=select("orders","ORDER",true,1,"");
+        var ready=queries.query(fixture.owner,fixture.owner,month,request);
+        assertEquals("READY",map(ready.get("readModel")).get("status"));
+        fixture.repo.save(fixture.owner,new Entry(shop,"SHOPEE","ORDER","new-month-order","new-month-order","","",
+            "COMPLETED",day,"THB",decimal("10"),null,null,null,null,"API",Map.of()));
+        var pending=queries.query(fixture.owner,fixture.owner,month,request);
+        assertEquals("PENDING",map(pending.get("readModel")).get("status"));
+        assertEquals(1,number(map(ready.get("records")).get("total")));
+        assertEquals(2,number(map(pending.get("records")).get("total")));
+    }
     @Test void personalFieldPreferencesAndTenantScopeAreNotShared(){
         fee("private","PHP");build();
         var result=queries.query(fixture.other,fixture.other,month,select("fees","FEE",false,1,""));
@@ -484,7 +503,7 @@ class FinanceWorkspaceQueryIntegrationTest {
                 assertEquals("PENDING",map(result.get("readModel")).get("status"));
                 var records=map(result.get("records"));assertEquals(1,number(records.get("total")));
                 assertEquals(0,decimal("12.123456").compareTo(decimal(rows(records.get("items")).getFirst().get("amount"))));
-                verify(bounded,times(1)).request(fixture.owner,month);
+                verify(bounded,times(1)).requestMissing(fixture.owner,month);
                 verify(bounded,never()).findForQuery(any(),any(),anyBoolean());
             }finally{lock.execute("UNLOCK TABLES");}
         }

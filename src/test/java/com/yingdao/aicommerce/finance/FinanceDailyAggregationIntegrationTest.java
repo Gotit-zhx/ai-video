@@ -177,6 +177,27 @@ class FinanceDailyAggregationIntegrationTest extends FinanceConfigurationIntegra
         assertEquals(expected,indexed(observed.dashboardBuckets(owner,full,false)));
         assertNotEquals(expected,indexed(unsplit().dashboardBuckets(owner,full,false)));
     }
+    @Test void pageRowsAndExactCountShareShopVisibilitySnapshot(){
+        String shop=connect(owner,false);
+        var full=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,31),"","","","day");
+        for(int i=0;i<51;i++)repo.save(owner,new Entry(shop,"SHOPEE","FEE","visible-"+i,"","","fee","SETTLED",
+            full.start(),"PHP",decimal("10"),null,null,null,null,"API",Map.of()));
+        var changed=new java.util.concurrent.atomic.AtomicBoolean();
+        var observed=new org.springframework.jdbc.core.JdbcTemplate(dataSource){
+            @Override public <T> List<T> queryForList(String sql,Class<T> element,Object...args){
+                var rows=super.queryForList(sql,element,args);
+                if(sql.startsWith("SELECT id FROM finance_connections WHERE organization_id=")&&changed.compareAndSet(false,true))
+                    java.util.concurrent.CompletableFuture.runAsync(()->db.update("UPDATE finance_connections SET status='REMOVED' WHERE id=?",shop))
+                        .orTimeout(5,java.util.concurrent.TimeUnit.SECONDS).join();
+                return rows;
+            }
+        };
+        var current=new FinanceRepository(observed,new ObjectMapper()).details(owner,full,"FEE",1,50);
+        assertTrue(changed.get());
+        assertEquals(51,number(current.get("total")));
+        assertEquals(50,rows(current.get("items")).size());
+        assertEquals(0,number(repo.details(owner,full,"FEE",1,50).get("total")));
+    }
     @Test void partitionedAdvertisingKeepsAllLedgerFeesBeforeOperatingExclusions(){
         String shop=connect(owner,false),foreign=connect(other,false);
         for(var scope:List.of(owner,other))for(int day:List.of(1,7,8,15,31)){

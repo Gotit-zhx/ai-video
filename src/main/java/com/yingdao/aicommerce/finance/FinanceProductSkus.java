@@ -93,7 +93,7 @@ public final class FinanceProductSkus {
             var args=new ArrayList<Object>();args.add(scope.organizationId());
             orders.keySet().forEach(key->{args.add(key.shop());args.add(key.order());});
             String where=String.join(" OR ",Collections.nCopies(orders.size(),"(o.shop_id=? AND o.order_id=?)"));
-            for(var row:repo.jdbc().queryForList("SELECT o.shop_id,o.order_id,o.status related_order_status,JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.create_time')) order_created_time,JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.order_type')) order_type,JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.is_sample_order')) is_sample_order,"+SKU+" sku FROM finance_records o "+ITEMS.replace("JOIN JSON_TABLE","LEFT JOIN JSON_TABLE")+" ON TRUE "
+            for(var row:repo.jdbc().queryForList("SELECT o.shop_id,o.order_id,o.status related_order_status,JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.create_time')) order_created_time,JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.order_type')) order_type,JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.is_sample_order')) is_sample_order,"+SKU+" sku FROM finance_records o FORCE INDEX(idx_finance_settled_order) "+ITEMS.replace("JOIN JSON_TABLE","LEFT JOIN JSON_TABLE")+" ON TRUE "
                     +" WHERE o.organization_id=? AND o.kind='ORDER' AND o.source='API' AND ("+where+")",args.toArray())){
                 String code=text(row.get("sku")).trim();
                 var key=new OrderKey(text(row.get("shop_id")),text(row.get("order_id")));
@@ -107,10 +107,10 @@ public final class FinanceProductSkus {
             var args=new ArrayList<Object>();args.add(scope.organizationId());args.addAll(bills.keySet());
             String slots=String.join(",",Collections.nCopies(bills.size(),"?"));
             for(var row:repo.jdbc().queryForList("""
-                SELECT r.id record_id,JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.create_time')) order_created_time,%s sku FROM finance_records r
-                JOIN finance_records t ON t.organization_id=r.organization_id AND t.shop_id=r.shop_id
+                SELECT r.id record_id,JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.create_time')) order_created_time,%s sku FROM finance_records r FORCE INDEX(PRIMARY)
+                STRAIGHT_JOIN finance_records t FORCE INDEX(idx_finance_cost_statement) ON t.organization_id=r.organization_id AND t.shop_id=r.shop_id
                   AND t.kind='SETTLEMENT' AND t.source='API' AND t.statement_id=r.external_id
-                JOIN finance_records o ON o.organization_id=r.organization_id AND o.shop_id=r.shop_id
+                STRAIGHT_JOIN finance_records o FORCE INDEX(idx_finance_settled_order) ON o.organization_id=r.organization_id AND o.shop_id=r.shop_id
                   AND o.kind='ORDER' AND o.source='API' AND o.order_id=t.order_id
                 %s ON TRUE WHERE r.organization_id=? AND r.kind='BILL' AND r.id IN (%s)
                 """.formatted(SKU,ITEMS.replace("JOIN JSON_TABLE","LEFT JOIN JSON_TABLE"),slots),args.toArray())){

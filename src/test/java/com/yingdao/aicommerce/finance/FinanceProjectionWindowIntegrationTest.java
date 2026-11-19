@@ -41,7 +41,8 @@ class FinanceProjectionWindowIntegrationTest extends FinanceConfigurationIntegra
         var month=month("");
         var first=month.start();
         var last=first.plusDays(4);
-        var slices=List.of(new FinanceSettlementCostDays.Window(first,first,List.of(shop)),
+        var slices=List.of(new FinanceSettlementCostDays.Window(first,first,
+                    List.of(shop,shop.toUpperCase(java.util.Locale.ROOT))),
                 new FinanceSettlementCostDays.Window(last,last,List.of(otherShop)));
 
         var queries=new java.util.ArrayList<FinanceRepository.Query>();
