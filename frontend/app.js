@@ -39,6 +39,7 @@ applySidebarExpanded(true);
 const commerceSections = {
   "commerce-assets": "素材管理",
   "product-capture": "采集链接",
+  "product-capture-templates": "采集模板",
   "product-main-image-styles": "主图风格模板",
   "commerce-designs": "一键裂变",
   "commerce-templates": "模板配置",
@@ -64,11 +65,11 @@ function selectCommerceSection() {
   const workbenchActive=route==='product-capture';
   document.querySelector("#nav-publish").classList.toggle("active",workbenchActive);
   if(workbenchActive)document.querySelector('#nav-publish').setAttribute('aria-current','page');else document.querySelector('#nav-publish').removeAttribute('aria-current');
-  document.querySelector(".topbar h2").textContent = `商品运营 / ${commerceSections[route]}`;
+  document.querySelector(".topbar h2").textContent = `${route === "product-capture-templates" ? "商品运营 v2.0" : "商品运营"} / ${commerceSections[route]}`;
   window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#${route}${route === "product-capture" ? window.location.hash.slice(1).replace(/^[^?]*/, "") : ""}`);
   syncProductCaptureView();
   window.dispatchEvent(new CustomEvent("heyi:commerce-section-entered", {detail:{route}}));
-  if(route!=="product-capture" && route!=="product-main-image-styles"){
+  if(route!=="product-capture" && route!=="product-main-image-styles" && route!=="product-capture-templates"){
     const panel=document.querySelector(`[data-commerce-panel="${route}"]`);
     const heading=route==="commerce-designs"?document.querySelector(".commerce-batch-hub header"):panel?.querySelector("header");
     if(heading&&!heading.querySelector("[data-module-listing-settings]")){
