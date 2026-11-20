@@ -42,6 +42,14 @@ await click('下一页');assert(new URL(calls.at(-1).path,'https://test').search
 await click('上一页');await click('查看千易数据');assert(current().textContent.includes('SKU-A'));assert(current().textContent.includes('987654321987654321'));assert(current().textContent.includes('查看千易接口原始字段'));assert(current().textContent.includes('WAIT_PAYMENT'));
 await click('关闭');
 const stale={};deferred=stale;button('查询').click();await settle();await change('退款状态','FINISH');stale.resolve({total:1,page:1,items:[{return_number:'STALE'}]});await settle();assert(!current().textContent.includes('STALE'));
+const dateCalls=calls.length;
+await change('开始日期','2026-10-01');
+assert.equal(calls.length,dateCalls);assert(button('导出千易售后 Excel').disabled);
+assert(current().textContent.includes('开始日期不能晚于结束日期'));
+await change('结束日期','2026-10-15');
+query=new URL(calls.at(-1).path,'https://test').searchParams;
+assert.equal(query.get('start'),'2026-10-01');assert.equal(query.get('end'),'2026-10-15');
+await change('开始日期','');assert(button('导出千易售后 Excel').disabled);
 await click('清除日期');query=new URL(calls.at(-1).path,'https://test').searchParams;assert.equal(query.get('start'),'');assert.equal(query.get('end'),'');
 const closing={};deferred=closing;button('查询').click();await settle();await click('关闭');closing.resolve({total:0,page:1,items:[]});await settle();assert.equal(d.querySelectorAll('dialog').length,1);
 await click('关闭');assert(!d.querySelector('dialog'));w.close();

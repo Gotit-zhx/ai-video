@@ -28,12 +28,16 @@
   let filters=defaultFilters(),numberQueries={},orderScope='ALL';
   const allOrderView=()=>view==='orders'&&selectedKind==='ORDER'&&orderScope==='ALL';
   const detailNumbers=()=>numberQueries[view+':'+currentFieldView()]||'';
-  let filterScope=null,pinnedDates=false,reportFilters=null;
+  let filterScope=null,pinnedDates=false,reportFilters=null,reportDateError='';
   const filterStorageKey=()=>typeof currentUser!=='undefined'&&currentUser?.organizationId&&currentUser?.userId
     ?'heyi:finance-filters:v1:'+JSON.stringify([currentUser.organizationId,currentUser.userId]):'';
   const currentMonthEnd=()=>monthRange(today().slice(0,7)).end;
   const validFilterDate=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)
     &&dateText(new Date(value+'T12:00:00Z'))===value&&value<=currentMonthEnd();
+  function reportDateIssue(start,end){
+    if(!validFilterDate(start)||!validFilterDate(end)||start>today())return '请选择有效的开始日期和结束日期';
+    return start>end?'开始日期不能晚于结束日期':'';
+  }
   function restoreFilters(){
     const key=filterStorageKey();if(key===filterScope)return;
     adSpendSearch='';adSpendAssignment='';adSpendPage=1;
@@ -45,7 +49,7 @@
       if(['','SHOPEE','TIKTOK_SHOP'].includes(saved.platform))filters.platform=saved.platform;
       // A new visit starts with RMB across every native currency. Older sessions
       // also saved the server's automatic MYR/PHP choice, which silently narrowed "all shops".
-      if(saved.pinnedDates===true&&validFilterDate(saved.start)&&validFilterDate(saved.end)&&saved.start<=saved.end){
+      if(saved.pinnedDates===true&&!reportDateIssue(saved.start,saved.end)){
         filters.start=saved.start;filters.end=saved.end;pinnedDates=true;
         filters.granularity=dateGranularity(filters.start,filters.end);
       }
@@ -251,10 +255,10 @@
   function loadingIndicator(parent){const n=el('span','正在加载所选数据…',parent,'fi-loading');n.hidden=true;n.setAttribute('role','status');n.setAttribute('aria-live','polite');}
   function selectionKey(){return JSON.stringify([view,filters.start,filters.end,filters.shopId,filters.groupId,filters.platform,filters.currency,filters.displayCurrency,filters.granularity,page,selectedKind,orderScope,detailNumbers(),view==='ads'?[adSpendSearch,adSpendAssignment,adSpendPage]:null]);}
   function markPending(){
-    const pending=!!mountedSelection&&mountedSelection!==selectionKey();
+    const pending=!!reportDateError||!!mountedSelection&&mountedSelection!==selectionKey();
     root.classList.toggle('fi-selection-pending',pending);
     const content=root.querySelector('.fi-content');if(content){content.hidden=pending;content.setAttribute('aria-busy',String(pending));}
-    if(pending)notify('正在查询所选店铺和日期，请稍候…');
+    if(pending)notify(reportDateError||'正在查询所选店铺和日期，请稍候…',!!reportDateError);
     return pending;
   }
   // Previous-scope rows remain mounted for recovery, but stay hidden and cannot be exported.
@@ -264,7 +268,7 @@
     if(target?.closest('.fi-content')&&!target.closest('.fi-tabs,.fi-settlement-totals')){
       event.preventDefault();event.stopImmediatePropagation();notify('正在切换筛选条件，请等待新数据加载完成。');
     }else if(target?.closest('.fi-head button')&&/导出|字段/.test(target.closest('button').textContent)){
-      event.preventDefault();event.stopImmediatePropagation();notify('新筛选数据加载完成后即可导出。');
+      event.preventDefault();event.stopImmediatePropagation();notify(reportDateError||'新筛选数据加载完成后即可导出。',!!reportDateError);
     }
   },true);
   function setLoading(busy){root.setAttribute('aria-busy',String(busy));const n=root.querySelector('.fi-loading');if(n){n.hidden=!busy;n.textContent=view==='shops'?'正在读取店铺同步进度…':view==='live'?'正在读取最新经营数据…':'正在加载所选店铺和日期…';n.title=filters.start+' 至 '+filters.end;}}
@@ -273,7 +277,7 @@
   function reset(){shopeeEpoch++;adSupportExpanded=false;adSpendSearch='';adSpendAssignment='';adSpendPage=1;shopMonthFilter='ALL';shopSearch='';qianyiSelection={};orderScope='ALL';active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();resetMarketFx();resetCostExports();globalThis.FinanceFeeExports?.reset();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();numberQueries={};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
   function leave(){shopeeEpoch++;document.querySelectorAll('[data-shopee-authorization], [data-ad-shop-accounts]').forEach(d=>d.remove());active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();stopMarketFx();leaveCostExports();}
   async function refreshWhenIdle(){
-    if(!active)return;
+    if(!active||reportDateError)return;
     if(document.hidden||document.querySelector('.fi-dialog[open]')){refreshTimer=setTimeout(refreshWhenIdle,15000);return;}
     if(data?.readModel&&!['shops','costs','expense-ledger','live','overview'].includes(view)){
       const run=generation;
@@ -296,10 +300,46 @@
     return chartPromise;
   }
   function select(parent,label,options,value,onchange){const wrap=el('label',null,parent);wrap.dataset.updateKey='select:'+label;el('span',label,wrap);const n=el('select',null,wrap);for(const [v,name] of options){el('option',name,n).value=v;}n.value=value||'';n.setAttribute('aria-label',label);n.onchange=e=>onchange(e.currentTarget.value);return n;}
-  function dateInput(parent,label,value,key){const n=el('input',null,parent);n.type='date';n.setAttribute('value',value);n.setAttribute('aria-label',label);n.max=key==='end'?currentMonthEnd():today();n.onchange=e=>{const value=e.currentTarget.value;if(!validFilterDate(value)||(key==='start'&&value>today()))return;const next={...filters,[key]:value};if(next.start>next.end){notify('开始日期不能晚于结束日期',true);return;}filters[key]=value;filters.fxSnapshot='';pinnedDates=true;filters.granularity=dateGranularity(filters.start,filters.end);page=1;adSpendPage=1;load();};return n;}
+  function reportMonth(){
+    const month=filters.start.slice(0,7),range=monthRange(month);
+    return filters.start===range.start&&filters.end===range.end?month:'';
+  }
+  function syncReportDateControls(){
+    for(const input of root.querySelectorAll('input[data-finance-report-date]')){
+      const key=input.dataset.financeReportDate;
+      input.value=key==='month'?reportMonth():filters[key];
+    }
+  }
+  function applyReportDates(start,end,granularity=dateGranularity(start,end)){
+    reportDateError='';pinnedDates=true;
+    updateFilters({start,end,granularity});
+    syncReportDateControls();
+    return load();
+  }
+  function changeReportDates(event){
+    const range=event.currentTarget.parentElement;
+    const start=range.querySelector('[data-finance-report-date="start"]').value;
+    const end=range.querySelector('[data-finance-report-date="end"]').value;
+    reportDateError=reportDateIssue(start,end);
+    if(!reportDateError)return applyReportDates(start,end);
+    // Keep both edited controls available while an invalid range blocks queries.
+    // A request for the previous dates may still be running as the user edits.
+    generation++;activeLoadKey='';loadController?.abort();loadController=null;
+    clearTimeout(refreshTimer);clearInterval(waitingTimer);setLoading(false);
+    const month=root.querySelector('[data-finance-report-date="month"]');if(month)month.value='';
+    markPending();
+  }
+  function dateInput(parent,label,value,key){
+    const input=el('input',null,parent);input.type='date';input.setAttribute('value',value);input.setAttribute('aria-label',label);
+    input.dataset.financeReportDate=key;input.max=key==='end'?currentMonthEnd():today();input.onchange=changeReportDates;
+  }
   function selectMonth(month){
-    if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)||month>today().slice(0,7))return;
-    Object.assign(filters,monthRange(month));filters.fxSnapshot='';pinnedDates=true;filters.granularity='day';page=1;adSpendPage=1;return load();
+    if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)||month>today().slice(0,7)){
+      if(!reportDateError)syncReportDateControls();
+      return;
+    }
+    const {start,end}=monthRange(month);
+    return applyReportDates(start,end);
   }
   function shell(root){
     root.className='workspace-body finance-workspace';
@@ -337,7 +377,7 @@
       if(view!=='live'){
         const monthLabel=el('label',null,bar);el('span','整月',monthLabel);
         const month=el('input',null,monthLabel);month.type='month';month.setAttribute('aria-label','统计月份（店铺当地）');month.max=today().slice(0,7);
-        const full=monthRange(filters.start.slice(0,7));month.setAttribute('value',filters.start===full.start&&filters.end===full.end?filters.start.slice(0,7):'');
+        month.dataset.financeReportDate='month';month.setAttribute('value',reportMonth());
         month.onchange=e=>selectMonth(e.currentTarget.value);
         button('上月整月',bar,()=>selectMonth(previousMonth()));
       }
@@ -402,9 +442,8 @@
       notice.setAttribute('role','note');
       for(const r of data.reportingMonths||[])if(!r.included){
         button('查看 '+r.reporting_month+' 整月',notice,()=>{
-          const [year,month]=r.reporting_month.split('-').map(Number);
-          filters.start=r.reporting_month+'-01';filters.end=dateText(new Date(Date.UTC(year,month,0)));
-          filters.granularity='month';filters.fxSnapshot='';pinnedDates=true;page=1;load();
+          const {start,end}=monthRange(r.reporting_month);
+          return applyReportDates(start,end,'month');
         },'fi-record-link');
       }
     }
@@ -1523,6 +1562,7 @@
   }
   async function load(interactive=true){
     if(!active||!allowed())return;
+    if(reportDateError){markPending();return;}
     if(view==='orders'&&!['ORDER','REFUND'].includes(selectedKind))selectedKind='ORDER';
     const nextKey=selectionKey();
     if(activeLoadKey===nextKey&&loadController&&!loadController.signal.aborted)return;
@@ -1650,7 +1690,15 @@
   }
   globalThis.FinanceWorkspace={allowed,canManage,enter(route,initialFilters){
     if(!allowed())return;shopeeEpoch++;restoreFilters();const wasLive=view==='live';
-    if(initialFilters&&globalThis.FinanceEntry){const seed=globalThis.FinanceEntry.cleanFilters(initialFilters);Object.assign(filters,seed);if(seed.start||seed.end){pinnedDates=true;filters.granularity=dateGranularity(filters.start,filters.end);}filters.fxSnapshot='';}
+    reportDateError='';
+    if(initialFilters&&globalThis.FinanceEntry){
+      const {start,end,...seed}=globalThis.FinanceEntry.cleanFilters(initialFilters);
+      const from=start||filters.start,to=end||filters.end;
+      Object.assign(filters,seed,{fxSnapshot:''});
+      if((start||end)&&!reportDateIssue(from,to)){
+        Object.assign(filters,{start:from,end:to,granularity:dateGranularity(from,to)});pinnedDates=true;
+      }
+    }
     view=route==='fees'?'fee-records':routes[route]?route:'overview';
     if(view!=='costs')leaveCostExports();
     if(route==='fees')selectedKind='FEE';
@@ -1660,7 +1708,7 @@
     }else if(view!=='live'&&wasLive&&reportFilters){
       filters={...reportFilters,fxSnapshot:''};reportFilters=null;
     }
-    active=true;page=1;load();
+    syncReportDateControls();active=true;page=1;load();
   },leave,reset};
   window.addEventListener('heyi:company-reset',reset);
 })();

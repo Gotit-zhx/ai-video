@@ -148,8 +148,14 @@
       if(cost){const note=el('p','按当前筛选全部页面 · 收货月标准成本 · 不含贴单费',totals,'fi-muted');note.style.gridColumn='1 / -1';note.title=cost.basis||'';}
     }
     async function load(){
-      controller?.abort();controller=new AbortController();
-      const current=++sequence,selected=query();onSelection(selected);status.textContent='正在读取千易售后数据…';status.classList.add('is-loading');m.feedback.textContent='';records.setAttribute('aria-busy','true');download.disabled=true;totals.hidden=true;records.hidden=true;pages.hidden=true;
+      controller?.abort();
+      const current=++sequence,selected=query();
+      download.disabled=true;totals.hidden=true;records.hidden=true;pages.hidden=true;m.feedback.textContent='';
+      if((!!selected.start!==!!selected.end)||(selected.start&&selected.start>selected.end)){
+        status.textContent='请选择完整日期范围，开始日期不能晚于结束日期。';
+        status.classList.remove('is-loading');records.setAttribute('aria-busy','false');return;
+      }
+      controller=new AbortController();onSelection(selected);status.textContent='正在读取千易售后数据…';status.classList.add('is-loading');records.setAttribute('aria-busy','true');
       try{
         const result=await request('/qianyi/returns?'+new URLSearchParams(selected),{signal:controller.signal});if(!m.alive()||current!==sequence)return;
         applied=selected;showSummary(result);totals.hidden=false;records.hidden=false;pages.hidden=false;download.disabled=false;
