@@ -105,6 +105,18 @@
   }
   function button(label,parent,fn,cls=''){const n=el('button',label,parent,cls);n.type='button';n.onclick=async event=>{try{await fn(event.currentTarget);}catch(e){notify(e.message,true);}};return n;}
   function action(label,symbol,parent,fn,cls=''){const n=button('',parent,fn,'fi-btn-icon '+cls);icon(symbol,n);el('span',label,n);return n;}
+  function reportExportButton(label,parent,fn,type,selection,style=''){
+    const node=action(label,'download',parent,fn,style);
+    return globalThis.FinanceReportExports?.decorate(node,type,selection)||node;
+  }
+  function recordExportSelection(kind='',override=null){
+    const selection={...filters,...override,view:kind||currentFieldView(),numbers:detailNumbers(),orderScope:allOrderView()?'ALL':'SETTLED'};
+    if(view==='ads'&&kind==='FEE')selection.advertisingOnly='true';
+    return selection;
+  }
+  function adExportSelection(){
+    return {...filters,search:adSpendSearch,assignment:adSpendAssignment};
+  }
   const number=v=>v==null?'—':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:2});
   const canManage=()=>typeof currentUser!=='undefined'&&(currentUser?.platformAdmin===true||(currentUser?.roles||[]).includes('ADMIN')||(currentUser?.permissions||[]).includes('finance:manage'));
   const allowed=()=>canManage()||(typeof currentUser!=='undefined'&&(currentUser?.permissions||[]).includes('finance:view'));
@@ -313,9 +325,18 @@
     action('刷新','refresh',actions,()=>{filters.fxSnapshot='';return load();});
     if(view==='shops'){if(canManage())action('连接店铺','plus',actions,()=>authorizeDialog(),'fi-primary');}
     else if(view==='expense-ledger'){action('成本管理','chart',actions,()=>navigate('costs'));}
-    else if(view==='ads'&&window.FinanceAdSpend){if(canManage())action('导入消耗报表','plus',actions,()=>window.FinanceAdSpend.importDialog(adSpendContext()));action('导出三张表','download',actions,()=>window.FinanceAdSpend.exportReport(adSpendContext()));}
-    else if(view!=='costs'&&!qianyiView()){action('字段设置','fee',actions,()=>fieldsDialog(currentFieldView()));if(canManage())action(view==='ads'?'异常补录':'导入账单','plus',actions,()=>importDialog());action('导出报表','download',actions,()=>exportDialog(['settlements','ads'].includes(view)?selectedKind:''),'fi-primary');}
-    if(view!=='shops')globalThis.FinanceFeeExports?.mount(actions,{request,
+    else if(view==='ads'&&window.FinanceAdSpend){
+      if(canManage())action('导入消耗报表','plus',actions,()=>window.FinanceAdSpend.importDialog(adSpendContext()));
+      reportExportButton('导出三张表',actions,()=>globalThis.FinanceReportExports
+        ?FinanceReportExports.submit('ADVERTISING',adExportSelection()):window.FinanceAdSpend.exportReport(adSpendContext()),'ADVERTISING',adExportSelection());
+    }else if(view!=='costs'&&!qianyiView()){
+      action('字段设置','fee',actions,()=>fieldsDialog(currentFieldView()));
+      if(canManage())action(view==='ads'?'异常补录':'导入账单','plus',actions,()=>importDialog());
+      const kind=['settlements','ads'].includes(view)?selectedKind:'';
+      reportExportButton('导出报表',actions,()=>exportDialog(kind),'RECORDS',recordExportSelection(kind),'fi-primary');
+    }
+    if(globalThis.FinanceReportExports)FinanceReportExports.mountTasks(actions);
+    else if(view!=='shops')globalThis.FinanceFeeExports?.mount(actions,{request,
       identity:()=>typeof currentUser==='undefined'?'':JSON.stringify([currentUser?.organizationId,currentUser?.userId]),
       isPending:()=>root.classList.contains('fi-selection-pending'),
       selection:{...filters},shops:data?.shops||[],groups:data?.groups||[],canCreate:['fees','fee-records'].includes(view)});
@@ -856,7 +877,8 @@
     else footnote(parent,'按店铺时区的下单日期查询全部已抓取官方订单，包含已取消、未结算及跨月结算订单。首次结算日期单列；财务总览的收入、利润和成本仍按结算口径统计。');
     if(selectedKind==='FEE'){
       const detail=card(parent,'已结算平台费用构成','正数为扣减，负数为补贴或返还；商家优惠与退款已计入销售收入',12);
-      action('全体导出','download',detail.h,()=>globalThis.FinanceFeeExports?.open());
+      reportExportButton('全体导出',detail.h,()=>globalThis.FinanceReportExports
+        ?FinanceReportExports.submit('FEE_MATRIX',filters):globalThis.FinanceFeeExports?.open(),'FEE_MATRIX',{...filters});
       table(detail.n,['费用项目','金额（'+(data.filters.displayCurrency||data.filters.currency)+'）','记录数'],(data.fees||[]).filter(r=>Number(r.amount)!==0).map(r=>[feeName(r.category),number(r.amount),number(r.records)]));
     }
     if(run!==generation)return;
@@ -867,7 +889,7 @@
     const tools=view==='settlements'?el('div',null,h,'fi-actions'):h;el('span',data.filters.currency||'原币',tools,'fi-tag');
     numberSearch(n,detailNumbers(),value=>{numberQueries[view+':'+currentFieldView()]=value;page=1;load();},allOrderView()?'订单编号':'订单 / 账单 / 退款编号');
     renderFieldsTable(n,result.items,result.fieldSettings);action('字段设置','fee',tools,()=>fieldsDialog(selectedKind,result.fieldSettings));
-    if(view==='settlements')action('导出 Excel','download',tools,()=>exportDialog(selectedKind),'fi-primary');
+    if(view==='settlements')reportExportButton('导出 Excel',tools,()=>exportDialog(selectedKind),'RECORDS',recordExportSelection(selectedKind),'fi-primary');
     const bar=el('div',null,n,'fi-pagebar');el('span',`第 ${result.page} 页 · 每页 ${result.pageSize} 条`,bar);const controls=el('div',null,bar,'fi-actions');
     button('上一页',controls,()=>{page--;load();}).disabled=page<=1;
     button('下一页',controls,()=>{page++;load();}).disabled=page*result.pageSize>=result.total;
@@ -1125,7 +1147,7 @@
     for(const k of ['AD','FEE','AD_GMV'])button(detailTitle(k),detailKinds,()=>{selectedKind=k;page=1;reload();}).setAttribute('aria-pressed',String(k===selectedKind));
     const detail=card(parent,detailTitle(selectedKind),'当前筛选 · 共 '+number(records.total)+' 条 · 编号查询仅过滤明细，期间汇总不受分页影响',12);
     if(selectedKind==='AD')el('p','这里仅列普通独立广告报表和导入费用；平台账单广告费与 GMV Max 报表在相邻页签查看。没有返回记录不代表没有广告投放。',detail.n,'fi-muted');
-    action('字段设置','fee',detail.h,()=>fieldsDialog(selectedKind,records.fieldSettings));action('导出 Excel','download',detail.h,()=>exportDialog(selectedKind,selectionOverride));
+    action('字段设置','fee',detail.h,()=>fieldsDialog(selectedKind,records.fieldSettings));reportExportButton('导出 Excel',detail.h,()=>exportDialog(selectedKind,selectionOverride),'RECORDS',recordExportSelection(selectedKind,selectionOverride));
     numberSearch(detail.n,detailNumbers(),value=>{numberQueries[view+':'+currentFieldView()]=value;page=1;reload();},'费用记录 / 订单 / 账单编号');
     renderFieldsTable(detail.n,records.items,records.fieldSettings);
     const pager=el('div',null,detail.n,'fi-pagebar');el('span',`第 ${records.page} 页 · 每页 ${records.pageSize} 条`,pager);const controls=el('div',null,pager,'fi-actions');
@@ -1408,9 +1430,8 @@
     return cell;
   }
   function exportDialog(fixedType='',selectionOverride=null){
-    const selection={...filters,...selectionOverride,numbers:detailNumbers(),orderScope:allOrderView()?'ALL':'SETTLED'},identity=()=>typeof currentUser==='undefined'?'':JSON.stringify([currentUser?.organizationId,currentUser?.userId]),owner=identity();
+    const selection=recordExportSelection(fixedType,selectionOverride),identity=financeIdentity,owner=identity();
     const advertisingExport=view==='ads',ledgerAds=advertisingExport&&fixedType==='FEE';
-    if(ledgerAds)selection.advertisingOnly='true';
     const d=dialog(ledgerAds?'导出平台账单广告费':fixedType?'导出'+kinds[fixedType]:'导出财务报表');
     el('p',`${selection.start} 至 ${selection.end} · 当前分组、店铺、平台和币种筛选 · 全部符合条件的记录（不限当前页）`,d.body,'fi-muted');
     if(selection.orderScope==='ALL')el('p','导出订单时按下单日期，包含已取消、未结算及跨月结算订单。',d.body,'fi-muted');
@@ -1420,9 +1441,15 @@
     const configure=button('配置导出字段',d.body,()=>fieldsDialog(type.value));
     const format=select(d.body,'文件格式',[['xlsx',advertisingExport?'Excel（广告明细与统计口径）':'Excel（含结算对账与统计口径）'],['csv','CSV 明细']],'xlsx',()=>{});
     const progress=el('span','正在生成报表，请稍候…',d.body,'fi-loading');progress.hidden=true;progress.setAttribute('role','status');
-    const submit=d.submit('下载报表',async()=>{
+    const submit=d.submit(globalThis.FinanceReportExports?'生成报表':'下载报表',async()=>{
       if(!allowed()||identity()!==owner)throw Error('登录信息已变化，请重新打开导出');
-      const selectedType=type.value,selectedFormat=format.value,controller=new AbortController();let timedOut=false;
+      const selectedType=type.value,selectedFormat=format.value;
+      if(globalThis.FinanceReportExports){
+        await FinanceReportExports.submit('RECORDS',{...selection,view:selectedType,format:selectedFormat});
+        d.d.close();
+        return;
+      }
+      const controller=new AbortController();let timedOut=false;
       const cancel=()=>controller.abort(),timer=setTimeout(()=>{timedOut=true;controller.abort();},180000);
       d.d.addEventListener('close',cancel);progress.hidden=false;submit.textContent='正在导出…';d.d.setAttribute('aria-busy','true');
       type.disabled=format.disabled=configure.disabled=true;
@@ -1440,9 +1467,15 @@
         type.disabled=format.disabled=configure.disabled=false;
       }
     });
+    if(globalThis.FinanceReportExports){
+      const update=()=>FinanceReportExports.decorate(submit,'RECORDS',{...selection,view:type.value,format:format.value});
+      type.onchange=format.onchange=update;
+      update();
+    }
   }
   async function downloadOrderCosts(selection){
     if(!allowed())throw Error('没有财务 BI 查看权限');
+    if(globalThis.FinanceReportExports)return FinanceReportExports.submit('ORDER_COST',costExportSelection(selection));
     const identity=financeIdentity();
     if(!identity||identity!==costExportOwner)throw Error('登录信息已变化，请重新打开导出');
     return submitCostExport(costExportSelection(selection));
@@ -1478,6 +1511,7 @@
     if(filters.displayCurrency==='ORIGINAL')select(controls,'原币',[['','全部币种（人民币汇总）'],...data.currencies.map(c=>[c,c])],data.filters.currency,selectCurrency);
     button('返回总览',controls,async()=>{if(document.fullscreenElement)await document.exitFullscreen();navigate('overview');});
     button('全屏展示',controls,async()=>{if(document.fullscreenElement)await document.exitFullscreen();else await document.getElementById('finance-page').requestFullscreen();});
+    globalThis.FinanceReportExports?.mountTasks(controls);
     el('div',new Date().toLocaleString('zh-CN',{timeZone:displayZone,hour12:false}),top,'fi-live-clock');
     const errors=data.sync.filter(r=>r.status==='ERROR'),orders=data.sync.filter(r=>r.channel==='ORDER_LIVE');
     const successes=orders.map(s=>s.last_success_at).filter(Boolean).sort();
@@ -1626,7 +1660,7 @@
       }
       if(view==='costs'){
         const host=root.querySelector('[data-finance-costs]');
-        if(globalThis.FinanceCosts){FinanceCosts.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),preview:data.costs,initialLabelPrefetch,dates:{start:filters.start,end:filters.end},onDatesChange:dates=>{filters.start=dates.start;filters.end=dates.end;filters.granularity=dateGranularity(dates.start,dates.end);filters.fxSnapshot='';pinnedDates=true;rememberFilters();},openRecord:detailDialog,skuCell,dateTimeCell,numberSearch,downloadOrderCosts,mountOrderCostExports:mountCostExports,isActive:()=>active&&view==='costs',request:(path,options)=>request('/workspace'+path,options)});labelPrefetchHandedOff=true;}
+        if(globalThis.FinanceCosts){FinanceCosts.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),preview:data.costs,initialLabelPrefetch,dates:{start:filters.start,end:filters.end},onDatesChange:dates=>{filters.start=dates.start;filters.end=dates.end;filters.granularity=dateGranularity(dates.start,dates.end);filters.fxSnapshot='';pinnedDates=true;rememberFilters();},openRecord:detailDialog,skuCell,dateTimeCell,numberSearch,downloadOrderCosts,mountOrderCostExports:globalThis.FinanceReportExports?null:mountCostExports,isActive:()=>active&&view==='costs',request:(path,options)=>request('/workspace'+path,options)});labelPrefetchHandedOff=true;}
         else{initialLabelPrefetch?.cancel();el('p','成本管理页面组件暂未加载，请刷新重试。',host,'fi-muted');}
       }
       if(view==='expense-ledger'){
