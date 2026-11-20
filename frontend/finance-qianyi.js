@@ -150,9 +150,11 @@
     async function load(){
       controller?.abort();controller=new AbortController();
       const current=++sequence,selected=query();onSelection(selected);status.textContent='正在读取千易售后数据…';status.classList.add('is-loading');m.feedback.textContent='';records.setAttribute('aria-busy','true');download.disabled=true;totals.hidden=true;records.hidden=true;pages.hidden=true;
+      globalThis.FinanceReportExports?.decorate(download,'QIANYI',null);
       try{
         const result=await request('/qianyi/returns?'+new URLSearchParams(selected),{signal:controller.signal});if(!m.alive()||current!==sequence)return;
         applied=selected;showSummary(result);totals.hidden=false;records.hidden=false;pages.hidden=false;download.disabled=false;
+        globalThis.FinanceReportExports?.decorate(download,'QIANYI',selected);
         records.replaceChildren();pages.replaceChildren();
         for(const [node,key,map]of [[returned,'return_state',returnStates],[refunded,'refund_state',refundStates],[type,'aftersale_type',types]])for(const row of result.items){const raw=row[key];if(raw&&![...node.options].some(o=>o.value===raw))el('option',state(map,raw),node).value=raw;}
         table(records,['店铺 / 平台','千易售后单 / 平台订单','类型','退货状态','退款状态','退回物流状态','收货时间（北京时间）','创建时间（北京时间）','千易订单退款金额','操作'],result.items.map(r=>{
@@ -171,7 +173,9 @@
     }
     m.button(actions,'查询',()=>{page=1;return load();},'fi-primary');m.button(actions,'清除日期',()=>{start.value='';end.value='';page=1;return load();});
     const download=m.button(actions,'导出千易售后 Excel',async()=>{
-      if(!applied)return;const current=sequence;exportController?.abort();exportController=new AbortController();
+      if(!applied)return;
+      if(globalThis.FinanceReportExports){await FinanceReportExports.submit('QIANYI',applied);return;}
+      const current=sequence;exportController?.abort();exportController=new AbortController();
       const timer=setTimeout(()=>exportController.abort(),120000);
       try{
         const response=await fetch('/api/v1/finance/qianyi/returns/export?'+new URLSearchParams(applied),{credentials:'same-origin',cache:'no-store',signal:exportController.signal});

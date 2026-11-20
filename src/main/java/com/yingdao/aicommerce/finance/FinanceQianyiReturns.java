@@ -121,6 +121,9 @@ public class FinanceQianyiReturns {
         return totals;
     }
     public byte[] export(Scope scope,Map<String,String> input){
+        return export(scope,input,List.of());
+    }
+    byte[] export(Scope scope,Map<String,String> input,List<List<String>> receipt){
         var selected=selection(input);var query=query(scope,selected);
         if(!exports.tryAcquire())throw bad("千易报表正在生成，请稍后重试");
         try{
@@ -129,6 +132,7 @@ public class FinanceQianyiReturns {
                 if(count>50000)throw bad("千易售后导出最多 50,000 条，请缩小日期或店铺范围");
                 var costs=new FinanceQianyiReturnCostSummary(repo,scope.organizationId());var costTotal=costs.totals(query);
                 try(var book=new FinanceCostWorkbook()){
+                    FinanceReportFile.addReceipt(book,receipt);
                     var notes=book.sheet("统计口径",List.of("项目","内容"));
                     notes.row(List.of("来源与口径",BASIS));
                     for(var field:List.of("start","end","dateField","receiptScope","receiptStatus","shopId","groupId","platform","type","returnStatus","refundStatus","costStatus","numbers"))

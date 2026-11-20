@@ -137,6 +137,11 @@ public class FinanceCostExport {
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ,timeout=600)
     public GeneratedFile exportFile(Scope company,Filter filter,String source,String recordId,String costStatus,String numbers,
                                     Path directory,BiConsumer<Long,Long> progress){
+        return exportFile(company,filter,source,recordId,costStatus,numbers,directory,progress,List.of());
+    }
+    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ,timeout=600)
+    public GeneratedFile exportFile(Scope company,Filter filter,String source,String recordId,String costStatus,String numbers,
+                                    Path directory,BiConsumer<Long,Long> progress,List<List<String>> receipt){
         String selectedStatus=FinanceCostReport.costStatus(costStatus);
         String selectedKind=kind(FinanceCostReport.scopeKind(source,!text(recordId).isBlank()));
         if(!slots.tryAcquire())throw bad("当前有其他成本报表正在生成，请稍后重试");
@@ -156,7 +161,7 @@ public class FinanceCostExport {
             long processed=0,lines=0,outputBytes=0;
             Path keyFile=Files.createTempFile(directory,"cost-keys-",".bin");created.add(keyFile);
             spoolKeys(q,from,selectedKind,selectedStatus,keyFile,total,deadline);
-            current=new Part(directory);
+            current=new Part(directory,receipt);
             try(var keyInput=new DataInputStream(new BufferedInputStream(Files.newInputStream(keyFile)))){
             while(processed<total){
                 checkTime(deadline);
@@ -173,7 +178,7 @@ public class FinanceCostExport {
                     },stats);
                     if(current.totals.orders>0&&(current.totals.orders>=limits.orders()||current.totals.lines+stats.lines>limits.lines())){
                         FilePart part=finishPart(current,company,filter,selectedKind,recordId,selectedStatus,numbers,directory,parts.size()+1,true,limits.bytes()-outputBytes,created,deadline);
-                        parts.add(part);outputBytes+=part.bytes();current.close();current=new Part(directory);
+                        parts.add(part);outputBytes+=part.bytes();current.close();current=new Part(directory,receipt);
                     }
                     for(var values:orderRows)current.orders.row(values);
                     for(var values:detailRows)current.details.row(values);
@@ -341,9 +346,9 @@ public class FinanceCostExport {
     private record FilePart(Path path,int index,long orders,long lines,long bytes){}
     private static final class Part implements AutoCloseable{
         final FinanceCostWorkbook book;final FinanceCostWorkbook.Sheet summary,orders,details;final Totals totals=new Totals();
-        Part(Path directory)throws IOException{
+        Part(Path directory,List<List<String>> receipt)throws IOException{
             book=new FinanceCostWorkbook(directory);
-            try{summary=book.sheet("汇总说明",List.of("项目","内容"));orders=book.sheet("订单成本",ORDER_HEADERS);details=book.sheet("SKU成本明细",LINE_HEADERS);}
+            try{FinanceReportFile.addReceipt(book,receipt);summary=book.sheet("汇总说明",List.of("项目","内容"));orders=book.sheet("订单成本",ORDER_HEADERS);details=book.sheet("SKU成本明细",LINE_HEADERS);}
             catch(IOException|RuntimeException e){book.close();throw e;}
         }
         @Override public void close()throws IOException{book.close();}

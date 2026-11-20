@@ -534,10 +534,11 @@
         try{
           if(!context.downloadOrderCosts)throw Error('导出功能未加载，请刷新页面后重试');
           const result=await context.downloadOrderCosts(selection);
-          toast(result?.status==='READY'?'订单成本导出已完成，已请求浏览器保存；若未开始，请点击下载。':result?.status==='UNCERTAIN'?'提交结果待确认，请在导出任务中确认上次任务。':'订单成本导出任务已提交，可在导出任务中查看进度。');
+          toast(result?.status==='READY'?(globalThis.FinanceReportExports?'订单成本文件已就绪，可在导出任务中下载。':'订单成本导出已完成，已请求浏览器保存；若未开始，请点击下载。'):result?.status==='UNCERTAIN'?'提交结果待确认，请在导出任务中确认上次任务。':'订单成本导出任务已提交，可在导出任务中查看进度。');
         }finally{exporting=false;exportButton.textContent='导出 Excel';}
       },'fi-primary');
       exportButton.disabled=true;
+      globalThis.FinanceReportExports?.decorate(exportButton,'ORDER_COST',selection.start&&selection.end&&selection.start<=selection.end?selection:null);
       exportButton.title='导出当前筛选的全部订单，含 SKU 单价、数量、成本月份与缺失原因';
       context.mountOrderCostExports?.(bar,selection);
       const amountSummary=el('div',null,bar,'fc-order-amount-summary');amountSummary.setAttribute('role','status');
