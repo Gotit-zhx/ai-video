@@ -42,6 +42,12 @@ GitHub 的 Operations 从 `develop` 读取巡检代码，日常菜单只保留 `
 
 允许通过 VS Code Remote SSH 直接编辑规范工作区，或使用团队批准的定向同步。同步前读取服务器差异，只覆盖本任务已核对文件。不得自动上传所有本地 worktree，不得覆盖其他会话的未提交修改，不得同步 `.env.development`、生产密钥、Cookie 或业务导出。
 
+商品运营 `byh-运营` 正式部署按以下顺序执行。
+
+1. 查询远端默认开发分支，fetch 最新基线。用 `git merge-base --is-ancestor origin/develop HEAD` 确认当前待部署分支包含已获取的 `develop` 提交。
+2. 有新增提交时在独立工作区合并并跑相关检查。再提交本次改动到 `byh-运营`，正常推送并核对远端分支。发布前复查基线，如有更新则重新同步和验证。
+3. 将本次已核对的源文件定向同步到共享工作区，记录开发基线、部署提交和验证结果。
+
 前端 HTML/JS/CSS 直接读取源码，不生成静态包、gzip 或前端镜像。Java watcher 只编译到 `target/classes`；编译成功后才更新 DevTools trigger。Java 修改需要实际编译和上下文重启的数秒时间，不能承诺零延迟。`pom.xml` 依赖变化会受控重启 app；Flyway 迁移、环境配置、工具链及 watcher/运行工具本身变化必须显式维护并单独验证。
 
 共享真实数据环境的 Java 重启顺序：
