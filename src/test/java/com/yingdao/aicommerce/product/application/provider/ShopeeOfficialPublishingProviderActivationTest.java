@@ -25,6 +25,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class ShopeeOfficialPublishingProviderActivationTest {
+    private static final String UNLIST_ITEM = "/api/v2/product/unlist_item";
     private static final String GET_ITEM_BASE_INFO = "/api/v2/product/get_item_base_info";
     private static final long ITEM_ID = 2300069665L;
 
@@ -126,6 +127,52 @@ class ShopeeOfficialPublishingProviderActivationTest {
         assertThat(delays).containsExactly(1_000L, 2_000L, 3_000L, 4_000L);
         verify(client, times(5)).shopGet(
                 GET_ITEM_BASE_INFO, connection, Map.of("item_id_list", ITEM_ID));
+    }
+
+    @Test
+    void retriesTheSameUnlistedItemOnceAfterAGenericRejection() {
+        var client = mock(ShopeeOfficialClient.class);
+        var provider = provider(client);
+        var connection = connection();
+        var request = Map.of("item_list", List.of(Map.of("item_id", ITEM_ID, "unlist", false)));
+        var rejection = genericActivationRejection();
+        when(client.shopPost(UNLIST_ITEM, connection, request)).thenThrow(rejection).thenReturn(Map.of(
+                "response", Map.of("success_list", List.of(Map.of("item_id", ITEM_ID, "unlist", false)))));
+        when(client.shopGet(GET_ITEM_BASE_INFO, connection, Map.of("item_id_list", ITEM_ID)))
+                .thenReturn(baseInfo("UNLIST"), baseInfo("NORMAL"));
+        var delays = new ArrayList<Long>();
+
+        assertThat(provider.activateExistingItem(connection, ITEM_ID, delays::add)).isEqualTo("NORMAL");
+        assertThat(delays).containsExactly(10_000L);
+        verify(client, times(2)).shopPost(UNLIST_ITEM, connection, request);
+    }
+
+    @Test
+    void usesAnAlreadyActivatedReadbackAndNeverRetriesAProductSpecificRejection() {
+        var client = mock(ShopeeOfficialClient.class);
+        var provider = provider(client);
+        var connection = connection();
+        var request = Map.of("item_list", List.of(Map.of("item_id", ITEM_ID, "unlist", false)));
+        var rejection = genericActivationRejection();
+        when(client.shopPost(UNLIST_ITEM, connection, request)).thenThrow(rejection);
+        when(client.shopGet(GET_ITEM_BASE_INFO, connection, Map.of("item_id_list", ITEM_ID)))
+                .thenReturn(baseInfo("NORMAL"));
+        assertThat(provider.activateExistingItem(connection, ITEM_ID, ignored -> { })).isEqualTo("NORMAL");
+        verify(client).shopPost(UNLIST_ITEM, connection, request);
+
+        var explicit = mock(ShopeeOfficialClient.ApiFailure.class);
+        when(explicit.getMessage()).thenReturn("Shopee 官方接口 /api/v2/product/unlist_item 失败：Unlist item all failed. Item under promotion");
+        org.mockito.Mockito.doThrow(explicit).when(client).shopPost(UNLIST_ITEM, connection, request);
+        assertThatThrownBy(() -> provider.activateExistingItem(connection, ITEM_ID, ignored -> { }))
+                .isSameAs(explicit);
+        verify(client, times(2)).shopPost(UNLIST_ITEM, connection, request);
+        verify(client).shopGet(GET_ITEM_BASE_INFO, connection, Map.of("item_id_list", ITEM_ID));
+    }
+
+    private ShopeeOfficialClient.ApiFailure genericActivationRejection() {
+        var rejection = mock(ShopeeOfficialClient.ApiFailure.class);
+        when(rejection.getMessage()).thenReturn("Shopee 官方接口 /api/v2/product/unlist_item 失败：Unlist item all failed.");
+        return rejection;
     }
 
     private Map<String, Object> baseInfo(String status) {

@@ -139,6 +139,7 @@ function harness(captures = fixture()) {
   vm.createContext(c);
   const fragments = [
     slice('function renderProductMainImageProgress(', 'function renderProductUploadResult('),
+    slice('function productPublishWorkflowMayHaveReachedPlatform(', 'function productPublishWorkflowForCapture('),
     slice('function productCaptureCanUpload(', 'function renderProductCaptureList('),
     slice('function productCapturePayload(', 'function productCaptureListPayload('),
     slice('function nullableProductValue(', 'function productSkuAttributesComplete('),
@@ -1020,6 +1021,27 @@ test('a late history status read merges into the latest saved batch without eras
     assert.equal(h.c.productBulkItems.length,0);assert.equal(h.posts.length,0);
     assert.match(h.node('#product-bulk-history-list').innerHTML,/全部成功/);
   } finally {gate.resolve({data:{}});h.c.stopProductBulkHistoryPolling();}
+});
+
+test('reopening print history refreshes a recovered marketplace receipt without resubmitting',async()=>{
+  const h=harness(), key=ProductBulkHistory.storageKey('org','recovered-print');
+  const items=ProductBulkUpload.plan(fixture(),'shop','history');
+  Object.assign(items[0],{printDirectListing:true,status:'FAILED',workflow:{
+    id:'existing-a',captureId:'a',status:'FAILED',shopId:'shop',executionMode:'LIVE',publicationAttempted:true}});
+  Object.assign(items[1],{printDirectListing:true,status:'FAILED',workflow:{
+    id:'not-submitted-b',captureId:'b',status:'FAILED',shopId:'shop',executionMode:'LIVE',publicationAttempted:false}});
+  h.c.saveProductBulkItems(items,key,'org');
+  h.state.onWorkflowRead=async()=>({data:{id:'existing-a',captureId:'a',status:'SUCCEEDED',shopId:'shop',
+    executionMode:'LIVE',publicationAttempted:true,publication:{remoteStatus:'NORMAL'}}});
+  try {
+    h.c.openProductBulkHistory(true);
+    await flush();
+    const saved=JSON.parse(h.storage.get(key));
+    assert.equal(saved.items[0].workflow.publication.remoteStatus,'NORMAL');
+    assert.equal(saved.items[1].workflow.status,'FAILED');
+    assert.equal(h.workflowReads.length,1);
+    assert.equal(h.posts.length,0);
+  } finally {h.c.stopProductBulkHistoryPolling();}
 });
 
 test('history polling ignores an obsolete receipt and organization changes before saving',async()=>{

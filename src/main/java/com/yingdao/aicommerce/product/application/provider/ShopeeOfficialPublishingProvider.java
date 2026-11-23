@@ -33,6 +33,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.LongConsumer;
 import java.util.regex.Pattern;
@@ -53,6 +54,9 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
     private static final int ITEM_STATUS_READBACK_ATTEMPTS = 5;
     private static final long ITEM_STATUS_READBACK_DELAY_MILLIS = 1_000L;
     private static final long VARIATION_INITIALIZATION_DELAY_MILLIS = 5_000L;
+    private static final long ACTIVATION_RETRY_DELAY_MILLIS = 10_000L;
+    private static final String GENERIC_ACTIVATION_REJECTION =
+            "Shopee 官方接口 /api/v2/product/unlist_item 失败：Unlist item all failed.";
     private static final int IMAGE_UPLOAD_ATTEMPTS = 3;
     private static final long IMAGE_UPLOAD_RETRY_DELAY_MILLIS = 1_000L;
     private static final Pattern HTTP_FAILURE_STATUS = Pattern.compile("^店铺官方接口 HTTP ([0-9]{3})(?:：|:|\\s|$)");
@@ -240,10 +244,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
             String remoteStatus = itemStatus(pending, numericItemId);
             if (!"UNLIST".equals(remoteStatus)) throw conflict("商品上传后未确认待上架状态：" + remoteStatus);
             if (directListing) {
-                var activation = client.shopPost(UNLIST_ITEM, connection,
-                        Map.of("item_list", List.of(Map.of("item_id", numericItemId, "unlist", false))));
-                verifyActivationResponse(activation, numericItemId);
-                remoteStatus = readActivatedItemStatus(connection, numericItemId, Thread::sleep);
+                remoteStatus = activateExistingItem(connection, numericItemId, Thread::sleep);
             }
             Map<String, Object> receipt = new LinkedHashMap<>();
             receipt.put("platform", "SHOPEE");
@@ -544,6 +545,28 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
     private void waitForVariationInitializationWindow() {
         pause(VARIATION_INITIALIZATION_DELAY_MILLIS,
                 "Shopee 商品已按未上架状态创建，但等待规格初始化时任务被中断");
+    }
+
+    String activateExistingItem(MarketplaceAccess.Connection connection, long itemId, ItemStatusReadbackSleeper sleeper) {
+        var payload = Map.of("item_list", List.of(Map.of("item_id", itemId, "unlist", false)));
+        try {
+            verifyActivationResponse(client.shopPost(UNLIST_ITEM, connection, payload), itemId);
+        } catch (ShopeeOfficialClient.ApiFailure rejection) {
+            if (rejection.hasWarning() || !GENERIC_ACTIVATION_REJECTION.equals(rejection.getMessage())) throw rejection;
+            try {
+                sleeper.sleep(ACTIVATION_RETRY_DELAY_MILLIS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw conflict("Shopee 商品等待核对上架状态时任务被中断");
+            }
+            String status = Objects.toString(itemStatus(client.shopGet(GET_ITEM_BASE_INFO, connection,
+                    Map.of("item_id_list", itemId)), itemId), "").strip().toUpperCase(Locale.ROOT);
+            if ("NORMAL".equals(status) || "REVIEWING".equals(status)) return status;
+            // A retry can only activate the same verified unlisted item. Product creation stays quarantined.
+            if (!"UNLIST".equals(status)) throw rejection;
+            verifyActivationResponse(client.shopPost(UNLIST_ITEM, connection, payload), itemId);
+        }
+        return readActivatedItemStatus(connection, itemId, sleeper);
     }
 
     void verifyActivationResponse(Map<String, Object> activation, long itemId) {

@@ -375,10 +375,32 @@ public class ShopeeOfficialClient implements MarketplaceAccess.Client {
         if (error != null && !error.isBlank()) {
             String code = error.matches("[A-Za-z0-9_.]{1,160}") ? error : "unrecognized_error";
             String warning = text(response, "warning");
+            String message = fallback(text(response, "message"), error);
+            if ("/api/v2/product/unlist_item".equals(path)) {
+                String reason = activationFailureReason(response);
+                if (reason != null) message += " " + reason;
+            }
             throw new ApiFailure(code, "Shopee 官方接口 " + path + " 失败："
-                    + http.safeBody(fallback(text(response, "message"), error)), warning != null && !warning.isBlank());
+                    + http.safeBody(message), warning != null && !warning.isBlank());
         }
         return response;
+    }
+
+    private String activationFailureReason(Map<String, Object> response) {
+        Object failures = response.get("failure_list");
+        if (response.get("response") instanceof Map<?, ?> details && details.get("failure_list") != null)
+            failures = details.get("failure_list");
+        if (failures instanceof List<?> entries) {
+            for (Object entry : entries) {
+                if (!(entry instanceof Map<?, ?> fields)) continue;
+                for (String key : List.of("failed_reason", "failure_reason", "fail_reason", "message", "failure_code", "fail_error")) {
+                    Object value = fields.get(key);
+                    if (value instanceof String message && !message.isBlank()) return message.strip();
+                    if (value instanceof Number) return value.toString();
+                }
+            }
+        }
+        return null;
     }
 
     private String hmacSha256(String input) {

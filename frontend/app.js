@@ -7682,8 +7682,17 @@ async function pollProductBulkHistory(session) {
     && currentUser?.organizationId === session.org && document.querySelector('#product-bulk-history-dialog').open;
   if (!current()) return;
   const records = ProductBulkHistory.list(localStorage, session.org, session.printOnly);
-  const pending = records.flatMap(record => record.items.filter(item => item.workflow?.id && productPublishWorkflowIsActive(item.workflow))
-    .map(item => ({key:record.key, captureId:item.captureId, workflowId:item.workflow.id})));
+  const pending = records.flatMap(record => record.items.flatMap(item => {
+    const workflow = item.workflow;
+    if (!workflow?.id) return [];
+    const target = {key:record.key, captureId:item.captureId, workflowId:workflow.id};
+    if (productPublishWorkflowIsActive(workflow)) return [target];
+    const readKey = record.key + '/' + workflow.id;
+    if (workflow.status !== 'FAILED' || !productPublishWorkflowMayHaveReachedPlatform(workflow)
+      || session.reconciledReads.has(readKey)) return [];
+    session.reconciledReads.add(readKey);
+    return [target];
+  }));
   let cursor = 0;
   await Promise.all(Array.from({length:Math.min(3,pending.length)}, async () => {
     while (current() && cursor < pending.length) {
@@ -7721,7 +7730,7 @@ function openProductBulkHistory(printOnly = false) {
   const dialog = document.querySelector('#product-bulk-history-dialog');
   document.querySelector('#product-bulk-history-title').textContent = printOnly ? '上架任务' : '批量任务';
   document.querySelector('#product-bulk-history-copy').hidden = printOnly;
-  const session = {org:currentUser.organizationId, printOnly, controller:new AbortController(), timer:null};
+  const session = {org:currentUser.organizationId, printOnly, controller:new AbortController(), timer:null, reconciledReads:new Set()};
   productBulkHistorySession = session;
   if (!dialog.open) dialog.showModal();
   renderProductBulkHistory();
