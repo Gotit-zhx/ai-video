@@ -232,6 +232,14 @@ public class ModelConfigService {
                 .orElseThrow(() -> new BusinessException(HttpStatus.CONFLICT, CAPTURE_PRINT_MODEL_UNAVAILABLE));
     }
 
+    public Optional<RuntimeModelConnection> capturePrintConnectionById(String organizationId, String id) {
+        if (organizationId == null || organizationId.isBlank() || id == null || id.isBlank()) return Optional.empty();
+        var config = mapper.selectOne(new LambdaQueryWrapper<ModelConfig>()
+                .eq(ModelConfig::getOrganizationId, organizationId).eq(ModelConfig::getId, id)
+                .eq(ModelConfig::getModelType, "IMAGE").eq(ModelConfig::getStatus, "ACTIVE"));
+        return artworkRuntime(organizationId, config, CAPTURE_PRINT_MODEL_IDS);
+    }
+
     public static void requireCapturePrintModel(RuntimeModelConnection connection) {
         if (!configuredArtworkConnection(connection) || !CAPTURE_PRINT_MODEL_ID.equals(connection.modelId())
                 || !connection.fallbackModels().isEmpty()) {

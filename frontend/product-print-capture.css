@@ -129,3 +129,28 @@
   .pc-workspace .pc-monitor article:nth-child(n+3) { border-top: 1px solid var(--line); }
   .pc-workspace .pc-monitor article:nth-child(3) { border-left: 0; }
 }
+
+
+.product-bulk-listing-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 0;
+  margin: 10px 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+.product-bulk-listing-steps li { display: flex; align-items: center; gap: 5px; }
+.product-bulk-listing-steps li::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+.product-bulk-listing-steps [aria-current="step"],
+.product-bulk-listing-steps [data-done] { color: var(--ink); }
+.product-bulk-listing-steps [aria-current="step"] { font-weight: 600; }
+.product-bulk-listing-steps [data-done]::before { background: currentColor; }

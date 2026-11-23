@@ -362,6 +362,23 @@ class TikTokShopOfficialPublishingProviderTest {
     }
 
     @Test
+    void directListingReadbackAcceptsPlatformReviewOrActiveButNeverDraft() {
+        var provider = provider(mock(ShopAuthorizationService.class), mock(TikTokShopOfficialClient.class),
+                mock(ProductCaptureSkuMapper.class), mock(ProductCaptureImageMapper.class),
+                mock(MarketplaceImageDownloader.class));
+        var payload = Map.<String, Object>of("save_mode", "LISTING",
+                "skus", List.of(Map.of("seller_sku", "A01-RD-S-1234ABCD")));
+        var sku = Map.of("id", "sku-1", "seller_sku", "A01-RD-S-1234ABCD");
+        for (String status : List.of("PENDING", "ACTIVATE")) {
+            assertThat(provider.verifyReadback("product-1", payload, Map.of(),
+                    Map.of("data", Map.of("id", "product-1", "status", status, "skus", List.of(sku)))).status()).isEqualTo(status);
+        }
+        assertThatThrownBy(() -> provider.verifyReadback("product-1", payload, Map.of(),
+                Map.of("data", Map.of("id", "product-1", "status", "DRAFT", "skus", List.of(sku)))))
+                .hasMessageContaining("DRAFT");
+    }
+
+    @Test
     void getProductRetriesNotFoundOrNotYetConsistentWithoutSleepingInTheTest() {
         TikTokShopOfficialClient client = mock(TikTokShopOfficialClient.class);
         TikTokShopOfficialPublishingProvider provider = provider(

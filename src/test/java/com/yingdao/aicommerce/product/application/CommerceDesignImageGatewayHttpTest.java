@@ -122,6 +122,26 @@ class CommerceDesignImageGatewayHttpTest {
         }
     }
 
+    @Test void printListingUsesTheExactModelAndOneCompositionGuide() throws Exception {
+        var body = new AtomicReference<String>();
+        try (var server = new Loopback(exchange -> {
+            body.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            reply(exchange, 200, RESULT);
+        }); var gateway = new CommerceDesignImageGateway(server.url(), "unit-only")) {
+            var guide = new CommerceDesignImageGateway.Reference("image/png", "aGVsbG8=");
+            var model = new ModelConfigService.RuntimeModelConnection(
+                    "capture-model", MODEL.baseUrl(), "gpt-image-2.6", MODEL.apiFormat(), MODEL.provider(), MODEL.apiKey());
+            gateway.generatePrintListingMockup("keep the placed artwork", "print_listing_attempt", model, guide);
+            var sent = new tools.jackson.databind.ObjectMapper().readTree(body.get());
+            assertEquals("gpt-image-2.6", sent.path("model").path("modelId").asText());
+            assertTrue(sent.path("productMockup").asBoolean());
+            assertEquals(1, sent.path("references").size());
+            assertEquals(guide.dataBase64(), sent.path("references").get(0).path("dataBase64").asText());
+            assertFalse(sent.has("background"));
+            assertFalse(sent.has("inputFidelity"));
+        }
+    }
+
     @Test void exhaustedLeaseIsProvenUnsentAndDoesNotReachServer() throws Exception {
         var entered = new CountDownLatch(1); var release = new CountDownLatch(1); var requests = new AtomicInteger();
         try (var server = new Loopback(exchange -> {

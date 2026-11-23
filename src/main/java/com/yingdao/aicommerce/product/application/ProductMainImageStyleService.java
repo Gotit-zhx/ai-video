@@ -19,6 +19,9 @@ import java.util.*;
 /** Each slot and paid attempt is durable; original capture images are never mutated. */
 @Service
 public class ProductMainImageStyleService {
+    static final String PRINT_COMPOSITION = "PRINT_COMPOSITION_1";
+    private static final String PRINT_COMPOSITION_PROMPT =
+            "把这张已排版的商品参考图合成为一张干净的电商主图。参考图中的商品是唯一主体，保持品类、剪裁、颜色、角度、画幅和背景。严格保留现有印花的文字、图案、配色、尺寸、位置和朝向，让印花沿衣物自然光影贴合材质。输出一张完整的成品商品图，禁止添加其他颜色、文字、水印、道具或多视图。";
     private final JdbcTemplate db;
     private final ProductCaptureImageMapper images;
     private final CommerceImageArchive archive;
@@ -41,11 +44,17 @@ public class ProductMainImageStyleService {
     }
 
     public boolean selected(ProductPublishWorkflow workflow) {
-        return ProductMainImageStylePolicy.templateId(request(workflow)) != null;
+        var request = request(workflow);
+        return ProductMainImageStylePolicy.templateId(request) != null || directPrint(request);
     }
 
     public Progress progress(ProductPublishWorkflow workflow) {
         if (!selected(workflow)) return null;
+        if (directPrint(request(workflow))) {
+            var image = imageProgress(0, printJob(workflow), false, workflow);
+            var urls = image.imageUrl() == null ? List.<String>of() : List.of(image.imageUrl());
+            return new Progress("GPT Image 2.6 合成", 1, urls.size(), urls, List.of(image));
+        }
         Map<String, Object> template;
         try { template = current(workflow); }
         catch (BusinessException unavailable) { return new Progress("模板不可用", 0, 0, List.of(), List.of()); }
@@ -91,30 +100,42 @@ public class ProductMainImageStyleService {
     /** Process at most one slot per workflow claim, releasing the worker between slots. */
     public boolean ensureReady(ProductPublishWorkflow workflow, ProductCapture capture) {
         if (!selected(workflow)) return true;
+        if (directPrint(request(workflow))) {
+            var job = printJob(workflow);
+            if (job == null) {
+                preparePrint(workflow, capture);
+                job = printJob(workflow);
+            }
+            if (job == null) throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "图片合成任务尚未保存");
+            return "READY".equals(job.get("status")) || processJob(workflow, job);
+        }
         var slots = slots(current(workflow));
         prepare(workflow, capture, slots);
         var currentJobs = currentJobs(workflow, slots);
         if (currentJobs.size() != slots.size()) throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "风格主图任务尚未完整保存");
         var pending = currentJobs.stream().filter(job -> !"READY".equals(job.get("status"))).findFirst();
         if (pending.isEmpty()) return true;
-        var job = pending.get();
+        return processJob(workflow, pending.get());
+    }
+
+    private boolean processJob(ProductPublishWorkflow workflow, Map<String, Object> job) {
         String id = (String) job.get("id"), org = workflow.getOrganizationId();
         String status = (String) job.get("status");
         int attempt = ((Number) job.get("attempt_count")).intValue();
         String attemptId = id + (attempt == 0 ? "" : "_r" + attempt);
         if ("FAILED".equals(status)) throw conflict(Objects.toString(job.get("error_message"), "风格主图生成失败"));
         if ("PREPARED".equals(status)) {
-            var model = models.commerceMockupConnectionById(org, (String) job.get("model_config_id"))
-                    .orElseThrow(() -> conflict("原风格主图模型已停用，请恢复模型配置后重试"));
-            var references = List.of(archive.read(org, (String) job.get("source_key")), archive.read(org, (String) job.get("reference_key")));
+            var model = jobModel(org, job);
+            var references = jobReferences(org, job);
             if (db.update("UPDATE product_main_image_jobs SET status='SUBMITTING',updated_at=NOW(6) WHERE id=? AND status='PREPARED' AND attempt_count=?", id, attempt) != 1) return false;
             try {
-                var result = gateway.generateMainImagePoster((String) job.get("prompt"), attemptId, model, references, (String) job.get("size"));
+                var result = generate(job, attemptId, model, references);
                 if (result == null) return false;
                 received(id, attempt, result);
             } catch (CommerceImageRejectedException rejected) {
-                fail(id, "风格主图模型拒绝本次生成：" + rejected.getMessage());
-                throw conflict("风格主图模型拒绝本次生成：" + rejected.getMessage());
+                String message = "图片模型拒绝本次生成：" + rejected.getMessage();
+                fail(id, message);
+                throw conflict(message);
             } catch (ImageGenerationNotSentException notSent) {
                 db.update("UPDATE product_main_image_jobs SET status='PREPARED',updated_at=NOW(6) WHERE id=? AND status='SUBMITTING' AND attempt_count=?", id, attempt);
                 throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, notSent.getMessage());
@@ -177,21 +198,80 @@ public class ProductMainImageStyleService {
             fail(id, "原风格主图结果恢复连续3次失败，已保留原任务，未重复生图");
             throw conflict("原风格主图结果恢复连续3次失败，已保留原任务，未重复生图");
         }
-        var model = models.commerceMockupConnectionById(org, (String) job.get("model_config_id"))
-                .orElseThrow(() -> conflict("原风格主图模型已停用，请恢复模型配置后重试"));
-        var references = List.of(archive.read(org, (String) job.get("source_key")), archive.read(org, (String) job.get("reference_key")));
+        var model = jobModel(org, job);
+        var references = jobReferences(org, job);
         if (db.update("""
                 UPDATE product_main_image_jobs SET recovery_count=recovery_count+1,updated_at=NOW(6)
                 WHERE id=? AND status='SUBMITTING' AND attempt_count=? AND recovery_count=?
                 """, id, attempt, count) != 1) return;
         // Only a confirmed cached response permits replay. The same operation ID retains its input fingerprint.
         try {
-            var result = gateway.generateMainImagePoster((String) job.get("prompt"), attemptId, model, references, (String) job.get("size"));
+            var result = generate(job, attemptId, model, references);
             if (result == null) throw new IllegalStateException("原图片结果暂不可读");
             received(id, attempt, result);
         } catch (RuntimeException failure) {
             throw new BusinessException(HttpStatus.BAD_GATEWAY, "原风格主图结果已缓存，正在恢复读取（" + (count + 1) + "/3）");
         }
+    }
+
+    private static boolean directPrint(Map<String, Object> request) {
+        return ProductPrintProductionService.directListing(request) && "LIVE".equals(request.get("executionMode"));
+    }
+
+    static String printCompositionId(String organization, String capture) {
+        return UUID.nameUUIDFromBytes((PRINT_COMPOSITION + ":" + organization + ":" + capture)
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+    }
+
+    private Map<String, Object> printJob(ProductPublishWorkflow workflow) {
+        var rows = db.queryForList("SELECT * FROM product_main_image_jobs WHERE id=? AND organization_id=? AND capture_id=? AND size=?",
+                printCompositionId(workflow.getOrganizationId(), workflow.getCaptureId()),
+                workflow.getOrganizationId(), workflow.getCaptureId(), PRINT_COMPOSITION);
+        return rows.isEmpty() ? null : rows.getFirst();
+    }
+
+    private void preparePrint(ProductPublishWorkflow workflow, ProductCapture capture) {
+        String org = workflow.getOrganizationId();
+        if (!org.equals(capture.getOrganizationId()) || ProductPrintProductionService.templateId(capture, json).isEmpty())
+            throw conflict("当前商品没有已确认的印花套版");
+        var main = images.selectList(new LambdaQueryWrapper<ProductCaptureImage>()
+                        .eq(ProductCaptureImage::getOrganizationId, org).eq(ProductCaptureImage::getCaptureId, capture.getId())
+                        .eq(ProductCaptureImage::getRoleName, "MAIN").orderByAsc(ProductCaptureImage::getSortOrder))
+                .stream().findFirst().orElseThrow(() -> conflict("商品缺少已确认的排版图"));
+        String source = json.readTree(Objects.toString(main.getSourceJson(), "{}")).path("commerceStorageKey").asText("");
+        if (!source.matches("[a-f0-9]{64}/[a-f0-9]{64}")
+                || !(CommercePublicationDrafts.PREFIX + source).equals(main.getProcessedUrl())) {
+            throw conflict("商品的排版图已变化，请回到采集链接重新排版");
+        }
+        var model = models.requireCapturePrintConnection(org);
+        db.update("""
+                INSERT IGNORE INTO product_main_image_jobs(id,organization_id,workflow_id,capture_id,sort_order,
+                source_key,reference_key,prompt,size,model_config_id,template_fingerprint,status,updated_at)
+                VALUES(?,?,?,?,0,?,?,?,?,?,?,'PREPARED',NOW(6))
+                """, printCompositionId(org, capture.getId()), org, workflow.getId(), capture.getId(), source,
+                source, PRINT_COMPOSITION_PROMPT, PRINT_COMPOSITION, model.id(),
+                CommerceImageArchive.sha(PRINT_COMPOSITION_PROMPT.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    }
+
+    private ModelConfigService.RuntimeModelConnection jobModel(String org, Map<String, Object> job) {
+        String id = (String) job.get("model_config_id");
+        return (PRINT_COMPOSITION.equals(job.get("size"))
+                ? models.capturePrintConnectionById(org, id) : models.commerceMockupConnectionById(org, id))
+                .orElseThrow(() -> conflict("原图片模型已停用，请恢复模型配置后重试"));
+    }
+
+    private List<CommerceDesignImageGateway.Reference> jobReferences(String org, Map<String, Object> job) {
+        var source = archive.read(org, (String) job.get("source_key"));
+        return PRINT_COMPOSITION.equals(job.get("size")) ? List.of(source)
+                : List.of(source, archive.read(org, (String) job.get("reference_key")));
+    }
+
+    private CommerceDesignImageGateway.Response generate(Map<String, Object> job, String attemptId,
+            ModelConfigService.RuntimeModelConnection model, List<CommerceDesignImageGateway.Reference> references) {
+        String prompt = (String) job.get("prompt");
+        return PRINT_COMPOSITION.equals(job.get("size"))
+                ? gateway.generatePrintListingMockup(prompt, attemptId, model, references.getFirst())
+                : gateway.generateMainImagePoster(prompt, attemptId, model, references, (String) job.get("size"));
     }
 
     private void prepare(ProductPublishWorkflow workflow, ProductCapture capture, List<Map<String, Object>> slots) {

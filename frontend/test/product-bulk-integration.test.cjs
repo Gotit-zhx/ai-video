@@ -280,6 +280,28 @@ test('multi-shop UI submits each product to both stores with separate requests a
   assert.ok(h.workflowReads.length>=2,'Second store waits for first store workflow completion');
   h.c.stopProductBulkPolling();
 });
+test('print listing asks for shops and sends the direct listing intent to both stores', async () => {
+  const capture = {...fixture()[0], status:'READY', printProduction:true, stock:18, skuCount:2};
+  const h = harness([capture]);
+  const select = h.node('#product-bulk-shop');
+  h.c.activeMarketplaceShops = platform => platform === 'SHOPEE'
+    ? [{id:'shop',name:'One',platform:'SHOPEE'},{id:'shop-two',name:'Two',platform:'SHOPEE'}] : [];
+  select.multiple = true;
+  Object.defineProperty(select,'selectedOptions',{get:()=>select.options.filter(option=>option.selected)});
+  h.state.uniqueStoreWorkflows = true;
+  await h.c.openProductBulkUpload('', capture);
+  assert.equal(h.c.productBulkShopIds().length, 0);
+  assert.equal(h.node('#submit-product-bulk').textContent, '确认上架');
+  assert.equal(h.node('#product-bulk-listing-sequence').hidden, false);
+  h.c.setProductBulkShopIds(['shop','shop-two']);
+  h.c.changeProductBulkShop();
+  await h.submit();
+  assert.equal(h.posts.length, 2);
+  assert.ok(h.posts.every(call => call.body.printDirectListing === true));
+  assert.match(h.node('#product-bulk-progress').innerHTML, /上架进度/);
+  h.c.stopProductBulkPolling();
+});
+
 test('multi-shop retries only the rejected store with the frozen payload and key, then restores both choices',async()=>{
   const h=harness([fixture()[0]]),select=h.node('#product-bulk-shop');
   h.c.activeMarketplaceShops=platform=>platform==='SHOPEE'

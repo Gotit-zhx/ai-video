@@ -126,8 +126,11 @@ public class ProductPublishWorkflowProcessor {
                 processImages(workflow,worker,workflowPrincipal(workflow,"asset:watermark"),capture);
                 return;
             }
+            var request = workflowService.request(workflow);
+            boolean compose = ProductPrintProductionService.directListing(request) && workflowService.liveExecution(workflow)
+                    && "STYLE_IMAGES".equals(workflow.getCurrentStep());
             if (List.of("READY", "APPROVED", "PUBLISHED").contains(capture.getStatus())
-                    && ProductMainImageStylePolicy.templateId(workflowService.request(workflow)) != null) {
+                    && (compose || ProductMainImageStylePolicy.templateId(request) != null)) {
                 workflowPrincipal(workflow, "product:edit");
                 owned(workflowMapper.markStep(workflow.getId(), worker, "STYLE_IMAGES", capture.getVersion(), Instant.now()));
                 if (!mainImageStyles.ensureReady(workflow, capture)) {

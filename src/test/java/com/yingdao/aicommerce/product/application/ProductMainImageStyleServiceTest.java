@@ -58,6 +58,34 @@ class ProductMainImageStyleServiceTest {
         assertEquals(1,service.progress(workflow).processedImages());
         verifyNoInteractions(gateway,models,downloader);
     }
+    @Test void listedPrintStartsOneCompositionAndReusesItsArchivedImageForAnotherShop() {
+        String direct = json.writeValueAsString(Map.of("executionMode", "LIVE", "printDirectListing", true));
+        when(workflow.getCaptureId()).thenReturn("capture");
+        when(workflow.getRequestJson()).thenReturn(direct);
+        String id = ProductMainImageStyleService.printCompositionId("org", "capture");
+        String size = ProductMainImageStyleService.PRINT_COMPOSITION;
+        job.put("id", id); job.put("size", size); job.put("status", "PREPARED");
+        when(db.queryForList(anyString(), eq(id), eq("org"), eq("capture"), eq(size))).thenReturn(List.of(job));
+        var model = new ModelConfigService.RuntimeModelConnection("model", "https://model.example",
+                "gpt-image-2.6", "OPENAI_COMPATIBLE", "CUSTOM", "test");
+        when(models.capturePrintConnectionById("org", "model")).thenReturn(Optional.of(model));
+        when(db.update(contains("SET status='SUBMITTING'"), eq(id), eq(0))).thenReturn(1);
+
+        assertFalse(service.ensureReady(workflow, capture));
+        verify(gateway).generatePrintListingMockup(eq("Prompt"), eq(id), eq(model),
+                eq(new CommerceDesignImageGateway.Reference("image/png", "aW1hZ2U=")));
+        job.put("status", "READY");
+
+        var other = mock(ProductPublishWorkflow.class);
+        when(other.getId()).thenReturn("other-shop-workflow");
+        when(other.getOrganizationId()).thenReturn("org");
+        when(other.getCaptureId()).thenReturn("capture");
+        when(other.getRequestJson()).thenReturn(direct);
+        assertTrue(service.ensureReady(other, capture));
+        assertEquals(List.of("/api/v1/product-main-image-results/" + id), service.progress(other).imageUrls());
+        verifyNoMoreInteractions(gateway);
+    }
+
     @Test void originalOnlyTemplateCopiesArchivedReferenceWithoutProductSourceOrAnyModel() {
         slot.put("analysis", ProductMainImageStylePolicyTest.originalAnalysis());
         var persisted = new ArrayList<Map<String,Object>>();

@@ -747,7 +747,7 @@
     const current = () => preparation === pending && currentUser?.organizationId === pending.org;
     if (capture?.captureId !== pending.captureId || activeResult !== pending.resultId
         || get('style').value !== pending.templateId || canvas.dataset.preview !== 'composition') {
-      status('production-status', '排版已变化，请重新开始制作。', true);
+      status('production-status', '排版已变化，请重新开始上架。', true);
       return;
     }
     const settings = Object.fromEntries(new FormData(productionForm));
@@ -756,7 +756,7 @@
     settings.price = Number(settings.price);
     preparing = true;
     for (const button of productionForm.querySelectorAll('button')) button.disabled = true;
-    status('production-status', '正在制作商品草稿…');
+    status('production-status', '正在准备商品资料…');
     try {
       const png = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
       if (!current() || !production.open) return;

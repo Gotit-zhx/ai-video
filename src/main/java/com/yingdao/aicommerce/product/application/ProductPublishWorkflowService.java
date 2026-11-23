@@ -89,6 +89,8 @@ public class ProductPublishWorkflowService {
         String key = requireIdempotencyKey(idempotencyKey);
         Map<String, Object> body = mutableMap(request);
         ProductPublicationSkuNaming.normalize(body);
+        boolean printDirect = ProductPrintProductionService.directListing(body);
+        if (!printDirect) body.remove(ProductPrintProductionService.DIRECT_LISTING);
         body.remove("mainImageStyleSnapshot");
         String styleTemplateId = ProductMainImageStylePolicy.templateId(body);
         if (styleTemplateId == null) body.remove(ProductMainImageStylePolicy.TEMPLATE);
@@ -141,6 +143,13 @@ public class ProductPublishWorkflowService {
         ProductCapture capture = captureDetail.capture();
         String initialStep = initialStep(capture.getStatus());
         String printTemplate = ProductPrintProductionService.templateId(capture, objectMapper);
+        if (printDirect) {
+            if (printTemplate.isEmpty()) throw badRequest("只有印花套版商品可使用直接上架");
+            if (!List.of("READY", "APPROVED", "PUBLISHED").contains(capture.getStatus()))
+                throw badRequest("请回到采集链接重新确认套版和商品资料");
+            requireAuthority(principal, "product:edit", "当前账号没有套版合成权限");
+            if (MODE_LIVE.equals(executionMode)) initialStep = "STYLE_IMAGES";
+        }
         if (!printTemplate.isEmpty()) {
             if (captureDetail.skus().isEmpty() || captureDetail.skus().stream().anyMatch(sku -> sku.getStock() == null)) {
                 throw badRequest("请为每个套版商品规格填写库存");

@@ -2,6 +2,7 @@ package com.yingdao.aicommerce.product.application.provider;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yingdao.aicommerce.common.exception.BusinessException;
+import com.yingdao.aicommerce.product.application.ProductPrintProductionService;
 import com.yingdao.aicommerce.product.application.CommerceSourceColorResolver;
 import com.yingdao.aicommerce.product.domain.ProductCapture;
 import com.yingdao.aicommerce.product.domain.ProductCaptureImage;
@@ -125,6 +126,9 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         List<ProductCaptureSku> skus = client.isSandboxEnvironment() ? allSkus.stream().limit(50).toList() : allSkus;
         List<ProductCaptureImage> images = images(capture);
         var styleGallery = mainImageAssets == null ? null : mainImageAssets.gallery(capture, request);
+        boolean directListing = ProductPrintProductionService.directListing(request);
+        if (directListing && styleGallery == null) throw conflict("印花合成图尚未就绪");
+        if (directListing) images = styleGallery;
         boolean variants = hasVariants(skus);
         rejectDryRunImages(images);
         int publishStock = requiredStock(request);
@@ -156,7 +160,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         // A still-transcoding video should not cause gallery images to be staged on every poll.
         ShopeeProductVideoUploader.UploadedVideo video = videoUploader.upload(capture, connection);
         Map<String, String> uploadedByUrl = uploadImages(connection, images);
-        if (styleGallery != null) {
+        if (styleGallery != null && !directListing) {
             var allUploaded = new LinkedHashMap<>(uploadedByUrl);
             allUploaded.putAll(uploadImages(connection, styleGallery));
             uploadedByUrl = allUploaded;
@@ -230,6 +234,12 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
                     Map.of("item_id_list", numericItemId));
             String remoteStatus = itemStatus(pending, numericItemId);
             if (!"UNLIST".equals(remoteStatus)) throw conflict("商品上传后未确认待上架状态：" + remoteStatus);
+            if (directListing) {
+                var activation = client.shopPost(UNLIST_ITEM, connection,
+                        Map.of("item_list", List.of(Map.of("item_id", numericItemId, "unlist", false))));
+                verifyActivationResponse(activation, numericItemId);
+                remoteStatus = readActivatedItemStatus(connection, numericItemId, Thread::sleep);
+            }
             Map<String, Object> receipt = new LinkedHashMap<>();
             receipt.put("platform", "SHOPEE");
             receipt.put("apiVersion", "v2");
@@ -253,7 +263,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
             receipt.put("variantInitialized", !variationResponse.isEmpty());
             receipt.put("addModelBatchCount", addModelBatchCount);
             receipt.put("models", publishedModels);
-            receipt.put("listingMode", "PENDING_LISTING");
+            receipt.put("listingMode", directListing ? "DIRECT_LISTING" : "PENDING_LISTING");
             receipt.put("remoteStatus", remoteStatus);
             return new PublishResult(itemId, receipt);
         } catch (RuntimeException exception) {

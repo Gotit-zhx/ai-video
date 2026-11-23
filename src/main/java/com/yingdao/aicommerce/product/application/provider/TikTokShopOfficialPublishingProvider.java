@@ -1,5 +1,7 @@
 package com.yingdao.aicommerce.product.application.provider;
 
+import com.yingdao.aicommerce.product.application.ProductPrintProductionService;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.product.domain.ProductCapture;
@@ -111,6 +113,9 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
             skus = publicationSkuNaming.apply(capture, skus, request);
         List<ProductCaptureImage> images = images(capture);
         var styleGallery = mainImageAssets == null ? null : mainImageAssets.gallery(capture, request);
+        boolean directListing = ProductPrintProductionService.directListing(request);
+        if (directListing && styleGallery == null) throw conflict("印花合成图尚未就绪");
+        if (directListing) images = styleGallery;
         rejectDryRunImages(images);
         int stock = requiredStock(request);
         String categoryId = requiredText(request, "categoryId",
@@ -166,7 +171,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         if (sizeChart.present()) body.put("size_chart", sizeChart.payload());
         body.remove("video");
         if (video.present()) body.put("video", Map.of("id", video.videoId()));
-        body.put("save_mode", "AS_DRAFT");
+        body.put("save_mode", directListing ? "LISTING" : "AS_DRAFT");
         body.put("title", capture.getTitle());
         body.put("description", description.html());
         body.put("category_id", categoryId);
@@ -232,6 +237,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         receipt.put("listingCheckRequestId", text(listingCheckResponse.get("request_id")));
         receipt.put("readbackRequestId", text(readbackResponse.get("request_id")));
         receipt.put("verification", "CONFIRMED_BY_GET_PRODUCT");
+        receipt.put("listingMode", directListing ? "DIRECT_LISTING" : "PENDING_LISTING");
         receipt.put("remoteStatus", verification.status());
         receipt.put("remoteSkuIds", verification.skuIdsBySellerSku());
         if (video.present()) {
@@ -407,7 +413,13 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         if (status == null) {
             throw readbackFailure(productId, "Get Product 响应缺少 status/product_status");
         }
-        verifyRemoteStatus(productId, status);
+        if ("LISTING".equals(createPayload.get("save_mode"))) {
+            if (!Set.of("ACTIVATE", "PENDING").contains(status.strip().toUpperCase(Locale.ROOT))) {
+                throw readbackFailure(productId, "直接上架后状态为 " + truncate(status, 80) + "，请在店铺核对");
+            }
+        } else {
+            verifyRemoteStatus(productId, status);
+        }
         String expectedVideoId = nestedText(createPayload, "video", "id");
         if (expectedVideoId != null && !expectedVideoId.equals(nestedText(data, "video", "id"))) {
             throw readbackFailure(productId, "Get Product 未确认已提交的视频 ID，视频缺失或不一致；禁止盲目重试创建商品");

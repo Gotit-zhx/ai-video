@@ -101,6 +101,12 @@ public class CommerceDesignImageGateway implements AutoCloseable {
     public Response generateProductPreview(String prompt,String attemptId,ModelConfigService.RuntimeModelConnection model,List<Reference> references,boolean productMockup){
         return generateArtwork(prompt,attemptId,model,references,"low",false,productMockup);
     }
+    public Response generatePrintListingMockup(String prompt, String attemptId, ModelConfigService.RuntimeModelConnection model,
+                                               Reference layout) {
+        ModelConfigService.requireCapturePrintModel(model);
+        return generateArtwork(prompt, attemptId, model, List.of(layout), "medium", false, true);
+    }
+
     /** Four detail cells share one archived style sheet and one fixed product reference. */
     public Response generateProductDetailGrid(String prompt,String attemptId,ModelConfigService.RuntimeModelConnection model,List<Reference> references){
         if(references==null||references.size()!=2)throw bad("四格详情图须使用商品主图和已组合的详情风格图两张参考图");
@@ -152,7 +158,7 @@ public class CommerceDesignImageGateway implements AutoCloseable {
         if(references==null||references.size()>4)throw bad("图片创作最多使用四张已归档参考图，不允许静默截断");
         for(var reference:references){if(reference==null||!Set.of("image/png","image/jpeg","image/webp").contains(Objects.toString(reference.mimeType(),""))||reference.dataBase64()==null||reference.dataBase64().isBlank()||reference.dataBase64().length()>12_000_000)throw bad("参考图编码或格式无效");try{Base64.getDecoder().decode(reference.dataBase64());}catch(IllegalArgumentException e){throw bad("参考图编码无效");}}
         body.put("prompt",prompt);body.put("size",detailGrid?"2048x2048":"1024x1024");body.put("references",references);body.put("progressRequestId",attemptId);
-        if (!transparentArtwork || !ModelConfigService.CAPTURE_PRINT_MODEL_ID.equals(model.modelId())) {
+        if (!ModelConfigService.CAPTURE_PRINT_MODEL_ID.equals(model.modelId()) || (!transparentArtwork && !productMockup)) {
             body.put("inputFidelity", "high");
         }
         if(quality!=null)body.put("quality",quality);

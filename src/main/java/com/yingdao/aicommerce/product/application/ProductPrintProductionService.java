@@ -29,6 +29,7 @@ import java.util.Objects;
 
 @Service
 public class ProductPrintProductionService {
+    public static final String DIRECT_LISTING = "printDirectListing";
     private static final String KEY_PREFIX = "print-production-";
     private static final String TEMPLATE_KEY = "printProductionTemplateId";
     private static final String MEASUREMENT_KEY = "printSizeMeasurements";
@@ -191,6 +192,10 @@ public class ProductPrintProductionService {
         var parts = values.entrySet().stream().filter(entry -> entry.getValue() != null)
                 .map(entry -> entry.getKey() + " " + entry.getValue().toPlainString() + " cm").toList();
         return parts.isEmpty() ? "" : size.name() + "  " + String.join(" / ", parts);
+    }
+
+    public static boolean directListing(Map<String, Object> request) {
+        return Boolean.TRUE.equals(request.get(DIRECT_LISTING));
     }
 
     static String templateId(ProductCapture capture, ObjectMapper json) {

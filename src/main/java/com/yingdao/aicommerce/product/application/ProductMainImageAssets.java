@@ -24,6 +24,7 @@ public class ProductMainImageAssets {
 
     /** Null means opt-out; a selected but incomplete style must never fall back to original images. */
     public List<ProductCaptureImage> gallery(ProductCapture capture, Map<String, Object> request) {
+        if (ProductPrintProductionService.directListing(request)) return printGallery(capture, request);
         String template = ProductMainImageStylePolicy.templateId(request);
         if (template == null) return null;
         String key = Objects.toString(request.get("idempotencyKey"), "");
@@ -69,10 +70,32 @@ public class ProductMainImageAssets {
         }).toList();
     }
 
+    private List<ProductCaptureImage> printGallery(ProductCapture capture, Map<String, Object> request) {
+        String key = Objects.toString(request.get("idempotencyKey"), "");
+        if (!key.matches("wf-[a-f0-9-]{36}-publish") || ProductPrintProductionService.templateId(capture, json).isEmpty())
+            throw conflict("请通过套版上架任务提交商品");
+        String workflowId = key.substring(3, key.length() - 8);
+        var workflows = db.queryForList("""
+                SELECT request_json FROM product_publish_workflows WHERE id=? AND organization_id=? AND capture_id=?
+                AND shop_id=? AND destination_platform=?
+                """, workflowId, capture.getOrganizationId(), capture.getId(), request.get("shopId"), request.get("destinationPlatform"));
+        if (workflows.size() != 1) throw conflict("套版上架任务与目标店铺不一致");
+        var saved = json.readTree((String) workflows.getFirst().get("request_json"));
+        if (!saved.path(ProductPrintProductionService.DIRECT_LISTING).asBoolean(false))
+            throw conflict("套版上架任务未确认");
+        String id = ProductMainImageStyleService.printCompositionId(capture.getOrganizationId(), capture.getId());
+        var reference = read(capture.getOrganizationId(), capture.getId(), id);
+        String url = ProductMainImageStylePolicy.PREFIX + id;
+        var image = new ProductCaptureImage(capture.getOrganizationId(), capture.getId(), url + "?original", "MAIN",
+                "印花套版成品", 0, reference.mimeType(), "{}");
+        image.processed(url);
+        return List.of(image);
+    }
+
     /** Check again after media staging, outside the publishing transaction's earlier read view. */
     @Transactional(propagation = Propagation.REQUIRES_NEW, isolation = Isolation.READ_COMMITTED, readOnly = true)
     public void verifyCurrentGallery(ProductCapture capture, Map<String, Object> request, List<ProductCaptureImage> staged) {
-        if (ProductMainImageStylePolicy.templateId(request) == null) return;
+        if (!ProductPrintProductionService.directListing(request) && ProductMainImageStylePolicy.templateId(request) == null) return;
         var current = gallery(capture, request);
         if (staged == null || !current.stream().map(ProductCaptureImage::getProcessedUrl).toList()
                 .equals(staged.stream().map(ProductCaptureImage::getProcessedUrl).toList())) throw new TemplateChanged();

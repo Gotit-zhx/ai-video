@@ -59,7 +59,8 @@
   function stylePayload(item) {
     const id = item?.mainImageStyleTemplateId;
     const merchant = merchantStyle(item?.merchantStyleCode);
-    return {...(id ? {mainImageStyleTemplateId: id} : {}), ...(merchant ? {merchantStyleCode: merchant} : {})};
+    return {...(id ? {mainImageStyleTemplateId: id} : {}), ...(merchant ? {merchantStyleCode: merchant} : {}),
+      ...(item?.printDirectListing || item?.payload?.printDirectListing ? {printDirectListing: true} : {})};
   }
   function merchantStyle(value) {
     const code = String(value || '').trim().toUpperCase();

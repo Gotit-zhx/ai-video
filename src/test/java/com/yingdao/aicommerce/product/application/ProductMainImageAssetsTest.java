@@ -28,6 +28,26 @@ class ProductMainImageAssetsTest {
                 () -> assets.gallery(capture,Map.of("mainImageStyleTemplateId",template,"idempotencyKey","arbitrary-request")));
         verifyNoInteractions(db,archive);
     }
+    @Test void directListingOnlyUsesReadyCompositionForAConfirmedShopWorkflow() {
+        when(capture.getId()).thenReturn("capture");
+        when(capture.getOrganizationId()).thenReturn("org");
+        when(capture.getIdempotencyKey()).thenReturn("print-production-task");
+        when(capture.getRawData()).thenReturn(json.writeValueAsString(Map.of("printProductionTemplateId", template)));
+        var request = new LinkedHashMap<String, Object>(Map.of("printDirectListing", true, "shopId", "shop-one",
+                "destinationPlatform", "SHOPEE", "idempotencyKey", "wf-" + workflow + "-publish"));
+        when(db.queryForList(contains("AND shop_id=? AND destination_platform=?"), eq(workflow), eq("org"),
+                eq("capture"), eq("shop-one"), eq("SHOPEE"))).thenReturn(List.of(Map.of("request_json", "{\"printDirectListing\":true}")));
+        var id = ProductMainImageStyleService.printCompositionId("org", "capture");
+        when(db.queryForList(contains("status='READY'"), eq(id), eq("org"), eq("capture")))
+                .thenReturn(List.of(Map.of("storage_key", "composition")));
+        when(archive.read("org", "composition")).thenReturn(new CommerceDesignImageGateway.Reference("image/png", "aW1hZ2U="));
+
+        var gallery = assets.gallery(capture, request);
+        assertEquals(List.of(ProductMainImageStylePolicy.PREFIX + id), gallery.stream().map(img -> img.getProcessedUrl()).toList());
+        request.put("shopId", "shop-other");
+        assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class, () -> assets.gallery(capture, request));
+        verify(archive).read("org", "composition");
+    }
     @Test void incompleteOrStaleOutputNeverFallsBackToOriginalProductImages() {
         var slot = setup();
         when(db.queryForList(contains("SELECT * FROM product_main_image_jobs"),eq(workflow),eq("org"),eq("capture"))).thenReturn(List.of(

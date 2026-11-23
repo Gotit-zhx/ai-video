@@ -7103,6 +7103,20 @@ function productBulkThumbnail(item) {
   const image = capture?.images?.[0];
   return safeProductUrl(item.thumbnailUrl || capture?.thumbnailUrl || image?.processedUrl || image?.originalUrl);
 }
+function renderPrintListingSteps(item) {
+  const workflow = item.workflow;
+  const state = workflow?.status || item.status;
+  const remote = workflow?.publication?.remoteStatus;
+  const pendingReview = ['PENDING', 'REVIEWING'].includes(remote);
+  const phase = {STYLE_IMAGES: 1, APPROVE: 2, PUBLISH: 3, COMPLETED: pendingReview ? 3 : 4}[workflow?.currentStep] || 0;
+  const labels = ['店铺已选', '图片合成', '资料校验', '上传并上架'];
+  if (pendingReview) labels[3] = '待平台审核';
+  if (['NORMAL', 'ACTIVATE'].includes(remote)) labels[3] = '已上架';
+  if (['DRAFT', 'UNLIST'].includes(remote)) labels[3] = '待上架';
+  if (state === 'SUCCEEDED' && workflow?.executionMode === 'DRY_RUN') labels[3] = '演练完成';
+  return `<ol class="product-bulk-listing-steps" aria-label="上架进度">${labels.map((label, index) =>
+    `<li${index < phase ? ' data-done' : index === phase ? ' aria-current="step"' : ''}>${label}</li>`).join('')}</ol>`;
+}
 function renderProductBulkCard(item, shops = [], preview = false) {
   const workflow = item.workflow;
   const state = workflow?.status || item.status || 'WAITING';
@@ -7110,13 +7124,18 @@ function renderProductBulkCard(item, shops = [], preview = false) {
   const success = state === 'SUCCEEDED';
   const active = ['PREPARING','SUBMITTING','RUNNING'].includes(state);
   const tone = failed ? 'failed' : success ? 'success' : active ? 'active' : 'waiting';
-  const status = {WAITING:'等待准备',PREPARING:'自动准备中',PREPARE_FAILED:'准备失败',PREPARED:'准备就绪',SUBMITTING:'正在提交',CREATE_FAILED:'提交失败',PENDING:'排队中',RUNNING:'处理中',SUCCEEDED:workflow?.executionMode === 'DRY_RUN' ? '演练完成' : '已上传 · 待上架',FAILED:'上传失败',REVIEW_REQUIRED:'需要处理'}[state] || state;
-  const stage = {IMAGES:'图片检测与处理',STYLE_IMAGES:'生成风格主图',APPROVE:'商品资料确认',PUBLISH:'上传到待上架'}[workflow?.currentStep] || '';
+  const directListing = item.printDirectListing || item.payload?.printDirectListing;
+  const remote = workflow?.publication?.remoteStatus;
+  const result = workflow?.executionMode === 'DRY_RUN' ? '演练完成'
+    : directListing && ['NORMAL', 'ACTIVATE'].includes(remote) ? '已上架'
+    : directListing && ['PENDING', 'REVIEWING'].includes(remote) ? '待平台审核' : '已上传 · 待上架';
+  const status = {WAITING:'等待准备',PREPARING:'自动准备中',PREPARE_FAILED:'准备失败',PREPARED:'准备就绪',SUBMITTING:'正在提交',CREATE_FAILED:'提交失败',PENDING:'排队中',RUNNING:'处理中',SUCCEEDED:result,FAILED:directListing ? '上架失败' : '上传失败',REVIEW_REQUIRED:'需要处理'}[state] || state;
+  const stage = {IMAGES:'图片检测与处理',STYLE_IMAGES:directListing ? 'GPT Image 2.6 合成' : '生成风格主图',APPROVE:'商品资料确认',PUBLISH:directListing ? '上传并提交上架' : '上传到待上架'}[workflow?.currentStep] || '';
   const images = workflow?.currentStep === 'STYLE_IMAGES' ? workflow?.mainImageStyle : workflow?.imageProcessing;
   const measured = Number.isInteger(images?.totalImages) && images.totalImages > 0;
   const done = measured ? Math.min(images.totalImages, Math.max(0, Number(images.processedImages) || 0)) : 0;
-  const percent = success ? 100 : measured ? Math.round(done / images.totalImages * 100) : null;
-  const progress = success ? '上传成功' : item.waitMessage || (measured ? `${workflow?.currentStep === 'STYLE_IMAGES' ? '风格主图' : '图片'} ${done} / ${images.totalImages}` : preview ? '选择店铺后自动准备' : stage || status);
+  const percent = success ? (result === '待平台审核' ? null : 100) : measured ? Math.round(done / images.totalImages * 100) : null;
+  const progress = success ? (directListing ? result : '上传成功') : item.waitMessage || (measured ? `${workflow?.currentStep === 'STYLE_IMAGES' && !directListing ? '风格主图' : '图片'} ${done} / ${images.totalImages}` : preview ? '选择店铺后自动准备' : stage || status);
   const shopId = workflow?.shopId || item.payload?.shopId || item.shopId;
   const shop = shops.find(candidate => String(candidate.id) === String(shopId));
   const shopName = shop?.name || shop?.shopName || shop?.externalShopId || shopId || '';
@@ -7129,6 +7148,7 @@ function renderProductBulkCard(item, shops = [], preview = false) {
       <div class="bulk-product-overlay"><div><span>${escapeHtml(progress)}</span>${percent !== null && !failed ? `<b>${percent}%</b>` : ''}</div><div class="bulk-product-track ${active && percent === null ? 'is-indeterminate' : ''}"><span style="width:${percent === null ? 0 : percent}%"></span></div></div>
     </div><div class="bulk-product-info"><strong title="${escapeHtml(item.title)}" translate="no">${escapeHtml(item.title)}</strong>
       ${shopName ? `<small title="${escapeHtml(shopName)}">${escapeHtml(shopName)}</small>` : `<small>售价换汇 · 库存 ${item.printProduction ? Number(item.stock) : 999} · 自动匹配类目</small>`}
+      ${directListing && !preview ? renderPrintListingSteps(item) : ''}
       ${renderProductMainImageProgress(workflow, true)}
       ${error ? `<details class="bulk-product-error"><summary>${success ? '查看状态同步提示' : '查看失败原因'}</summary><p>${escapeHtml(error)}</p></details>` : ''}
       ${retries ? `<small class="bulk-product-retry">${escapeHtml(retries)}</small>` : ''}</div></section>`;
@@ -7181,6 +7201,8 @@ function renderProductBulkProgress() {
   const repairChart = chartFailures.length > 0 && Boolean(ProductBulkSizeChart.key());
   const reconnect = productBulkItems.some(item => item.progressPaused || item.syncPaused);
   const button = document.querySelector('#submit-product-bulk');
+  const directListing = document.querySelector('#product-bulk-dialog').dataset.printDirectListing === 'true';
+  document.querySelector('#product-bulk-listing-sequence').hidden = !directListing || productBulkItems.length > 0;
   const changeable = productBulkItems.filter(ProductBulkUpload.canChangeShop);
   document.querySelector('#product-bulk-settings').disabled = productBulkBusy || (productBulkItems.length > 0 && !changeable.length);
   globalThis.ProductMainImageStyles?.syncBulkLock(productBulkBusy || (productBulkItems.length > 0 && !changeable.length));
@@ -7189,7 +7211,7 @@ function renderProductBulkProgress() {
     ? `已选择 ${productBulkShopIds().length} 家店铺，每件商品分别上传；进度与结果按店铺独立记录。`
     : changeable.length
     ? `可切换店铺，${changeable.length} 件未提交商品将按新店铺重新准备。${changeable.length < productBulkItems.length ? '已提交商品保留原店铺。' : ''}` : '';
-  button.textContent = productBulkBusy ? '正在自动准备并提交…' : productBulkItems.length ? repairChart ? '补图并重试失败商品' : pending ? '重试未提交商品' : reconnect ? '重试进度同步' : chartFailures.length ? '补传尺码图后重试' : '全部商品已提交' : '一键上传所选商品';
+  button.textContent = productBulkBusy ? '正在自动准备并提交…' : productBulkItems.length ? repairChart ? '补图并重试失败商品' : pending ? '重试未提交商品' : reconnect ? '重试进度同步' : chartFailures.length ? '补传尺码图后重试' : '全部商品已提交' : directListing ? (marketplaceIntegrationStatus.livePublishingEnabled ? '确认上架' : '开始演练') : '一键上传所选商品';
   button.disabled = productBulkBusy || ProductBulkSizeChart.isUploading() || (productBulkItems.length > 0 && !pending && !reconnect && !repairChart) || !productBulkShopIds().length;
   const chartShop = shops.find(shop => productBulkShopIds().includes(String(shop.id)) && normalizedMarketplacePlatform(shop.platform) === 'SHOPEE')
     || shops.find(shop => String(shop.id) === productBulkShopIds()[0]);
@@ -7328,13 +7350,20 @@ async function openProductBulkUpload(historyKey, captureId) {
   const run = productBulkRuns.get(productBulkStorageKey);
   productBulkItems = run?.items || saved?.items || [];
   productBulkBusy = Boolean(run);
+  const directListing = Boolean(directCapture?.printProduction
+    || productBulkItems.some(item => item.printDirectListing || item.payload?.printDirectListing));
+  document.querySelector('#product-bulk-dialog').dataset.printDirectListing = String(directListing);
+  document.querySelector('#product-bulk-title').textContent = directListing ? '套版上架' : '批量一键上传';
+  document.querySelector('#product-bulk-intro').textContent = directListing
+    ? (marketplaceIntegrationStatus.livePublishingEnabled ? '可多选店铺。确认后会调用 GPT Image 2.6 合成商品图并提交上架，图片按张计费。' : '演练会检查商品资料和提交步骤。')
+    : '可同时选择多个店铺上传，也可为本批商品指定尺码图。';
   const merchantItem = productBulkItems.find(ProductBulkUpload.canChangeShop) || productBulkItems[0];
   document.querySelector('#product-bulk-merchant-style').value = merchantItem?.payload?.merchantStyleCode || merchantItem?.merchantStyleCode || '';
   document.querySelector('#product-bulk-merchant-style').setCustomValidity('');
   ProductBulkSizeChart.open(org,productBulkStorageKey,productBulkItems);
   const style = document.querySelector('#product-bulk-main-style');
-  document.querySelector('#product-bulk-main-style-field').hidden = !!directCapture?.printProduction;
-  if (directCapture?.printProduction) {
+  document.querySelector('#product-bulk-main-style-field').hidden = directListing;
+  if (directListing) {
     style.value = '';
     document.querySelector('#product-bulk-main-style-preview').hidden = true;
     document.querySelector('#product-bulk-main-style-status').textContent = '';
@@ -7345,13 +7374,14 @@ async function openProductBulkUpload(historyKey, captureId) {
   const selected = selectedIds.map(id => (directCapture?.id === id ? directCapture : null) || productCaptures.find(item => item.id === id) || productBulkSelectedCaptures.get(id)
     || (saved && {id, title:saved.items.find(item => item.captureId === id)?.title})).filter(Boolean);
   const republishing = selected.some(item => item.status === 'PUBLISHED');
-  setProductBulkShopIds(shops.length === 1 && !republishing ? [String(shops[0].id)] : []);
+  setProductBulkShopIds(!directListing && shops.length === 1 && !republishing ? [String(shops[0].id)] : []);
   if (!marketplaceIntegrationStatus.livePublishingEnabled && !shops.length) {
     select.innerHTML = '<option value="dry-run-shop">发布演练（不连接店铺）</option>';
     setProductBulkShopIds(['dry-run-shop']);
   }
   document.querySelector('#product-bulk-mode').textContent = marketplaceIntegrationStatus.livePublishingEnabled
-    ? republishing ? '请重新选择目标店铺；已提交商品复用现有图片，同店重复提交会核对已有记录。' : '上传到店铺待上架目录，后续上架由你决定。'
+    ? directListing ? '各店铺共用合成图，分别显示上架结果。' : republishing
+      ? '请重新选择目标店铺；已提交商品复用现有图片，同店重复提交会核对已有记录。' : '上传到店铺待上架目录，后续上架由你决定。'
     : '当前为发布演练模式，不会在店铺创建商品。';
   document.querySelector('#product-bulk-summary').textContent = `已选择 ${selected.length} 件商品`;
   document.querySelector('#product-bulk-items').innerHTML = selected.map(item => renderProductBulkCard(item, [], true)).join('');
@@ -7412,8 +7442,10 @@ async function submitProductBulkUpload(event) {
     if (!productBulkItems.length) {
       const merchantStyleCode = ProductBulkUpload.merchantStyle(document.querySelector('#product-bulk-merchant-style').value);
       const items = [...document.querySelectorAll('[data-bulk-item]')].map(row => ({id: row.dataset.bulkItem, title: row.querySelector('strong').textContent}));
+      const printDirectListing = document.querySelector('#product-bulk-dialog').dataset.printDirectListing === 'true';
       productBulkItems = ProductBulkUpload.plan(items, productBulkShopIds(), newProductIdempotencyKey());
       for (const item of productBulkItems) {
+        if (printDirectListing) item.printDirectListing = true;
         item.thumbnailUrl = productBulkThumbnail(item);
         item.sizeChartImageKey = ProductBulkSizeChart.key();
         if (merchantStyleCode) item.merchantStyleCode = merchantStyleCode;
