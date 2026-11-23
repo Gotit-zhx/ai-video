@@ -8,6 +8,7 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 /** A module is a data namespace, not a replacement for organization authorization. */
 public final class CommerceModule {
     public static final String CAPTURE = "CAPTURE";
+    public static final String PRINT_SOURCE = "PRINT_SOURCE";
     public static final String FISSION = "FISSION";
     private CommerceModule() {}
 

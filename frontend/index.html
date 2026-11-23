@@ -47,7 +47,8 @@
   <link rel="stylesheet" href="/commerce-artwork-library.css?v=artwork-library-20260916-1">
   <link rel="stylesheet" href="/commerce-motion.css?v=workbench-layout-20260921">
   <link rel="stylesheet" href="/product-bulk-history.css?v=20260910-bulk-history-2">
-  <link rel="stylesheet" href="/product-capture-templates.css?v=20261115-codes-1">
+  <link rel="stylesheet" href="/product-print-capture.css?v=4">
+  <link rel="stylesheet" href="/product-capture-templates.css?v=20261122-v2-entry-1">
   <link rel="stylesheet" href="/product-main-image-styles.css?v=20261019-detail-1">
   <link rel="stylesheet" href="/knowledge-workspace.css?v=20260923-3">
     <link rel="stylesheet" href="/finance-workspace.css?v=20261119-shop-ad-accounts-1">
@@ -205,6 +206,7 @@
         <a href="#shops" id="nav-shops" class="nav-item" data-nav-label="店铺管理" title="店铺管理"><span aria-hidden="true">▣</span><span class="nav-label">店铺管理</span></a>
         </div></details>
         <details class="nav-group" data-nav-group="commerce-v2"><summary title="商品运营 v2.0"><span aria-hidden="true">◇</span><span class="nav-group-label">商品运营 v2.0</span><i aria-hidden="true">⌄</i></summary><div class="nav-children">
+        <a href="#product-print-capture" class="nav-item" data-commerce-route="product-print-capture" data-nav-label="采集链接" title="采集链接"><span aria-hidden="true">◇</span><span class="nav-label">采集链接</span></a>
         <a href="#product-capture-templates" class="nav-item" data-commerce-route="product-capture-templates" data-nav-label="采集模板" title="采集模板"><span aria-hidden="true">▧</span><span class="nav-label">采集模板</span></a>
         </div></details>
         <details class="nav-group" data-nav-group="knowledge" translate="no"><summary title="知识库"><span aria-hidden="true">▣</span><span class="nav-group-label">知识库</span><i aria-hidden="true">⌄</i></summary><div class="nav-children">
@@ -902,8 +904,99 @@
           <div id="commerce-batch-list"></div>
           <div id="commerce-batch-detail"></div>
         </section>
-        <section data-commerce-panel="product-capture-templates" hidden id="capture-template-workspace">
-<header class="capture-template-heading"><h1>采集模板</h1></header>
+        <section data-commerce-panel="product-print-capture" id="print-capture-workspace" class="pc-workspace" hidden>
+          <header class="pc-heading pc-preview-heading">
+            <h1>采集链接</h1>
+            <div class="pc-tools">
+              <button id="pc-monitor-toggle" class="quiet-button" type="button" aria-controls="pc-monitor" aria-expanded="true">监控</button>
+              <button id="pc-layout" class="quiet-button" type="button" aria-pressed="false" title="切换上下布局">布局 · 左右</button>
+              <button id="print-capture-listing-template" class="quiet-button" type="button" data-listing-template-opener aria-haspopup="dialog" aria-controls="product-listing-template-dialog">定制模板配置</button>
+              <a class="quiet-button" href="/assets/hoyee-print-collector-v2.zip" download>下载 v2.0 插件</a>
+            </div>
+          </header>
+          <section id="pc-monitor" class="product-summary-grid pc-monitor" aria-label="采集监控">
+            <article><span>最近采集（最多 30 条）</span><strong id="pc-recent-count">—</strong></article>
+            <article><span>当前商品图</span><strong id="pc-photo-count">0</strong></article>
+            <article><span>印花处理</span><strong id="pc-monitor-print" role="status">待选图</strong></article>
+            <article><span>排版状态</span><strong id="pc-monitor-layout">待套版</strong></article>
+          </section>
+          <div class="pc-editor" id="pc-editor">
+            <div class="pc-inputs">
+              <section class="pc-section pc-library" aria-labelledby="pc-library-heading">
+                <header class="pc-preview-heading">
+                  <h2 id="pc-library-heading">采集商品</h2>
+                  <button id="pc-refresh-recent" class="quiet-button" type="button">刷新</button>
+                </header>
+                <label class="product-capture-search" for="pc-search"><span aria-hidden="true">⌕</span><input id="pc-search" type="search" aria-label="搜索商品名称" placeholder="搜索商品名称"></label>
+                <div id="pc-recent" class="pc-recent" aria-label="最近采集商品"></div>
+                <p id="pc-recent-status" class="pc-status" role="status"></p>
+              </section>
+              <section class="pc-section" id="pc-source-section" aria-labelledby="pc-source-heading" hidden>
+                <h2 id="pc-source-heading">商品图片</h2>
+                <p id="pc-source-status" class="pc-status" role="status" hidden></p>
+                <div id="pc-source-result" hidden>
+                  <p class="pc-title" id="pc-product-title"></p>
+                  <fieldset>
+                    <legend>选一张有印花的商品图</legend>
+                    <div id="pc-source-images" class="pc-source-images"></div>
+                  </fieldset>
+                </div>
+              </section>
+              <section class="pc-section" aria-labelledby="pc-print-heading" id="pc-print-section" hidden>
+                <h2 id="pc-print-heading">提取印花</h2>
+                <div class="pc-print-row">
+                  <div id="pc-print-tile" class="pc-print-tile" hidden><img id="pc-art" alt="提取的透明印花"></div>
+                  <div class="pc-extract-controls">
+                    <div id="pc-extract-action" hidden>
+                      <label class="pc-consent"><input id="pc-confirm-model" type="checkbox"> 确认调用图片模型（按模型计费）</label>
+                      <button class="primary-button" id="pc-extract" type="button" disabled>提取印花</button>
+                    </div>
+                    <p id="pc-extract-status" class="pc-status" role="status" hidden></p>
+                  </div>
+                </div>
+              </section>
+            </div>
+            <section class="pc-composition" aria-labelledby="pc-composition-heading">
+              <header class="pc-preview-heading">
+                <h2 id="pc-composition-heading">套版预览</h2>
+                <div class="pc-tools">
+                  <button id="pc-arrange" class="quiet-button" type="button" aria-expanded="false" aria-controls="pc-placement" disabled>排版</button>
+                  <button id="pc-download" class="primary-button" type="button" disabled>下载图片</button>
+                </div>
+              </header>
+              <div id="pc-style-controls" hidden>
+                <label for="pc-style">采集模板</label>
+                <select id="pc-style"></select>
+                <p id="pc-template-state" class="pc-status" role="status" hidden></p>
+                <a href="#product-capture-templates" id="pc-template-link" hidden>前往采集模板</a>
+              </div>
+              <div class="pc-preview">
+                <canvas id="pc-canvas" aria-label="印花套版预览" hidden></canvas>
+                <p id="pc-preview-state" role="status">提取印花后，选择款式预览。</p>
+              </div>
+              <div id="pc-placement" hidden>
+                <label>大小 <output for="pc-size" id="pc-size-value">26%</output><input type="range" id="pc-size" min="5" max="85" value="26"></label>
+                <label>左右 <output for="pc-x" id="pc-x-value">50%</output><input type="range" id="pc-x" min="0" max="100" value="50"></label>
+                <label>上下 <output for="pc-y" id="pc-y-value">43%</output><input type="range" id="pc-y" min="0" max="100" value="43"></label>
+                <button id="pc-reset-position" class="quiet-button" type="button">重置</button>
+              </div>
+            </section>
+          </div>
+          <p id="pc-no-access" hidden>当前账号没有商品编辑权限。</p>
+        </section>
+
+        <section data-commerce-panel="product-capture-templates" id="capture-templates-page" hidden>
+          <header id="capture-templates-heading" class="capture-template-heading">
+            <div class="capture-template-title-row">
+              <h1>采集模板</h1>
+              <button id="capture-template-listing-config" class="quiet-button" type="button" data-listing-template-opener aria-haspopup="dialog" aria-controls="product-listing-template-dialog">定制模板配置</button>
+            </div>
+            <nav aria-label="模板类型">
+              <a href="#product-capture-templates" id="capture-style-tab" aria-controls="capture-template-workspace" aria-current="page">款式模板</a>
+              <a href="#product-capture-templates?tab=main-image-styles" id="capture-main-style-tab" aria-controls="main-style-workspace">主图风格模板</a>
+            </nav>
+          </header>
+          <section id="capture-template-workspace" aria-label="款式模板" hidden>
 <div id="ct-toast" role="status" aria-live="polite" hidden></div>
 <div class="ct-workspace"><aside class="ct-template-rail"><div class="ct-rail-heading"><h2>我的模板 <span id="ct-template-count"></span></h2></div><label class="ct-search"><span data-icon="search"></span><input id="ct-search" type="search" placeholder="搜索模板" aria-label="搜索模板"></label><div id="ct-template-list" class="ct-template-list"></div><button id="ct-load-more-templates" class="ct-rail-more" hidden>加载更多</button></aside>
 <section class="ct-editor" aria-label="模板编辑"><header class="ct-editor-heading"><div><h2 id="ct-editor-title"></h2><span id="ct-save-state">未保存</span></div><button id="ct-save" class="ct-primary"><span data-icon="check"></span>保存</button></header>
@@ -916,11 +1009,12 @@
 <input id="ct-image-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
 </section>
 
-        <section data-commerce-panel="product-main-image-styles" hidden id="main-style-workspace">
+          <section id="main-style-workspace" aria-label="主图风格模板" hidden>
           <header class="main-style-heading"><div><h1>主图风格模板</h1><span id="main-style-count">0 套模板</span></div><div class="main-style-actions"><button type="button" id="main-style-refresh" title="刷新模板" aria-label="刷新模板">↻</button><button type="button" id="main-style-new">＋ 新建模板</button></div></header>
           <p id="main-style-status" role="status" aria-live="polite"></p>
           <div id="main-style-list" class="main-style-list"></div>
           <section id="main-style-detail" hidden></section>
+          </section>
         </section>
         <div data-commerce-panel="product-capture">
         <section class="product-page-heading">
@@ -2041,11 +2135,12 @@
   <script src="/product-bulk-history.js?v=languages-20260921-2" defer></script>
   <script src="/video-script-terminal.js?v=languages-20260921-2" defer></script>
   <link rel="stylesheet" href="/product-listing-templates.css?v=20261014-multi-shop-1">
-  <script src="/product-listing-templates.js?v=20261023-tiktok-warehouse-1" defer></script>
+  <script src="/product-listing-templates.js?v=20261122-v2-entry-1" defer></script>
   <script src="/incremental-dom.js?v=20261021-2" defer></script>
   <script src="/incremental-charts.js?v=20261021-1" defer></script>
   <script src="/video-direct-downloads.js?v=20261102-direct-download-1" defer></script>
-  <script src="/app.js?v=20261119-video-finance-capture" defer></script>
+  <script src="/app.js?v=20261119-video-finance-capture-20261122-commerce-v2" defer></script>
+  <script src="/product-print-capture.js?v=3" defer></script>
   <script src="/product-capture-templates.js?v=20261115-codes-1" defer></script>
   <script src="/product-main-image-styles.js?v=20261021-incremental-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261019-94383ea9f5cb" defer></script>

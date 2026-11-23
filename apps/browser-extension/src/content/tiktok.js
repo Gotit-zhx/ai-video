@@ -21,6 +21,8 @@
       });
     },
 
+    productIdentity,
+
     isDetailUrl(value) {
       return Boolean(productIdentity(value));
     },

@@ -207,13 +207,21 @@ export async function retryPendingRevocations(options = {}) {
   };
 }
 
-export async function createCapture(payload, idempotencyKey) {
+export function createCapture(payload, idempotencyKey) {
+  return submitCapture(API_PATHS.CAPTURES, payload, { "Idempotency-Key": idempotencyKey });
+}
+
+export function createPrintSource(payload) {
+  return submitCapture(`${API_PATHS.CAPTURES}/print-source`, payload, {});
+}
+
+async function submitCapture(path, payload, headers) {
   const auth = await requireAuth();
   try {
-    return await fetchJson(auth.baseUrl, API_PATHS.CAPTURES, {
+    return await fetchJson(auth.baseUrl, path, {
       method: "POST",
       accessToken: auth.accessToken,
-      headers: { "Idempotency-Key": idempotencyKey },
+      headers,
       body: payload
     });
   } catch (error) {

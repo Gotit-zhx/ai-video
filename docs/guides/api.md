@@ -51,6 +51,8 @@ Content-Type: application/json
 | 商品采集 / 图片 / 发布流程 | `/api/v1/product-captures` | `product/web/ProductCaptureController.java` 及同目录专用控制器 |
 | 插件身份 | `/api/v1/extension-auth` | `auth/ExtensionAuthController.java` |
 | 采集模板 / 版式图片 | `/api/v1/product-capture-templates`、`/api/v1/product-capture-templates/images` | `product/web/ProductCaptureTemplateController.java`；[用法与权限](capture-template-preview.md) |
+| 商品运营 v2.0 专用插件 | `POST /api/v1/product-captures/print-source` | 接收 `sourceUrl`、`title`、`images`，返回采集记录 `id`。需要 `product:collect` |
+| 商品运营 v2.0 采集链接 / 提取印花 | `GET /api/v1/product-print-capture`、`GET /api/v1/product-print-capture/{captureId}`、`POST /api/v1/product-print-capture/lookup`、`POST /api/v1/product-print-capture/{captureId}/extract` | 最近 30 条记录、按 ID 查询、按 `url` 查询、按 `imageId` 提取。提取需传 `confirmed` 和 `Idempotency-Key` 请求头。需要 `product:edit` |
 | 主图模板 / 结果 | `/api/v1/product-main-image-templates`、`/api/v1/product-main-image-results` | `product/web/ProductMainImage*Controller.java` |
 | 模板 / 裂变批次 / 设计稿 | `/api/v1/commerce-templates`、`/api/v1/commerce-batches`、`/api/v1/commerce-designs` | `product/web/Commerce*Controller.java` |
 | 商品店铺 / 官方授权 | `/api/v1/shops`、`/api/v1/shop-authorizations` | `shop/web/` |

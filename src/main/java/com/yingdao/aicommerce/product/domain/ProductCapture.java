@@ -142,6 +142,9 @@ public class ProductCapture {
     public void assignModule(String module) {
         this.dataModule = com.yingdao.aicommerce.product.application.CommerceModule.validate(module);
     }
+    public void assignPrintSource() {
+        this.dataModule = com.yingdao.aicommerce.product.application.CommerceModule.PRINT_SOURCE;
+    }
     public String getCreatedBy() { return createdBy; }
     public String getIdempotencyKey() { return idempotencyKey; }
     public String getRequestFingerprint() { return requestFingerprint; }

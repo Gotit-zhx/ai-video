@@ -7,6 +7,7 @@ import {
 import {
   ApiError,
   createCapture,
+  createPrintSource,
   exchangePairingCode,
   loginWithPassword,
   connectBrowserSession,
@@ -25,6 +26,8 @@ import {
   writeSettings
 } from "./storage.js";
 
+const isPrintEdition = () => chrome.runtime.getManifest().short_name === "赫逸印花采集 v2.0";
+const printRoute = "#product-print-capture";
 const PENDING_CAPTURE_PREFIX = "heyiPendingCaptureV1:";
 let revocationRetryInFlight = null;
 
@@ -82,8 +85,16 @@ async function dispatchMessage(message, sender) {
     case MESSAGE_TYPES.TAKE_PENDING_CAPTURE:
       requireMarketplaceContentScript(sender);
       return takePendingCapture(sender);
+    case "HEYI_CAPTURE_PRINT_SOURCE":
+      if (!isPrintEdition()) throw new ApiError("请使用 v2.0 专用插件", 403, "WRONG_EDITION");
+      requireMarketplaceContentScript(sender);
+      if (sender.frameId !== 0 || sender.url !== sender.tab.url) {
+        throw new ApiError("无法确认当前商品页面", 403, "CONTENT_SCRIPT_REQUIRED");
+      }
+      return capturePrintSource(message.payload, sender.tab.url);
     case MESSAGE_TYPES.CAPTURE:
       requireMarketplaceContentScript(sender);
+      if (isPrintEdition()) throw new ApiError("请使用印花采集按钮", 403, "WRONG_EDITION");
       return captureProduct(message.payload, sender.tab.url);
     default:
       throw new ApiError("未知的插件请求", 400, "UNKNOWN_MESSAGE");
@@ -179,7 +190,7 @@ async function openPlatform(rawBaseUrl) {
   await chrome.storage.local.set({heyiAutoLoginPaused:false});
   retryRevocationsInBackground().catch(() => {});
   const baseUrl = normalizePlatformUrl(rawBaseUrl);
-  await chrome.tabs.create({ url: `${baseUrl}/#product-capture`, active: true });
+  await chrome.tabs.create({ url: `${baseUrl}/${isPrintEdition() ? printRoute : "#product-capture"}`, active: true });
   return { opened: true };
 }
 
@@ -278,6 +289,25 @@ async function pendingRevocationRequiresOrigin(baseUrl) {
   const origin = originPattern(baseUrl);
   const pending = await readPendingRevocations();
   return pending.some(item => originPattern(item.baseUrl) === origin);
+}
+
+async function capturePrintSource(raw, senderUrl) {
+  const platform = platformForPageUrl(senderUrl, true);
+  const source = new URL(safeMarketplaceUrl(senderUrl, platform));
+  const identity = marketplaceProductIdentity(source.href, platform);
+  if (!identity?.productId) {
+    throw new ApiError("请在商品详情页采集", 400, "INVALID_PRODUCT_URL");
+  }
+  if (platform === "TIKTOK_SHOP") source.searchParams.set("product_id", identity.productId);
+  const title = cleanText(raw?.title, 255);
+  const images = sanitizeImages(raw?.images).slice(0, 20).map(image => image.url);
+  if (!title || !images.length) throw new ApiError("未读取到商品图片", 400, "INVALID_PRINT_SOURCE");
+  const auth = await readAuth();
+  if (!auth) throw new ApiError("请先登录赫逸印花采集插件", 401, "AUTH_REQUIRED");
+  const result = await createPrintSource({ sourceUrl: source.href, title, images });
+  if (!/^[a-f0-9-]{36}$/i.test(result?.id || "")) throw new ApiError("平台没有返回采集编号", 502, "INVALID_RESPONSE");
+  await chrome.tabs.create({url: `${auth.baseUrl}/${printRoute}?capture=${encodeURIComponent(result.id)}`, active: true});
+  return {id: result.id};
 }
 
 async function captureProduct(rawPayload, senderUrl) {
