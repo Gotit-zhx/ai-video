@@ -8,6 +8,8 @@
   const canvas = get('canvas');
   const positionDefaults = {size: 26, x: 50, y: 43};
   const attempts = new Map();
+  const rejectedImages = new Map();
+  const rejectionSuffix = '；同一请求不会自动重试生图';
   const requests = new Set();
   let revision = 0;
   let imageRevision = 0;
@@ -150,9 +152,20 @@
     updateActions();
   }
 
+  function showRejection(message) {
+    get('extract-action').hidden = true;
+    get('confirm-model').checked = false;
+    get('monitor-print').textContent = '提取已拒绝';
+    const guidance = message.includes('图片内容未通过服务商审核') ? '。请改选有权使用的其他商品图。' : '';
+    status('extract-status', message + guidance, true);
+  }
+
   function selectSource(image) {
     selected = image;
     clearPrint();
+    const rejection = rejectedImages.get(image.id);
+    get('extract-action').hidden = Boolean(rejection);
+    if (rejection) showRejection(rejection);
   }
 
   function clearSource() {
@@ -189,7 +202,6 @@
     });
     selectSource(capture.images[0]);
     get('print-section').hidden = false;
-    get('extract-action').hidden = false;
   }
 
   async function readSource(id) {
@@ -241,7 +253,7 @@
   }
 
   get('extract').addEventListener('click', async () => {
-    if (busy || !capture || !selected || !get('confirm-model').checked) return;
+    if (busy || !capture || !selected || rejectedImages.has(selected.id) || !get('confirm-model').checked) return;
     const key = extractionKey();
     const run = revision;
     busy = true;
@@ -255,6 +267,12 @@
         body: JSON.stringify({imageId: selected.id, confirmed: true})
       });
       if (run !== revision) return;
+      if (data.status === 'REJECTED') {
+        const message = data.message || '服务商已拒绝本次提取，未生成印花。';
+        rejectedImages.set(selected.id, message);
+        showRejection(message);
+        return;
+      }
       if (data.status !== 'READY' || !data.imageUrl) {
         get('extract').textContent = '查看提取结果';
         get('monitor-print').textContent = data.status === 'UNKNOWN' ? '待核查' : '等待结果';
@@ -272,7 +290,12 @@
       get('monitor-print').textContent = '已提取';
       await loadTemplates();
     } catch (error) {
-      if (run === revision) {
+      if (run !== revision) return;
+      if (error.status === 409 && error.message.endsWith(rejectionSuffix)) {
+        const message = error.message.slice(0, -rejectionSuffix.length);
+        rejectedImages.set(selected.id, message);
+        showRejection(message);
+      } else {
         get('extract').textContent = '查看提取结果';
         status('extract-status', error.message, true);
         get('monitor-print').textContent = '待查看';
@@ -457,6 +480,7 @@
     revision++;
     for (const request of requests) request.abort();
     attempts.clear();
+    rejectedImages.clear();
     handoffId = null;
     recent = [];
     loadingRecent = false;
