@@ -12,7 +12,7 @@ prefix = 'hoyee-print-collector-v2/'
 
 def package(output):
     manifest = json.loads((legacy / 'manifest.json').read_text())
-    manifest.update(name=name, short_name=name, version='2.0.0',
+    manifest.update(name=name, short_name=name, version='2.0.1',
                     description='从 Shopee 和 TikTok Shop 商品页采集图片并打开赫逸印花套版。')
     manifest['action']['default_title'] = name
     for entry in manifest['content_scripts']:

@@ -165,8 +165,17 @@ function renderPermissions(permissions) {
 }
 
 async function requestPlatformPermission(baseUrl) {
-  const origins = [originPattern(baseUrl), ...["shopee.com","shopeemobile.com","susercontent.com","tiktokcdn.com","tiktokcdn-us.com","ibytedtos.com","byteoversea.com"].map(h=>`https://*.${h}/*`)];
+  const optionalHosts = chrome.runtime.getManifest?.()?.optional_host_permissions;
+  const origins = [originPattern(baseUrl)];
+  if (optionalHosts?.length) {
+    const mediaHosts = ["shopee.com", "shopeemobile.com", "susercontent.com", "tiktokcdn.com",
+      "tiktokcdn-us.com", "ibytedtos.com", "byteoversea.com"];
+    origins.push(...mediaHosts.map(host => `https://*.${host}/*`));
+  }
   if (await chrome.permissions.contains({ origins })) return;
+  if (!optionalHosts?.length) {
+    throw new Error("请在 Chrome 扩展程序详情中允许访问 hoyee.org.cn，然后重试。");
+  }
   const granted = await chrome.permissions.request({ origins });
   if (!granted) throw new Error("未获得平台域名访问权限，无法登录或提交商品");
 }

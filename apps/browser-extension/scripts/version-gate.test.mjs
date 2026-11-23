@@ -45,7 +45,9 @@ const popup = vm.createContext({
   MESSAGE_TYPES:{GET_STATE:"state",LOGIN:"login",SAVE_PLATFORM:"save",OPEN_PLATFORM:"open",LOGOUT:"logout"},
   originPattern: url => url + "/*", Date, Intl, navigator:{platform:"Test"},
   document:{ querySelector: id => { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); }, createElement:node },
-  chrome: { permissions: { contains:async()=>true }, runtime:{sendMessage:async message => {
+  chrome: { permissions: { contains:async()=>true }, runtime:{
+    getManifest: () => ({ version: "0.2.8", optional_host_permissions: ["https://*/*"] }),
+    sendMessage:async message => {
     sent.push(message); return {ok:true,data:state};
   }}}
 });
@@ -60,6 +62,36 @@ await nodes.get("#open-platform").handlers.click();
 assert.ok(sent.filter(message=>["login","save","open"].includes(message.type))
   .every(message=>message.baseUrl==="https://hoyee.org.cn"));
 assert.equal(nodes.get("#login-password").value, "");
+// The V2 distribution declares the official site as a required host with no
+// optional hosts. Chrome rejects requests for the V1 CDN origins in this build.
+const officialOrigins = ["https://hoyee.org.cn/*"];
+popup.chrome.runtime.getManifest = () => ({
+  version: "2.0.1",
+  short_name: "赫逸印花采集 v2.0",
+  host_permissions: officialOrigins
+});
+let siteAccess = true;
+let optionalRequests = 0;
+popup.chrome.permissions.contains = async ({ origins }) => (
+  siteAccess && origins.length === 1 && origins[0] === officialOrigins[0]
+);
+popup.chrome.permissions.request = async () => {
+  optionalRequests++;
+  throw new Error("Only permissions specified in the manifest may be requested.");
+};
+const firstV2Message = sent.length;
+await nodes.get("#open-platform").handlers.click();
+nodes.get("#login-password").value = "not-a-real-password";
+await nodes.get("#pairing-form").handlers.submit({preventDefault(){}});
+assert.deepEqual(sent.slice(firstV2Message).map(message => message.type), ["save", "open", "login"]);
+assert.equal(optionalRequests, 0);
+siteAccess = false;
+const beforeDeniedClick = sent.length;
+await nodes.get("#open-platform").handlers.click();
+assert.equal(sent.length, beforeDeniedClick);
+assert.equal(optionalRequests, 0);
+assert.match(nodes.get("#notice").textContent, /允许访问 hoyee\.org\.cn/);
+
 popup.chrome.runtime.sendMessage=async()=>({ok:false,error:{status:426,code:"EXTENSION_UPDATE_REQUIRED",message:"请更新插件"}});
 await popup.loadState(true);
 assert.equal(nodes.get("#update-required").hidden,false);
