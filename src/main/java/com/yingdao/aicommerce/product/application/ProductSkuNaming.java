@@ -106,7 +106,7 @@ final class ProductSkuNaming {
         return result;
     }
 
-    private static String dimension(Map<String,Object> attributes, boolean color) {
+    static String dimension(Map<String,Object> attributes, boolean color) {
         for (var entry : attributes.entrySet())
             if (color ? CommerceSourceColorResolver.isColorDimension(entry.getKey()) : SIZE_NAMES.contains(normalize(entry.getKey())))
                 return text(entry.getValue()).strip();

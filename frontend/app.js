@@ -7142,12 +7142,12 @@ function renderProductBulkCard(item, shops = [], preview = false) {
   const error = [workflow?.errorMessage || item.error, item.syncError].filter(Boolean).join(' · ');
   const retries = item.retryMessage || (item.retryCount ? `已自动重试 ${item.retryCount} 次` : '');
   const thumb = productBulkThumbnail(item);
-  return `<section class="bulk-product-card is-${tone}" ${item.printProduction ? `data-print-stock="${Number(item.stock)}" data-print-skus="${Number(item.skuCount) || 1}"` : ""} ${preview ? `data-bulk-item="${escapeHtml(item.id)}"` : ''}>
+  return `<section class="bulk-product-card is-${tone}" ${preview ? `data-bulk-item="${escapeHtml(item.id)}"` : ''}>
     <div class="bulk-product-visual"><span class="bulk-product-placeholder" aria-hidden="true">▧</span>${thumb ? `<img src="${escapeHtml(thumb)}" alt="" loading="lazy" onerror="this.hidden=true">` : ''}
       <span class="bulk-product-badge">${success ? '✓' : failed ? '!' : active ? '◌' : '·'} ${escapeHtml(status)}</span>
       <div class="bulk-product-overlay"><div><span>${escapeHtml(progress)}</span>${percent !== null && !failed ? `<b>${percent}%</b>` : ''}</div><div class="bulk-product-track ${active && percent === null ? 'is-indeterminate' : ''}"><span style="width:${percent === null ? 0 : percent}%"></span></div></div>
     </div><div class="bulk-product-info"><strong title="${escapeHtml(item.title)}" translate="no">${escapeHtml(item.title)}</strong>
-      ${shopName ? `<small title="${escapeHtml(shopName)}">${escapeHtml(shopName)}</small>` : `<small>售价换汇 · 库存 ${item.printProduction ? Number(item.stock) : 999} · 自动匹配类目</small>`}
+      ${shopName ? `<small title="${escapeHtml(shopName)}">${escapeHtml(shopName)}</small>` : `<small>售价换汇 · 库存 999 · 自动匹配类目</small>`}
       ${directListing && !preview ? renderPrintListingSteps(item) : ''}
       ${renderProductMainImageProgress(workflow, true)}
       ${error ? `<details class="bulk-product-error"><summary>${success ? '查看状态同步提示' : '查看失败原因'}</summary><p>${escapeHtml(error)}</p></details>` : ''}
@@ -7182,32 +7182,31 @@ function renderProductBulkShopPicker(shops) {
 function renderProductBulkProgress() {
   const shops = crossPlatformPublishShops();
   const summary = document.querySelector('#product-bulk-defaults');
-  if (summary && typeof ProductListingTemplates !== 'undefined') {
+  const directListing = document.querySelector('#product-bulk-dialog').dataset.printDirectListing === 'true';
+  if (summary) summary.hidden = directListing;
+  if (summary && !directListing && typeof ProductListingTemplates !== 'undefined') {
     const shopId = productBulkShopIds()[0];
     const target = shops.find(shop => String(shop.id) === shopId)?.platform;
     const template = target && ProductListingTemplates.get(target);
-    const draft = document.querySelector('#product-bulk-items [data-print-stock]');
-    summary.textContent = draft ? `${Number(draft.dataset.printSkus) > 1 ? `${Number(draft.dataset.printSkus)} 个规格 · 每个规格` : ''}库存 ${Number(draft.dataset.printStock)} · 各店铺应用该款式对应平台的尺码图`
-      : productBulkShopIds().length > 1 ? '各店铺独立应用对应平台模板、类目与物流 · 库存 999 · 原售价换汇'
+    summary.textContent = productBulkShopIds().length > 1 ? '各店铺独立应用对应平台模板、类目与物流 · 库存 999 · 原售价换汇'
       : template?.enabled
       ? `${template.name} · ${Number(template.weightGrams)/1000} kg · ${template.packageLengthCm} × ${template.packageWidthCm} × ${template.packageHeightCm} cm · 库存 999 · 自动匹配类目与物流`
       : '自动套用目标平台配置 · 库存 999 · 默认无品牌 · 自动匹配类目与物流 · 原售价换汇';
   }
   replaceHtmlPreservingMedia(document.querySelector("#product-bulk-progress"), productBulkItems.map(item => renderProductBulkCard(item, shops)).join(''));
   const selection = document.querySelector('.product-bulk-selection');
-  if (selection) selection.hidden = productBulkItems.length > 0;
+  if (selection) selection.hidden = directListing || productBulkItems.length > 0;
   const pending = productBulkItems.some(item => !item.workflow?.id);
   const chartFailures = productBulkItems.filter(ProductBulkUpload.canRepairSizeChart);
   const repairChart = chartFailures.length > 0 && Boolean(ProductBulkSizeChart.key());
   const reconnect = productBulkItems.some(item => item.progressPaused || item.syncPaused);
   const button = document.querySelector('#submit-product-bulk');
-  const directListing = document.querySelector('#product-bulk-dialog').dataset.printDirectListing === 'true';
   document.querySelector('#product-bulk-listing-sequence').hidden = !directListing || productBulkItems.length > 0;
   const changeable = productBulkItems.filter(ProductBulkUpload.canChangeShop);
   document.querySelector('#product-bulk-settings').disabled = productBulkBusy || (productBulkItems.length > 0 && !changeable.length);
   globalThis.ProductMainImageStyles?.syncBulkLock(productBulkBusy || (productBulkItems.length > 0 && !changeable.length));
   const shopHint = document.querySelector('#product-bulk-shop-hint');
-  if (shopHint) shopHint.textContent = productBulkShopIds().length > 1
+  if (shopHint) shopHint.textContent = !directListing && productBulkShopIds().length > 1
     ? `已选择 ${productBulkShopIds().length} 家店铺，每件商品分别上传；进度与结果按店铺独立记录。`
     : changeable.length
     ? `可切换店铺，${changeable.length} 件未提交商品将按新店铺重新准备。${changeable.length < productBulkItems.length ? '已提交商品保留原店铺。' : ''}` : '';
@@ -7217,6 +7216,7 @@ function renderProductBulkProgress() {
     || shops.find(shop => String(shop.id) === productBulkShopIds()[0]);
   ProductBulkSizeChart.render({busy:productBulkBusy,editable:!productBulkItems.length || changeable.length > 0 || chartFailures.length > 0,
     platform:normalizedMarketplacePlatform(chartShop?.platform || 'SHOPEE')});
+  if (directListing) document.querySelector('#product-bulk-size-chart').hidden = !chartFailures.length;
   renderProductBulkShopPicker(shops);
 }
 
@@ -7326,7 +7326,7 @@ async function pollProductBulkProgress() {
   }
 }
 
-async function openProductBulkUpload(historyKey, captureId) {
+async function openProductBulkUpload(historyKey, captureId, isSourceCurrent = () => true) {
   if (!hasAnyPermission("product:publish")) return;
   if (typeof historyKey !== 'string') historyKey = '';
   const directCapture = captureId?.printProduction === true ? captureId
@@ -7339,7 +7339,7 @@ async function openProductBulkUpload(historyKey, captureId) {
   if (historyKey && !saved) return;
   const selectedIds = saved ? [...new Set(saved.items.map(item => item.captureId))] : directCapture ? [directCapture.id] : [...productBulkSelectedIds];
   await loadMarketplaceShops({silent:true});
-  if (!org || currentUser?.organizationId !== org || view !== productBulkViewGeneration) return;
+  if (!org || currentUser?.organizationId !== org || view !== productBulkViewGeneration || !isSourceCurrent()) return;
   if (historyKey) {
     saved = ProductBulkHistory.list(localStorage, org).find(record => record.key === historyKey);
     if (!saved) return;
@@ -7355,7 +7355,7 @@ async function openProductBulkUpload(historyKey, captureId) {
   document.querySelector('#product-bulk-dialog').dataset.printDirectListing = String(directListing);
   document.querySelector('#product-bulk-title').textContent = directListing ? '套版上架' : '批量一键上传';
   document.querySelector('#product-bulk-intro').textContent = directListing
-    ? (marketplaceIntegrationStatus.livePublishingEnabled ? '可多选店铺。确认后会调用 GPT Image 2.6 合成商品图并提交上架，图片按张计费。' : '演练会检查商品资料和提交步骤。')
+    ? (marketplaceIntegrationStatus.livePublishingEnabled ? '确认后使用 GPT Image 2.6 合成商品图，按张计费。' : '演练会检查商品资料和提交步骤。')
     : '可同时选择多个店铺上传，也可为本批商品指定尺码图。';
   const merchantItem = productBulkItems.find(ProductBulkUpload.canChangeShop) || productBulkItems[0];
   document.querySelector('#product-bulk-merchant-style').value = merchantItem?.payload?.merchantStyleCode || merchantItem?.merchantStyleCode || '';
@@ -7363,6 +7363,11 @@ async function openProductBulkUpload(historyKey, captureId) {
   ProductBulkSizeChart.open(org,productBulkStorageKey,productBulkItems);
   const style = document.querySelector('#product-bulk-main-style');
   document.querySelector('#product-bulk-main-style-field').hidden = directListing;
+  document.querySelector('#product-bulk-main-style-status').hidden = directListing;
+  document.querySelector('.bulk-dialog-eyebrow').hidden = directListing;
+  document.querySelector('#product-bulk-merchant-field').hidden = directListing;
+  document.querySelector('#product-bulk-merchant-style').disabled = directListing;
+  document.querySelector('.product-bulk-shop-picker').open = directListing;
   if (directListing) {
     style.value = '';
     document.querySelector('#product-bulk-main-style-preview').hidden = true;
@@ -7380,7 +7385,7 @@ async function openProductBulkUpload(historyKey, captureId) {
     setProductBulkShopIds(['dry-run-shop']);
   }
   document.querySelector('#product-bulk-mode').textContent = marketplaceIntegrationStatus.livePublishingEnabled
-    ? directListing ? '各店铺共用合成图，分别显示上架结果。' : republishing
+    ? directListing ? '' : republishing
       ? '请重新选择目标店铺；已提交商品复用现有图片，同店重复提交会核对已有记录。' : '上传到店铺待上架目录，后续上架由你决定。'
     : '当前为发布演练模式，不会在店铺创建商品。';
   document.querySelector('#product-bulk-summary').textContent = `已选择 ${selected.length} 件商品`;

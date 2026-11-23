@@ -293,6 +293,10 @@ test('print listing asks for shops and sends the direct listing intent to both s
   assert.equal(h.c.productBulkShopIds().length, 0);
   assert.equal(h.node('#submit-product-bulk').textContent, '确认上架');
   assert.equal(h.node('#product-bulk-listing-sequence').hidden, false);
+  assert.equal(h.node('#product-bulk-merchant-field').hidden, true);
+  assert.equal(h.node('#product-bulk-size-chart').hidden, true);
+  assert.equal(h.node('#product-bulk-defaults').hidden, true);
+  assert.equal(h.node('#product-bulk-main-style-status').hidden, true);
   h.c.setProductBulkShopIds(['shop','shop-two']);
   h.c.changeProductBulkShop();
   await h.submit();

@@ -7,11 +7,8 @@
   const endpoint = '/api/v1/product-print-capture';
   const canvas = get('canvas');
   const printBox = get('print-box');
-  const production = get('production');
-  const productionForm = get('production-form');
   let drag = null;
   let preparation = null;
-  let preparing = false;
   const positionDefaults = {size: 26, x: 50, y: 43};
   const attempts = new Map();
   const selectedIds = new Set();
@@ -154,6 +151,7 @@
     get('produce').disabled = true;
     get('adjust-hint').hidden = printBox.hidden = true;
     drag = null;
+    status('production-status');
   }
 
   function clearPreview(message) {
@@ -668,7 +666,8 @@
     status('preview-state');
     canvas.hidden = false;
     printBox.hidden = get('adjust-hint').hidden = false;
-    get('produce').disabled = false;
+    get('produce').disabled = Boolean(preparation);
+    status('production-status');
     get('arrange').disabled = false;
     get('monitor-layout').textContent = '可排版';
     get('download').disabled = false;
@@ -715,70 +714,43 @@
 
   for (const name of Object.keys(positionDefaults)) get(name).addEventListener('input', () => updatePosition());
   get('reset-position').addEventListener('click', () => updatePosition(true));
-  get('produce').addEventListener('click', () => {
-    if (!capture || !activeResult || canvas.dataset.preview !== 'composition' || !hasAnyPermission('product:publish')) return;
-    const captureId = capture.captureId;
-    const sameSource = preparation?.captureId === captureId;
+  get('produce').addEventListener('click', async () => {
+    if (preparation || !capture || !activeResult || canvas.dataset.preview !== 'composition'
+        || !hasAnyPermission('product:publish')) return;
     const template = templates.find(item => item.id === get('style').value);
     if (!template) return;
-    preparation = {captureId, resultId: activeResult, templateId: template.id,
+    const pending = {captureId: capture.captureId, resultId: activeResult, templateId: template.id,
       templateVersion: template.version, org: currentUser?.organizationId};
-    const variant = template.variants[0];
-    const colors = variant.colors.filter(color => color.name?.trim() || color.colorCode?.trim());
-    const sizes = variant.sizes;
-    const options = [];
-    if (colors.length) options.push(`颜色 ${colors.map(color => color.name?.trim() || '未填写').join('、')}`);
-    if (sizes.length) options.push(`尺码 ${sizes.map(size => size.name?.trim() || '未填写').join('、')}`);
-    const count = Math.max(1, colors.length) * Math.max(1, sizes.length);
-    status('production-sizes', options.length
-      ? `${options.join(' · ')} · ${count} 个规格` : '规格 · 默认规格');
-    if (!sameSource) {
-      productionForm.reset();
-      productionForm.elements.title.value = capture.title?.slice(0, 500) || '';
-    }
-    status('production-status');
-    production.showModal();
-  });
-
-  productionForm.addEventListener('submit', async event => {
-    event.preventDefault();
-    if (preparing || !preparation || !hasAnyPermission('product:publish')) return;
-    const pending = preparation;
-    const current = () => preparation === pending && currentUser?.organizationId === pending.org;
-    if (capture?.captureId !== pending.captureId || activeResult !== pending.resultId
-        || get('style').value !== pending.templateId || canvas.dataset.preview !== 'composition') {
-      status('production-status', '排版已变化，请重新开始上架。', true);
-      return;
-    }
-    const settings = Object.fromEntries(new FormData(productionForm));
-    Object.assign(settings, {resultId: pending.resultId, templateId: pending.templateId,
-      templateVersion: pending.templateVersion, stock: Number(settings.stock)});
-    settings.price = Number(settings.price);
-    preparing = true;
-    for (const button of productionForm.querySelectorAll('button')) button.disabled = true;
-    status('production-status', '正在准备商品资料…');
+    const current = () => preparation === pending && currentUser?.organizationId === pending.org
+      && capture?.captureId === pending.captureId && activeResult === pending.resultId
+      && get('style').value === pending.templateId && location.hash.split('?')[0] === '#product-print-capture'
+      && canvas.dataset.preview === 'composition';
+    preparation = pending;
+    get('produce').disabled = true;
+    status('production-status', '正在读取采集规格…');
     try {
       const png = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-      if (!current() || !production.open) return;
+      if (!current()) return;
       if (!png || png.size > 8 * 1024 * 1024) throw new Error('套版图导出失败或大于 8 MiB，请调整后重试。');
+      const {resultId, templateId, templateVersion} = pending;
       const body = new FormData();
-      body.append('settings', new Blob([JSON.stringify(settings)], {type: 'application/json'}));
+      body.append('settings', new Blob([JSON.stringify({resultId, templateId, templateVersion})], {type: 'application/json'}));
       body.append('image', png, 'composition.png');
-      const draft = await request(`${endpoint}/${encodeURIComponent(pending.captureId)}/production`, {
+      const draft = await request(endpoint + '/' + encodeURIComponent(pending.captureId) + '/production', {
         method: 'POST', body, headers: {'X-Commerce-Module': 'CAPTURE'}
       });
-      if (!current() || !production.open) return;
-      await openProductBulkUpload('', {...draft, printProduction: true});
-      if (current()) production.close();
+      if (!current()) return;
+      await openProductBulkUpload('', {...draft, printProduction: true}, current);
+      if (current()) status('production-status');
     } catch (error) {
-      if (current()) status('production-status', error.message || '商品制作失败，请重试。', true);
+      if (current()) status('production-status', error.message || '商品准备失败，请重试。', true);
     } finally {
-      preparing = false;
-      for (const button of productionForm.querySelectorAll('button')) button.disabled = false;
+      if (preparation === pending) {
+        preparation = null;
+        get('produce').disabled = canvas.dataset.preview !== 'composition';
+      }
     }
   });
-
-  production.addEventListener('cancel', event => { if (preparing) event.preventDefault(); });
 
   get('download').addEventListener('click', () => {
     if (canvas.hidden || canvas.dataset.preview !== 'composition') return;
@@ -825,7 +797,6 @@
   window.addEventListener('heyi:company-reset', () => {
     revision++;
     preparation = null;
-    if (production.open) production.close();
     for (const request of requests) request.abort();
     attempts.clear();
     handoffId = null;

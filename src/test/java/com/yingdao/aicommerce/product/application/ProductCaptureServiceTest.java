@@ -99,9 +99,20 @@ class ProductCaptureServiceTest {
         var user = new PlatformPrincipal("maker", "org-a", "org-a", "maker", "Maker", "",
                 true, List.of(), List.of("product:edit", "product:publish"));
         var source = new ProductCapture(user.organizationId(), user.userId(), "print-source", "hash",
-                "SHOPEE", "https://shopee.ph/product/1/2", "1", "2", "source", "", "",
-                null, "PHP", null, null, "{}", "{}");
+                "SHOPEE", "https://shopee.ph/product/1/2", "1", "2", "source", "Cotton shirt", "T-Shirts",
+                null, "PHP", BigDecimal.TEN, BigDecimal.TEN, json.writeValueAsString(Map.of(
+                        "skuCompleteness", Map.of("complete", true, "hasVariants", sized,
+                                "variantDimensionCount", sized ? 2 : 0, "expectedCount", sized ? 2 : 1,
+                                "capturedCount", sized ? 2 : 1))), "{}");
         source.assignPrintSource();
+        String skuImage = "https://images.example.com/print.jpg";
+        var first = new ProductCaptureSku("org-a", source.getId(), "first", "1", "old-1", "source one",
+                BigDecimal.TEN, BigDecimal.TEN, 0, skuImage, "SKU",
+                sized ? json.writeValueAsString(Map.of("Color", "黑色", "Size", "Small")) : "{}", "{}", 0);
+        var second = new ProductCaptureSku("org-a", source.getId(), "second", "2", "old-2", "source two",
+                BigDecimal.valueOf(20), BigDecimal.valueOf(25), null, skuImage, "SKU",
+                json.writeValueAsString(Map.of("Color", "红色", "Size", "Medium")), "{}", 1);
+        when(skuMapper.selectList(any())).thenReturn(sized ? List.of(first, second) : List.of(first));
         when(captureMapper.selectOne(any())).thenReturn(source, (ProductCapture) null);
         when(print.results(source.getId(), user)).thenReturn(List.of(
                 new CommerceSampleService.CaptureResult("photo", "artwork", "READY", "/artwork.png", "")));
@@ -127,8 +138,7 @@ class ProductCaptureServiceTest {
         var png = new java.io.ByteArrayOutputStream();
         javax.imageio.ImageIO.write(image, "PNG", png);
         var file = new org.springframework.mock.web.MockMultipartFile("image", "layout.png", "image/png", png.toByteArray());
-        var settings = new ProductPrintProductionService.Settings("artwork", "style", "Printed T-shirt", "T-Shirts",
-                "Cotton shirt", "PHP", BigDecimal.TEN, 18, 3L);
+        var settings = new ProductPrintProductionService.Settings("artwork", "style", 3L);
         var production = new ProductPrintProductionService(service, print, captureTemplates, archive,
                 captureMapper, imageMapper, skuMapper, json, naming);
         var draft = production.prepare(source.getId(), settings, file, user);
@@ -137,19 +147,26 @@ class ProductCaptureServiceTest {
         var sku = org.mockito.ArgumentCaptor.forClass(ProductCaptureSku.class);
         var gallery = org.mockito.ArgumentCaptor.forClass(ProductCaptureImage.class);
         verify(captureMapper).insert(saved.capture());
-        verify(skuMapper, times(sized ? 4 : 1)).insert(sku.capture());
+        verify(skuMapper, times(sized ? 2 : 1)).insert(sku.capture());
         verify(imageMapper).insert(gallery.capture());
         assertEquals("READY", draft.status());
-        assertEquals(sized ? 4 : 1, draft.skuCount());
+        assertEquals(sized ? 2 : 1, draft.skuCount());
         var skus = sku.getAllValues();
-        assertTrue(skus.stream().allMatch(row -> row.getStock() == 18));
+        assertEquals(0, skus.getFirst().getStock());
+        assertEquals("source", draft.title());
+        assertEquals("T-Shirts", saved.getValue().getCategoryName());
+        assertEquals("PHP", saved.getValue().getCurrency());
         assertEquals("style", ProductPrintProductionService.templateId(saved.getValue(), json));
         assertEquals(List.of(), service.approvalMissingFields(saved.getValue(), skus, List.of(gallery.getValue())));
         if (sized) {
             assertEquals(Map.of("Color", "黑色", "Size", "Small"), json.readValue(skus.getFirst().getAttributesJson(), Map.class));
             assertEquals(Map.of("Color", "红色", "Size", "Medium"), json.readValue(skus.getLast().getAttributesJson(), Map.class));
-            assertEquals(List.of("A01-BK-S-8F3A6C2D", "A01-BK-M-8F3A6C2D", "A01-RED-S-8F3A6C2D", "A01-RED-M-8F3A6C2D"),
+            assertEquals(List.of("A01-BK-S-8F3A6C2D", "A01-RED-M-8F3A6C2D"),
                     skus.stream().map(ProductCaptureSku::getSellerSku).toList());
+            assertEquals(999, skus.getLast().getStock());
+            assertEquals(BigDecimal.valueOf(20), skus.getLast().getPrice());
+            assertEquals(BigDecimal.valueOf(25), skus.getLast().getOriginalPrice());
+            assertEquals("2", skus.getLast().getExternalSkuId());
             assertTrue(ProductPrintProductionService.sharedColorImage(saved.getValue(), json));
             var overrides = new ProductPublicationSkuNaming(naming, json).apply(saved.getValue(), skus, Map.of("merchantStyleCode", "B02"));
             assertEquals("B02-RED-M-8F3A6C2D", overrides.getLast().getSellerSku());
@@ -207,7 +224,7 @@ class ProductCaptureServiceTest {
     @Test
     void pluginStoresImageOnlySnapshotOutsideTheOriginalCaptureQueue() {
         String photo = "https://images.example.com/print.jpg";
-        String id = service.importPrintSource("https://shopee.ph/product/105/209", "花朵印花", List.of(photo, photo), principal("org-a"));
+        String id = service.importPrintSource("https://shopee.ph/product/105/209", "花朵印花", List.of(photo, photo), null, principal("org-a"));
         var capture = ArgumentCaptor.forClass(ProductCapture.class);
         verify(captureMapper).insert(capture.capture());
         assertEquals(id, capture.getValue().getId());
@@ -218,6 +235,59 @@ class ProductCaptureServiceTest {
         assertEquals(photo, image.getValue().getOriginalUrl());
         assertEquals(id, image.getValue().getCaptureId());
         org.mockito.Mockito.verifyNoInteractions(skuMapper);
+    }
+
+    @Test
+    void pluginRecollectsSkuFactsInPlaceWithoutReplacingPrintImages() {
+        String url = "https://shopee.ph/product/105/209";
+        String photo = "https://images.example.com/print.jpg";
+        var user = principal("org-a");
+        var existing = new ProductCapture("org-a", user.userId(), "print-source-existing", "hash",
+                "SHOPEE", url, "105", "209", "Source", null, null, null, null, null, null, "{}", "{}");
+        existing.assignPrintSource();
+        when(captureMapper.selectList(any())).thenReturn(List.of(existing));
+        var sku = Map.of("externalSkuId", "123", "price", 125, "originalPrice", 140,
+                "stock", 17, "attributes", Map.of("Color", "Black", "Size", "M"));
+        var product = Map.<String, Object>of("description", "Product description", "categoryName", "T-shirts",
+                "currency", "PHP", "priceMin", 125, "priceMax", 125, "skus", List.of(sku),
+                "domData", Map.of("skuCompleteness", Map.of("complete", true, "expectedCount", 1,
+                        "capturedCount", 1, "variantDimensionCount", 2)));
+        assertEquals(existing.getId(), service.importPrintSource(url, "Source", List.of(photo), product, user));
+        var saved = ArgumentCaptor.forClass(ProductCaptureSku.class);
+        verify(skuMapper).insert(saved.capture());
+        assertEquals("123", saved.getValue().getExternalSkuId());
+        assertEquals(17, saved.getValue().getStock());
+        assertEquals(new BigDecimal("125.00"), saved.getValue().getPrice());
+        assertEquals("T-shirts", existing.getCategoryName());
+        verify(captureMapper, never()).insert(any(ProductCapture.class));
+        org.mockito.Mockito.verifyNoInteractions(imageMapper);
+    }
+
+    @Test
+    void imageOnlyPrintSourceCanReuseVerifiedFactsForTheSameLink() {
+        String url = "https://shopee.ph/product/105/209";
+        String photo = "https://images.example.com/print.jpg";
+        var user = principal("org-a");
+        var old = new ProductCapture("org-a", "first-collector", "print-source-existing", "hash",
+                "SHOPEE", url, "105", "209", "Source", null, null, null, null, null, null, "{}", "{}");
+        old.assignPrintSource();
+        var full = new ProductCapture("org-a", user.userId(), "regular-source", "hash",
+                "SHOPEE", url, "105", "209", "Source", "Description", "T-shirts", null, "PHP",
+                BigDecimal.TEN, BigDecimal.TEN, """
+                {"skuCompleteness":{"complete":true,"expectedCount":1,"capturedCount":1}}
+                """, "{}");
+        var sku = new ProductCaptureSku("org-a", full.getId(), "1", "1", "S1", "Default",
+                BigDecimal.TEN, BigDecimal.TEN, 4, photo, "SKU", "{}", "{}", 0);
+        when(captureMapper.selectOne(any())).thenReturn(old);
+        when(captureMapper.selectList(any())).thenReturn(List.of(full));
+        when(skuMapper.selectList(any())).thenReturn(List.of(), List.of(sku));
+        assertEquals(full.getId(), service.printSourceForProduction(old.getId(), user).capture().getId());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<QueryWrapper<ProductCapture>> query = ArgumentCaptor.forClass(QueryWrapper.class);
+        verify(captureMapper).selectList(query.capture());
+        assertTrue(query.getValue().getCustomSqlSegment().contains("source_url ="));
+        assertTrue(query.getValue().getParamNameValuePairs().values().containsAll(List.of(url, "org-a")));
+        verify(captureMapper, never()).updateById(any(ProductCapture.class));
     }
 
     @Test

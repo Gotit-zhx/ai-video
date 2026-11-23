@@ -364,7 +364,8 @@ public class ProductCaptureService {
 
     /** Print source snapshots are separate from the existing editable capture queue. */
     @Transactional
-    public String importPrintSource(String url, String title, List<String> imageUrls, PlatformPrincipal principal) {
+    public String importPrintSource(String url, String title, List<String> imageUrls,
+                                    Map<String, Object> product, PlatformPrincipal principal) {
         if (!principal.permissionCodes().contains("product:collect")) {
             throw new BusinessException(HttpStatus.FORBIDDEN, "缺少商品采集权限");
         }
@@ -378,6 +379,23 @@ public class ProductCaptureService {
         String name = bounded(title.strip(), 500);
         List<String> images = imageUrls.stream().map(safeImageUrl::validate).distinct().toList();
         String key = sha256(writeJson(List.of("print-source-v2", principal.userId(), source.canonicalUrl(), name, images)));
+        if (product != null && writeJson(product).length() > MAX_RAW_JSON_LENGTH) {
+            throw badRequest("采集数据不能超过 2 MB");
+        }
+        if (product != null) {
+            // Recollect facts in place so previous extraction IDs keep their original image references.
+            var candidates = captureMapper.selectList(new QueryWrapper<ProductCapture>()
+                    .eq("organization_id", principal.organizationId())
+                    .eq("created_by", principal.userId())
+                    .eq("data_module", CommerceModule.PRINT_SOURCE)
+                    .eq("source_url", source.canonicalUrl())
+                    .orderByDesc("created_at", "id").last("LIMIT 1 FOR UPDATE"));
+            if (!candidates.isEmpty()) {
+                var existing = candidates.getFirst();
+                savePrintSourceProduct(existing, name, images, product);
+                return existing.getId();
+            }
+        }
         var snapshot = new ProductCapture(principal.organizationId(), principal.userId(), "print-source-" + key,
                 key, source.platform(), source.canonicalUrl(), source.shopId(), source.productId(),
                 name, null, null, null, null, null, null, "{}", "{}");
@@ -385,13 +403,72 @@ public class ProductCaptureService {
         try {
             captureMapper.insert(snapshot);
         } catch (DuplicateKeyException duplicate) {
-            ProductCapture existing = findByIdempotency(principal.organizationId(), snapshot.getIdempotencyKey());
+            var existing = captureMapper.selectOne(new QueryWrapper<ProductCapture>()
+                    .eq("organization_id", principal.organizationId())
+                    .eq("idempotency_key", snapshot.getIdempotencyKey()).last("FOR UPDATE"));
             if (existing == null || !CommerceModule.PRINT_SOURCE.equals(existing.getDataModule())
                     || !key.equals(existing.getRequestFingerprint())) throw duplicate;
+            if (product != null) savePrintSourceProduct(existing, name, images, product);
             return existing.getId();
         }
         insertImages(snapshot, images);
+        if (product != null) savePrintSourceProduct(snapshot, name, images, product);
         return snapshot.getId();
+    }
+
+    private void savePrintSourceProduct(ProductCapture capture, String name, List<String> images,
+                                        Map<String, Object> product) {
+        var normalized = new LinkedHashMap<String, Object>();
+        var dom = mapValue(product, "domData");
+        copyKnownFields(dom, normalized);
+        copyKnownFields(product, normalized);
+        copy(dom, normalized, "attributes", "attributes");
+        copy(dom, normalized, "variantHints", "variantHints");
+        copy(dom, normalized, "skuCompleteness", "skuCompleteness");
+        var skus = resolveSkuImages(value(product, "skus"), images);
+        normalizeSkuCompleteness(product, normalized, skus, false, false, Map.of());
+        if (!validatedSkuCompleteness(normalized, skus)
+                && validatedSkuCompleteness(readMap(capture.getNormalizedData()), skuEntityMaps(capture))) {
+            return;
+        }
+        String description = boundedNullable(text(product, "description"), 100_000);
+        String category = boundedNullable(text(product, "categoryName"), 255);
+        String brand = boundedNullable(text(product, "brandName"), 255);
+        String currency = currency(text(product, "currency"));
+        BigDecimal min = decimal(value(product, "priceMin"), "最低价格");
+        BigDecimal max = decimal(value(product, "priceMax"), "最高价格");
+        validatePriceRange(min, max);
+        putStandardFields(normalized, name, description, category, brand, currency, min, max);
+        normalized.remove("images");
+        normalized.remove("skus");
+        capture.recapture(name, description, category, brand, currency, min, max, writeJson(normalized), "{}");
+        updateCapture(capture);
+        deleteSkus(capture);
+        insertSkus(capture, skus);
+    }
+
+    CaptureDetail printSourceForProduction(String id, PlatformPrincipal user) {
+        var source = verifyPrintSource(id, user);
+        var requested = detail(source);
+        if (completePrintFacts(requested)) return requested;
+        // Image-only captures can use verified facts previously collected for the exact link in this organization.
+        var candidates = captureMapper.selectList(new QueryWrapper<ProductCapture>()
+                .eq("organization_id", user.organizationId())
+                .eq("source_url", source.getSourceUrl())
+                .ne("id", id)
+                .in("data_module", CommerceModule.CAPTURE, CommerceModule.PRINT_SOURCE)
+                .notLikeRight("idempotency_key", "print-production-")
+                .apply("NOT EXISTS (SELECT 1 FROM commerce_batch_publications p WHERE p.organization_id = product_captures.organization_id AND p.capture_id = product_captures.id)")
+                .orderByDesc("updated_at", "id").last("LIMIT 10"));
+        return candidates.stream().map(this::detail).filter(this::completePrintFacts).findFirst()
+                .orElseThrow(() -> badRequest("采集商品缺少完整规格、售价、币种或描述，请在原商品页用新版插件重新采集。"));
+    }
+
+    private boolean completePrintFacts(CaptureDetail source) {
+        return source.capture().getCurrency() != null && !source.capture().getCurrency().isBlank()
+                && !Objects.toString(ProductListingTemplateService.sourceDescription(source.capture(), objectMapper), "").isBlank()
+                && validatedSkuCompleteness(source.normalizedData(), skuEntityMaps(source.skus()))
+                && source.skus().stream().allMatch(sku -> sku.getPrice().signum() > 0);
     }
 
     public record PrintSourceSummary(String id, String sourcePlatform, String title) {}
@@ -436,14 +513,19 @@ public class ProductCaptureService {
 
     @Transactional(readOnly = true)
     public PrintSource getPrintSource(String id, PlatformPrincipal principal) {
+        var capture = verifyPrintSource(id, principal);
+        return new PrintSource(capture, images(capture));
+    }
+
+    private ProductCapture verifyPrintSource(String id, PlatformPrincipal principal) {
         ProductCapture capture = requireCapture(id, principal.organizationId());
-        if (CommerceModule.PRINT_SOURCE.equals(capture.getDataModule())) return new PrintSource(capture, images(capture));
+        if (CommerceModule.PRINT_SOURCE.equals(capture.getDataModule())) return capture;
         if (!CommerceModule.CAPTURE.equals(capture.getDataModule())
                 || !ProductPrintProductionService.templateId(capture, objectMapper).isEmpty()
                 || !captureMapper.selectCommerceGeneratedCaptureIds(principal.organizationId(), List.of(id)).isEmpty()) {
             throw new BusinessException(HttpStatus.NOT_FOUND, "找不到该采集商品");
         }
-        return new PrintSource(capture, images(capture));
+        return capture;
     }
 
     public record PrintSource(ProductCapture capture, List<ProductCaptureImage> images) {}

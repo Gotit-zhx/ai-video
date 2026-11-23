@@ -47,6 +47,7 @@ function startWorker(shortName) {
     },
     readAuth: async () => ({ baseUrl: 'https://hoyee.org.cn' }),
     restrictStorageToExtensionPages: async () => {},
+    deduplicateVideos: () => [],
     createPrintSource: async payload => {
       requests.push(JSON.parse(JSON.stringify(payload)));
       return { id: captureId };
@@ -66,6 +67,30 @@ test('v2 sends the active product identity and images, then opens the matching c
   assert.equal(response.data.id, captureId);
   assert.deepEqual(requests, [{ sourceUrl: productUrl, title: '花朵印花', images: ['https://cdn.example.com/first.png'] }]);
   assert.deepEqual(tabs, [`https://hoyee.org.cn/#product-print-capture?capture=${captureId}`]);
+});
+
+test('v2 forwards the same sanitized SKU facts as regular collection for the active product', async () => {
+  const { send, requests } = startWorker('赫逸印花采集 v2.0');
+  const product = {
+    sourceUrl: 'https://shopee.ph/product/400/999', sourceProductId: '209', sourceShopId: '105',
+    sourcePlatform: 'SHOPEE', title: '花朵印花', description: 'Cotton', categoryName: 'T-Shirts',
+    currency: 'PHP', priceMin: 120, priceMax: 165, skus: [
+      {externalSkuId: '111', price: 120, originalPrice: 150, stock: 0, attributes: {Color: 'Black', Size: 'M'}},
+      {externalSkuId: '112', price: 165, originalPrice: 190, stock: 8, attributes: {Color: 'Red', Size: 'L'}}
+    ],
+    skuCompleteness: {complete: true, expectedCount: 2, capturedCount: 2, variantDimensionCount: 2}
+  };
+  assert.equal((await send({...message, payload: {...message.payload, product}})).ok, true);
+  const sent = requests[0].product;
+  assert.equal(sent.sourceUrl, productUrl);
+  assert.equal(sent.categoryName, 'T-Shirts');
+  assert.equal(sent.description, 'Cotton');
+  assert.equal(sent.currency, 'PHP');
+  assert.deepEqual(sent.skus.map(({externalSkuId, price, originalPrice, stock, attributes}) =>
+    ({externalSkuId, price, originalPrice, stock, attributes})), product.skus);
+  const invalid = await send({...message, payload: {...message.payload, product: {...product, sourceProductId: '999'}}});
+  assert.equal(invalid.error.code, 'PRODUCT_ID_MISMATCH');
+  assert.equal(requests.length, 1);
 });
 
 test('the two editions only handle their own capture messages and require the active top frame', async () => {

@@ -207,18 +207,19 @@ test('outline dragging and resizing update placement and the adjusted PNG goes t
   pointer(box, 'pointermove', 70, 70);
   assert.ok(Number(get('size').value) > 26);
   get('produce').click();
-  const form = get('production-form');
-  assert.match(get('production-sizes').textContent, /黑色、红色.*Small、Medium.*4 个规格/);
-  assert.equal(form.elements.title.value, '示例');
-  for (const [name, value] of Object.entries({category: 'T-shirts', description: 'Cotton', currency: 'PHP', price: '170', stock: '18'})) {
-    form.elements[name].value = value;
-  }
-  form.dispatchEvent(new window.Event('submit', {cancelable: true}));
+  assert.equal(get('production-form'), null);
   await flush();
   assert.equal(app.drafts.length, 1);
   assert.equal(app.drafts[0].get('image').name, 'composition.png');
-  assert.equal(app.drafts[0].get('settings').type, 'application/json');
+  const settings = app.drafts[0].get('settings');
+  assert.equal(settings.type, 'application/json');
+  const settingsJson = await new Promise(resolve => {
+    const reader = new window.FileReader();
+    reader.onload = () => resolve(JSON.parse(reader.result));
+    reader.readAsText(settings);
+  });
+  assert.deepEqual(settingsJson, {resultId: 'print-a', templateId: 'style', templateVersion: 3});
   assert.equal(app.bulk[0].draft.id, 'draft-id');
   assert.equal(app.bulk[0].draft.printProduction, true);
-  assert.equal(get('production').open, false);
+  assert.equal(get('production-status').hidden, true);
 });

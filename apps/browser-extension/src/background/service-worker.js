@@ -304,7 +304,9 @@ async function capturePrintSource(raw, senderUrl) {
   if (!title || !images.length) throw new ApiError("未读取到商品图片", 400, "INVALID_PRINT_SOURCE");
   const auth = await readAuth();
   if (!auth) throw new ApiError("请先登录赫逸印花采集插件", 401, "AUTH_REQUIRED");
-  const result = await createPrintSource({ sourceUrl: source.href, title, images });
+  const product = raw?.product ? sanitizeCapture({...raw.product, sourceUrl: source.href}, platform) : null;
+  const result = await createPrintSource({sourceUrl: source.href, title, images,
+    ...(product ? {product} : {})});
   if (!/^[a-f0-9-]{36}$/i.test(result?.id || "")) throw new ApiError("平台没有返回采集编号", 502, "INVALID_RESPONSE");
   await chrome.tabs.create({url: `${auth.baseUrl}/${printRoute}?capture=${encodeURIComponent(result.id)}`, active: true});
   return {id: result.id};

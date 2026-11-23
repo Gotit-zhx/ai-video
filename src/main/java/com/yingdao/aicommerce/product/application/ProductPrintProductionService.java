@@ -14,12 +14,14 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
+import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.math.BigDecimal;
 import java.util.ArrayList;
-import java.util.Currency;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -37,10 +39,9 @@ public class ProductPrintProductionService {
     private static final String SKU_ORDER = "STYLE_COLOR_SIZE";
     private static final String SHARED_IMAGE_KEY = "printSharedColorImage";
 
-    public record Settings(String resultId, String templateId, String title, String category,
-                           String description, String currency, BigDecimal price, Integer stock, Long templateVersion) {}
-    public record Draft(String id, String title, String status, String thumbnailUrl, int stock, int skuCount) {}
-    private record SaleOption(String name, String code) {}
+    public record Settings(String resultId, String templateId, Long templateVersion) {}
+    public record Draft(String id, String title, String status, String thumbnailUrl, int skuCount) {}
+    private static final int DEFAULT_STOCK = 999;
 
     private final ProductCaptureService captures;
     private final ProductPrintCaptureService print;
@@ -73,7 +74,10 @@ public class ProductPrintProductionService {
         if (!user.permissionCodes().containsAll(List.of("product:edit", "product:publish"))) {
             throw new BusinessException(HttpStatus.FORBIDDEN, "缺少商品制作和上传权限");
         }
-        var source = captures.getPrintSource(sourceId, user).capture();
+        var sourceDetail = captures.printSourceForProduction(sourceId, user);
+        var source = sourceDetail.capture();
+        var sourceSkus = sourceDetail.skus();
+        String description = ProductListingTemplateService.sourceDescription(source, json);
         boolean hasArtwork = print.results(sourceId, user).stream()
                 .anyMatch(result -> result.id().equals(settings.resultId()) && result.imageUrl() != null);
         if (!hasArtwork) throw bad("请选择可用的印花提取结果");
@@ -84,58 +88,52 @@ public class ProductPrintProductionService {
         String templateId = template.id();
         var variant = template.variants().getFirst();
         String style = ProductPublicationSkuNaming.style(variant.styleCode());
-        var colors = colorOptions(variant.colors());
+        var colors = variant.colors();
         var sizes = ProductCaptureTemplateService.normalizeSizes(variant.sizes(), true);
-        var sizeOptions = sizes.stream().map(size -> new SaleOption(size.name(), size.sizeCode())).toList();
-        int skuCount = Math.max(1, colors.size()) * Math.max(1, sizeOptions.size());
-        int dimensions = (colors.isEmpty() ? 0 : 1) + (sizeOptions.isEmpty() ? 0 : 1);
-
-        String title = required(settings.title(), 500, "商品名称");
-        String category = required(settings.category(), 255, "商品类目");
-        String description = required(settings.description(), 10_000, "商品描述");
-        String currency = Objects.toString(settings.currency(), "").strip().toUpperCase(Locale.ROOT);
-        try {
-            Currency.getInstance(currency);
-        } catch (IllegalArgumentException invalid) {
-            throw bad("请输入有效的三位币种代码");
-        }
-        BigDecimal price = settings.price();
-        if (price == null || price.signum() <= 0 || price.stripTrailingZeros().scale() > 2
-                || price.compareTo(new BigDecimal("999999999999.99")) > 0) throw bad("请输入有效的售价，最多两位小数");
-        Integer stock = settings.stock();
-        if (stock == null || stock < 0 || stock > 999_999) throw bad("库存须为 0 到 999999 的整数");
+        int skuCount = sourceSkus.size();
+        String title = source.getTitle();
+        BigDecimal priceMin = sourceSkus.stream().map(ProductCaptureSku::getPrice).min(Comparator.naturalOrder()).orElseThrow();
+        BigDecimal priceMax = sourceSkus.stream().map(ProductCaptureSku::getPrice).max(Comparator.naturalOrder()).orElseThrow();
         byte[] bytes = imageBytes(image);
         String org = user.organizationId();
         String hash = CommerceImageArchive.sha(json.writeValueAsBytes(List.of(
-                user.userId(), sourceId, settings.resultId(), templateId, title, category, description,
-                currency, price.stripTrailingZeros().toPlainString(), stock, CommerceImageArchive.sha(bytes),
-                colors, sizes, style, SKU_ORDER)));
+                "source-specs", user.userId(), sourceId, source.getId(), source.getVersion(), settings.resultId(), templateId,
+                template.version(), CommerceImageArchive.sha(bytes), SKU_ORDER)));
         String key = KEY_PREFIX + hash;
         ProductCapture existing = captureMapper.selectOne(query(org, key));
         if (existing != null) {
             return new Draft(existing.getId(), existing.getTitle(), existing.getStatus(),
-                    CommercePublicationDrafts.PREFIX + archive.store(org, bytes).storageKey(), stock, skuCount);
+                    CommercePublicationDrafts.PREFIX + archive.store(org, bytes).storageKey(), skuCount);
         }
 
         var archived = archive.store(org, bytes);
         String url = CommercePublicationDrafts.PREFIX + archived.storageKey();
-        var normalized = Map.of(
-                "originalDescription", description,
-                "skuCompleteness", Map.of("complete", true, "expectedCount", skuCount, "capturedCount", skuCount,
-                        "hasVariants", dimensions > 0, "variantDimensionCount", dimensions,
-                        "source", "COMMERCE_GENERATED", "issues", List.of()),
-                "imageCompleteness", Map.of("complete", true, "expectedCount", 1, "capturedCount", 1,
-                        "requiredSkuImageCount", 1, "coveredSkuImageCount", 1, "issues", List.of()));
+        var normalized = new LinkedHashMap<>(sourceDetail.normalizedData());
+        normalized.remove("images");
+        normalized.remove("skus");
+        normalized.remove("listingTemplate");
+        normalized.put("title", title);
+        normalized.put("description", description);
+        normalized.put("originalDescription", description);
+        normalized.put("priceMin", priceMin);
+        normalized.put("priceMax", priceMax);
+        normalized.put("imageCompleteness", Map.of("complete", true, "expectedCount", 1, "capturedCount", 1,
+                "requiredSkuImageCount", 1, "coveredSkuImageCount", 1, "issues", List.of()));
         var measurements = sizes.stream().map(ProductPrintProductionService::measurementLine)
                 .filter(line -> !line.isEmpty()).toList();
         var pattern = naming.printArtworkCode(org, settings.resultId());
         String skuStyle = style.isEmpty() ? pattern.style() : style;
+        var attributes = sourceSkus.stream()
+                .map(sku -> json.readValue(sku.getAttributesJson(), new TypeReference<Map<String, Object>>() {}))
+                .toList();
+        long distinctColors = attributes.stream().map(row -> ProductSkuNaming.dimension(row, true)).distinct().count();
         String rawData = json.writeValueAsString(Map.of(TEMPLATE_KEY, templateId, MEASUREMENT_KEY, measurements,
-                SKU_SUFFIX_KEY, pattern.suffix(), "printSkuOrder", SKU_ORDER, SHARED_IMAGE_KEY, colors.size() > 1,
+                SKU_SUFFIX_KEY, pattern.suffix(), "printSkuOrder", SKU_ORDER, SHARED_IMAGE_KEY, distinctColors > 1,
                 "printCaptureId", sourceId, "printResultId", settings.resultId()));
         var draft = new ProductCapture(org, user.userId(), key, hash, source.getSourcePlatform(),
                 source.getSourceUrl(), source.getSourceShopId(), source.getSourceProductId(), title, description,
-                category, null, currency, price, price, json.writeValueAsString(normalized), rawData);
+                source.getCategoryName(), source.getBrandName(), source.getCurrency(), priceMin, priceMax,
+                json.writeValueAsString(normalized), rawData);
         draft.assignModule(CommerceModule.CAPTURE);
         draft.imagesReady();
         try {
@@ -143,44 +141,38 @@ public class ProductPrintProductionService {
         } catch (DuplicateKeyException duplicate) {
             var winner = captureMapper.selectOne(query(org, key).last("FOR UPDATE"));
             if (winner == null) throw duplicate;
-            return new Draft(winner.getId(), winner.getTitle(), winner.getStatus(), url, stock, skuCount);
+            return new Draft(winner.getId(), winner.getTitle(), winner.getStatus(), url, skuCount);
         }
         String originalUrl = url + "?original";
         var main = new ProductCaptureImage(org, draft.getId(), originalUrl, "MAIN", title, 0, archived.mimeType(),
                 json.writeValueAsString(Map.of("commerceStorageKey", archived.storageKey())));
         main.processed(url);
         imageMapper.insert(main);
-        int sortOrder = 0;
-        var skuColors = colors.isEmpty() ? List.of(new SaleOption("", "UNK")) : colors;
-        var skuSizes = sizeOptions.isEmpty() ? List.of(new SaleOption("", "NOSIZE")) : sizeOptions;
-        for (var color : skuColors) {
-            for (var size : skuSizes) {
-                var attributes = new LinkedHashMap<String, String>();
-                if (!color.name().isEmpty()) attributes.put("Color", color.name());
-                if (!size.name().isEmpty()) attributes.put("Size", size.name());
-                String name = attributes.isEmpty() ? "默认规格" : String.join(" / ", attributes.values());
-                String sku = String.join("-", skuStyle, color.code(), size.code(), pattern.suffix());
-                skuMapper.insert(new ProductCaptureSku(org, draft.getId(), sku, sku, sku, name,
-                        price, price, stock, originalUrl, "COMMERCE_GENERATED",
-                        json.writeValueAsString(attributes), "{}", sortOrder++));
+        var used = new HashSet<String>();
+        for (int i = 0; i < skuCount; i++) {
+            var sourceSku = sourceSkus.get(i);
+            String colorName = ProductSkuNaming.dimension(attributes.get(i), true);
+            String sizeName = ProductSkuNaming.dimension(attributes.get(i), false);
+            String colorCode = colors.stream().filter(color -> colorName.equalsIgnoreCase(color.name()))
+                    .map(ProductCaptureTemplateService.Color::colorCode)
+                    .filter(code -> code != null && code.matches("[A-Z0-9]{1,16}"))
+                    .findFirst().orElseGet(() -> ProductSkuNaming.color(colorName));
+            String sizeCode = sizes.stream().filter(size -> sizeName.equalsIgnoreCase(size.name()))
+                    .map(ProductCaptureTemplateService.Size::sizeCode).findFirst().orElseGet(() -> ProductSkuNaming.size(sizeName));
+            String sku = String.join("-", skuStyle, colorCode, sizeCode, pattern.suffix());
+            if (!used.add(sku)) {
+                // Other source dimensions can distinguish combinations with the same color and size.
+                String variantCode = CommerceImageArchive.sha(sourceSku.getSkuKey().getBytes(StandardCharsets.UTF_8))
+                        .substring(0, 8).toUpperCase(Locale.ROOT);
+                sku = String.join("-", skuStyle, colorCode, sizeCode.substring(0, Math.min(sizeCode.length(), 8)) + variantCode, pattern.suffix());
+                if (!used.add(sku)) throw bad("原商品规格编码重复，请重新采集。");
             }
+            skuMapper.insert(new ProductCaptureSku(org, draft.getId(), sku, sourceSku.getExternalSkuId(), sku,
+                    sourceSku.getVariationName(), sourceSku.getPrice(), sourceSku.getOriginalPrice(),
+                    Objects.requireNonNullElse(sourceSku.getStock(), DEFAULT_STOCK), originalUrl, "COMMERCE_GENERATED",
+                    sourceSku.getAttributesJson(), sourceSku.getSourceJson(), i));
         }
-        return new Draft(draft.getId(), draft.getTitle(), draft.getStatus(), url, stock, skuCount);
-    }
-
-    private static List<SaleOption> colorOptions(List<ProductCaptureTemplateService.Color> configured) {
-        var colors = new ArrayList<SaleOption>();
-        var names = new HashSet<String>();
-        var codes = new HashSet<String>();
-        for (var color : configured) {
-            String name = Objects.toString(color.name(), "").strip();
-            String code = Objects.toString(color.colorCode(), "").strip().toUpperCase(Locale.ROOT);
-            if (name.isEmpty() && code.isEmpty() && Objects.toString(color.hex(), "").isBlank()) continue;
-            if (name.isEmpty() || !code.matches("[A-Z0-9]{1,16}")) throw bad("请在采集模板补全颜色名称和编码");
-            if (!names.add(name.toUpperCase(Locale.ROOT)) || !codes.add(code)) throw bad("颜色名称和编码不能重复");
-            colors.add(new SaleOption(name, code));
-        }
-        return List.copyOf(colors);
+        return new Draft(draft.getId(), draft.getTitle(), draft.getStatus(), url, skuCount);
     }
 
     private static String measurementLine(ProductCaptureTemplateService.Size size) {
@@ -244,12 +236,6 @@ public class ProductPrintProductionService {
         } catch (IOException invalid) {
             throw bad("套版图片读取失败，请重新导出");
         }
-    }
-
-    private static String required(String input, int maxLength, String label) {
-        String value = Objects.toString(input, "").strip();
-        if (value.isEmpty() || value.length() > maxLength) throw bad(label + "须填写，最多 " + maxLength + " 个字符");
-        return value;
     }
 
     private static BusinessException bad(String message) {

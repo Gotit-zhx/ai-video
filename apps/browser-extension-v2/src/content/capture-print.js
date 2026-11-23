@@ -7,25 +7,14 @@
   let currentUrl;
 
   async function collect(url) {
-    const identity = adapter.productIdentity(url);
-    const shopee = adapter.id === 'SHOPEE';
-    const data = await (shopee ? collector.loadShopeeProductData(identity) : collector.loadTikTokProductData(identity));
+    const product = await adapter.extract(document.querySelector('main') || document.body, url, 'DETAIL');
     if (location.href !== url || adapter.blockedReason()) throw new Error('商品页面已变化，请重新采集');
-    const structured = collector.parseJsonLdProduct(document);
-    const meta = collector.metaContent(['og:title', 'twitter:title']);
-    const title = collector.cleanText(data?.title || structured?.name || document.querySelector('h1')?.textContent || meta.value, 255);
-    const selector = shopee
-      ? "img[alt^='Product image' i], [data-testid*='product-image' i] img, [class*='product-gallery'] img"
-      : "[data-e2e*='product-image' i] img, [data-testid*='product-image' i] img, [class*='product-gallery'] img";
-    const gallery = collector.collectImages(document, [...(data?.images || []), ...(structured?.images || [])], 20, selector);
-    const candidates = [
-      ...(data?.imageCandidates || []).filter(image => image.role !== 'SIZE_CHART'),
-      ...gallery,
-      ...(data?.skus || []).map(sku => ({url: sku.imageUrl, role: 'VARIANT'}))
-    ];
-    const images = collector.planListingImages(candidates, 20).images.map(image => image.url);
-    if (!title || !images.length) throw new Error('未读取到商品图片，请等详情页加载完成后重试');
-    return {title, images};
+    const images = collector.planListingImages([
+      ...product.images.filter(image => ['MAIN', 'GALLERY', 'VARIANT'].includes(image.role)),
+      ...product.skus.map(sku => ({url: sku.imageUrl, role: 'VARIANT'}))
+    ], 20).images.map(image => image.url);
+    if (!product.title || !images.length) throw new Error('未读取到商品图片，请等详情页加载完成后重试');
+    return {title: product.title, images, product};
   }
 
   async function run(button, notice, url) {
@@ -40,7 +29,7 @@
       const payload = await collect(url);
       const result = await chrome.runtime.sendMessage({type: 'HEYI_CAPTURE_PRINT_SOURCE', payload});
       if (!result?.ok) throw new Error(result?.error?.message || '采集失败，请重试');
-      notice.textContent = '已采集商品图';
+      notice.textContent = '已采集商品';
       button.textContent = '重新采集';
     } catch (error) {
       notice.textContent = error.message;
