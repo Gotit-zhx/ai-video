@@ -1,0 +1,80 @@
+{
+  "phase": "activated",
+  "contextBefore": "086cba3f-4153-4a76-a2e0-005b02c9814b",
+  "contextAfter": "447b52f1-4325-497b-bbb7-7fddd26f3994",
+  "healthy": true,
+  "maintenance": false,
+  "watcherResumed": true,
+  "schemaUnchanged": true,
+  "schemaFingerprint": "f48d9e5e82f3b049acf54a0b9fa80e551cdddb67031cf2bc0c456e93ccb6b202",
+  "schemaVersion": "158",
+  "runtimeUnchanged": true,
+  "runtimeFileSha256": "8550566c0d10d0185384867f97ce46b4603a8d5c552b4b6a294326539bb96327",
+  "runtimeConfigurationHash": "c4ae5422fc452f04eb5188ce1a325462494d5992fd407bdcbbf7982a0c9355ab",
+  "unrelatedSourcesUnchanged": true,
+  "protectedSourceFiles": {
+    "src/main/java/com/yingdao/aicommerce/finance/FinanceQueryProjections.java": "cb746750b865dd7b501052436eea4cf5be2750eada5ad3b7b610c2fe8cca5214",
+    "src/main/java/com/yingdao/aicommerce/finance/FinanceRepository.java": "049368bf250cd9659dd012b96ef183962b61ffa20fba2a86213a561fa14f506c",
+    "src/main/java/com/yingdao/aicommerce/finance/FinanceLabelCosts.java": "f4e23bfadbe677b9f9acad6be86157ce34ef98288bac68e8c43bfbf82f404cc5",
+    "frontend/finance-workspace.js": "62757e09578a4c9d40a6da81b08ffb9948f136ab27e875d9c3faacdf82ed35cc",
+    "frontend/finance-costs.js": "79ad77a6c61339495b9399730e6ddd98d3cd3bf5b5640dc8fc9de1a18f3a112f"
+  },
+  "sourceFiles": {
+    "frontend/finance-ad-spend.js": {
+      "beforeHash": "0c98a4b4890c9ebb679224940eba60ad5adcf2cf0ff47a61680ac1b5367f45f9",
+      "targetHash": "a831d8189e06746f0ff92378a2e39e652e6e3d5dad89345a782cc0890aed2466"
+    },
+    "src/main/java/com/yingdao/aicommerce/finance/FinanceAdBcFunding.java": {
+      "beforeHash": "76aa41b6578099b901283ca09a204ca68361ef9bc891d26923f6b373de6faadb",
+      "targetHash": "ee3e325266244c53866bec8f51c286877fcc9f5d80a5def9654d8413ab728994"
+    }
+  },
+  "operation": "/opt/heyi/dev/operations/finance-funding-reauth-20261113-42792dff7a76",
+  "checkedAt": 1794582677,
+  "gitCommit": "7fed4fba8881fef9479c3cb9bc38134a52d08839",
+  "fundingViewVerification": [
+    {
+      "displayStatuses": {
+        "PARTIAL_ACCESS": 28
+      },
+      "missingFinanceRoleBcCounts": [
+        2
+      ],
+      "newFundingContract": true,
+      "workerStatuses": {
+        "SUCCESS": 28
+      },
+      "event": "deployed-funding-view",
+      "coverageStatuses": {
+        "NO_RECORDS": 28
+      },
+      "accounts": 28,
+      "readableBcCounts": [
+        1
+      ]
+    },
+    {
+      "jobs": [
+        {
+          "status": "SUCCESS",
+          "historyVersion": 0,
+          "historyRequired": false,
+          "until": "",
+          "from": ""
+        }
+      ],
+      "providerRequests": 0,
+      "readOnly": true,
+      "event": "deployed-funding-ranges"
+    }
+  ],
+  "readOnlyProbeCleaned": true,
+  "verification": {
+    "javaTests": 62,
+    "javaFailures": 0,
+    "javaSkipped": 0,
+    "uiScripts": 3,
+    "sourceCasChecks": 4,
+    "independentReview": "passed"
+  }
+}

@@ -178,7 +178,7 @@ public class FinanceService {
         java.util.function.Supplier<Map<String,Object>> load=()->buildDashboard(s,requested,cny,snapshotId,false);
         return withCalculations(s,requested,sharedSnapshots==null?snapshots.get(key,load):sharedSnapshots.get(key,load));
     }
-    private Map<String,Object> withCalculations(Scope s,Filter f,Map<String,Object> result){
+    Map<String,Object> withCalculations(Scope s,Filter f,Map<String,Object> result){
         if(sharedSnapshots==null)return result;
         var selected=rows(result.get("shops")).stream().filter(shop->FinanceGroups.matches(shop,f)).map(shop->text(shop.get("id"))).toList();
         var copy=new LinkedHashMap<>(result);copy.put("settlementCalculation",sharedSnapshots.settlementCalculation(s,selected));return copy;
@@ -213,26 +213,31 @@ public class FinanceService {
     Map<String,Object> buildDashboard(Scope s,Filter requested,boolean cny,String snapshotId,boolean live){
         // SQL facts are daily and currency-neutral. Display granularity is applied below.
         Filter all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"","day",requested.groupId());
+        return dashboardFromFacts(s,requested,cny,snapshotId,live,loadDashboardFacts(s,all,live));
+    }
+    /** Same financial presentation algorithm, with facts supplied by a verified read model. */
+    Map<String,Object> dashboardFromFacts(Scope s,Filter requested,boolean cny,String snapshotId,boolean live,Map<String,Object> facts){
+        return dashboardFromFacts(s,requested,cny,snapshotId,live,facts,null);
+    }
+    Map<String,Object> dashboardFromFacts(Scope s,Filter requested,boolean cny,String snapshotId,boolean live,Map<String,Object> facts,FinanceFx.Quote resolvedQuote){
         var costReport=new FinanceCostReport(repo);
-        var facts=loadDashboardFacts(s,all,live);
         var reportingMonths=rows(facts.get("reportingMonths"));
         String trendGranularity=reportingMonths.stream().anyMatch(r->Boolean.TRUE.equals(r.get("included")))?"month":requested.granularity();
         var buckets=rows(facts.get("buckets"));
-        var allRanking=aggregate(buckets,"shop_id","kind");
-        List<String> codes=java.util.stream.Stream.concat(allRanking.stream(),(live?List.<Map<String,Object>>of():rows(facts.get("advertising"))).stream())
+        List<String> codes=java.util.stream.Stream.concat(buckets.stream(),(live?List.<Map<String,Object>>of():rows(facts.get("advertising"))).stream())
                 .map(r->text(r.get("currency"))).distinct().sorted().toList();
         String currency=requested.currency().isBlank()?(cny||codes.isEmpty()?"":codes.getFirst()):requested.currency();
         Filter f=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),currency,requested.granularity(),requested.groupId());
-        var ranking=allRanking.stream().filter(r->currency.isBlank()||currency.equals(text(r.get("currency")))).toList();
-        List<Map<String,Object>> totals=nativeTotals(ranking);
-        FinanceFx.Quote quote=cny?fx.historical(snapshotId,requested.start(),requested.end()):null;
-        if(cny)totals=FinanceFx.groups(buckets.stream().filter(r->currency.isBlank()||currency.equals(text(r.get("currency")))).toList(),quote,"kind");
+        var selected=currency.isBlank()?buckets:buckets.stream().filter(r->currency.equals(text(r.get("currency")))).toList();
+        FinanceFx.Quote quote=cny?(resolvedQuote==null?fx.historical(snapshotId,requested.start(),requested.end()):resolvedQuote):null;
+        var converted=cny?new FinanceFx.Grouping(selected,quote):null;
+        var ranking=cny?converted.groups("shop_id","kind"):aggregate(selected,"shop_id","kind");
+        var totals=cny?converted.groups("kind"):nativeTotals(ranking);
         LinkedHashMap<String,Map<String,Object>> points=new LinkedHashMap<>();
         for(LocalDate d=f.start();!live&&!d.isAfter(f.end());d=d.plusDays(1)){
             String key=bucket(d,trendGranularity);points.computeIfAbsent(key,k->{var m=new LinkedHashMap<String,Object>();m.put("period",k);return m;});
         }
-        var selected=buckets.stream().filter(r->currency.isBlank()||currency.equals(text(r.get("currency")))).toList();
-        var daily=live?List.<Map<String,Object>>of():cny?FinanceFx.groups(selected,quote,"record_date","kind"):aggregate(selected,"record_date","kind");
+        var daily=live?List.<Map<String,Object>>of():cny?converted.groups("record_date","kind"):aggregate(selected,"record_date","kind");
         daily=FinanceProfitReport.withGross(daily,"record_date");
         var incompletePoints=new HashSet<String>();
         for(var row:daily){
@@ -255,11 +260,13 @@ public class FinanceService {
         if(!live)out.put("advertising",FinanceAdvertisingReport.build(rows(facts.get("advertising")),rows(out.get("shops")),f,cny,quote,trendGranularity));
         out.put("dateBasis",FinanceCalendar.contract());
         out.put("dateWindows",FinanceCalendar.windows(f,rows(out.get("shops"))));
-        var fees=live?List.<Map<String,Object>>of():aggregate(selected.stream().filter(r->"FEE".equals(r.get("kind"))).toList(),"category","kind");
-        var statuses=aggregate(selected.stream().filter(r->"ORDER".equals(r.get("kind"))).toList(),"status","kind");
-        out.put("ranking",FinanceProfitReport.withGross(cny?FinanceFx.groups(selected,quote,"shop_id","kind"):ranking,"shop_id"));
-        out.put("fees",(cny?FinanceFx.groups(selected.stream().filter(r->"FEE".equals(r.get("kind"))).toList(),quote,"category","kind"):fees).stream().filter(r->"FEE".equals(r.get("kind"))).toList());
-        out.put("statuses",cny?FinanceFx.groups(selected.stream().filter(r->"ORDER".equals(r.get("kind"))).toList(),quote,"status","kind"):statuses);out.put("sync",syncStates(s,requested));
+        var fees=cny?converted.groupsOfKind("FEE","category","kind"):
+            live?List.<Map<String,Object>>of():aggregate(selected.stream().filter(r->"FEE".equals(r.get("kind"))).toList(),"category","kind");
+        var statuses=cny?converted.groupsOfKind("ORDER","status","kind"):
+            aggregate(selected.stream().filter(r->"ORDER".equals(r.get("kind"))).toList(),"status","kind");
+        out.put("ranking",FinanceProfitReport.withGross(ranking,"shop_id"));
+        out.put("fees",fees);
+        out.put("statuses",statuses);out.put("sync",syncStates(s,requested));
         out.put("updatedAt",Instant.now().toString());
         var productCosts=costReport.dashboardSummary(s,f,rows(facts.get("orders")));
         productCosts.put("labelConfiguration",new FinanceOrderCharges(repo).labelConfiguration(s,rows(out.get("shops")),rows(productCosts.get("shops"))));
@@ -284,7 +291,6 @@ public class FinanceService {
         return out;
     }
     private Map<String,Object> loadDashboardFacts(Scope s,Filter all,boolean live){
-        var costReport=new FinanceCostReport(repo);
         var factsKey=new FinanceSnapshotCache.Key(s,all,false,"",live);
         var companyKey=new FinanceSnapshotCache.Key(s,new Filter(all.start(),all.end(),"","","","day"),false,"",live);
         // A shop-first visit stays a shop query. A previously loaded company snapshot can
@@ -296,9 +302,21 @@ public class FinanceService {
                 .anyMatch(row->"UNASSIGNED".equals(text(row.get("shop_id")))))wider=null;
         // The bounded cold read contains multiple queries; a per-query-sized total
         // transaction deadline previously discarded complete month computations.
-        java.util.function.Supplier<Map<String,Object>> read=()->repo.readSnapshot(180,()->{
+        java.util.function.Supplier<Map<String,Object>> read=()->buildNativeDashboardFacts(s,all,live);
+        var facts=wider==null?(sharedSnapshots==null?dashboardFacts.get(factsKey,read):sharedSnapshots.facts(factsKey,read)):
+                narrowDashboardFacts(wider,all,shops(s),live?List.of():new FinanceReportingMonths(repo).coverage(s,all));
+        return facts;
+    }
+    /** Original currency-neutral algorithm. Projection workers share its surrounding MVCC transaction. */
+    Map<String,Object> buildNativeDashboardFacts(Scope s,Filter all,boolean live){
+        return buildNativeDashboardFacts(s,all,live,null);
+    }
+    Map<String,Object> buildNativeDashboardFacts(Scope s,Filter all,boolean live,List<Map<String,Object>> rawPageCounts){
+        var costReport=new FinanceCostReport(repo);
+        return repo.readSnapshot(180,()->{
             var advertising=new ArrayList<Map<String,Object>>();
-            var buckets=new ArrayList<>(repo.dashboardBuckets(s,all,live,live?null:advertising));
+            var buckets=new ArrayList<>(rawPageCounts==null?repo.dashboardBuckets(s,all,live,live?null:advertising):
+                repo.dashboardBuckets(s,all,live,live?null:advertising,rawPageCounts));
             var orders=costReport.dashboardFacts(s,all);
             if(!live){
                 buckets.removeIf(row->Set.of("ORDER","REFUND").contains(text(row.get("kind"))));
@@ -308,9 +326,6 @@ public class FinanceService {
             return Map.of("buckets",dailyFactRows(buckets),"orders",dailyFactRows(orders),"advertising",dailyFactRows(advertising),
                     "reportingMonths",live?List.of():new FinanceReportingMonths(repo).coverage(s,all));
         });
-        var facts=wider==null?(sharedSnapshots==null?dashboardFacts.get(factsKey,read):sharedSnapshots.facts(factsKey,read)):
-                narrowDashboardFacts(wider,all,shops(s),live?List.of():new FinanceReportingMonths(repo).coverage(s,all));
-        return facts;
     }
     Map<String,Object> feeExportFacts(Scope s,Filter requested){
         Filter all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"","day",requested.groupId());

@@ -29,13 +29,15 @@ async function boot(saved,route='overview'){
     const selected=available.filter(s=>!currency||s.currency===currency);
     const amount=selected.reduce((sum,s)=>sum+s.amount*(cny?s.rate:1),0);
     const fields=[{id:'order_id',label:'订单编号',type:'text'},{id:'amount',label:'金额',type:'money'}];
+    const recordPage={items:selected.map(s=>({id:s.id,order_id:'ORDER-'+s.id,shop_id:s.id,currency:s.currency,amount:s.amount,cny_amount:s.amount*s.rate,kind:q.kind||'BILL',platform:s.platform})),
+      fieldSettings:{fields,visible:['order_id','amount'],exported:['order_id','amount']},total:selected.length,page:1,pageSize:50};
     return {data:{
       filters:{...q,currency,displayCurrency:cny?'CNY':currency},shops,groups:[],currencies:['MYR','PHP'],
       fx:cny?{id:'test-rate',time:'2026-10-29T00:00:00Z',provider:'test'}:null,
       sync:[],trend:[],hourly:[],fees:[],statuses:[],recent:[],ranking:[],
       totals:['ORDER','SETTLEMENT','BILL','PENDING','FEE','AD'].map(kind=>({kind,amount,revenue:amount,records:selected.length,known_amounts:selected.length,known_revenues:selected.length})),
       profit:{currency:cny?'CNY':currency,settledGrossAmount:amount,amount,platformFees:0,advertising:0,productCost:0,operatingCost:0,notes:[]},
-      items:selected.map(s=>({id:s.id,order_id:'ORDER-'+s.id,shop_id:s.id,currency:s.currency,amount:s.amount,cny_amount:s.amount*s.rate,kind:q.kind||'BILL',platform:s.platform})),
+      records:recordPage,items:recordPage.items,
       fieldSettings:{fields,visible:['order_id','amount'],exported:['order_id','amount']},total:selected.length,page:1,pageSize:50
     }};
   };
@@ -43,7 +45,7 @@ async function boot(saved,route='overview'){
   const settle=async()=>{for(let n=0;n<100;n++){await new Promise(r=>setTimeout(r,5));if(d.querySelector('main').getAttribute('aria-busy')==='false')return;}throw Error('UI timeout');};
   const select=async(label,value)=>{const e=d.querySelector(`[aria-label="${label}"]`);assert(e,label);e.value=value;assert.equal(e.value,value);e.dispatchEvent(new w.Event('change'));await settle();};
   const click=async(text,host=d)=>{const b=[...host.querySelectorAll('button')].find(e=>e.textContent.trim()===text);assert(b,text);b.click();await settle();};
-  const lastReport=()=>reads.filter(r=>/\/(overview|records|reconciliation|screen)$/.test(r.pathname)).at(-1);
+  const lastReport=()=>reads.filter(r=>/\/(overview|workspace\/query|screen)$/.test(r.pathname)).at(-1);
   w.FinanceWorkspace.enter(route);await settle();
   return {dom,w,d,reads,downloads,settle,select,click,lastReport};
 }

@@ -9,13 +9,14 @@ w.ResizeObserver=class{observe(){}disconnect(){}};
 let gate=null,fail=false;
 w.api=async path=>{
   const url=new URL(path,'https://example.test');requests.push(url);
-  assert.equal(url.pathname,'/api/v1/finance/reconciliation','reconciliation must not load dashboard or charts');
+  assert.equal(url.pathname,'/api/v1/finance/workspace/query','reconciliation uses one page-specific response');
   if(gate)await gate;
   if(fail)throw Error('temporary outage');
   const page=Number(url.searchParams.get('page')||1),cny=url.searchParams.get('displayCurrency')==='CNY';
   const fields=[{id:'external_id',label:'账单',type:'text'},{id:'result',label:'结果',type:'text'}];
-  return {data:{items:Array.from({length:page===1?50:7},(_,i)=>({id:`${page}-${i}`,external_id:`BILL-${page}-${i}`,result:'MATCHED'})),
-    total:57,page,pageSize:50,filters:{...Object.fromEntries(url.searchParams),currency:'PHP',displayCurrency:cny?'CNY':'PHP'},
+  const records={items:Array.from({length:page===1?50:7},(_,i)=>({id:`${page}-${i}`,external_id:`BILL-${page}-${i}`,result:'MATCHED'})),
+    total:57,page,pageSize:50,fieldSettings:{fields,visible:fields.map(f=>f.id)}};
+  return {data:{records,filters:{...Object.fromEntries(url.searchParams),currency:'PHP',displayCurrency:cny?'CNY':'PHP'},
     currencies:['PHP'],shops:[{id:'shop',name:'Test shop',platform:'SHOPEE'}],sync:[],
     ...(cny?{fx:{id:'fixed',time:'2026-10-21',provider:'test'}}:{}),
     fieldSettings:{fields,visible:fields.map(f=>f.id)}}};

@@ -1,6 +1,6 @@
 # 研究与实验
 
-更新日期：2026-11-05。这里保留接口来源调查、受限原型、风险审查及明确未验证的结论；这些文件不作为生产发布指令或功能完成证明。实验产物可能未随源码入库，失效文件链接已改为原始路径说明。
+更新日期：2026-11-14。这里保留接口来源调查、受限原型、风险审查及明确未验证的结论；这些文件不作为生产发布指令或功能完成证明。实验产物可能未随源码入库，失效文件链接已改为原始路径说明。
 
 ## 服装重建与计算
 
@@ -26,6 +26,12 @@
 | [open-source-watermark-detection-20260908.md](watermark/open-source-watermark-detection-20260908.md) | 商品图可见水印检测：GitHub 候选核验 |
 | [watermarkremover-ai-evaluation-20260909.md](watermark/watermarkremover-ai-evaluation-20260909.md) | WatermarkRemover-AI 替代现有去水印的评估 |
 | [watermarkremover-ai-real-test-20260909.md](watermark/watermarkremover-ai-real-test-20260909.md) | WatermarkRemover-AI 商品图实测 |
+
+## 财务性能与方案选型
+
+| 文档 | 内容 |
+| --- | --- |
+| [bi-query-performance-options-20261114.md](finance/bi-query-performance-options-20261114.md) | 成熟 BI 提速方法与三档选型；用户已选择现有架构分阶段完善路线，第一阶段进行中 |
 
 ## 财务时间来源
 

@@ -17,6 +17,18 @@ class FinanceProductIdentityTest {
             assertEquals("PACK",row.get("product_skus"));assertFalse(row.containsKey("product_sku_details"));
         }
     }
+    @Test void orderPlatformSkusAreDistinctExactVariantIdsEvenWithCompleteMerchantCodes(){
+        for(String platform:List.of("TIKTOK_SHOP","SHOPEE")){
+            var row=new LinkedHashMap<String,Object>(Map.of("kind","ORDER","source","API","platform",platform));
+            boolean tk=platform.equals("TIKTOK_SHOP");var items=new ArrayList<Map<String,Object>>();
+            for(String id:List.of("9007199254740993123","9007199254740993123","9007199254740993124",""))
+                items.add(Map.of(tk?"product_id":"item_id","distinct-spu",tk?"seller_sku":"model_sku","PACK",tk?"sku_id":"model_id",id));
+            FinanceFields.enrich(row,Map.of(tk?"line_items":"item_list",items));
+            assertEquals(List.of("9007199254740993123","9007199254740993124"),row.get("platform_sku_values"));
+            assertEquals(List.of("distinct-spu"),row.get("product_spu_values"));
+            assertEquals("PACK",row.get("product_skus"));assertFalse(row.containsKey("product_sku_details"));
+        }
+    }
     @Test void emptyMerchantSkuKeepsOriginalNamesAndExactPlatformIdsWithoutBuyerData(){
         var row=new LinkedHashMap<String,Object>(Map.of("kind","ORDER","source","API","platform","SHOPEE"));
         var item=Map.<String,Object>of("item_id",40026185876L,"model_id",400076697058L,"model_sku","","item_sku","",

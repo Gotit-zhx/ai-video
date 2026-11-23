@@ -1,6 +1,7 @@
 package com.yingdao.aicommerce.finance;
 
 import org.springframework.stereotype.Service;
+import jakarta.annotation.PreDestroy;
 import tools.jackson.databind.ObjectMapper;
 import java.net.URI;
 import java.net.http.*;
@@ -84,7 +85,7 @@ public class FinanceFx {
         public BigDecimal convert(Object amount,String currency,LocalDate date){
             BigDecimal value=decimal(amount);if(value==null)return null;
             if(value.signum()==0)return BigDecimal.ZERO.setScale(6);
-            BigDecimal rate=rate(currency,date);return rate==null?null:value.multiply(rate).setScale(6,RoundingMode.HALF_UP);
+            return multiply(value,rate(currency,date));
         }
         public BigDecimal fromCny(Object amount,String targetCurrency,LocalDate date){
             BigDecimal value=decimal(amount);if(value==null)return null;
@@ -138,8 +139,9 @@ public class FinanceFx {
     }
     public Quote historical(String snapshotId,Collection<LocalDate> dates){return history.quote(snapshotId,dates);}
     public Map<String,Object> market(){return history.market();}
+    @PreDestroy void close(){history.close();}
     /** Legacy reads never insert new formats into finance_fx_snapshots. */
-    public synchronized Quote quote(String snapshotId){
+    public Quote quote(String snapshotId){
         if(snapshotId==null||snapshotId.isBlank())return historical(null,List.of(LocalDate.now(ZoneOffset.UTC)));
         if(snapshotId.matches("[a-f0-9]{32}"))return historical(snapshotId,List.of());
         var rows=repo.jdbc().queryForList("SELECT * FROM finance_fx_snapshots WHERE id=?",snapshotId);
@@ -156,28 +158,68 @@ public class FinanceFx {
         if(date.isBlank())date=text(row.get("record_date"));
         try{return date.isBlank()?null:LocalDate.parse(date.substring(0,10));}catch(RuntimeException e){return null;}
     }
+    private static BigDecimal multiply(BigDecimal value,BigDecimal rate){
+        if(value==null)return null;
+        if(value.signum()==0)return BigDecimal.ZERO.setScale(6);
+        return rate==null?null:value.multiply(rate).setScale(6,RoundingMode.HALF_UP);
+    }
     public static List<Map<String,Object>> groups(List<Map<String,Object>> rows,Quote quote,String...dimensions){
-        quote.preload(rows.stream().map(FinanceFx::businessDate).filter(Objects::nonNull).toList());
-        Map<List<Object>,Map<String,Object>> result=new LinkedHashMap<>();
-        for(var row:rows){
-            List<Object> key=Arrays.stream(dimensions).map(row::get).toList();
-            var target=result.computeIfAbsent(key,k->{var m=new LinkedHashMap<String,Object>();for(String d:dimensions)m.put(d,row.get(d));m.put("currency","CNY");return m;});
-            BigDecimal nativeAmount=decimal(row.get("amount")),nativeRevenue=decimal(row.get("revenue"));
-            boolean missingAmount=nativeAmount!=null&&nativeAmount.signum()!=0&&quote.rate(text(row.get("currency")),businessDate(row))==null;
-            boolean missingRevenue=nativeRevenue!=null&&nativeRevenue.signum()!=0&&quote.rate(text(row.get("currency")),businessDate(row))==null;
-            for(String field:List.of("amount","revenue","records","known_amounts","known_revenues","known_impressions","known_clicks","known_conversions","impressions","clicks","conversions")){
-                BigDecimal value=Set.of("amount","revenue").contains(field)?quote.convert(row.get(field),text(row.get("currency")),businessDate(row)):decimal(row.get(field));
-                if(field.equals("known_amounts")&&missingAmount||field.equals("known_revenues")&&missingRevenue)value=BigDecimal.ZERO;
-                if(value!=null)target.merge(field,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));else target.putIfAbsent(field,null);
+        return new Grouping(rows,quote).groups(dimensions);
+    }
+    /** Apply each row's business-date rounding once before making several rollups. */
+    static final class Grouping {
+        private static final List<String> COUNTS_AND_METRICS=List.of("records","known_amounts","known_revenues",
+            "known_impressions","known_clicks","known_conversions","impressions","clicks","conversions");
+        private record Converted(Map<String,Object> row,BigDecimal amount,BigDecimal revenue,
+                                 boolean missingAmount,boolean missingRevenue){}
+        private final List<Converted> converted;
+        Grouping(List<Map<String,Object>> rows,Quote quote){
+            var dates=rows.stream().map(FinanceFx::businessDate).toList();
+            quote.preload(dates);
+            converted=new ArrayList<>(rows.size());
+            int index=0;
+            for(var row:rows){
+                var day=dates.get(index++);
+                BigDecimal amount=decimal(row.get("amount")),revenue=decimal(row.get("revenue"));
+                BigDecimal rate=nonzero(amount)||nonzero(revenue)?quote.rate(text(row.get("currency")),day):null;
+                converted.add(new Converted(row,multiply(amount,rate),multiply(revenue,rate),
+                    nonzero(amount)&&rate==null,nonzero(revenue)&&rate==null));
             }
-            if(missingAmount)target.put("_fx_missing_amount",true);if(missingRevenue)target.put("_fx_missing_revenue",true);
         }
-        for(var target:result.values())for(String field:List.of("amount","revenue")){
-            target.put("known_"+field,target.get(field));target.put("partial_"+field,target.get(field));
-            if(Boolean.TRUE.equals(target.remove("_fx_missing_"+field))){target.put(field,null);target.put("fx_complete",false);}
+        private static boolean nonzero(BigDecimal value){return value!=null&&value.signum()!=0;}
+        List<Map<String,Object>> groups(String...dimensions){return groupsOfKind(null,dimensions);}
+        List<Map<String,Object>> groupsOfKind(String kind,String...dimensions){
+            Map<List<Object>,Map<String,Object>> result=new LinkedHashMap<>();
+            for(var item:converted){
+                var row=item.row();
+                if(kind!=null&&!kind.equals(row.get("kind")))continue;
+                var key=new ArrayList<Object>(dimensions.length);
+                for(String dimension:dimensions)key.add(row.get(dimension));
+                var target=result.computeIfAbsent(key,k->{
+                    var group=new LinkedHashMap<String,Object>();
+                    for(String dimension:dimensions)group.put(dimension,row.get(dimension));
+                    group.put("currency","CNY");return group;
+                });
+                add(target,"amount",item.amount());
+                add(target,"revenue",item.revenue());
+                for(String field:COUNTS_AND_METRICS){
+                    boolean missing=field.equals("known_amounts")&&item.missingAmount()||field.equals("known_revenues")&&item.missingRevenue();
+                    add(target,field,missing?BigDecimal.ZERO:decimal(row.get(field)));
+                }
+                if(item.missingAmount())target.put("_fx_missing_amount",true);
+                if(item.missingRevenue())target.put("_fx_missing_revenue",true);
+            }
+            for(var target:result.values())for(String field:List.of("amount","revenue")){
+                target.put("known_"+field,target.get(field));target.put("partial_"+field,target.get(field));
+                if(Boolean.TRUE.equals(target.remove("_fx_missing_"+field))){target.put(field,null);target.put("fx_complete",false);}
+            }
+            result.values().forEach(target->target.putIfAbsent("fx_complete",true));
+            return new ArrayList<>(result.values());
         }
-        result.values().forEach(target->target.putIfAbsent("fx_complete",true));
-        return new ArrayList<>(result.values());
+        private static void add(Map<String,Object> target,String field,BigDecimal value){
+            if(value==null)target.putIfAbsent(field,null);
+            else target.merge(field,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));
+        }
     }
     public void enrich(List<Map<String,Object>> rows,Quote quote){
         var dates=new ArrayList<LocalDate>();

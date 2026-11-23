@@ -30,13 +30,14 @@ function response(q){
   const selected=available.filter(s=>!currency||currency===s.currency);
   const amount=selected.reduce((n,s)=>n+s.amount,0),displayCurrency=cny?'CNY':currency;
   const quote={id:'fx-'+(++scopeResponse),time:'2026-10-29T00:00:00Z',provider:'test'};
+  const items=selected.map(s=>({id:s.id,order_id:'ORDER-'+s.id,shop_id:s.id,platform:s.platform,kind:q.kind||'BILL',currency:s.currency,amount:s.amount}));
   return {
     filters:{...q,currency,displayCurrency},fx:cny?quote:null,currencies:[...new Set(available.map(s=>s.currency))],
     groups,shops,sync:[],fees:[],statuses:[],trend:[],hourly:[],recent:[],updatedAt:'2026-10-29T00:00:00Z',
     totals:['ORDER','SETTLEMENT','BILL','PENDING','AD','FEE'].map(kind=>({kind,records:selected.length,known_amounts:selected.length,known_revenues:selected.length,amount,revenue:amount})),
     ranking:selected.map(s=>({shop_id:s.id,kind:'SETTLEMENT',amount:s.amount,settled_gross_amount:s.amount,currency:displayCurrency,records:1})),
     profit:{currency:displayCurrency,settledGrossAmount:amount,platformFees:0,advertising:0,productCost:10,operatingCost:10,logisticsLabelCost:0,amount:amount-10,notes:[]},
-    items:selected.map(s=>({id:s.id,order_id:'ORDER-'+s.id,shop_id:s.id,platform:s.platform,kind:q.kind||'BILL',currency:s.currency,amount:s.amount})),
+    records:{items,fieldSettings,total:selected.length?100:0,page:Number(q.page)||1,pageSize:50},items,
     fieldSettings,total:selected.length?100:0,page:Number(q.page)||1,pageSize:50
   };
 }
@@ -48,10 +49,10 @@ w.api=async (path,options={})=>{
     return {data:{id:'cost-'+costExports.length,status:'READY',filename:'成本.xlsx',contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',parts:1,processed:1,total:1,start:body.start,end:body.end}};
   }
   if(endpoint==='/cost-exports')return {data:[]};
-  if(['/overview','/reconciliation','/screen','/records'].includes(endpoint)){
+  if(['/overview','/workspace/query','/screen'].includes(endpoint)){
     if(failedShop&&q.shopId===failedShop)throw Error('Internal server error');
     const result=response(q);
-    if((heldShop&&q.shopId===heldShop&&endpoint!=='/records')||(heldRecords&&q.shopId===heldRecords&&endpoint==='/records'))await new Promise(resolve=>pending.push(resolve));
+    if((heldShop&&q.shopId===heldShop)||(heldRecords&&q.shopId===heldRecords&&endpoint==='/workspace/query'))await new Promise(resolve=>pending.push(resolve));
     return {data:result};
   }
   if(endpoint==='/ads')return {data:[]};
@@ -61,6 +62,10 @@ w.api=async (path,options={})=>{
   if(endpoint==='/workspace/costs'){
     const shop=shops.find(s=>s.id===q.shopId)||shops.find(s=>!q.groupId||s.group_id===q.groupId);
     return {data:{live:true,shopId:shop.id,groupId:shop.group_id,groups,costs:[],manualCosts:[],products:[],mappings:{},settings:{},shopCatalogs:{}}};
+  }
+  if(endpoint==='/workspace/costs/context'){
+    const shop=shops.find(s=>s.id===q.shopId)||shops.find(s=>!q.groupId||s.group_id===q.groupId);
+    return {data:{live:true,catalogLoaded:false,settingsLoaded:false,shopId:shop.id,groupId:shop.group_id||'',groupName:''}};
   }
   if(endpoint==='/workspace/costs/orders'){
     const available=scoped(q).filter(s=>!q.currency||q.currency===s.currency);
@@ -85,10 +90,10 @@ function change(label,value){
 }
 let transitionStart=0;
 async function choose(label,value){transitionStart=reads.length;change(label,value);await ready();}
-const reports=()=>reads.filter(r=>['/overview','/records','/screen','/reconciliation'].includes(r.endpoint));
+const reports=()=>reads.filter(r=>['/overview','/workspace/query','/screen'].includes(r.endpoint));
 const lastReport=()=>reports().at(-1);
 function assertScopeRequest(shopId,displayCurrency){
-  const q=reads.slice(transitionStart).find(r=>['/overview','/records','/screen','/reconciliation'].includes(r.endpoint)).q;
+  const q=reads.slice(transitionStart).find(r=>['/overview','/workspace/query','/screen'].includes(r.endpoint)).q;
   assert.equal(q.shopId,shopId);assert.equal(q.currency,'','new scope must resolve its own native currency');
   assert.equal(q.fxSnapshot,'','new scope must obtain its own FX snapshot');assert.equal(q.displayCurrency,displayCurrency);
 }
@@ -119,14 +124,14 @@ try{
         const tab=[...d.querySelectorAll('.fi-settlement-totals button,.fi-tabs button')].find(b=>b.textContent.startsWith(label));
         assert(tab,label);tab.click();await ready();
         await choose('店铺','ph');await choose('店铺','my');assertScopeRequest('my',mode);assertVisible(route,shops[1]);
-        assert.equal(reads.filter(r=>r.endpoint==='/records').at(-1).q.kind,kind);
+        assert.equal(reads.filter(r=>r.endpoint==='/workspace/query').at(-1).q.kind,kind);
       }
       if(['settlements','orders','fee-records'].includes(route)){
-        const rowQuery=reads.filter(r=>r.endpoint==='/records').at(-1).q;
+        const rowQuery=reads.filter(r=>r.endpoint==='/workspace/query').at(-1).q;
         assert(['','MYR'].includes(rowQuery.currency),'direct record requests resolve the new shop currency server-side when blank');assert.equal(rowQuery.shopId,'my');assert.equal(rowQuery.displayCurrency,mode);
         if(rowQuery.fxSnapshot)assert(rowQuery.fxSnapshot.startsWith('fx-'),'only a resolved current quote can be forwarded');
         await click('下一页');await choose('店铺','ph');
-        assert.equal(reads.filter(r=>r.endpoint==='/records').at(-1).q.page,'1');
+        assert.equal(reads.filter(r=>r.endpoint==='/workspace/query').at(-1).q.page,'1');
       }
       await choose('店铺','th');assertScopeRequest('th',mode);assertVisible(route,shops[2]);
       await choose('店铺','');assertScopeRequest('',mode);
@@ -177,8 +182,8 @@ try{
   assert(root.classList.contains('fi-selection-pending'));
   assert(root.textContent.includes('ORDER-my'),'last complete view remains mounted while pending');
   assert(root.querySelector('.fi-content').hidden,'old rows remain hidden until the new overview and rows both finish');
-  assert.equal(reads.filter(r=>r.endpoint==='/records').at(-1).q.currency,'PHP');
-  const oldRecords=reads.filter(r=>r.endpoint==='/records').at(-1);
+  assert.equal(reads.filter(r=>r.endpoint==='/workspace/query').at(-1).q.currency,'','single page queries resolve the native currency with their rows');
+  const oldRecords=reads.filter(r=>r.endpoint==='/workspace/query').at(-1);
   change('店铺','my');await ready();assertVisible('settlements',shops[1]);
   assert.equal(oldRecords.signal.aborted,true);
   heldRecords='';pending.splice(0).forEach(resolve=>resolve());await pause();assertVisible('settlements',shops[1]);

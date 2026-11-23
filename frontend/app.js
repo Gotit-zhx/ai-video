@@ -1,3 +1,5 @@
+const workspaceScriptsReady = document.readyState === "complete" ? Promise.resolve() :
+  new Promise(resolve => document.addEventListener("DOMContentLoaded", resolve, { once: true }));
 const loginView = document.querySelector("#login-view");
 const dashboardView = document.querySelector("#dashboard-view");
 const loginForm = document.querySelector("#login-form");
@@ -256,6 +258,8 @@ let generalVideoReferences = [];
 let generalVideoReference = null;
 let generalMentionStart = null;
 let generalVideoLoadGeneration = 0;
+let generalVideoOptionsGeneration = 0;
+let generalVideoOptions = null;
 let generalVideoPollTimer = null;
 let generalVideoPollInFlight = false;
 const expandedGeneralVideoTaskIds = new Set();
@@ -983,6 +987,10 @@ async function showDashboard(user) {
   document.querySelector("#current-organization").textContent = `${user.organizationName || "企业工作空间"}${user.organizationCode ? ` · ${user.organizationCode}` : ""}`;
   document.querySelector("#current-permission-state").textContent = productPermissionLabel();
   applyFeatureAccess();
+  if (window.location.hash.startsWith('#finance-') && canAccessFinance() && !globalThis.FinanceWorkspace) {
+    await workspaceScriptsReady;
+    if (currentUser !== user) return;
+  }
   if (window.location.hash.startsWith('#finance-') && globalThis.FinanceWorkspace?.allowed()) {
     switchWorkspace('finance'); globalThis.FinanceWorkspace.enter(window.location.hash.slice(9)); return;
   }
@@ -1366,7 +1374,7 @@ document.querySelectorAll("[data-commerce-route]").forEach(link => {
 document.querySelector("#nav-general-video").addEventListener("click", async event => {
   event.preventDefault();
   switchWorkspace("generalVideo");
-  await loadGeneralVideoTasks();
+  await Promise.all([loadGeneralVideoOptions(), loadGeneralVideoTasks()]);
 });
 
 document.querySelector("#nav-ai-video-monitor").addEventListener("click", async event => {
@@ -9605,6 +9613,8 @@ function resetAiVideoMonitorState() {
 
 function resetGeneralVideoState() {
   generalVideoLoadGeneration += 1;
+  generalVideoOptionsGeneration += 1;
+  generalVideoOptions = null;
   if (generalVideoPollTimer) clearInterval(generalVideoPollTimer);
   generalVideoPollTimer = null;
   generalVideoPollInFlight = false;
@@ -9614,7 +9624,8 @@ function resetGeneralVideoState() {
   clearGeneralVideoReferences();
   const form = document.querySelector("#general-video-form");
   form?.reset();
-  syncGeneralVideoRouteResolution();
+  renderGeneralVideoOptions();
+  setGeneralVideoOptionsStatus("");
   document.querySelector("#general-prompt-count").textContent = "0 / 20,000";
   const formStatus = document.querySelector("#general-video-form-status");
   formStatus.textContent = "";
@@ -13550,10 +13561,64 @@ function renderGeneralVideoReferences() {
   mentions.innerHTML = generalVideoReferences.map(reference => `<button type="button" data-general-mention="图片${generalVideoReferences.indexOf(reference) + 1}" title="${escapeHtml(reference.file.name)}">@图片${generalVideoReferences.indexOf(reference) + 1}</button>`).join("");
 }
 
-function syncGeneralVideoRouteResolution() {
-  const form = document.querySelector('#general-video-form');
-  form.querySelector('input[name="videoRoute"][value="QUALITY"]').checked = true;
-  form.querySelector('input[name="resolution"][value="720p"]').checked = true;
+function putGeneralVideoChoices(select, choices, preferred) {
+  const value = choices.some(choice => choice.value === select.value) ? select.value : preferred;
+  select.replaceChildren(...(choices.length
+    ? choices.map(choice => new Option(choice.label, choice.value))
+    : [new Option("—", "")]));
+  if (choices.some(choice => choice.value === value)) select.value = value;
+  select.disabled = !choices.length;
+}
+
+function renderGeneralVideoResolutions() {
+  const form = document.querySelector("#general-video-form");
+  const model = generalVideoOptions?.models.find(option => option.id === form.elements.modelId.value);
+  const resolutions = model?.resolutions || [];
+  putGeneralVideoChoices(form.elements.resolution,
+    resolutions.map(value => ({ value, label: value === "4k" ? "4K" : value })), "720p");
+}
+
+function renderGeneralVideoOptions() {
+  const form = document.querySelector("#general-video-form");
+  const models = generalVideoOptions?.models || [];
+  const ratios = models.length ? generalVideoOptions.aspectRatios : [];
+  const durations = models.length ? [
+    { value: "-1", label: "自动" },
+    ...Array.from({ length: generalVideoOptions.maxDuration - generalVideoOptions.minDuration + 1 }, (_, index) => {
+      const seconds = generalVideoOptions.minDuration + index;
+      return { value: String(seconds), label: `${seconds} 秒` };
+    })
+  ] : [];
+  putGeneralVideoChoices(form.elements.modelId, models.map(model => ({ value: model.id, label: model.label })));
+  putGeneralVideoChoices(form.elements.aspectRatio,
+    ratios.map(value => ({ value, label: value === "adaptive" ? "自适应" : value })), "adaptive");
+  putGeneralVideoChoices(form.elements.durationSeconds, durations, "-1");
+  renderGeneralVideoResolutions();
+  document.querySelector("#general-video-submit").disabled = !models.length || form.getAttribute("aria-busy") === "true";
+}
+
+function setGeneralVideoOptionsStatus(message, error = false) {
+  const status = document.querySelector("#general-video-options-status");
+  status.textContent = message;
+  status.classList.toggle("is-error", error);
+}
+
+async function loadGeneralVideoOptions() {
+  const generation = ++generalVideoOptionsGeneration;
+  const organizationId = currentUser?.organizationId;
+  if (!organizationId) return;
+  setGeneralVideoOptionsStatus("正在读取生成选项…");
+  try {
+    const result = await generalVideoApi("/options");
+    if (generation !== generalVideoOptionsGeneration || currentUser?.organizationId !== organizationId) return;
+    generalVideoOptions = result.data;
+    renderGeneralVideoOptions();
+    const available = Boolean(generalVideoOptions?.models?.length);
+    setGeneralVideoOptionsStatus(available ? "" : "当前企业没有可用的生成模型。", !available);
+  } catch (error) {
+    if (generation !== generalVideoOptionsGeneration || currentUser?.organizationId !== organizationId) return;
+    setGeneralVideoOptionsStatus(error.message, true);
+  }
 }
 
 function addGeneralVideoReferences(files) {
@@ -13661,7 +13726,7 @@ function generalVideoTaskCard(task) {
 function renderGeneralVideoTasks() {
   const grid = document.querySelector("#general-video-task-grid");
   if (!generalVideoTasks.length) {
-    IncrementalDOM.html(grid, `<div class="general-video-empty"><strong>还没有通用生成任务</strong><span>上传参考图并写下画面描述，第一条任务会出现在这里。</span></div>`);
+    IncrementalDOM.html(grid, `<div class="general-video-empty"><strong>还没有通用生成任务</strong></div>`);
     return;
   }
   IncrementalDOM.html(grid, generalVideoTasks.map(generalVideoTaskCard).join(""));
@@ -13771,7 +13836,6 @@ function renderGeneralVideoReference() {
     });
     video.addEventListener("error", () => {if(reference === generalVideoReference) {reference.duration = null;preview.querySelector('[data-clip-summary]').textContent = "浏览器无法预览此视频，请转换成 MP4 后上传";}});
   }
-  syncGeneralVideoRouteResolution();
 }
 
 function paintGeneralVideoClip() {
@@ -13816,7 +13880,6 @@ document.querySelector("#general-video-reference-input").addEventListener("chang
   else if (generalVideoReferences.reduce((n, r) => n + r.file.size, files[0].size) > 90 * 1024 * 1024) message = "参考素材合计不能超过 90 MB。";
   if (message) { error.textContent = message; error.hidden = false; return; }
   generalVideoReference = {file: files[0], previewUrl: URL.createObjectURL(files[0])};
-  document.querySelector('#general-video-form input[name="videoRoute"][value="QUALITY"]').checked = true;
   error.hidden = true;
   renderGeneralVideoReference();
 });
@@ -13893,7 +13956,7 @@ document.querySelector("#general-video-prompt").addEventListener("input", event 
 });
 
 document.querySelector("#general-video-form").addEventListener("change", event => {
-  if (event.target.matches('input[name="videoRoute"], input[name="resolution"]')) syncGeneralVideoRouteResolution();
+  if (event.target.name === "modelId") renderGeneralVideoResolutions();
 });
 
 document.querySelector("#general-video-task-grid").addEventListener("click", async event => {
@@ -13931,13 +13994,15 @@ document.querySelector("#general-video-task-grid").addEventListener("click", asy
   await loadGeneralVideoTaskDetail(id);
 });
 
-document.querySelector("#general-video-refresh").addEventListener("click", () => loadGeneralVideoTasks());
+document.querySelector("#general-video-refresh").addEventListener("click", () =>
+  Promise.all([loadGeneralVideoOptions(), loadGeneralVideoTasks()]));
 
 document.querySelector("#general-video-form").addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.currentTarget;
   const status = document.querySelector("#general-video-form-status");
   const button = document.querySelector("#general-video-submit");
+  if (button.disabled) return;
   const formData = new FormData(form);
   const prompt = String(formData.get("prompt") || "");
   const limit = generalVideoReferenceLimit();
@@ -13946,18 +14011,17 @@ document.querySelector("#general-video-form").addEventListener("submit", async e
     status.className = "general-form-status is-error";
     return;
   }
-  if ((!generalVideoReferences.length && !generalVideoReference) || generalVideoReferences.length > limit) {
-    status.textContent = generalVideoReferences.length ? `最多使用 ${limit} 张图片。` : "请至少上传 1 张图片或 1 条视频。";
+  if (generalVideoReferences.length > limit) {
+    status.textContent = `最多使用 ${limit} 张图片。`;
     status.className = "general-form-status is-error";
     return;
   }
   if (generalVideoReference && !generalVideoReference.duration) {status.textContent = "请等待视频时长读取完成，或更换可预览的 MP4 视频。";status.className = "general-form-status is-error";return;}
   const payload = new FormData();
   payload.append("prompt", prompt);
-  payload.append("durationSeconds", String(formData.get("durationSeconds") || "5"));
-  payload.append("aspectRatio", String(formData.get("aspectRatio") || "9:16"));
-  payload.append("resolution", String(formData.get("resolution") || "720p"));
-  payload.append("videoRoute", String(formData.get("videoRoute") || "QUALITY"));
+  for (const field of ["modelId", "durationSeconds", "aspectRatio", "resolution"]) {
+    payload.append(field, String(formData.get(field)));
+  }
   payload.append("autoStart", String(formData.get("autoStart") === "on"));
   generalVideoReferences.forEach(reference => payload.append("files", reference.file, reference.file.name));
   if (generalVideoReference) {
@@ -13966,15 +14030,15 @@ document.querySelector("#general-video-form").addEventListener("submit", async e
     payload.append("videoClipEnd", String(generalVideoReference.clipEnd));
   }
   button.disabled = true;
+  form.setAttribute("aria-busy", "true");
   button.innerHTML = `正在创建 <span class="button-spinner" aria-hidden="true"></span>`;
-  status.textContent = "正在上传参考图并创建任务…";
+  status.textContent = "正在创建";
   status.className = "general-form-status";
   try {
     const result = await generalVideoApi("", { method: "POST", body: payload });
     const created = generalVideoTaskPayload(result.data);
     clearGeneralVideoReferences();
-    form.reset();
-    syncGeneralVideoRouteResolution();
+    form.elements.prompt.value = "";
     document.querySelector("#general-prompt-count").textContent = "0 / 20,000";
     status.textContent = formData.get("autoStart") === "on" ? "任务已创建，正在进入生成线路。" : "任务已保存，等待开始。";
     status.className = "general-form-status is-success";
@@ -13984,12 +14048,11 @@ document.querySelector("#general-video-form").addEventListener("submit", async e
     status.textContent = error.message;
     status.className = "general-form-status is-error";
   } finally {
-    button.disabled = false;
+    form.removeAttribute("aria-busy");
+    button.disabled = !form.elements.modelId.value;
     button.innerHTML = `开始生成 <span aria-hidden="true">→</span>`;
   }
 });
-
-syncGeneralVideoRouteResolution();
 
 if (window.location.hash === "#product-capture") rememberProductCaptureRoute(true);
 loadSocialLoginProviders();

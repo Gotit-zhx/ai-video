@@ -43,6 +43,11 @@ w.api=async(path,options={})=>{
     totals:[{kind:'SETTLEMENT',amount:1200,records:3},{kind:'BILL',amount:1200,records:1},{kind:'PENDING',amount:300,records:2}],
     ranking:[],statuses:[],fees:[],trend:[],basis:'测试数据',updatedAt:'2026-10-22T00:00:00Z',hourly:[],recent:records,
     productCosts:{scope:'ORDER',basis:'测试订单成本口径',total:{known_amount_cny:88.75,amount_cny:null,ready_count:3,pending_count:1,estimated_count:2,excluded_count:0},shops:[{shop_id:'shop2',known_amount_cny:88.75,amount_cny:null,pending_count:1}]}};
+  if(endpoint==='/workspace/query'){
+    const kind=url.searchParams.get('view')==='reconciliation'?'RECONCILIATION':url.searchParams.get('kind')||'ORDER';
+    const recordPage={items:records.map((r,i)=>({...r,kind,order_id:i===3?'':r.external_id,currency:'PHP',amount:[203,226,kind==='SETTLEMENT'?0:538,null][i]})),total:51,page,pageSize:50,fieldSettings:settings(kind)};
+    return {data:{...common,records:recordPage}};
+  }
   if(['/overview','/screen'].includes(endpoint))return {data:common};
   if(['/records','/reconciliation'].includes(endpoint)){const kind=endpoint==='/reconciliation'?'RECONCILIATION':url.searchParams.get('kind')||'ORDER';return {data:{...common,items:records.map((r,i)=>({...r,kind,order_id:i===3?'':r.external_id,currency:'PHP',amount:[203,226,kind==='SETTLEMENT'?0:538,null][i]})),total:51,page,pageSize:50,fieldSettings:settings(kind)}};}
   throw Error('Unexpected API '+endpoint);
@@ -63,9 +68,9 @@ assert(d.querySelector('thead').textContent.includes('首次平台结算日期')
 const stable=row;button('刷新').click();await ready();assert.equal(d.querySelector('tbody tr'),stable);
 let input=d.querySelector('.fi-number-search textarea');input.value='585766520348574952\n586208660231587825，585766520348574952';
 input.closest('form').dispatchEvent(new w.Event('submit',{cancelable:true}));await ready();
-let query=requests.filter(r=>r.url.pathname.endsWith('/records')).at(-1).url.searchParams;
+let query=requests.filter(r=>r.url.pathname.endsWith('/workspace/query')).at(-1).url.searchParams;
 assert.equal(query.get('numbers'),'585766520348574952,586208660231587825');assert.equal(query.get('page'),'1');
-await choose('店铺','shop1');query=requests.filter(r=>r.url.pathname.endsWith('/records')).at(-1).url.searchParams;
+await choose('店铺','shop1');query=requests.filter(r=>r.url.pathname.endsWith('/workspace/query')).at(-1).url.searchParams;
 assert.equal(query.get('shopId'),'shop1');assert.equal(query.get('numbers'),'585766520348574952,586208660231587825');
 button('下一页').click();await ready();assert.equal(requests.at(-1).url.searchParams.get('page'),'2');
 button('清除').click();await ready();assert.equal(requests.at(-1).url.searchParams.get('numbers'),'');assert.equal(requests.at(-1).url.searchParams.get('page'),'1');
@@ -85,7 +90,7 @@ for(const [kind,label] of [['SETTLEMENT','结算明细'],['BILL','结算账单']
   input=d.querySelector('.fi-number-search textarea');input.value='00123456789012345678';
   input.closest('form').dispatchEvent(new w.Event('submit',{cancelable:true}));await ready();
   button('下一页').click();await ready();
-  const current=requests.filter(r=>r.url.pathname.endsWith('/records')).at(-1).url.searchParams;
+  const current=requests.filter(r=>r.url.pathname.endsWith('/workspace/query')).at(-1).url.searchParams;
   button('导出 Excel').click();await tick();const modal=d.querySelector('dialog');
   assert.equal(modal.querySelector('[aria-label="导出类型"]').value,kind);
   assert(modal.textContent.includes('不限当前页'));assert(modal.textContent.includes('00123456789012345678'));

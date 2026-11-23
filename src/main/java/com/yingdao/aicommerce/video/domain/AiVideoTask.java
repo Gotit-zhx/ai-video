@@ -264,6 +264,14 @@ public class AiVideoTask {
     public boolean isUseScriptReferenceVideo() { return useScriptReferenceVideo; }
     public boolean isDirectReferenceVideo() { return directReferenceVideo; }
     public String getGenerationRulesJson() { return generationRulesJson; }
+    public String getSelectedVideoModelId() {
+        if (!isGeneral() || generationRulesJson == null || generationRulesJson.isBlank()) return null;
+        try {
+            return GENERATION_RULES_MAPPER.readTree(generationRulesJson).path("videoModelId").asText(null);
+        } catch (RuntimeException invalidRules) {
+            return null;
+        }
+    }
     public String getVideoReferenceMode() {
         if (generationRulesJson == null || generationRulesJson.isBlank()) return "GRID";
         try {

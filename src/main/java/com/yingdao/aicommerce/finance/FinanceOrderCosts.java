@@ -5,8 +5,9 @@ import java.time.*;
 import java.util.*;
 import static com.yingdao.aicommerce.finance.FinanceData.*;
 
-/** SKU-first, SPU-fallback standard costs, separate from actual warehouse accounting. */
+/** Merchant-SKU-first, platform-SKU-fallback standard costs, separate from actual warehouse accounting. */
 public final class FinanceOrderCosts {
+    static final String POLICY_VERSION="sku-platform-sku-standard-v1";
     final FinanceRepository repo;
     public FinanceOrderCosts(FinanceRepository repo){this.repo=repo;}
     public record Context(String shopId,String groupId,String region,String timezone,String bookId,
@@ -72,7 +73,7 @@ public final class FinanceOrderCosts {
         var rules=map(context.settings().get("rules"));
         boolean excluded=Set.of("UNPAID","CANCELLED","CANCELED").contains(status);
         var out=new LinkedHashMap<String,Object>();
-        out.put("currency","CNY");out.put("basis","MERCHANT_SKU_STANDARD");out.put("warehouse",warehouse);
+        out.put("currency","CNY");out.put("basis","MERCHANT_SKU_STANDARD");out.put("warehouse",warehouse);out.put("policyVersion",POLICY_VERSION);
         out.put("bookId",context.bookId());out.put("dateBasis",text(rules.getOrDefault("basis","order")));
         out.put("lines",new ArrayList<Map<String,Object>>());
         if(excluded){out.putAll(Map.of("status","EXCLUDED","amountCny",BigDecimal.ZERO,"knownAmountCny",BigDecimal.ZERO,"lineCount",0,"matchedLines",0,"fallbackLines",0,"note","未付款或取消订单，不计标准成本"));return out;}
@@ -124,7 +125,7 @@ public final class FinanceOrderCosts {
             if(lineWarehouse.isBlank()){line.put("issue","请配置成本仓，无法唯一匹配店铺国家");continue;}
             boolean manual=!saved.isEmpty()&&!FinanceCostWorkspace.automaticMethod(text(saved.get("method")))
                     &&context.groupId().equals(text(saved.get("groupId")));
-            var automatic=FinanceCostWorkspace.matchProduct(seller,product,codes.keySet(),normalized);
+            var automatic=FinanceCostWorkspace.matchProduct(seller,sku,codes.keySet(),normalized);
             String code=manual?text(saved.get("code")):automatic==null?"":automatic.code();
             BigDecimal factor=manual?decimal(saved.get("factor")):automatic!=null&&automatic.bundleQuantity()!=null?BigDecimal.valueOf(automatic.bundleQuantity()):BigDecimal.ONE;
             String manualId=manual?text(saved.get("manualCostId")):"";
@@ -136,14 +137,14 @@ public final class FinanceOrderCosts {
             }else{
                 if(context.costs().isEmpty()){line.put("issue","店铺分组尚未配置成本资料");continue;}
                 if(code.isBlank()){
-                    var elsewhere=FinanceCostWorkspace.matchProduct(seller,product,allCodes,normalized);
-                    line.put("issue",elsewhere!=null?"成本表缺少 "+lineWarehouse+" 的 "+elsewhere.code()+" 成本，不能自动使用其他国家成本；请人工确认":
-                        "商品 SKU 与平台 SPU 均未匹配到唯一成本型号，请人工确认");continue;
+                    var elsewhere=FinanceCostWorkspace.matchProduct(seller,sku,allCodes,normalized);
+                    line.put("issue",elsewhere!=null?"商品 SKU 与平台 SKU 均未匹配到 "+lineWarehouse+" 的成本；其他仓仅找到 "+elsewhere.code()+"，不能自动使用其他国家成本，请补齐本仓成本或人工确认":
+                        "商品 SKU 与平台 SKU 均未匹配到唯一成本型号，请人工确认");continue;
                 }
                 if(!codes.containsKey(code)){line.put("issue","成本表缺少 "+lineWarehouse+" 的 "+code+" 成本，不能自动使用其他国家成本");continue;}
                 selected=codes.get(code);
             }
-            line.put("matchedBy",manual?"MANUAL":automatic!=null&&automatic.method().equals("SPU_CODE")?"SPU":"SKU");
+            line.put("matchedBy",manual?"MANUAL":automatic!=null&&automatic.method().equals("PLATFORM_SKU_CODE")?"PLATFORM_SKU":"SKU");
             if(factor==null||factor.signum()<=0){line.put("issue","人工关联缺少有效换算数量");continue;}
             var prices=map(selected.get("prices"));String priceMonth=manualId.isBlank()?month:"固定单价";
             BigDecimal price=decimal(manualId.isBlank()?prices.get(month):selected.get("unitPriceCny"));
@@ -174,7 +175,7 @@ public final class FinanceOrderCosts {
         out.put("amountCny",complete?known:null);out.put("knownAmountCny",known);out.put("lineCount",total);
         out.put("matchedLines",matched);out.put("fallbackLines",fallback);
         out.put("note",allExcluded?"全部商品明细未付款或已取消，不计标准成本":complete?(fallback>0?"使用最近历史月份的标准成本估算":
-            lines.stream().anyMatch(l->l.containsKey("manualCostId"))?"按已关联成本计算（含独立手动成本），金额为人民币":"按商品 SKU 优先、平台 SPU 兜底与有效购买数量统计标准成本，取消商品明细不计入"):"成本资料待补齐，不按零成本计算");
+            lines.stream().anyMatch(l->l.containsKey("manualCostId"))?"按已关联成本计算（含独立手动成本），金额为人民币":"按商品 SKU 优先、平台 SKU 兜底与有效购买数量统计标准成本，取消商品明细不计入"):"成本资料待补齐，不按零成本计算");
         return out;
     }
     Context context(String organization,String shopId){
@@ -206,7 +207,7 @@ public final class FinanceOrderCosts {
         if(value instanceof List<?> list)return list.stream().map(FinanceOrderCosts::canonical).toList();
         return value;
     }
-    static String sourceHash(FinanceRepository repo,Map<String,Object> raw,String status){return hash("sku-spu-standard-v1:"+(hasGift(raw)?"gift-zero-v1:":"cancelled-excluded-v2:")+repo.write(canonical(raw))+status);}
+    static String sourceHash(FinanceRepository repo,Map<String,Object> raw,String status){return hash(POLICY_VERSION+":"+(hasGift(raw)?"gift-zero-v1:":"cancelled-excluded-v2:")+repo.write(canonical(raw))+status);}
     static void enqueue(FinanceRepository repo,Scope s,Entry entry){
         if(!entry.kind().equals("ORDER"))return;
         // INSERT ... SELECT takes shared locks on its source rows in MySQL's
@@ -235,6 +236,40 @@ public final class FinanceOrderCosts {
             ON DUPLICATE KEY UPDATE cursor_id='',status='READY',requested_at=UTC_TIMESTAMP(6)
             """,organization,shopId);
         repo.jdbc().update("UPDATE finance_order_cost_jobs SET priority=1 WHERE organization_id=? AND shop_id=? AND priority=2",organization,shopId);
+        recordPolicyRequest(organization,shopId);
+    }
+    /** One small durable scheduling receipt per shop/policy, never per-order financial snapshots. */
+    void recordPolicyRequest(String organization,String shopId){
+        String id=hash("standard-cost-policy:"+POLICY_VERSION+":"+organization+":"+shopId).substring(0,32);
+        int added=repo.jdbc().update("""
+            INSERT IGNORE INTO finance_workspace_audit(id,organization_id,entity_type,entity_id,after_json,reason,actor_id)
+            VALUES(?,?,'COST_POLICY_REBUILD',?,?,?,'SYSTEM')
+            """,id,organization,shopId,repo.write(Map.of("policyVersion",POLICY_VERSION,"status","QUEUED")),"标准成本匹配策略已加入有界后台重算");
+        if(added>0&&number(repo.jdbc().queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='finance_query_events'",Long.class))>0){
+            String companyId=hash("standard-cost-policy-invalidation:"+POLICY_VERSION+":"+organization).substring(0,32);
+            int first=repo.jdbc().update("""
+                INSERT IGNORE INTO finance_workspace_audit(id,organization_id,entity_type,entity_id,after_json,reason,actor_id)
+                VALUES(?,?,'COST_POLICY_INVALIDATE',?,?,?,'SYSTEM')
+                """,companyId,organization,organization,repo.write(Map.of("policyVersion",POLICY_VERSION)),"财务投影的旧成本匹配策略已失效");
+            if(first>0)repo.jdbc().update("INSERT INTO finance_query_events(organization_id,event_scope,source_table) VALUES(?,'ALL','finance_cost_policy')",organization);
+        }
+    }
+    /** Finished old histories need an explicit pass even if no upstream order changes again. */
+    void seedPolicyUpgrades(){
+        var shops=repo.jdbc().queryForList("""
+            SELECT c.organization_id,c.id FROM finance_connections c
+            JOIN finance_cost_rebuilds r ON r.organization_id=c.organization_id AND r.shop_id=c.id
+            WHERE c.status<>'REMOVED' AND r.status='DONE'
+              AND EXISTS(SELECT 1 FROM finance_cost_books b WHERE b.organization_id=c.organization_id AND b.group_id=c.group_id)
+              AND NOT EXISTS(SELECT 1 FROM finance_workspace_audit a WHERE a.id=LEFT(SHA2(CONCAT('standard-cost-policy:',?,':',c.organization_id,':',c.id),256),32))
+            ORDER BY c.organization_id,c.id LIMIT 10
+            """,POLICY_VERSION);
+        for(var shop:shops){
+            String organization=text(shop.get("organization_id")),id=text(shop.get("id"));
+            // Lock only this primary-key row. Never reset another active scan's cursor.
+            var current=repo.jdbc().queryForList("SELECT status FROM finance_cost_rebuilds WHERE organization_id=? AND shop_id=? FOR UPDATE SKIP LOCKED",organization,id);
+            if(!current.isEmpty()&&"DONE".equals(current.getFirst().get("status")))requestShop(organization,id);
+        }
     }
     void requestGroup(Scope s,String group){
         for(String shop:repo.jdbc().queryForList("SELECT id FROM finance_connections WHERE organization_id=? AND group_id=? AND status<>'REMOVED'",String.class,s.organizationId(),group))
@@ -259,8 +294,11 @@ public final class FinanceOrderCosts {
               SELECT 1 FROM finance_cost_books b WHERE b.organization_id=c.organization_id AND b.group_id=c.group_id)
             ORDER BY c.organization_id,c.id LIMIT 100
             """);
-        for(var shop:missing)if(repo.writableShop(text(shop.get("organization_id")),text(shop.get("id"))))
-            repo.jdbc().update("INSERT IGNORE INTO finance_cost_rebuilds(organization_id,shop_id) VALUES(?,?)",shop.get("organization_id"),shop.get("id"));
+        for(var shop:missing)if(repo.writableShop(text(shop.get("organization_id")),text(shop.get("id")))){
+            int added=repo.jdbc().update("INSERT IGNORE INTO finance_cost_rebuilds(organization_id,shop_id) VALUES(?,?)",shop.get("organization_id"),shop.get("id"));
+            if(added>0)recordPolicyRequest(text(shop.get("organization_id")),text(shop.get("id")));
+        }
+        seedPolicyUpgrades();
         var jobs=repo.jdbc().queryForList("SELECT * FROM finance_cost_rebuilds WHERE status IN ('READY','LABELS') ORDER BY requested_at LIMIT 1 FOR UPDATE SKIP LOCKED");
         if(jobs.isEmpty())return 0;var job=jobs.getFirst();
         if(!repo.writableShop(text(job.get("organization_id")),text(job.get("shop_id")))){
@@ -339,6 +377,7 @@ public final class FinanceOrderCosts {
             var label=new LinkedHashMap<String,Object>();label.put("amount_cny",order.get("invoice_label_amount"));
             label.put("pending_count",order.get("invoice_label_pending"));label.put("shipment_count",order.get("invoice_label_shipments"));
             var result=FinanceLabelCosts.overlay(product,label);
+            result.put("policyVersion",POLICY_VERSION);
             String serialized=repo.write(result);
             if(!old.equals(decode(serialized))){
                 // Persist the current derived result only. Repeated synchronization

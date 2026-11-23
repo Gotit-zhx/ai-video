@@ -63,3 +63,7 @@ export function createAdvertisingFixture(){
   }
   return {groups,shops,accounts,facts,overview,records};
 }
+
+export function advertisingWorkspaceResponse(fixture,q,{partial=false,adAccounts=fixture.accounts,adSpend,adAccountError=false,adSpendError=false}={}){
+  return {...fixture.overview(q,partial),records:fixture.records(q,partial),adAccounts,adSpend,adAccountError,adSpendError};
+}

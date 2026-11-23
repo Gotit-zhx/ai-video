@@ -20,6 +20,7 @@ class FinanceAdSpendReportTest {
     Map<String,Object> apiRecord(String kind){return new LinkedHashMap<>(Map.of("id","api","shop_id","a","platform","TIKTOK_SHOP","kind",kind,"record_date","2026-10-02","currency","USD","amount",new BigDecimal("10"),"source","API"));}
     @Test void shopeeShopDailyTotalDoesNotAddImportedCampaignsOrOtherPlatforms(){
         var official=new LinkedHashMap<String,Object>(Map.of("source_key","cpc","platform","SHOPEE","shop_id","s1","record_date","2026-10-02","currency","USD","amount",new BigDecimal("25"),"account_id","10001","source","API_SHOPEE_CPC"));
+        official.put("gms_amount",BigDecimal.ZERO);official.put("gms_currency","USD"); // Explicit complete zero, never inferred by production.
         var imported=new LinkedHashMap<>(official);imported.put("source_key","import");imported.put("source","IMPORT_FUNDING");imported.put("campaign_id","campaign");imported.put("amount",new BigDecimal("10"));
         var shops=List.<Map<String,Object>>of(Map.of("id","s1","platform","SHOPEE","name","Shop","group_id","g","group_name","Group","external_shop_id","10001"));
         var f=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,31),"","SHOPEE","USD","day");
@@ -58,6 +59,34 @@ class FinanceAdSpendReportTest {
         var account=rows(result.get("accountFunding")).getFirst();assertEquals(new BigDecimal("6"),account.get("cash_amount"));assertEquals(BigDecimal.TEN,account.get("amount"));
         var detail=rows(result.get("items")).getFirst();assertNull(detail.get("cash_amount"));
         var otherShop=new Filter(filter.start(),filter.end(),"b","TIKTOK_SHOP","USD","day");assertTrue(rows(FinanceAdSpendReport.build(List.of(basic,campaign),List.of(),shops,otherShop,null,"","").get("accountFunding")).isEmpty());
+    }
+    @Test void shopAccountDetailsUseAttributedRecordsAndIgnoreDetailSearch(){
+        var first=source("first","TIKTOK_SHOP","a","10");
+        first.put("net_amount",BigDecimal.ZERO);
+        var renamed=source("later","TIKTOK_SHOP","a","5");
+        renamed.put("account_name","更新后的名称");
+        renamed.put("record_date","2026-10-03");
+        var shared=source("shared","TIKTOK_SHOP","b","20");
+        var secondAccount=source("second","TIKTOK_SHOP","a","7");
+        secondAccount.put("account_id","456");
+        var unknown=source("unknown","TIKTOK_SHOP","UNASSIGNED","30");
+        var bc=source("bc","TIKTOK_SHOP","a","99");bc.put("source","API_BC_COST");
+        var excluded=source("basic","TIKTOK_SHOP","a","100");excluded.put("source","API_BASIC");
+        var shopee=source("shopee","SHOPEE","c","40");
+        var anotherCurrency=source("php","TIKTOK_SHOP","a","55");anotherCurrency.put("currency","PHP");
+        var result=FinanceAdSpendReport.build(List.of(first,renamed,shared,secondAccount,unknown,bc,excluded,shopee,anotherCurrency),
+                List.of(),shops,filter,null,"no match","OFFICIAL");
+        assertTrue(rows(result.get("items")).isEmpty());
+        var accounts=rows(result.get("shopAccounts"));
+        assertEquals(3,accounts.size());
+        var a=accounts.stream().filter(row->"a".equals(row.get("shop_id"))&&"123".equals(row.get("account_id"))).findFirst().orElseThrow();
+        assertEquals("更新后的名称",a.get("account_name"));
+        assertEquals(new BigDecimal("15"),a.get("amount"));
+        assertNull(a.get("net_amount"));
+        assertEquals(BigDecimal.ZERO,a.get("partial_net_amount"));
+        assertEquals(1L,a.get("known_net_amount"));
+        assertFalse(a.containsKey("cash_amount"));
+        assertEquals(new BigDecimal("20"),accounts.stream().filter(row->"b".equals(row.get("shop_id"))).findFirst().orElseThrow().get("amount"));
     }
     @Test void manualSplitsDoNotDuplicateSourceNetCostAndFundingSplitsCanUseTheirOwnKnownComponents(){
         var r=source("split","TIKTOK_SHOP","","10");r.put("net_amount",new BigDecimal("8"));
@@ -110,6 +139,28 @@ class FinanceAdSpendReportTest {
         var row=new HashMap<String,Object>();row.put("amount",null);row.put("known_amount",1);row.put("partial_amount",new BigDecimal("10"));
         assertEquals("10（已知部分）",FinanceAdSpendController.sheet(List.of(row),List.of("amount"),List.of("消耗合计")).get(1).getFirst());
     }
+    @Test void spendWorkbookOmitsFundingColumnsAndKeepsIdsAsText() throws Exception {
+        var row=source("export","TIKTOK_SHOP","a","10");
+        row.put("account_id","9012345678901234");
+        row.put("campaign_id","9012345678901235");
+        row.put("net_amount",new BigDecimal("8"));
+        var data=report(List.of(row),List.of());
+        var controller=new FinanceAdSpendController(null,null){
+            @Override Map<String,Object> report(Map<String,String> q,com.yingdao.aicommerce.auth.PlatformPrincipal user){return data;}
+        };
+        try(var zip=new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(controller.export(Map.of(),null).getBody()))){
+            String detail="";
+            for(var entry=zip.getNextEntry();entry!=null;entry=zip.getNextEntry()){
+                if(!entry.getName().startsWith("xl/worksheets/"))continue;
+                String xml=new String(zip.readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
+                assertFalse(xml.contains("现金消耗")||xml.contains("信用额度消耗")||xml.contains("广告费用赠款消耗"));
+                if("xl/worksheets/sheet3.xml".equals(entry.getName()))detail=xml;
+            }
+            assertTrue(detail.contains("<t xml:space=\"preserve\">9012345678901234</t>"));
+            assertTrue(detail.contains("<t xml:space=\"preserve\">9012345678901235</t>"));
+            assertTrue(detail.contains("<v>10</v>")&&detail.contains("<v>8</v>"));
+        }
+    }
     @Test void unassignedFundingNeverUsesAccountOrCampaignNameToGuessShop(){
         var result=report(imported(),List.of());var detail=rows(result.get("items")).getFirst();assertEquals("UNASSIGNED",detail.get("shop_id"));assertEquals("PENDING",detail.get("assignment_status"));assertEquals(new BigDecimal("7.81"),rows(result.get("totals")).getFirst().get("amount"));
     }
@@ -126,16 +177,16 @@ class FinanceAdSpendReportTest {
     @Test void shopeeShopScopedSourceUsesExactPlatformShopIdAndKeepsMissingFundingUnknown(){
         var imported=FinanceAdSpendImport.parse(List.of(List.of("date","ad_id","expense","currency"),List.of("2026-10-02","9012345678901234","9.00","USD")),"SHOPEE","SHOP_123","Shop source",false);
         var actual=new ArrayList<Map<String,Object>>(shops);var shop=new LinkedHashMap<>(actual.get(2));shop.put("external_shop_id","SHOP_123");actual.set(2,shop);
-        var detail=rows(FinanceAdSpendReport.build(imported,List.of(),actual,filter,null,"","").get("items")).getFirst();assertEquals("c",detail.get("shop_id"));assertNull(detail.get("cash_amount"));assertEquals(new BigDecimal("9.00"),detail.get("amount"));
+        var detail=rows(FinanceAdSpendReport.build(imported,List.of(),actual,filter,null,"","").get("items")).getFirst();assertEquals("c",detail.get("shop_id"));assertNull(detail.get("cash_amount"));assertNull(detail.get("amount"));assertEquals(new BigDecimal("9.00"),detail.get("source_reported_amount"));
     }
     @Test void campaignLevelApiRowsAreNotDiscardedAsTheirOwnAccountSummary(){
         var record=new LinkedHashMap<String,Object>(Map.of("id","api","shop_id","c","platform","SHOPEE","kind","AD","record_date","2026-10-02","currency","USD","amount",new BigDecimal("9"),"source","API"));
         var normalized=FinanceAdSpendReport.api(record,Map.of("shop_id","SHOP_123","ad_id","9012345678901234","ad_name","Product promotion"));
-        assertEquals("9012345678901234",normalized.get("campaign_id"));assertEquals("SHOP_123",normalized.get("account_id"));assertEquals(BigDecimal.valueOf(9),rows(report(List.of(normalized),List.of()).get("totals")).getFirst().get("amount"));
+        assertEquals("9012345678901234",normalized.get("campaign_id"));assertEquals("SHOP_123",normalized.get("account_id"));assertNull(rows(report(List.of(normalized),List.of()).get("totals")).getFirst().get("amount"));assertEquals(BigDecimal.valueOf(9),rows(report(List.of(normalized),List.of()).get("items")).getFirst().get("source_reported_amount"));
     }
     @Test void accountIdentityMissingFromOneApiFactIsNotOverlapWithItself(){
         var source=source("api","SHOPEE","c","9");source.put("account_id","");source.put("campaign_id","");source.put("source","API_BASIC");
-        assertEquals(BigDecimal.valueOf(9),rows(report(List.of(source),List.of()).get("totals")).getFirst().get("amount"));
+        assertNull(rows(report(List.of(source),List.of()).get("totals")).getFirst().get("amount"));assertEquals(BigDecimal.valueOf(9),rows(report(List.of(source),List.of()).get("items")).getFirst().get("source_reported_amount"));
     }
     @Test void exactManualSplitKeepsResidualAndThreeFundingControls(){
         var r=imported().getFirst();String key=text(r.get("source_key")),fingerprint=FinanceAdSpendReport.fingerprint(r);

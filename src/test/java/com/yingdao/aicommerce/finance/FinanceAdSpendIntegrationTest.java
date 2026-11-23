@@ -15,7 +15,7 @@ class FinanceAdSpendIntegrationTest {
     FinanceAdSpendService spend;String shop;
     final Filter filter=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,31),"","","USD","day");
     final List<List<String>> file=List.of(List.of("日期","推广系列ID","现金消耗","信用额度消耗","广告费用赠款消耗","金额","币种"),List.of("2026-10-02","9012345678901234","0","-6.60","-1.21","-7.81","USD"));
-    @BeforeAll void initialize()throws Exception{fixture.migrate();fixture.migration("V150__finance_ad_spend_workspace.sql");}
+    @BeforeAll void initialize()throws Exception{fixture.migrate();}
     @AfterAll void close(){fixture.closeDataSource();}
     @BeforeEach void setup(){
         fixture.setup();for(String t:List.of("finance_ad_spend_allocations","finance_ad_spend_allocation_sets","finance_ad_spend_imports"))fixture.db.update("DELETE FROM "+t);
@@ -30,7 +30,7 @@ class FinanceAdSpendIntegrationTest {
         var controller=new FinanceAdSpendController(spend,fixture.controller());byte[] bytes=controller.export(Map.of("start","2026-10-01","end","2026-10-31","currency","USD"),fixture.principal()).getBody();
         var factory=javax.xml.parsers.DocumentBuilderFactory.newInstance();factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl",true);
         try(var zip=new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(bytes))){for(var entry=zip.getNextEntry();entry!=null;entry=zip.getNextEntry())if(entry.getName().equals("xl/worksheets/sheet3.xml")){
-            var doc=factory.newDocumentBuilder().parse(new java.io.ByteArrayInputStream(zip.readAllBytes()));var cells=((org.w3c.dom.Element)doc.getElementsByTagName("row").item(1)).getElementsByTagName("c");var value=(org.w3c.dom.Element)cells.item(19);assertFalse(value.hasAttribute("t"));assertEquals(0,new BigDecimal("8").compareTo(new BigDecimal(value.getTextContent())));
+            var doc=factory.newDocumentBuilder().parse(new java.io.ByteArrayInputStream(zip.readAllBytes()));var cells=((org.w3c.dom.Element)doc.getElementsByTagName("row").item(1)).getElementsByTagName("c");var value=(org.w3c.dom.Element)cells.item(13);assertFalse(value.hasAttribute("t"));assertEquals(0,new BigDecimal("8").compareTo(new BigDecimal(value.getTextContent())));
         }}
         assertEquals(1,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_records",Integer.class));assertEquals(new BigDecimal("10.000000"),fixture.db.queryForObject("SELECT amount FROM finance_records",BigDecimal.class));
     }
@@ -51,7 +51,7 @@ class FinanceAdSpendIntegrationTest {
         var controller=new FinanceAdSpendController(spend,fixture.controller());var q=Map.of("start","2026-10-01","end","2026-10-31","currency","USD","page","2");
         var response=map(controller.list(q,fixture.principal()).data());assertEquals(600,response.get("total"));assertEquals(50,rows(response.get("items")).size());
         byte[] bytes=controller.export(q,fixture.principal()).getBody();var files=new HashMap<String,String>();try(var zip=new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(bytes))){for(var entry=zip.getNextEntry();entry!=null;entry=zip.getNextEntry())files.put(entry.getName(),new String(zip.readAllBytes(),java.nio.charset.StandardCharsets.UTF_8));}
-        assertTrue(files.get("xl/workbook.xml").contains("店铺消耗明细"));String detail=files.get("xl/worksheets/sheet3.xml");assertEquals(601,detail.split("<row",-1).length-1);assertTrue(detail.contains("<t xml:space=\"preserve\">9012345678901234</t>")||detail.contains("<t>9012345678901234</t>"));assertTrue(detail.contains("信用额度消耗"));
+        assertTrue(files.get("xl/workbook.xml").contains("店铺消耗明细"));String detail=files.get("xl/worksheets/sheet3.xml");assertEquals(601,detail.split("<row",-1).length-1);assertTrue(detail.contains("<t xml:space=\"preserve\">9012345678901234</t>")||detail.contains("<t>9012345678901234</t>"));assertFalse(detail.contains("信用额度消耗"));
     }
     @Test void originManagementAndCompanySwitchGuardsProtectNewWriteRoutes(){
         var policy=org.mockito.Mockito.mock(com.yingdao.aicommerce.saas.application.OrganizationAccessPolicy.class);
@@ -64,7 +64,7 @@ class FinanceAdSpendIntegrationTest {
     @Test void shopeeNativeExpenseImportAutomaticallyUsesItsExactCompanyShopSource(){
         String sourceShop=fixture.groupedShop(fixture.owner,"SHOP_123",fixture.service.saveGroup(fixture.owner,null,"Shopee source"));
         var entries=FinanceAdSpendImport.parse(List.of(List.of("date","ad_id","expense","currency"),List.of("2026-10-02","9012345678901234","9.00","USD")),"SHOPEE","SHOP_123","Shopee source",false);
-        spend.saveImport(fixture.owner,"actor",entries,"shopee.csv");var result=rows(spend.report(fixture.owner,filter,false,"","","").get("items")).getFirst();assertEquals(sourceShop,result.get("shop_id"));assertNull(result.get("cash_amount"));assertEquals(new BigDecimal("9.000000"),result.get("amount"));
+        spend.saveImport(fixture.owner,"actor",entries,"shopee.csv");var result=rows(spend.report(fixture.owner,filter,false,"","","").get("items")).getFirst();assertEquals(sourceShop,result.get("shop_id"));assertNull(result.get("cash_amount"));assertNull(result.get("amount"));assertEquals(new BigDecimal("9.000000"),result.get("source_reported_amount"));
         assertEquals(0,fixture.db.queryForObject("SELECT COUNT(*) FROM finance_records",Integer.class));
     }
     @Test void exactAssignmentsAreScopedVersionedAndReadAfterAllocationBeforeShopFilter(){
