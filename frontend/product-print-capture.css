@@ -62,7 +62,7 @@
 .pc-result small { color: var(--muted); overflow-wrap: anywhere; }
 .pc-workspace .pc-consent { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; font-weight: 400; }
 .pc-workspace input[type=checkbox] { width: auto; min-height: auto; }
-.pc-preview-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 14px; }
+.pc-preview-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 14px; }
 .pc-preview {
   display: grid;
   place-items: center;

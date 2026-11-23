@@ -161,3 +161,24 @@ test('history entry and dialog are accessible and load before application wiring
   assert.match(html,/app\.js\?v=[^"\s]+/);
   assert.ok(html.indexOf('/product-bulk-history.js?')<html.indexOf('/app.js?'));
 });
+
+test('print history keeps independent listing batches and ignores regular uploads', () => {
+  const storage = memoryStorage([
+    [storageKey('org-a','first'),record({batchId:'first',items:[{title:'圆领上衣', printDirectListing:true, status:'RUNNING'}]})],
+    [storageKey('org-a','second'),record({batchId:'second',items:[{title:'落肩短袖', payload:{printDirectListing:true}, status:'SUCCEEDED'}]})],
+    [storageKey('org-a','regular'),record({batchId:'regular',items:[{title:'普通上传', status:'RUNNING'}]})]
+  ]);
+  const batches = list(storage,'org-a',true);
+  assert.deepEqual(batches.map(batch => batch.batchId), ['first','second']);
+  assert.match(render(batches,true), /圆领上衣[\s\S]*落肩短袖/);
+  assert.doesNotMatch(render(batches,true), /普通上传/);
+  assert.match(render([],true), /暂无上架任务/);
+  assert.equal(list(storage,'org-a').length, 3);
+});
+
+test('the preview toolbar can reopen listing history before arranging a new print', () => {
+  const html = fs.readFileSync(path.join(__dirname,'../index.html'),'utf8');
+  const app = fs.readFileSync(path.join(__dirname,'../app.js'),'utf8');
+  assert.match(html, /id="pc-task-list"[^>]+aria-controls="product-bulk-history-dialog"[^>]*>任务列表<\/button>\s+<button id="pc-arrange"/);
+  assert.match(app, /querySelector\('#pc-task-list'\)\.addEventListener\('click', \(\) => openProductBulkHistory\(true\)\)/);
+});

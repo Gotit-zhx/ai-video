@@ -20,7 +20,7 @@
     return timestamp(record.updatedAt) || timestamp(record.createdAt);
   }
 
-  function list(storage, organizationId) {
+  function list(storage, organizationId, printOnly = false) {
     if (!storage || typeof organizationId !== 'string' || !organizationId.trim()) return [];
     const currentPrefix = `${PREFIX}${encodeURIComponent(organizationId)}:`;
     const legacyPrefix = `heyi:bulk-upload:${organizationId}:`;
@@ -49,7 +49,8 @@
         }
       } catch (_error) { /* One damaged or inaccessible record must not hide other batches. */ }
     }
-    return [...found.values()].sort((left, right) =>
+    return [...found.values()].filter(record => !printOnly || record.items.some(item =>
+      item.printDirectListing === true || item.payload?.printDirectListing === true)).sort((left, right) =>
       updatedTime(right) - updatedTime(left)
       || timestamp(right.createdAt) - timestamp(left.createdAt)
       || left.key.localeCompare(right.key));
@@ -79,8 +80,10 @@
     return time ? new Date(time).toLocaleString((globalThis.HoyeeLanguage?.locale || "zh-CN"), {year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false}) : '历史批次';
   }
 
-  function render(records) {
-    if (!Array.isArray(records) || !records.length) return '<p class="product-bulk-history-empty">暂无批量任务。勾选商品后即可发起批量上传。</p>';
+  function render(records, printOnly = false) {
+    if (!Array.isArray(records) || !records.length) return printOnly
+      ? '<p class="product-bulk-history-empty">暂无上架任务。</p>'
+      : '<p class="product-bulk-history-empty">暂无批量任务。勾选商品后即可发起批量上传。</p>';
     return records.map(record => {
       const counts = summary(record);
       const label = {EMPTY: '暂无商品', WAITING: '待准备', RUNNING: '进行中', SUCCEEDED: '全部成功', FAILED: counts.succeeded ? '部分失败' : '需要处理'}[counts.status];

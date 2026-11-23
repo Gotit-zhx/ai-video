@@ -3,6 +3,7 @@
 #product-bulk-history-dialog h2 { margin:0; font-size:20px; }
 #product-bulk-history-dialog > header button { padding:7px 12px; border:1px solid var(--line); border-radius:6px; color:var(--ink); background:var(--surface); cursor:pointer; }
 .product-bulk-history-copy { margin:10px 0 20px; color:var(--muted); font-size:13px; line-height:1.7; }
+#product-bulk-history-copy[hidden] + #product-bulk-history-list { margin-top:12px; }
 #product-bulk-history-list { display:grid; grid-template-columns:minmax(0,1fr); min-width:0; gap:12px; }
 .product-bulk-history-row { min-width:0; max-width:100%; box-sizing:border-box; padding:16px; border:1px solid var(--line); border-radius:10px; background:var(--surface-soft); }
 .product-bulk-history-heading,.product-bulk-history-footer { display:flex; align-items:center; justify-content:space-between; gap:14px; }

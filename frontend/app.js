@@ -7387,6 +7387,7 @@ async function openProductBulkUpload(historyKey, captureId, isSourceCurrent = ()
     || productBulkItems.some(item => item.printDirectListing || item.payload?.printDirectListing));
   document.querySelector('#product-bulk-dialog').dataset.printDirectListing = String(directListing);
   document.querySelector('#product-bulk-title').textContent = directListing ? '套版上架' : '批量一键上传';
+  document.querySelector('#open-product-bulk-history-from-detail').textContent = directListing ? '任务列表' : '批量任务';
   document.querySelector('#product-bulk-intro').textContent = directListing
     ? (marketplaceIntegrationStatus.livePublishingEnabled ? '确认后使用 GPT Image 2.6 合成商品图，按张计费。' : '演练会检查商品资料和提交步骤。')
     : '可同时选择多个店铺上传，也可为本批商品指定尺码图。';
@@ -7664,8 +7665,9 @@ let productBulkHistorySession = null;
 function renderProductBulkHistory() {
   const dialog = document.querySelector('#product-bulk-history-dialog');
   if (!dialog?.open || !currentUser?.organizationId || typeof ProductBulkHistory === 'undefined') return;
+  const printOnly = productBulkHistorySession?.printOnly === true;
   document.querySelector('#product-bulk-history-list').innerHTML = ProductBulkHistory.render(
-    ProductBulkHistory.list(localStorage, currentUser.organizationId));
+    ProductBulkHistory.list(localStorage, currentUser.organizationId, printOnly), printOnly);
 }
 
 function stopProductBulkHistoryPolling() {
@@ -7679,7 +7681,7 @@ async function pollProductBulkHistory(session) {
   const current = () => productBulkHistorySession === session && !session.controller.signal.aborted
     && currentUser?.organizationId === session.org && document.querySelector('#product-bulk-history-dialog').open;
   if (!current()) return;
-  const records = ProductBulkHistory.list(localStorage, session.org);
+  const records = ProductBulkHistory.list(localStorage, session.org, session.printOnly);
   const pending = records.flatMap(record => record.items.filter(item => item.workflow?.id && productPublishWorkflowIsActive(item.workflow))
     .map(item => ({key:record.key, captureId:item.captureId, workflowId:item.workflow.id})));
   let cursor = 0;
@@ -7711,16 +7713,18 @@ async function pollProductBulkHistory(session) {
   if (current()) session.timer = setTimeout(() => void pollProductBulkHistory(session), 3000);
 }
 
-function openProductBulkHistory() {
+function openProductBulkHistory(printOnly = false) {
   if (!hasAnyPermission('product:publish') || !currentUser?.organizationId) return;
   stopProductBulkHistoryPolling();
   const detail = document.querySelector('#product-bulk-dialog');
   if (detail.open) detail.close();
   const dialog = document.querySelector('#product-bulk-history-dialog');
+  document.querySelector('#product-bulk-history-title').textContent = printOnly ? '上架任务' : '批量任务';
+  document.querySelector('#product-bulk-history-copy').hidden = printOnly;
+  const session = {org:currentUser.organizationId, printOnly, controller:new AbortController(), timer:null};
+  productBulkHistorySession = session;
   if (!dialog.open) dialog.showModal();
   renderProductBulkHistory();
-  const session = {org:currentUser.organizationId, controller:new AbortController(), timer:null};
-  productBulkHistorySession = session;
   void pollProductBulkHistory(session);
 }
 
@@ -7744,8 +7748,11 @@ document.querySelector('#product-bulk-merchant-style').addEventListener('change'
   }
 });
 document.querySelector('#product-bulk-merchant-style').addEventListener('input', event => event.target.setCustomValidity(''));
-document.querySelector('#open-product-bulk-history').addEventListener('click', openProductBulkHistory);
-document.querySelector('#open-product-bulk-history-from-detail').addEventListener('click', openProductBulkHistory);
+document.querySelector('#open-product-bulk-history').addEventListener('click', () => openProductBulkHistory());
+document.querySelector('#pc-task-list').addEventListener('click', () => openProductBulkHistory(true));
+document.querySelector('#open-product-bulk-history-from-detail').addEventListener('click', () => openProductBulkHistory(
+  document.querySelector('#product-bulk-dialog').dataset.printDirectListing === 'true'
+));
 document.querySelector('#close-product-bulk-history').addEventListener('click', () => document.querySelector('#product-bulk-history-dialog').close());
 document.querySelector('#product-bulk-history-dialog').addEventListener('close', stopProductBulkHistoryPolling);
 document.querySelector('#product-bulk-history-list').addEventListener('click', event => {

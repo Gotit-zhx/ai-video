@@ -779,7 +779,9 @@
     get('monitor-toggle').hidden = get('layout').hidden = !allowed;
     get('monitor').hidden = !allowed || get('monitor-toggle').getAttribute('aria-expanded') === 'false';
     get('no-access').hidden = allowed;
-    get('produce').hidden = !hasAnyPermission('product:publish');
+    const canPublish = hasAnyPermission('product:publish');
+    get('produce').hidden = !canPublish;
+    get('task-list').hidden = !allowed || !canPublish;
     if (!allowed) return;
     void loadRecent();
     const id = new URLSearchParams(location.hash.split('?')[1] || '').get('capture');
