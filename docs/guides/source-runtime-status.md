@@ -1,6 +1,6 @@
 # 源码运行现场状态与验收交接
 
-核对日期：2026-11-13（北京时间）。共享服务器主 Java 应用和 Web 前端已实际切换为源码运行。其余独立服务继续沿用既有入口；本记录不代表 Pi Runtime、招聘、ERP、文档转换、水印、下载或桌面程序完成迁移或业务验收。
+现场复核日期为 2026-11-23（北京时间）。共享服务器主 Java 应用和 Web 前端使用源码运行。Pi Runtime、招聘、ERP、文档转换、水印、下载和桌面程序保留各自的运行与验收入口。
 
 ## 已生效的运行方式
 
@@ -13,7 +13,7 @@
 | 本地前端 | dev profile 的 Spring 直接读取本地 `frontend/`，API/UI 同源 |
 | Compose | 保留 base → production → `.2images` → `source-development.frontend.json` → `source-development.app.json` 完整叠加链；精确路径以受限 runtime 配置及现场回执为准，不只运行最后一份覆盖文件 |
 | watcher | `heyi-source-watch.service` 已 enabled、active，最终状态 ready、健康且无遗留 gate；配置 `/etc/heyi-dev/runtime.json` |
-| 数据库 | 源码切换时 V150，后续显式追加 V151–V154；2026-11-13 先完成性能 V155，再追加广告资料 V156，验收指纹 `b5d11548…`。上下文、原数据摘要与商家重授边界见[广告 V156 生效回执](../releases/finance/finance-tiktok-metadata-20261113.md)，操作前仍核对后续现场 |
+| 数据库 | 11 月 23 日两次生效回执均记录最高已应用版本 V187。V177–V187 于 11 月 21 日显式追加，迁移前历史校验通过。GitHub 协作分支本轮核对时归档至 V165，详见[三处仓库核对记录](../releases/infrastructure/source-sync-20261123.md) |
 | 自动迁移 | 共享环境 Flyway 自动执行已禁用；migration 源码/hash/history 守卫阻止普通保存执行 DDL |
 
 共享源码状态与中断恢复由 root 在源码根执行：
@@ -27,7 +27,13 @@ python3 scripts/shared_dev.py recover --config /etc/heyi-dev/runtime.json
 
 Java 保存仍执行维护锁、停止领取新工作、等待安全点、编译、上下文健康检查和本次门控恢复。`pom.xml` 依赖变化会受控重启 app；迁移、环境配置、JDK/Maven 及 watcher/运行工具本身的变化须显式维护和专项验证。
 
-## 本次实际验证
+## 2026-11-23 现场复核
+
+- `heyi-source-watch.service` 为 enabled、active。只读状态确认应用健康、最近一次编译成功、watcher 就绪、维护门控已释放。MySQL 备份 timer 为 enabled、active、`Persistent=false`。
+- 财务广告月度范围和投影恢复的当日回执均记录生效成功。投影恢复的后续抽样观察到财务同步和投影继续推进，同时仍有待处理事件和需要广告授权的账户。样本时间及回执见[三处仓库核对记录](../releases/infrastructure/source-sync-20261123.md)。
+- 服务器运行目录带有已生效和待核对的工作区增量。运行代码应按具体回执及文件摘要识别，`git rev-parse HEAD` 只提供已提交基线。
+
+## 2026-11-11 源码切换验收样本
 
 | 环境与样本 | 结果 |
 | --- | --- |
