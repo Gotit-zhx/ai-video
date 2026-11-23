@@ -193,7 +193,18 @@ public class ProductMainImageTemplateService {
 
     /** Workers read the current template each time; edits apply to unfinished uploads. */
     public Map<String, Object> current(String id, String org) {
-        var template = scopedRow(id, org, true, "");
+        return current(id, org, "");
+    }
+
+    Map<String, Object> currentForCapture(String captureTemplateId, String org) {
+        var rows = db.queryForList("""
+                SELECT id FROM product_main_image_templates WHERE organization_id=? AND active_capture_template_id=?
+                """, org, captureTemplateId);
+        return rows.isEmpty() ? Map.of() : current((String) rows.getFirst().get("id"), org, captureTemplateId);
+    }
+
+    private Map<String, Object> current(String id, String org, String scope) {
+        var template = scopedRow(id, org, true, scope);
         var images = imageRows(id, org);
         if (images.isEmpty() || images.size() > ProductMainImageStylePolicy.MAX_IMAGES
                 || images.stream().anyMatch(image -> !"READY".equals(image.get("status")))) throw conflict("主图风格模板尚未全部识别完成");

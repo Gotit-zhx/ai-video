@@ -120,15 +120,19 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         if (!com.yingdao.aicommerce.product.application.ProductPublicationSkuNaming.style(request.get("merchantStyleCode")).isEmpty())
             allSkus = publicationSkuNaming.apply(capture, allSkus, request);
         boolean printProduction = !com.yingdao.aicommerce.product.application.ProductPrintProductionService.skuSuffix(capture, objectMapper).isEmpty();
-        if (client.isSandboxEnvironment() && printProduction && allSkus.size() > 50) {
-            throw conflict("Shopee 沙盒最多上传 50 个规格，请减少颜色或尺码后重试");
-        }
-        List<ProductCaptureSku> skus = client.isSandboxEnvironment() ? allSkus.stream().limit(50).toList() : allSkus;
         List<ProductCaptureImage> images = images(capture);
         var styleGallery = mainImageAssets == null ? null : mainImageAssets.gallery(capture, request);
         boolean directListing = ProductPrintProductionService.directListing(request);
         if (directListing && styleGallery == null) throw conflict("印花合成图尚未就绪");
-        if (directListing) images = styleGallery;
+        boolean hasPrintColorImages = directListing && styleGallery.stream().anyMatch(image -> "VARIANT".equals(image.getRoleName()));
+        if (directListing) {
+            images = styleGallery;
+            if (hasPrintColorImages) allSkus = mainImageAssets.assignPrintColorImages(allSkus, styleGallery);
+        }
+        if (client.isSandboxEnvironment() && printProduction && allSkus.size() > 50) {
+            throw conflict("Shopee 沙盒最多上传 50 个规格，请减少颜色或尺码后重试");
+        }
+        List<ProductCaptureSku> skus = client.isSandboxEnvironment() ? allSkus.stream().limit(50).toList() : allSkus;
         boolean variants = hasVariants(skus);
         rejectDryRunImages(images);
         int publishStock = requiredStock(request);
@@ -167,6 +171,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         }
         final Map<String, String> galleryUploads = uploadedByUrl;
         List<String> galleryImageIds = (styleGallery == null ? images : styleGallery).stream()
+                .filter(image -> !hasPrintColorImages || !"VARIANT".equals(image.getRoleName()))
                 .sorted(Comparator.comparingInt(ProductCaptureImage::getSortOrder))
                 .map(this::publishUrl)
                 .map(galleryUploads::get)
@@ -200,7 +205,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         addItem.remove("video_upload_id");
         if (video.present()) addItem.put("video_upload_id", List.of(video.uploadId()));
 
-        boolean sharedColorImage = com.yingdao.aicommerce.product.application.ProductPrintProductionService.sharedColorImage(capture, objectMapper);
+        boolean sharedColorImage = !hasPrintColorImages && ProductPrintProductionService.sharedColorImage(capture, objectMapper);
         Map<String, Object> fullVariationPayload = variants
                 ? variationPayload("0", skus, publishStock, sharedColorImage ? Map.of() : uploadedByUrl, request)
                 : Map.of();

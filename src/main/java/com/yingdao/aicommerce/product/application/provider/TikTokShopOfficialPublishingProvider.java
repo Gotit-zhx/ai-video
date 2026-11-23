@@ -1,9 +1,9 @@
 package com.yingdao.aicommerce.product.application.provider;
 
-import com.yingdao.aicommerce.product.application.ProductPrintProductionService;
-
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yingdao.aicommerce.common.exception.BusinessException;
+import com.yingdao.aicommerce.product.application.ProductMainImageAssets;
+import com.yingdao.aicommerce.product.application.ProductPrintProductionService;
 import com.yingdao.aicommerce.product.domain.ProductCapture;
 import com.yingdao.aicommerce.product.domain.ProductCaptureImage;
 import com.yingdao.aicommerce.product.domain.ProductCaptureSku;
@@ -115,7 +115,11 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         var styleGallery = mainImageAssets == null ? null : mainImageAssets.gallery(capture, request);
         boolean directListing = ProductPrintProductionService.directListing(request);
         if (directListing && styleGallery == null) throw conflict("印花合成图尚未就绪");
-        if (directListing) images = styleGallery;
+        boolean hasPrintColorImages = directListing && styleGallery.stream().anyMatch(image -> "VARIANT".equals(image.getRoleName()));
+        if (directListing) {
+            images = styleGallery;
+            if (hasPrintColorImages) skus = mainImageAssets.assignPrintColorImages(skus, styleGallery);
+        }
         rejectDryRunImages(images);
         int stock = requiredStock(request);
         String categoryId = requiredText(request, "categoryId",
@@ -156,7 +160,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
                 capture, images, connection, categoryRules, request);
 
         TikTokProductVideoUploader.UploadedVideo video = videoUploader.upload(capture, connection, text(request.get("idempotencyKey")));
-        boolean sharedColorImage = com.yingdao.aicommerce.product.application.ProductPrintProductionService.sharedColorImage(capture, objectMapper);
+        boolean sharedColorImage = !hasPrintColorImages && ProductPrintProductionService.sharedColorImage(capture, objectMapper);
         UploadedImages uploaded = uploadImages(connection, images, sharedColorImage ? List.of() : skus, styleGallery);
         if (uploaded.mainImages().isEmpty()) {
             throw conflict("TikTok Shop 发布至少需要一张处理完成的商品图");
@@ -527,7 +531,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         List<ProductCaptureImage> galleryCandidates = styleGallery == null ? images.stream()
                 .filter(image -> !"VARIANT".equalsIgnoreCase(image.getRoleName())
                         && !"DETAIL".equalsIgnoreCase(image.getRoleName()))
-                .toList() : styleGallery;
+                .toList() : styleGallery.stream().filter(image -> !"VARIANT".equals(image.getRoleName())).toList();
         if (galleryCandidates.isEmpty()) galleryCandidates = images.stream()
                 .filter(image -> !"DETAIL".equalsIgnoreCase(image.getRoleName())).toList();
         List<Map<String, Object>> mainImages = new ArrayList<>();
@@ -551,7 +555,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         }
         Map<String, String> attributeUriByProcessedUrl = new LinkedHashMap<>();
         Map<String, String> attributeImageBySkuKey = new LinkedHashMap<>();
-        if (skus.size() > 1) {
+        if (usesSalesAttributeImages(skus)) {
             for (ProductCaptureSku sku : skus) {
                 if (sku.getImageUrl() == null || sku.getImageUrl().isBlank()) continue;
                 ProductCaptureImage image = captureImageBySourceUrl.get(sku.getImageUrl());
@@ -592,6 +596,10 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         List<List<Map<String, Object>>> salesMatrix = new ArrayList<>();
         boolean hasExplicitSalesMapping = false;
         for (ProductCaptureSku sku : values) {
+            if (ProductMainImageAssets.TEMPLATE_COLOR_IMAGE.equals(sku.getImageSource())) {
+                salesMatrix.add(customSalesAttributes(sku));
+                continue;
+            }
             List<?> supplied = listValue(salesBySku.get(sku.getSkuKey()));
             boolean explicitlyMapped = !supplied.isEmpty();
             hasExplicitSalesMapping |= explicitlyMapped;
@@ -749,10 +757,14 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         }
     }
 
+    private boolean usesSalesAttributeImages(List<ProductCaptureSku> skus) {
+        return skus.size() > 1 || (skus.size() == 1 && ProductMainImageAssets.TEMPLATE_COLOR_IMAGE.equals(skus.getFirst().getImageSource()));
+    }
+
     private void attachAttributeImages(List<ProductCaptureSku> skus,
                                        List<List<Map<String, Object>>> matrix,
                                        Map<String, String> imageBySkuKey) {
-        if (skus.size() <= 1 || matrix.stream().anyMatch(List::isEmpty)) return;
+        if (!usesSalesAttributeImages(skus) || matrix.stream().anyMatch(List::isEmpty)) return;
         Map<String, String> uriByPrimaryValue = new LinkedHashMap<>();
         boolean completeAndConsistent = true;
         for (int index = 0; index < skus.size(); index++) {

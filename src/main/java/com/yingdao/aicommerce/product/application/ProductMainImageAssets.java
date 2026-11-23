@@ -3,6 +3,8 @@ package com.yingdao.aicommerce.product.application;
 import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.product.domain.ProductCapture;
 import com.yingdao.aicommerce.product.domain.ProductCaptureImage;
+import com.yingdao.aicommerce.product.domain.ProductCaptureSku;
+import tools.jackson.core.type.TypeReference;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -14,6 +16,7 @@ import java.util.*;
 
 @Service
 public class ProductMainImageAssets {
+    public static final String TEMPLATE_COLOR_IMAGE = "PRINT_TEMPLATE";
     private final JdbcTemplate db;
     private final CommerceImageArchive archive;
     private final ObjectMapper json;
@@ -83,13 +86,45 @@ public class ProductMainImageAssets {
         var saved = json.readTree((String) workflows.getFirst().get("request_json"));
         if (!saved.path(ProductPrintProductionService.DIRECT_LISTING).asBoolean(false))
             throw conflict("套版上架任务未确认");
+        if (saved.hasNonNull(ProductPrintImagePlan.SNAPSHOT)) {
+            var plan = json.treeToValue(saved.get(ProductPrintImagePlan.SNAPSHOT), ProductPrintImagePlan.class);
+            return java.util.stream.IntStream.range(0, plan.slots().size()).mapToObj(index -> {
+                var slot = plan.slots().get(index);
+                return printImage(capture, plan.jobId(capture, index, json), index, slot.label(), slot.variants());
+            }).toList();
+        }
         String id = ProductMainImageStyleService.printCompositionId(capture.getOrganizationId(), capture.getId());
+        return List.of(printImage(capture, id, 0, "印花套版成品", List.of()));
+    }
+
+    private ProductCaptureImage printImage(ProductCapture capture, String id, int index, String label, List<ProductPrintImagePlan.Variant> variants) {
         var reference = read(capture.getOrganizationId(), capture.getId(), id);
         String url = ProductMainImageStylePolicy.PREFIX + id;
-        var image = new ProductCaptureImage(capture.getOrganizationId(), capture.getId(), url + "?original", "MAIN",
-                "印花套版成品", 0, reference.mimeType(), "{}");
+        var image = new ProductCaptureImage(capture.getOrganizationId(), capture.getId(), url + "?original",
+                variants.isEmpty() ? "MAIN" : "VARIANT", label, index, reference.mimeType(),
+                variants.isEmpty() ? "{}" : json.writeValueAsString(Map.of("printVariants", variants)));
         image.processed(url);
-        return List.of(image);
+        return image;
+    }
+
+    public List<ProductCaptureSku> assignPrintColorImages(List<ProductCaptureSku> skus, List<ProductCaptureImage> images) {
+        var byKey = new HashMap<String, ProductCaptureSku>();
+        skus.forEach(sku -> byKey.put(sku.getSkuKey(), sku));
+        var output = new ArrayList<ProductCaptureSku>();
+        for (var image : images) {
+            if (!"VARIANT".equals(image.getRoleName())) continue;
+            var variants = json.convertValue(json.readTree(image.getSourceJson()).get("printVariants"),
+                    new TypeReference<List<ProductPrintImagePlan.Variant>>() {});
+            for (var variant : variants) {
+                var sku = byKey.get(variant.key());
+                if (sku == null) throw conflict("销售规格已修改，请重新准备上架任务");
+                boolean configured = variant.attributes() != null;
+                output.add(sku.forPublication(configured ? variant.sku() : sku.getSellerSku(), image.getProcessedUrl(),
+                        configured ? TEMPLATE_COLOR_IMAGE : sku.getImageSource(),
+                        configured ? json.writeValueAsString(variant.attributes()) : sku.getAttributesJson()));
+            }
+        }
+        return output.isEmpty() ? skus : List.copyOf(output);
     }
 
     /** Check again after media staging, outside the publishing transaction's earlier read view. */

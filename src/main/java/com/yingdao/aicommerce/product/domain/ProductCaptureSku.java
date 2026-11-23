@@ -73,9 +73,14 @@ public class ProductCaptureSku {
 
     /** Keep source and SKU identity intact when preparing an explicit upload code. */
     public ProductCaptureSku forPublication(String merchantCode) {
+        return forPublication(merchantCode, imageUrl, imageSource, attributesJson);
+    }
+
+    public ProductCaptureSku forPublication(String merchantCode, String publicationImageUrl,
+                                            String publicationImageSource, String publicationAttributes) {
         var copy = new ProductCaptureSku(organizationId, captureId, skuKey, externalSkuId,
-                merchantCode, variationName, price, originalPrice, stock, imageUrl,
-                imageSource, attributesJson, sourceJson, sortOrder);
+                merchantCode, variationName, price, originalPrice, stock, publicationImageUrl,
+                publicationImageSource, publicationAttributes, sourceJson, sortOrder);
         copy.id = id;
         copy.createdAt = createdAt;
         copy.updatedAt = updatedAt;

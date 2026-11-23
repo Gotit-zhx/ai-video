@@ -4776,9 +4776,10 @@ function renderProductMainImageProgress(workflow, compact = false) {
   const preserved = images.filter(image => image.stage === 'PRESERVED').length;
   const failed = images.filter(image => image.stage === 'FAILED' || image.stage === 'STOPPED').length;
   const stageText = image => labels[image.stage] || '等待处理';
-  const imageLink = (url, index) => {
+  const imageLabel = image => image.label || `第 ${count(image.index) + 1} 张`;
+  const imageLink = (url, index, label = `第 ${index + 1} 张风格主图`) => {
     const safe = safeProductUrl(url);
-    return safe ? `<a class="main-style-workflow-image" href="${escapeHtml(safe)}" target="_blank" rel="noopener"><img src="${escapeHtml(safe)}" alt="第 ${index + 1} 张风格主图" loading="lazy"></a>`
+    return safe ? `<a class="main-style-workflow-image" href="${escapeHtml(safe)}" target="_blank" rel="noopener"><img src="${escapeHtml(safe)}" alt="${escapeHtml(label)}" loading="lazy"></a>`
       : `<span class="main-style-workflow-number">${index + 1}</span>`;
   };
   const rows = images.map(image => {
@@ -4789,16 +4790,17 @@ function renderProductMainImageProgress(workflow, compact = false) {
     if (busy && image.elapsedSeconds != null) metrics.push(`本阶段已用 ${count(image.elapsedSeconds)} 秒`);
     if (busy && count(image.outputCharacters)) metrics.push(`检查已返回 ${count(image.outputCharacters)} 字符`);
     return `<li class="main-style-workflow-image-row is-${tone}">
-      ${imageLink(image.status === 'READY' ? image.imageUrl : null, index)}
-      <div><strong>第 ${index + 1} 张</strong><span>${escapeHtml(stageText(image))}</span>
+      ${imageLink(image.status === 'READY' ? image.imageUrl : null, index, image.label || undefined)}
+      <div><strong>${escapeHtml(imageLabel(image))}</strong><span>${escapeHtml(stageText(image))}</span>
       ${metrics.length ? `<small>${escapeHtml(metrics.join(' · '))}</small>` : ''}
       ${image.errorMessage ? `<small class="main-style-workflow-error">${escapeHtml(image.errorMessage)}</small>` : ''}</div></li>`;
   }).join('');
-  return `<section class="main-style-workflow-progress${compact ? ' is-compact' : ''}" aria-label="风格主图处理进度">
-    <header><strong>风格主图</strong><span>${done} / ${total} 张就绪</span></header>
+  const title = images.some(image => image.label) ? '主图和颜色图' : '风格主图';
+  return `<section class="main-style-workflow-progress${compact ? ' is-compact' : ''}" aria-label="${title}处理进度">
+    <header><strong>${title}</strong><span>${done} / ${total} 张就绪</span></header>
     <p class="main-style-workflow-template">${escapeHtml(style.templateName || '')}${preserved ? ` · 原样保留 ${preserved} 张` : ''}${failed ? ` · 未完成 ${failed} 张` : ''}</p>
     ${total ? `<progress value="${done}" max="${total}" aria-label="风格主图就绪张数"></progress>` : ''}
-    ${active && productPublishWorkflowIsActive(workflow) ? `<p class="main-style-workflow-current">第 ${count(active.index) + 1} 张 · ${escapeHtml(stageText(active))}</p>` : ''}
+    ${active && productPublishWorkflowIsActive(workflow) ? `<p class="main-style-workflow-current">${escapeHtml(imageLabel(active))} · ${escapeHtml(stageText(active))}</p>` : ''}
     ${rows ? `<ol class="main-style-workflow-list">${rows}</ol>` : (style.imageUrls || []).length
       ? `<div class="main-style-result-strip">${style.imageUrls.map((url, index) => imageLink(url, index)).join('')}</div>` : ''}
     <p class="main-style-workflow-connection" role="status" hidden></p></section>`;
@@ -7107,6 +7109,9 @@ function syncProductBulkCapture(item, session) {
 }
 
 function productBulkThumbnail(item) {
+  const result = item.workflow?.mainImageStyle?.images?.find(image => image.index === 0 && image.imageUrl);
+  const published = safeProductUrl(result?.imageUrl);
+  if (published) return published;
   const id = item.captureId || item.id;
   const capture = productCaptures.find(candidate => candidate.id === id) || productBulkSelectedCaptures.get(id);
   const image = capture?.images?.[0];
@@ -7126,6 +7131,17 @@ function renderPrintListingSteps(item) {
   return `<ol class="product-bulk-listing-steps" aria-label="上架进度">${labels.map((label, index) =>
     `<li${index < phase ? ' data-done' : index === phase ? ' aria-current="step"' : ''}>${label}</li>`).join('')}</ol>`;
 }
+function renderPrintListingSkus(workflow) {
+  const skus = workflow?.printSkus;
+  if (!skus?.length) return '';
+  const colorCount = new Set(skus.map(item => item.color).filter(Boolean)).size;
+  const summary = `销售规格 · ${skus.length} 个 SKU${colorCount ? ` · ${colorCount} 个颜色选项` : ''}`;
+  return `<details class="main-style-workflow-progress is-compact"><summary>${summary}</summary>
+    <ul class="main-style-workflow-list">${skus.map(item =>
+      `<li class="product-bulk-sku-row"><div><strong>${escapeHtml(item.sku || '')}</strong><span>${escapeHtml([item.color, item.size].filter(Boolean).join(' · '))}</span></div></li>`
+    ).join('')}</ul></details>`;
+}
+
 function shopReauthorizationNeeded(message) {
   return /refresh_token_expired|店铺授权已(?:过期|失效)|目标店铺没有可用凭证/i.test(message || '');
 }
@@ -7166,6 +7182,7 @@ function renderProductBulkCard(item, shops = [], preview = false) {
       ${shopName ? `<small title="${escapeHtml(shopName)}">${escapeHtml(shopName)}</small>` : `<small>售价换汇 · 库存 999 · 自动匹配类目</small>`}
       ${directListing && !preview ? renderPrintListingSteps(item) : ''}
       ${renderProductMainImageProgress(workflow, true)}
+      ${directListing && !preview ? renderPrintListingSkus(workflow) : ''}
       ${needsAuthorization ? `<div class="bulk-product-error"><p>店铺授权已过期，请重新授权。</p><a href="#${directListing ? 'shops-v2' : 'shops'}" target="_blank" rel="noopener">打开店铺管理</a></div>` : error ? `<details class="bulk-product-error"><summary>${success ? '查看状态同步提示' : '查看失败原因'}</summary><p>${escapeHtml(error)}</p></details>` : ''}
       ${!needsAuthorization && retries ? `<small class="bulk-product-retry">${escapeHtml(retries)}</small>` : ''}</div></section>`;
 }

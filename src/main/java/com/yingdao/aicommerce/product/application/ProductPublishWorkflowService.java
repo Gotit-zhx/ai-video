@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.product.domain.ProductCapture;
+import com.yingdao.aicommerce.product.domain.ProductCaptureSku;
 import com.yingdao.aicommerce.product.domain.ProductImageProcessingJob;
 import com.yingdao.aicommerce.product.domain.ProductPublishAudit;
 import com.yingdao.aicommerce.product.domain.ProductPublishWorkflow;
@@ -63,7 +64,11 @@ public class ProductPublishWorkflowService {
     @org.springframework.beans.factory.annotation.Autowired
     private ProductMainImageTemplateService mainImageTemplates;
     @org.springframework.beans.factory.annotation.Autowired
+    private ProductCaptureTemplateService captureTemplates;
+    @org.springframework.beans.factory.annotation.Autowired
     private ProductMainImageStyleService mainImageStyles;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.yingdao.aicommerce.product.mapper.ProductCaptureSkuMapper captureSkus;
 
     public ProductPublishWorkflowService(ProductPublishWorkflowMapper workflowMapper,
                                          ProductCaptureMapper captureMapper,
@@ -92,6 +97,7 @@ public class ProductPublishWorkflowService {
         boolean printDirect = ProductPrintProductionService.directListing(body);
         if (!printDirect) body.remove(ProductPrintProductionService.DIRECT_LISTING);
         body.remove("mainImageStyleSnapshot");
+        body.remove(ProductPrintImagePlan.SNAPSHOT);
         String styleTemplateId = ProductMainImageStylePolicy.templateId(body);
         if (styleTemplateId == null) body.remove(ProductMainImageStylePolicy.TEMPLATE);
         body.remove("exchangeRateSnapshot"); // Server-owned immutable quote; never trust a browser rate.
@@ -119,6 +125,8 @@ public class ProductPublishWorkflowService {
         if (sameKey != null) {
             body.put("executionMode", executionMode(sameKey));
             var savedRequest = request(sameKey);
+            if (savedRequest.containsKey(ProductPrintImagePlan.SNAPSHOT))
+                body.put(ProductPrintImagePlan.SNAPSHOT, savedRequest.get(ProductPrintImagePlan.SNAPSHOT));
             var template = ProductListingTemplateService.snapshotFrom(savedRequest);
             if (template.containsKey("captureTemplateId")) {
                 body.remove(ProductMainImageStylePolicy.TEMPLATE);
@@ -143,12 +151,20 @@ public class ProductPublishWorkflowService {
         ProductCapture capture = captureDetail.capture();
         String initialStep = initialStep(capture.getStatus());
         String printTemplate = ProductPrintProductionService.templateId(capture, objectMapper);
+        ProductPrintImagePlan printPlan = null;
         if (printDirect) {
             if (printTemplate.isEmpty()) throw badRequest("只有印花套版商品可使用直接上架");
             if (!List.of("READY", "APPROVED", "PUBLISHED").contains(capture.getStatus()))
                 throw badRequest("请回到采集链接重新确认套版和商品资料");
             requireAuthority(principal, "product:edit", "当前账号没有套版合成权限");
-            if (MODE_LIVE.equals(executionMode)) initialStep = "STYLE_IMAGES";
+            if (MODE_LIVE.equals(executionMode)) {
+                initialStep = "STYLE_IMAGES";
+                var poster = mainImageTemplates.currentForCapture(printTemplate, principal.organizationId());
+                var style = captureTemplates.printStyle(printTemplate, principal.organizationId());
+                printPlan = ProductPrintImagePlan.create(captureDetail, poster, style,
+                        ProductPublicationSkuNaming.style(body.get(ProductPublicationSkuNaming.FIELD)), objectMapper);
+                body.put(ProductPrintImagePlan.SNAPSHOT, objectMapper.convertValue(printPlan, new TypeReference<Map<String, Object>>() {}));
+            }
         }
         if (!printTemplate.isEmpty()) {
             if (captureDetail.skus().isEmpty() || captureDetail.skus().stream().anyMatch(sku -> sku.getStock() == null)) {
@@ -156,9 +172,13 @@ public class ProductPublishWorkflowService {
             }
             body.remove(ProductMainImageStylePolicy.TEMPLATE);
             styleTemplateId = null;
-            body.put("publishStock", captureDetail.skus().getFirst().getStock());
+            var selected = printPlan == null ? java.util.Set.<String>of() : printPlan.slots().stream()
+                    .flatMap(slot -> slot.variants().stream()).map(ProductPrintImagePlan.Variant::key)
+                    .collect(java.util.stream.Collectors.toSet());
             var skuStocks = new LinkedHashMap<String, Integer>();
-            captureDetail.skus().forEach(sku -> skuStocks.put(sku.getSkuKey(), sku.getStock()));
+            captureDetail.skus().stream().filter(sku -> selected.isEmpty() || selected.contains(sku.getSkuKey()))
+                    .forEach(sku -> skuStocks.put(sku.getSkuKey(), sku.getStock()));
+            body.put("publishStock", skuStocks.firstEntry().getValue());
             body.put("skuStocks", skuStocks);
         }
         boolean generated = commerceDb != null && commerceDb.queryForObject("SELECT COUNT(*) FROM commerce_batch_publications WHERE organization_id=? AND capture_id=?",Integer.class,principal.organizationId(),captureId)>0;
@@ -387,8 +407,27 @@ public class ProductPublishWorkflowService {
                         imageJob == null ? null : imageJob.getErrorMessage(), imageJob == null ? 0 : imageJob.getProcessedImages(), imageJob == null ? 0 : imageJob.getTotalImages()),
                 audit(audit), workflow.getErrorMessage(), workflow.getCreatedAt(), workflow.getUpdatedAt(),
                 workflow.getCompletedAt(),
-                mainImageStyles == null ? null : mainImageStyles.progress(workflow)
+                mainImageStyles == null ? null : mainImageStyles.progress(workflow), printSkus(workflow)
         );
+    }
+
+    private List<PrintSkuView> printSkus(ProductPublishWorkflow workflow) {
+        var request = request(workflow);
+        if (captureSkus == null || !ProductPrintProductionService.directListing(request)) return null;
+        var plan = ProductPrintImagePlan.read(request, objectMapper);
+        if (plan != null) {
+            var variants = plan.slots().stream().flatMap(slot -> slot.variants().stream()).toList();
+            if (!variants.isEmpty()) return variants.stream().map(this::printSkuView).toList();
+        }
+        return captureSkus.selectList(new LambdaQueryWrapper<ProductCaptureSku>()
+                        .eq(ProductCaptureSku::getOrganizationId, workflow.getOrganizationId())
+                        .eq(ProductCaptureSku::getCaptureId, workflow.getCaptureId())
+                        .orderByAsc(ProductCaptureSku::getSortOrder))
+                .stream().map(sku -> printSkuView(ProductPrintImagePlan.variant(sku, objectMapper))).toList();
+    }
+
+    private PrintSkuView printSkuView(ProductPrintImagePlan.Variant variant) {
+        return new PrintSkuView(variant.sku(), variant.color(), variant.size());
     }
 
     private StageView stage(String id, String status, String error, int processed, int total) {
@@ -567,7 +606,10 @@ public class ProductPublishWorkflowService {
                                boolean publicationAttempted,
                                StageView imageProcessing, PublishStageView publication,
                                String errorMessage, Instant createdAt, Instant updatedAt,
-                               Instant completedAt, ProductMainImageStyleService.Progress mainImageStyle) {}
+                               Instant completedAt, ProductMainImageStyleService.Progress mainImageStyle,
+                               List<PrintSkuView> printSkus) {}
+
+    public record PrintSkuView(String sku, String color, String size) {}
 
     public record StageView(String id, String status, String errorMessage, int processedImages, int totalImages) {}
 

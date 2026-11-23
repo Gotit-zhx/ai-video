@@ -85,6 +85,10 @@ public class ProductCaptureTemplateService {
         return current;
     }
 
+    VariantView printStyle(String id, String organization) {
+        return view(row(id, organization), organization, false).variants().stream().findFirst().orElse(null);
+    }
+
     /** An absent scope selects the existing enterprise configuration. A style scope must exist in this enterprise. */
     public String settingsScope(String id, PlatformPrincipal user, boolean edit) {
         if (id == null) return "";

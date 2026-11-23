@@ -115,3 +115,25 @@ test('product detail, publish dialog and bulk details all render the same live p
   assert.match(polling,/currentUser.organizationId !== organizationId/);
   assert.match(polling,/以上为最近一次状态/);
 });
+
+test('print listing labels the template posters and color images separately', () => {
+  const current = workflow();
+  current.mainImageStyle.images[0].label = '主图 1';
+  current.mainImageStyle.images[3].label = '颜色 · 红';
+  const html = harness().renderProductMainImageProgress(current);
+  assert.match(html, /主图和颜色图/);
+  assert.match(html, /主图 1 · 正在生成/);
+  assert.match(html, /alt="颜色 · 红"/);
+});
+
+test('print listing exposes the uploaded color and size options with SKU codes', () => {
+  const context = vm.createContext({escapeHtml});
+  vm.runInContext(functionSource('renderPrintListingSkus', 'shopReauthorizationNeeded'), context);
+  const html = context.renderPrintListingSkus({printSkus:[
+    {sku:'A01-BK-M-AB12CD34', color:'黑', size:'M'},
+    {sku:'A01-RED-L-AB12CD34', color:'红', size:'L'}
+  ]});
+  assert.match(html, /销售规格 · 2 个 SKU · 2 个颜色选项/);
+  assert.match(html, /A01-BK-M-AB12CD34/);
+  assert.match(html, /红 · L/);
+});

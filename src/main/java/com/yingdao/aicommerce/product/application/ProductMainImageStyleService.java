@@ -19,8 +19,8 @@ import java.util.*;
 /** Each slot and paid attempt is durable; original capture images are never mutated. */
 @Service
 public class ProductMainImageStyleService {
-    static final String PRINT_COMPOSITION = "PRINT_COMPOSITION_1";
-    private static final String PRINT_COMPOSITION_PROMPT =
+    static final String PRINT_COMPOSITION = ProductPrintImagePlan.MOCKUP;
+    static final String PRINT_COMPOSITION_PROMPT =
             "把这张已排版的商品参考图合成为一张干净的电商主图。参考图中的商品是唯一主体，保持品类、剪裁、颜色、角度、画幅和背景。严格保留现有印花的文字、图案、配色、尺寸、位置和朝向，让印花沿衣物自然光影贴合材质。输出一张完整的成品商品图，禁止添加其他颜色、文字、水印、道具或多视图。";
     private final JdbcTemplate db;
     private final ProductCaptureImageMapper images;
@@ -34,7 +34,7 @@ public class ProductMainImageStyleService {
     public record Progress(String templateName, int totalImages, int processedImages, List<String> imageUrls,
                            List<ImageProgress> images) {}
     public record ImageProgress(int index, String status, String stage, String mode, int attempt,
-                                Long elapsedSeconds, int outputCharacters, String errorMessage, String imageUrl) {}
+                                Long elapsedSeconds, int outputCharacters, String errorMessage, String imageUrl, String label) {}
 
     public ProductMainImageStyleService(JdbcTemplate db, ProductCaptureImageMapper images, CommerceImageArchive archive,
             MarketplaceImageDownloader downloader, CommerceDesignImageGateway gateway,
@@ -51,7 +51,18 @@ public class ProductMainImageStyleService {
     public Progress progress(ProductPublishWorkflow workflow) {
         if (!selected(workflow)) return null;
         if (directPrint(request(workflow))) {
-            var image = imageProgress(0, printJob(workflow), false, workflow);
+            var plan = ProductPrintImagePlan.read(request(workflow), json);
+            if (plan != null) {
+                var jobs = printJobs(workflow, plan, false);
+                var images = new ArrayList<ImageProgress>();
+                for (int index = 0; index < plan.slots().size(); index++) {
+                    var slot = plan.slots().get(index);
+                    images.add(imageProgress(index, jobs.get(index), slot.original(), workflow, slot.label()));
+                }
+                var urls = images.stream().map(ImageProgress::imageUrl).filter(Objects::nonNull).toList();
+                return new Progress(plan.name(), images.size(), urls.size(), urls, List.copyOf(images));
+            }
+            var image = imageProgress(0, printJob(workflow), false, workflow, null);
             var urls = image.imageUrl() == null ? List.<String>of() : List.of(image.imageUrl());
             return new Progress("GPT Image 2.6 合成", 1, urls.size(), urls, List.of(image));
         }
@@ -65,14 +76,14 @@ public class ProductMainImageStyleService {
             int position = index;
             var job = jobs.stream().filter(row -> ((Number) row.get("sort_order")).intValue() == position).findFirst().orElse(null);
             var analysis = json.convertValue(slots.get(index).get("analysis"), new TypeReference<Map<String, Object>>() {});
-            progress.add(imageProgress(index, job, ProductMainImageStylePolicy.preservesOriginal(analysis), workflow));
+            progress.add(imageProgress(index, job, ProductMainImageStylePolicy.preservesOriginal(analysis), workflow, null));
         }
         var ready = progress.stream().filter(image -> "READY".equals(image.status())).toList();
         return new Progress(Objects.toString(template.get("name"), ""), slots.size(), ready.size(),
                 ready.stream().map(ImageProgress::imageUrl).toList(), List.copyOf(progress));
     }
 
-    private ImageProgress imageProgress(int index, Map<String, Object> job, boolean original, ProductPublishWorkflow workflow) {
+    private ImageProgress imageProgress(int index, Map<String, Object> job, boolean original, ProductPublishWorkflow workflow, String label) {
         String status = job == null ? "WAITING" : Objects.toString(job.get("status"), "WAITING");
         int attempt = job == null ? 0 : boundedNumber(job.get("attempt_count"), 1);
         String stage = switch (status) {
@@ -94,13 +105,24 @@ public class ProductMainImageStyleService {
             if (error == null && Set.of("SUBMITTING", "RESULT_RECEIVED", "FAILED").contains(status)) error = workflow.getErrorMessage();
         }
         return new ImageProgress(index, status, stage, original ? ProductMainImageStylePolicy.PRESERVE_ORIGINAL : "REPLACE_PRODUCT",
-                attempt, elapsed, 0, error, "READY".equals(status) ? "/api/v1/product-main-image-results/" + job.get("id") : null);
+                attempt, elapsed, 0, error, "READY".equals(status) ? "/api/v1/product-main-image-results/" + job.get("id") : null, label);
     }
 
     /** Process at most one slot per workflow claim, releasing the worker between slots. */
     public boolean ensureReady(ProductPublishWorkflow workflow, ProductCapture capture) {
         if (!selected(workflow)) return true;
         if (directPrint(request(workflow))) {
+            var plan = ProductPrintImagePlan.read(request(workflow), json);
+            if (plan != null) {
+                var jobs = printJobs(workflow, plan, true);
+                if (jobs.contains(null)) {
+                    preparePrintPlan(workflow, capture, plan, jobs);
+                    jobs = printJobs(workflow, plan, true);
+                }
+                if (jobs.contains(null)) throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "图片合成任务尚未完整保存");
+                var pending = jobs.stream().filter(job -> !"READY".equals(job.get("status"))).findFirst();
+                return pending.isEmpty() || processJob(workflow, pending.get());
+            }
             var job = printJob(workflow);
             if (job == null) {
                 preparePrint(workflow, capture);
@@ -230,7 +252,48 @@ public class ProductMainImageStyleService {
         return rows.isEmpty() ? null : rows.getFirst();
     }
 
-    private void preparePrint(ProductPublishWorkflow workflow, ProductCapture capture) {
+    private List<Map<String, Object>> printJobs(ProductPublishWorkflow workflow, ProductPrintImagePlan plan, boolean processing) {
+        var ids = new ArrayList<String>();
+        for (int index = 0; index < plan.slots().size(); index++) {
+            ids.add(plan.slots().get(index).jobId(workflow.getOrganizationId(), workflow.getCaptureId(), index, json));
+        }
+        var parameters = new ArrayList<Object>();
+        parameters.add(workflow.getOrganizationId());
+        parameters.add(workflow.getCaptureId());
+        parameters.addAll(ids);
+        var rows = db.queryForList("SELECT id,sort_order,source_key,reference_key,prompt,size,model_config_id,"
+                + "attempt_count,recovery_count,status,storage_key,error_message,updated_at"
+                + (processing ? ",CASE WHEN status='RESULT_RECEIVED' AND storage_key IS NULL THEN result_json END AS result_json" : "")
+                + " FROM product_main_image_jobs WHERE organization_id=? AND capture_id=? AND id IN ("
+                + String.join(",", Collections.nCopies(ids.size(), "?")) + ")", parameters.toArray());
+        var byId = new HashMap<Object, Map<String, Object>>();
+        rows.forEach(row -> byId.put(row.get("id"), row));
+        return ids.stream().map(byId::get).toList();
+    }
+
+    private void preparePrintPlan(ProductPublishWorkflow workflow, ProductCapture capture, ProductPrintImagePlan plan,
+                                  List<Map<String, Object>> jobs) {
+        String org = workflow.getOrganizationId();
+        boolean generate = plan.slots().stream().anyMatch(slot -> !slot.original());
+        String source = generate ? printGuide(workflow, capture) : null;
+        String modelId = generate ? models.requireCapturePrintConnection(org).id() : "";
+        for (int index = 0; index < plan.slots().size(); index++) {
+            if (jobs.get(index) != null) continue;
+            var slot = plan.slots().get(index);
+            String reference = slot.referenceKey() == null ? source : slot.referenceKey();
+            if (slot.original()) archive.read(org, reference);
+            db.update("""
+                    INSERT IGNORE INTO product_main_image_jobs(id,organization_id,workflow_id,capture_id,sort_order,
+                    source_key,reference_key,prompt,size,model_config_id,template_fingerprint,status,storage_key,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,NOW(6))
+                    """, plan.jobId(capture, index, json), org, workflow.getId(), capture.getId(), index,
+                    slot.original() ? reference : source, reference, slot.prompt(), slot.size(),
+                    slot.original() ? "" : modelId, slot.fingerprint(json), slot.original() ? "READY" : "PREPARED",
+                    slot.original() ? reference : null);
+        }
+    }
+
+    private String printGuide(ProductPublishWorkflow workflow, ProductCapture capture) {
         String org = workflow.getOrganizationId();
         if (!org.equals(capture.getOrganizationId()) || ProductPrintProductionService.templateId(capture, json).isEmpty())
             throw conflict("当前商品没有已确认的印花套版");
@@ -243,6 +306,12 @@ public class ProductMainImageStyleService {
                 || !(CommercePublicationDrafts.PREFIX + source).equals(main.getProcessedUrl())) {
             throw conflict("商品的排版图已变化，请回到采集链接重新排版");
         }
+        return source;
+    }
+
+    private void preparePrint(ProductPublishWorkflow workflow, ProductCapture capture) {
+        String org = workflow.getOrganizationId();
+        String source = printGuide(workflow, capture);
         var model = models.requireCapturePrintConnection(org);
         db.update("""
                 INSERT IGNORE INTO product_main_image_jobs(id,organization_id,workflow_id,capture_id,sort_order,
@@ -255,7 +324,7 @@ public class ProductMainImageStyleService {
 
     private ModelConfigService.RuntimeModelConnection jobModel(String org, Map<String, Object> job) {
         String id = (String) job.get("model_config_id");
-        return (PRINT_COMPOSITION.equals(job.get("size"))
+        return (Objects.toString(job.get("size"), "").startsWith(ProductPrintImagePlan.POSTER_PREFIX)
                 ? models.capturePrintConnectionById(org, id) : models.commerceMockupConnectionById(org, id))
                 .orElseThrow(() -> conflict("原图片模型已停用，请恢复模型配置后重试"));
     }
@@ -269,9 +338,13 @@ public class ProductMainImageStyleService {
     private CommerceDesignImageGateway.Response generate(Map<String, Object> job, String attemptId,
             ModelConfigService.RuntimeModelConnection model, List<CommerceDesignImageGateway.Reference> references) {
         String prompt = (String) job.get("prompt");
-        return PRINT_COMPOSITION.equals(job.get("size"))
-                ? gateway.generatePrintListingMockup(prompt, attemptId, model, references.getFirst())
-                : gateway.generateMainImagePoster(prompt, attemptId, model, references, (String) job.get("size"));
+        String size = (String) job.get("size");
+        if (PRINT_COMPOSITION.equals(size)) return gateway.generatePrintListingMockup(prompt, attemptId, model, references.getFirst());
+        if (size.startsWith(ProductPrintImagePlan.POSTER_PREFIX)) {
+            ModelConfigService.requireCapturePrintModel(model);
+            size = size.substring(ProductPrintImagePlan.POSTER_PREFIX.length());
+        }
+        return gateway.generateMainImagePoster(prompt, attemptId, model, references, size);
     }
 
     private void prepare(ProductPublishWorkflow workflow, ProductCapture capture, List<Map<String, Object>> slots) {
