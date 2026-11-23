@@ -135,11 +135,24 @@ class SourceWatcher:
         found = {}
         if not directory.exists():
             return found
-        for path in sorted(directory.rglob('*')):
+        candidates = []
+        for folder, children, names in os.walk(directory, followlinks=False):
+            parent = Path(folder)
+            children[:] = sorted(name for name in children
+                if not name.startswith('.') and name not in ('node_modules', 'test', 'tests', '__pycache__')
+                and not (parent / name).is_symlink()
+                and not (frontend and ((parent / name).relative_to(directory).parts[0] == 'modern'
+                    or (parent / name).relative_to(directory).parts[:2] == ('assets', 'finance-modern'))))
+            candidates.extend(parent / name for name in sorted(names))
+        for path in candidates:
             relative = path.relative_to(directory)
             if path.is_symlink() or not path.is_file() or any(part.startswith('.') or part in ('node_modules', 'test', 'tests', '__pycache__') for part in relative.parts):
                 continue
             if frontend and path.suffix.lower() not in PUBLIC_EXTENSIONS:
+                continue
+            # React assets are published atomically and picked up on the next visit.
+            # Rebuilding this optional UI must not reload tabs with financial drafts.
+            if frontend and (relative.parts[0] == 'modern' or relative.parts[:2] == ('assets', 'finance-modern')):
                 continue
             stat = path.stat()
             stamp = (stat.st_mtime_ns, stat.st_size)
