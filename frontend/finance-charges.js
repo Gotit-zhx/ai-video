@@ -19,6 +19,7 @@
       const host=el('section',null,root,'fi-card fq-content');
       FinanceLabelCosts.mount(host,options);return;
     }
+    options.onActivityScope?.('BRUSH',null);
     if(groups.some(g=>g.id===options.filters?.groupId))state.group=options.filters.groupId;
     if(!groups.some(g=>g.id===state.group))state.group=groups[0]?.id||'';
     const today=new Date(),startDay=new Date(today);startDay.setDate(today.getDate()-29);

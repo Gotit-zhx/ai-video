@@ -228,6 +228,17 @@ public class FinanceOrderCharges {
         var rows=repo.jdbc().queryForList("SELECT x.* FROM finance_charge_rows x JOIN finance_connections c ON c.organization_id=x.organization_id AND c.group_id=x.group_id WHERE c.id=? AND x.organization_id=? AND x.order_id=? AND x.matched_shop_id IS NULL",e.shopId(),s.organizationId(),e.orderId());
         for(var r:rows){new FinanceGroups(repo).require(s,text(r.get("group_id")),true);matchAndSave(s.organizationId(),r);}
     }
+    void ordersArrived(Scope scope,String shop,List<String> orders){
+        var args=new ArrayList<Object>(List.of(shop,scope.organizationId()));args.addAll(orders);
+        var rows=repo.jdbc().queryForList("""
+            SELECT x.* FROM finance_charge_rows x JOIN finance_connections c
+              ON c.organization_id=x.organization_id AND c.group_id=x.group_id
+            WHERE c.id=? AND x.organization_id=? AND x.matched_shop_id IS NULL AND x.order_id IN (
+            """+String.join(",",Collections.nCopies(orders.size(),"?"))+")",args.toArray());
+        if(rows.isEmpty())return;
+        new FinanceGroups(repo).require(scope,text(rows.getFirst().get("group_id")),true);
+        for(var row:rows)matchAndSave(scope.organizationId(),row);
+    }
     static String normalOrder(String alias){
         return "NOT EXISTS(SELECT 1 FROM finance_marketing_orders mark WHERE mark.organization_id="+alias+".organization_id AND mark.shop_id="+alias+".shop_id AND mark.order_id="+alias+".order_id)";
     }

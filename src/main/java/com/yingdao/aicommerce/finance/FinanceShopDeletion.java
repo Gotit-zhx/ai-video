@@ -102,7 +102,10 @@ final class FinanceShopDeletion {
         Object[] keys={org,shop};
         count=switch(stage){
             case 0 -> delete("finance_sync_states","organization_id=? AND shop_id=?",keys);
-            case 1 -> delete("finance_cost_rebuilds","organization_id=? AND shop_id=?",keys);
+            case 1 -> {
+                int removed=delete("finance_cost_target_scans","organization_id=? AND shop_id=?",keys);
+                yield removed>0?removed:delete("finance_cost_rebuilds","organization_id=? AND shop_id=?",keys);
+            }
             case 2 -> delete("finance_order_cost_jobs","organization_id=? AND shop_id=?",keys);
             case 3 -> {
                 int removed=delete("finance_qianyi_return_costs","organization_id=? AND shop_id=?",keys);

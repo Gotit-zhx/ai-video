@@ -174,24 +174,26 @@ public class FinanceService {
         else refreshCostSnapshots(s);
     }
     public Map<String,Object> dashboard(Scope s,Filter requested,boolean cny,String snapshotId){
-        var key=new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId),false);
+        var key=new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId)+repo.costProgressMode(s).cacheSuffix(),false);
         java.util.function.Supplier<Map<String,Object>> load=()->buildDashboard(s,requested,cny,snapshotId,false);
         return withCalculations(s,requested,sharedSnapshots==null?snapshots.get(key,load):sharedSnapshots.get(key,load));
     }
     Map<String,Object> withCalculations(Scope s,Filter f,Map<String,Object> result){
-        if(sharedSnapshots==null)return result;
-        var selected=rows(result.get("shops")).stream().filter(shop->FinanceGroups.matches(shop,f)).map(shop->text(shop.get("id"))).toList();
-        var copy=new LinkedHashMap<>(result);copy.put("settlementCalculation",sharedSnapshots.settlementCalculation(s,selected));return copy;
+        var work=new FinancePublishedCosts(repo).apply(s,f,result);
+        if(sharedSnapshots==null)return work;
+        var selected=FinancePublishedCosts.shopIds(rows(work.get("shops")),f);
+        var copy=new LinkedHashMap<>(work);copy.put("settlementCalculation",sharedSnapshots.settlementCalculation(s,selected));return copy;
     }
     public void prewarm(Scope s){
         if(sharedSnapshots==null)return;
         LocalDate today=LocalDate.now(ZoneId.of("Asia/Shanghai"));
         var month=FinanceCalendar.previousMonth(Instant.now());
+        String mode=repo.costProgressMode(s).cacheSuffix();
         // Warm the two default RMB views. Native-currency projections reuse the
         // same facts without occupying a second worker waiting for identical SQL.
         for(boolean live:List.of(true,false)){
             var filter=new Filter(live?today:month.atDay(1),live?today:month.atEndOfMonth(),"","","","day");
-            sharedSnapshots.prime(new FinanceSnapshotCache.Key(s,filter,true,"",live),
+            sharedSnapshots.prime(new FinanceSnapshotCache.Key(s,filter,true,mode,live),
                     ()->live?buildScreen(s,filter,true,""):buildDashboard(s,filter,true,"",false));
         }
     }
@@ -291,8 +293,9 @@ public class FinanceService {
         return out;
     }
     private Map<String,Object> loadDashboardFacts(Scope s,Filter all,boolean live){
-        var factsKey=new FinanceSnapshotCache.Key(s,all,false,"",live);
-        var companyKey=new FinanceSnapshotCache.Key(s,new Filter(all.start(),all.end(),"","","","day"),false,"",live);
+        String mode=repo.costProgressMode(s).cacheSuffix();
+        var factsKey=new FinanceSnapshotCache.Key(s,all,false,mode,live);
+        var companyKey=new FinanceSnapshotCache.Key(s,new Filter(all.start(),all.end(),"","","","day"),false,mode,live);
         // A shop-first visit stays a shop query. A previously loaded company snapshot can
         // serve its shops/groups without repeating the large ledger and cost scans.
         var wider=factsKey.equals(companyKey)?null:sharedSnapshots==null?dashboardFacts.find(companyKey):sharedSnapshots.findFacts(companyKey);
@@ -379,7 +382,7 @@ public class FinanceService {
     }
     public Map<String,Object> screen(Scope s,Filter requested,boolean cny,String snapshotId){
         if(!requested.start().equals(requested.end()))throw bad("实时大屏按单个业务日展示");
-        var key=new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId),true);
+        var key=new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId)+repo.costProgressMode(s).cacheSuffix(),true);
         java.util.function.Supplier<Map<String,Object>> load=()->buildScreen(s,requested,cny,snapshotId);
         return withCalculations(s,requested,sharedSnapshots==null?snapshots.get(key,load):sharedSnapshots.get(key,load));
     }

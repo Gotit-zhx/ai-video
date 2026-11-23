@@ -9,29 +9,33 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 /** One provider request per account lease. Independent streams retain failed pages and backoff. */
 final class FinanceAdAutomation {
     static final List<String> GMV_CHANNELS=List.of("GMV");
+    static final String VISIBLE_STREAM="""
+            (t.channel='BASIC' OR EXISTS (
+              SELECT 1 FROM finance_ad_stores d
+              WHERE d.organization_id=t.organization_id AND d.advertiser_id=t.advertiser_id
+                AND d.store_id=t.store_id AND d.active=TRUE AND d.report_eligible=TRUE AND d.match_status<>'REMOVED'
+                AND (d.shop_id='' OR EXISTS (SELECT 1 FROM finance_connections c
+                    WHERE c.organization_id=d.organization_id AND c.id=d.shop_id AND c.status<>'REMOVED'))))
+            """;
     private final FinanceAds ads;
     private final FinanceRepository repo;
     private static final class ReportChanged extends RuntimeException {}
     private static final class EmptyReportRefresh extends RuntimeException {}
     FinanceAdAutomation(FinanceAds ads){this.ads=ads;this.repo=ads.repo;}
 
-    void tick(Scope s,Map<String,Object> account,String lease){
+    void tick(Scope s,String lease,FinanceAds.AdWork work){
+        var account=work.account();
         String advertiser=text(account.get("advertiser_id"));
         String token=ads.cipher.decrypt(text(account.get("access_token_encrypted")),s.organizationId(),"finance:"+s.userId()+":"+advertiser);
-        // A blocked legacy page must not prevent store discovery or other report streams.
-        if(account.get("discovery_next_at")==null||!instant(account.get("discovery_next_at")).isAfter(Instant.now())){
+        if(work.discovery()){
             discover(s,account,lease,token);return;
         }
         var due=repo.jdbc().queryForList("""
             SELECT t.* FROM finance_ad_streams t WHERE t.organization_id=? AND t.advertiser_id=?
-              AND t.next_at<=UTC_TIMESTAMP(6) AND (t.channel='BASIC' OR EXISTS (
-                SELECT 1 FROM finance_ad_stores d WHERE d.organization_id=t.organization_id AND d.advertiser_id=t.advertiser_id
-                  AND d.store_id=t.store_id AND d.active=TRUE AND d.report_eligible=TRUE AND d.match_status<>'REMOVED'
-                  AND (d.shop_id='' OR EXISTS (SELECT 1 FROM finance_connections c WHERE c.organization_id=d.organization_id AND c.id=d.shop_id AND c.status<>'REMOVED'))))
-            ORDER BY t.next_at,t.channel,t.store_id LIMIT 1
-            """,s.organizationId(),advertiser);
+              AND t.channel=? AND t.store_id=? AND t.next_at<=UTC_TIMESTAMP(6) AND
+            """+VISIBLE_STREAM,s.organizationId(),advertiser,work.channel(),work.store());
         if(due.isEmpty()){repo.transaction(()->{if(owns(s,advertiser,lease))release(s,advertiser,lease);return null;});return;}
-        sync(s,account,lease,token,due.getFirst());
+        sync(s,account,lease,token,due.getFirst(),work.period());
     }
 
     private boolean owns(Scope s,String advertiser,String lease){
@@ -98,7 +102,7 @@ final class FinanceAdAutomation {
                 ensureStream(s,advertiser,"BASIC","");
                 repo.jdbc().update("""
                     UPDATE finance_ad_accounts SET discovery_status=?,discovery_error=NULL,discovery_failures=0,
-                      discovery_next_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 HOUR) WHERE organization_id=? AND advertiser_id=?
+                      discovery_next_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 6 HOUR) WHERE organization_id=? AND advertiser_id=?
                     """,stores.isEmpty()?"EMPTY":"SUCCESS",s.organizationId(),advertiser);
                 release(s,advertiser,lease);return null;
             });
@@ -117,23 +121,58 @@ final class FinanceAdAutomation {
     private void ensureStream(Scope s,String advertiser,String channel,String store){
         repo.jdbc().update("INSERT IGNORE INTO finance_ad_streams(organization_id,advertiser_id,channel,store_id) VALUES(?,?,?,?)",s.organizationId(),advertiser,channel,store);
     }
-    private void sync(Scope s,Map<String,Object> account,String lease,String token,Map<String,Object> stream){
+    private Map<String,Object> checkpoint(Object value){
+        return value==null?new LinkedHashMap<>():new LinkedHashMap<>(repo.read(text(value)));
+    }
+    private LocalDate historyStart(Map<String,Object> account,Map<String,Object> stream,ZoneId zone,LocalDate today){
+        Object last=stream.get("last_success_at");
+        boolean nightly=last!=null&&instant(last).atZone(zone).toLocalDate().isBefore(today);
+        LocalDate start=today.minusDays(last==null?89:nightly?30:6);
+        if(last==null&&account.get("checkpoint_json")!=null){
+            String legacy=text(checkpoint(account.get("checkpoint_json")).get("from"));
+            if(!legacy.isBlank()&&LocalDate.parse(legacy).isBefore(start))start=LocalDate.parse(legacy);
+        }
+        return start;
+    }
+    private static void window(Map<String,Object> state,LocalDate from,LocalDate until){
+        state.put("from",from.toString());state.put("until",until.toString());state.put("page",1);
+    }
+    private void sync(Scope s,Map<String,Object> account,String lease,String token,Map<String,Object> stream,FinanceAds.Period period){
         String advertiser=text(account.get("advertiser_id")),channel=text(stream.get("channel")),store=text(stream.get("store_id"));
         Object[] keys={s.organizationId(),advertiser,channel,store};
+        FinanceAds.Period active=period;
         try{
-            var cp=stream.get("checkpoint_json")==null?new LinkedHashMap<String,Object>():new LinkedHashMap<>(repo.read(text(stream.get("checkpoint_json"))));
+            var state=checkpoint(stream.get("checkpoint_json"));
             ZoneId zone=ZoneId.of(text(account.get("timezone")));
             LocalDate today=LocalDate.now(zone);
+            if(period==FinanceAds.Period.MONTHS&&state.containsKey("from")&&!state.containsKey(period.key)
+                    &&!LocalDate.parse(text(state.get("from"))).isBefore(FinanceSyncRange.start(today)))
+                active=FinanceAds.Period.REPORT;
+            boolean priority=active.priority();
+            String phase=active.key;
+            // A recent page and a monthly page can each pause without changing the saved historical page.
+            Map<String,Object> cp=priority?new LinkedHashMap<>(map(state.get(phase))):state;
             if(cp.isEmpty()){
-                boolean nightly=stream.get("last_success_at")!=null&&instant(stream.get("last_success_at")).atZone(zone).toLocalDate().isBefore(today);
-                LocalDate start=today.minusDays(stream.get("last_success_at")==null?89:nightly?30:6);
-                if(stream.get("last_success_at")==null&&account.get("checkpoint_json")!=null){
-                    String legacy=text(repo.read(text(account.get("checkpoint_json"))).get("from"));
-                    if(!legacy.isBlank()&&LocalDate.parse(legacy).isBefore(start))start=LocalDate.parse(legacy);
-                }
-                cp.put("from",start.toString());
-                cp.put("until",today.toString());cp.put("page",1);
+                LocalDate start=historyStart(account,stream,zone,today);
+                if(priority){
+                    LocalDate[] selected=active==FinanceAds.Period.RECENT?new LocalDate[]{today.minusDays(6),today}
+                            :firstMissingWindow(keys,today);
+                    if(selected==null){
+                        repo.transaction(()->{if(owns(s,advertiser,lease))release(s,advertiser,lease);return null;});
+                        return;
+                    }
+                    window(cp,selected[0],selected[1]);
+                    if(!state.containsKey("from")){
+                        LocalDate priorityStart=FinanceSyncRange.start(today);
+                        if(active==FinanceAds.Period.RECENT&&start.isBefore(priorityStart))window(state,start,priorityStart.minusDays(1));
+                        else{
+                            window(state,selected[0],selected[1]);
+                            cp.put("priorityOnly",true);
+                        }
+                    }
+                }else window(cp,start,today);
             }
+            if(priority)state.put(phase,cp);
             cp.putIfAbsent("run",UUID.randomUUID().toString());
             LocalDate from=LocalDate.parse(text(cp.get("from"))),until=LocalDate.parse(text(cp.get("until"))),to=from.plusDays(6);
             if(to.isAfter(until))to=until;
@@ -142,7 +181,7 @@ final class FinanceAdAutomation {
             boolean owned=repo.transaction(()->{
                 if(!owns(s,advertiser,lease))return false;
                 repo.jdbc().update("UPDATE finance_ad_streams SET checkpoint_json=?,status='SYNCING' WHERE organization_id=? AND advertiser_id=? AND channel=? AND store_id=?",
-                        repo.write(cp),s.organizationId(),advertiser,channel,store);return true;
+                        repo.write(state),s.organizationId(),advertiser,channel,store);return true;
             });
             if(!owned)return;
             var data=ads.get(channel.equals("BASIC")?"/report/integrated/get/":"/gmv_max/report/get/",token,query(advertiser,channel,store,from,to,page));
@@ -168,25 +207,38 @@ final class FinanceAdAutomation {
                     publish(s,account,stream,cp,from,end,data);
                     if(end.isBefore(until)){
                         cp.put("from",end.plusDays(1).toString());cp.put("page",1);cp.remove("run");
-                    }else cp.clear();
+                    }else if(priority){
+                        state.remove(phase);
+                        if(Boolean.TRUE.equals(cp.get("priorityOnly"))||Boolean.TRUE.equals(cp.get("recentOnly"))){
+                            state.remove("from");state.remove("until");state.remove("page");
+                        }
+                    }else{
+                        String savedHistory=text(cp.get("historyFrom"));
+                        cp.clear();
+                        if(!savedHistory.isBlank())window(cp,LocalDate.parse(savedHistory),from.minusDays(1));
+                    }
                 }
-                boolean done=cp.isEmpty();
+                boolean done=state.isEmpty()&&firstMissingWindow(keys,today)==null;
                 repo.jdbc().update("""
                     UPDATE finance_ad_streams SET checkpoint_json=?,status=?,error_message=NULL,failures=0,
                       last_success_at=CASE WHEN ? THEN UTC_TIMESTAMP(6) ELSE last_success_at END,next_at=?
                     WHERE organization_id=? AND advertiser_id=? AND channel=? AND store_id=?
-                    """,done?null:repo.write(cp),done?"SUCCESS":"SYNCING",done,Timestamp.from(Instant.now().plusSeconds(done?3600:30)),
+                    """,done?null:repo.write(state),done?"SUCCESS":"SYNCING",done,Timestamp.from(Instant.now().plusSeconds(done?3600:30)),
                         s.organizationId(),advertiser,channel,store);
                 return release(s,advertiser,lease);
             });
         }catch(RuntimeException failure){
+            var failedPhase=active;
             repo.transaction(()->{
                 if(!owns(s,advertiser,lease))return null;
                 if(failure instanceof ReportChanged){
-                    var saved=repo.read(repo.jdbc().queryForObject("SELECT checkpoint_json FROM finance_ad_streams WHERE organization_id=? AND advertiser_id=? AND channel=? AND store_id=?",String.class,keys));
-                    var restart=new LinkedHashMap<>(saved);restart.put("page",1);restart.remove("run");
-                    repo.jdbc().update("DELETE FROM finance_ad_report_stage WHERE organization_id=? AND advertiser_id=? AND channel=? AND store_id=? AND run_id=?",keys[0],keys[1],keys[2],keys[3],saved.get("run"));
-                    repo.jdbc().update("UPDATE finance_ad_streams SET checkpoint_json=? WHERE organization_id=? AND advertiser_id=? AND channel=? AND store_id=?",repo.write(restart),keys[0],keys[1],keys[2],keys[3]);
+                    var saved=checkpoint(repo.jdbc().queryForObject("SELECT checkpoint_json FROM finance_ad_streams WHERE organization_id=? AND advertiser_id=? AND channel=? AND store_id=?",String.class,keys));
+                    var restart=failedPhase.priority()?new LinkedHashMap<>(map(saved.get(failedPhase.key))):saved;
+                    Object run=restart.remove("run");
+                    restart.put("page",1);
+                    if(failedPhase.priority())saved.put(failedPhase.key,restart);
+                    repo.jdbc().update("DELETE FROM finance_ad_report_stage WHERE organization_id=? AND advertiser_id=? AND channel=? AND store_id=? AND run_id=?",keys[0],keys[1],keys[2],keys[3],run);
+                    repo.jdbc().update("UPDATE finance_ad_streams SET checkpoint_json=? WHERE organization_id=? AND advertiser_id=? AND channel=? AND store_id=?",repo.write(saved),keys[0],keys[1],keys[2],keys[3]);
                 }
                 repo.jdbc().update("""
                     UPDATE finance_ad_streams SET status='ERROR',error_message=?,failures=failures+1,next_at=?
@@ -196,6 +248,26 @@ final class FinanceAdAutomation {
                 return release(s,advertiser,lease);
             });
         }
+    }
+    private LocalDate[] firstMissingWindow(Object[] keys,LocalDate today){
+        LocalDate start=FinanceSyncRange.start(today);
+        var known=new HashSet<LocalDate>();
+        for(var row:repo.jdbc().queryForList("""
+                SELECT record_date FROM finance_ad_coverage WHERE organization_id=? AND advertiser_id=? AND channel=? AND store_id=?
+                  AND record_date BETWEEN ? AND ?
+                """,keys[0],keys[1],keys[2],keys[3],start,today))
+            known.add(LocalDate.parse(text(row.get("record_date"))));
+        LocalDate current=today.withDayOfMonth(1);
+        for(LocalDate candidate:List.of(current,start)){
+            LocalDate last=candidate.equals(current)?today:current.minusDays(1);
+            for(LocalDate from=candidate;!from.isAfter(last);from=from.plusDays(1)){
+                if(known.contains(from))continue;
+                LocalDate to=from;
+                while(to.isBefore(last)&&to.isBefore(from.plusDays(6))&&!known.contains(to.plusDays(1)))to=to.plusDays(1);
+                return new LocalDate[]{from,to};
+            }
+        }
+        return null;
     }
     private boolean eligible(Scope s,String advertiser,String store){
         var rows=repo.jdbc().queryForList("SELECT shop_id,match_status FROM finance_ad_stores WHERE organization_id=? AND advertiser_id=? AND store_id=? AND active=TRUE AND report_eligible=TRUE FOR SHARE",s.organizationId(),advertiser,store);
@@ -274,7 +346,9 @@ final class FinanceAdAutomation {
         ads.finance.refreshAfterCommit(s);
     }
     private Object release(Scope s,String advertiser,String lease){
-        var states=repo.jdbc().queryForList("SELECT t.status,t.last_success_at,t.next_at,t.store_id FROM finance_ad_streams t WHERE organization_id=? AND advertiser_id=? AND (channel='BASIC' OR EXISTS (SELECT 1 FROM finance_ad_stores d WHERE d.organization_id=t.organization_id AND d.advertiser_id=t.advertiser_id AND d.store_id=t.store_id AND d.active=TRUE AND d.report_eligible=TRUE AND d.match_status<>'REMOVED'))",s.organizationId(),advertiser);
+        var states=repo.jdbc().queryForList("SELECT t.status,t.last_success_at,t.next_at,t.store_id "
+                +"FROM finance_ad_streams t WHERE t.organization_id=? AND t.advertiser_id=? AND "+VISIBLE_STREAM,
+                s.organizationId(),advertiser);
         boolean failed=states.stream().anyMatch(r->"ERROR".equals(r.get("status")));
         var account=repo.jdbc().queryForList("SELECT discovery_status,discovery_next_at,gmv_store_id FROM finance_ad_accounts WHERE organization_id=? AND advertiser_id=?",s.organizationId(),advertiser).getFirst();
         boolean discovered=Set.of("SUCCESS","EMPTY").contains(text(account.get("discovery_status")));
@@ -320,6 +394,16 @@ final class FinanceAdAutomation {
         var metrics=map(row.get("metrics"));if(amount(metrics,channel.equals("BASIC")?"spend":"cost")==null)throw bad("广告报表缺少消耗字段");
     }
     static long backoff(long failures){return Math.min(21600,120*(1L<<Math.min(7,failures)));}
+    private static final java.util.regex.Pattern PROVIDER_CODE=java.util.regex.Pattern.compile("错误码 (\\d{1,10})");
+    static String accessIssue(String error){
+        var match=PROVIDER_CODE.matcher(error);
+        if(!match.find())return "";
+        return switch(match.group(1)){
+            case "40001","40118","40125" -> "PERMISSION";
+            case "40102","40104","40105","40106","40113" -> "AUTHORIZATION";
+            default -> "";
+        };
+    }
     static String safeError(String stage,RuntimeException failure){
         if(failure instanceof EmptyReportRefresh)return stage+"部分日期返回空报表；已保留上次成功数据和进度，待核对并自动重试。";
         if(failure instanceof FinanceAdFailures.ProviderFailure)return stage+"："+failure.getMessage()+" 系统将自动重试，不影响其他报表。";

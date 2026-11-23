@@ -46,8 +46,9 @@ final class FinanceSyncMonth {
         if("SUCCESS".equals(row.get("status")))return false;
         // History resumes only after the complete priority month is certified.
         // This range deliberately skips that month and must not reopen its status.
-        if(number(row.get("completed_month_from"))==start.atStartOfDay(zone).toEpochSecond()
-                &&number(row.get("completed_month_until"))==end.atStartOfDay(zone).toEpochSecond())return false;
+        if(number(row.get("completed_month_from"))>=946684800L
+                &&number(row.get("completed_month_from"))<=start.atStartOfDay(zone).toEpochSecond()
+                &&number(row.get("completed_month_until"))>=end.atStartOfDay(zone).toEpochSecond())return false;
         long from=number(row.get("window_start")),until=number(row.get("target_until"));
         // An outstanding scan without a valid range cannot establish completion.
         if(from<946684800L||until<=from||until>=4102444800L)return true;

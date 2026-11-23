@@ -23,7 +23,7 @@ const refresh=async()=>{const before=reads;[...d.querySelectorAll('button')].fin
 w.FinanceWorkspace.enter('orders');await ready();
 const beforeScope=reads,scope=d.querySelector('[aria-label="订单范围"]');scope.value='SETTLED';scope.dispatchEvent(new w.Event('change'));await ready(beforeScope);
 let summary=d.querySelector('.fi-product-cost-summary');
-assert.equal(summary.querySelector('strong').textContent,'待补齐');
+assert.equal(summary.querySelector('strong').textContent,'待确认');
 assert(summary.textContent.includes('尚无可确认成本，不能按零成本计算'));
 assert(summary.textContent.includes('已完成成本计算'));
 assert(summary.textContent.includes('1,414'));

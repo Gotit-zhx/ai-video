@@ -14,16 +14,34 @@ public class FinanceSync {
     private final java.util.concurrent.atomic.AtomicBoolean verified=new java.util.concurrent.atomic.AtomicBoolean();
     private final java.util.concurrent.atomic.AtomicBoolean repairRegistered=new java.util.concurrent.atomic.AtomicBoolean();
     private final FinanceSyncClaims claims;
-    private final java.util.concurrent.ScheduledExecutorService worker=java.util.concurrent.Executors.newScheduledThreadPool(4,r->{var t=new Thread(r,"finance-shop-sync");t.setDaemon(true);return t;});
+    private final FinanceWorkerCapacity capacity;
+    private final int threads;
+    private final java.util.concurrent.ScheduledExecutorService worker;
     private final java.util.concurrent.ScheduledExecutorService heartbeat=java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"finance-sync-lease");t.setDaemon(true);return t;});
-    public FinanceSync(FinanceRepository repo,FinanceMarketplace marketplace){this.repo=repo;this.marketplace=marketplace;this.claims=new FinanceSyncClaims(repo);}
-    @PostConstruct public void start(){for(int slot=0;slot<4;slot++)worker.scheduleWithFixedDelay(()->{try{com.yingdao.aicommerce.ops.MaintenanceGate.runIfOpen(this::dispatch);if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance shop sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance sync dispatcher temporarily unavailable",e);}},30_000+slot*250,1000,java.util.concurrent.TimeUnit.MILLISECONDS);}
+    public FinanceSync(FinanceRepository repo,FinanceMarketplace marketplace){
+        this(repo,marketplace,FinanceWorkerCapacity.unrestricted(),4);
+    }
+    @org.springframework.beans.factory.annotation.Autowired
+    FinanceSync(FinanceRepository repo,FinanceMarketplace marketplace,FinanceWorkerCapacity capacity,
+                @org.springframework.beans.factory.annotation.Value("${APP_FINANCE_SYNC_THREADS:4}") int threads){
+        this.repo=repo;this.marketplace=marketplace;this.claims=new FinanceSyncClaims(repo);this.capacity=capacity;
+        this.threads=Math.clamp(threads,1,12);
+        worker=java.util.concurrent.Executors.newScheduledThreadPool(this.threads,r->{
+            var thread=new Thread(r,"finance-shop-sync");thread.setDaemon(true);return thread;
+        });
+    }
+    @PostConstruct public void start(){for(int slot=0;slot<threads;slot++)worker.scheduleWithFixedDelay(()->{try{com.yingdao.aicommerce.ops.MaintenanceGate.runIfOpen(this::dispatch);if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance shop sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance sync dispatcher temporarily unavailable",e);}},30_000+slot*250,1000,java.util.concurrent.TimeUnit.MILLISECONDS);}
     @PreDestroy public void stop(){worker.shutdownNow();heartbeat.shutdownNow();}
     public void tick(){runNext();}
     // Fill existing worker capacity without an extra idle second after every
     // completed page. Each new claim rechecks priority, shop delay and API budgets.
     void dispatch(){for(int i=0;i<4&&!Thread.currentThread().isInterrupted();i++)if(!runNext())return;}
     private boolean runNext(){
+        try(var permit=capacity.acquire()){
+            return permit!=null&&runNext(permit.historyAllowed());
+        }
+    }
+    private boolean runNext(boolean historyAllowed){
         if(!repairRegistered.get()){
             repo.jdbc().update("""
                 INSERT IGNORE INTO finance_sync_states(organization_id,user_id,shop_id,channel)
@@ -32,7 +50,7 @@ public class FinanceSync {
                 """);
             repairRegistered.set(true);
         }
-        var claim=claims.claim();if(claim==null)return false;
+        var claim=claims.claim(historyAllowed);if(claim==null)return false;
         var row=claim.row();Scope s=new Scope(text(row.get("organization_id")),text(row.get("user_id")));
         Object[] keys={s.organizationId(),s.userId(),row.get("shop_id"),row.get("channel"),claim.token()};
         String where="organization_id=? AND user_id=? AND shop_id=? AND channel=? AND lease_token=?";
@@ -43,7 +61,7 @@ public class FinanceSync {
         try{
             Map<String,Object> cp=row.get("checkpoint_json")==null?new LinkedHashMap<>():new LinkedHashMap<>(repo.read(text(row.get("checkpoint_json"))));
             Instant now=Instant.now();ZoneId zone=ZoneId.of(text(row.get("timezone")));
-            boolean fresh=cp.isEmpty();
+            boolean fresh=!cp.containsKey("from");
             if(fresh&&"ORDER_REPAIR".equals(row.get("channel"))){
                 cp.put("from",0);cp.put("to",0);cp.put("until",0);
                 cp.put("coverage",now.atZone(zone).toLocalDate().toString());
@@ -83,7 +101,7 @@ public class FinanceSync {
             }
             LocalDate targetMonth=now.atZone(zone).toLocalDate().withDayOfMonth(1).minusMonths(1);
             boolean needsMonth=!targetMonth.toString().equals(text(row.get("completed_month")));
-            var prioritized=FinanceSyncPlan.previousMonthFirst(cp,text(row.get("channel")),zone,now,needsMonth);
+            var prioritized=FinanceSyncPlan.twoMonthsFirst(cp,text(row.get("channel")),zone,now);
             prioritized=FinanceSyncPlan.missingSettlementsFirst(prioritized,text(row.get("platform")),
                 text(row.get("channel")),zone,now,needsMonth);
             if(fresh||!prioritized.equals(cp)){
@@ -94,6 +112,7 @@ public class FinanceSync {
             // A fixed bounded range is retained across pages; retry never loses the current cursor.
             var page=marketplace.step(s,row,cp);
             LocalDate completedMonth=FinanceSyncPlan.completedMonth(cp,page,zone);
+            if(!targetMonth.equals(completedMonth))completedMonth=null;
             var step=nextWindow(cp,page);Map<String,Object> next=new LinkedHashMap<>(step.checkpoint());
             FinanceRefundPacing.succeeded(repo,row);
             boolean done=step.done();
@@ -103,12 +122,15 @@ public class FinanceSync {
                     "ORDER_REPAIR".equals(row.get("channel"))?21600:Set.of("SETTLEMENT","PENDING").contains(text(row.get("channel")))?3600:600;
                 // The live watermark is the request boundary, not completion time:
                 // orders arriving while a long page chain runs must be fetched next time.
-                Instant completedThrough=live||"REFUND".equals(row.get("channel"))?Instant.ofEpochSecond(number(cp.get("until"))):Instant.now();
-                repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=NULL,status='SUCCESS',error_message=NULL,failures=0,"
+                Instant completedThrough=live||"REFUND".equals(row.get("channel"))
+                        ?Instant.ofEpochSecond(Math.max(number(cp.get("until")),number(cp.get("completedMonthUntil")))):Instant.now();
+                Object recentMonths=cp.get(FinanceSyncPlan.RECENT_MONTHS);
+                String marker=recentMonths==null?null:repo.write(Map.of(FinanceSyncPlan.RECENT_MONTHS,recentMonths));
+                repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=?,status='SUCCESS',error_message=NULL,failures=0,"
                         +"lease_until=NULL,lease_token=NULL,priority_requested_at=NULL,last_progress_at=UTC_TIMESTAMP(6),"
                         +"last_success_at=?,coverage_start=COALESCE(coverage_start,?),next_at=?,"
                         +"completed_month=COALESCE(?,completed_month),month_completed_at=CASE WHEN ? IS NOT NULL THEN UTC_TIMESTAMP(6) ELSE month_completed_at END WHERE "+where,
-                        Timestamp.from(completedThrough),cp.get("coverage"),Timestamp.from(Instant.now().plusSeconds(seconds)),
+                        marker,Timestamp.from(completedThrough),cp.get("coverage"),Timestamp.from(Instant.now().plusSeconds(seconds)),
                         completedMonth,completedMonth,keys[0],keys[1],keys[2],keys[3],keys[4]);
             }else{
                 repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=?,status='SYNCING',error_message=NULL,failures=0,"

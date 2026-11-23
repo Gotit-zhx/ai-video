@@ -1,10 +1,16 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const html=fs.readFileSync(path.join(__dirname,'../index.html'),'utf8');
 const app=fs.readFileSync(path.join(__dirname,'../app.js'),'utf8');
-test('all original destinations belong to one of seven parent menus',()=>{
+test('each original destination and the new capture routes have a single menu entry',()=>{
   const nav=html.slice(html.indexOf('<nav id="primary-navigation"'),html.indexOf('</nav>',html.indexOf('<nav id="primary-navigation"')));
   const groups=[...nav.matchAll(/<details class="nav-group"[\s\S]*?<\/details>/g)].map(m=>m[0]);
-  assert.equal(groups.length,7);
+  assert.equal(groups.length,8);
+  const captureGroup=groups.find(group=>group.includes('data-nav-group="commerce-v2"'));
+  for(const route of ['product-print-capture','product-capture-templates']){
+    const link=`data-commerce-route="${route}"`;
+    assert.ok(captureGroup?.includes(link),route);
+    assert.equal(groups.filter(group=>group.includes(link)).length,1,route);
+  }
   for(const id of ['nav-ai-video-monitor','nav-video-scripts','nav-ai-video-tasks','nav-general-video','nav-shops','nav-publish','nav-automations','nav-automation-admin','nav-models','nav-system','nav-assistant-test'])assert.equal(groups.filter(g=>g.includes(`id="${id}"`)).length,1,id);
 });
 test('commerce deep links select exactly one content panel and reject unknown routes',()=>{

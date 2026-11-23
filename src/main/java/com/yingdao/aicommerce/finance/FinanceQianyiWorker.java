@@ -12,24 +12,38 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 @Component
 public class FinanceQianyiWorker {
     final FinanceQianyi integration;final FinanceRepository repo;
-    static final int CONCURRENCY=3;
-    final ScheduledExecutorService worker=Executors.newScheduledThreadPool(CONCURRENCY,r->{var t=new Thread(r,"finance-qianyi");t.setDaemon(true);return t;});
-    public FinanceQianyiWorker(FinanceQianyi integration){this.integration=integration;this.repo=integration.repo;}
+    private final int concurrency;
+    private final FinanceWorkerCapacity capacity;
+    private final ScheduledExecutorService worker;
+    public FinanceQianyiWorker(FinanceQianyi integration){this(integration,FinanceWorkerCapacity.unrestricted(),3);}
+    @org.springframework.beans.factory.annotation.Autowired
+    FinanceQianyiWorker(FinanceQianyi integration,FinanceWorkerCapacity capacity,
+                        @org.springframework.beans.factory.annotation.Value("${APP_FINANCE_QIANYI_THREADS:3}") int concurrency){
+        this.integration=integration;this.repo=integration.repo;this.capacity=capacity;
+        this.concurrency=Math.clamp(concurrency,1,12);
+        worker=Executors.newScheduledThreadPool(this.concurrency,r->{var t=new Thread(r,"finance-qianyi");t.setDaemon(true);return t;});
+    }
     @PostConstruct public void start(){
         // Independent shops can wait on HTTP concurrently; the client still
         // applies one shared request-rate limit and leases serialize each shop.
-        for(int i=0;i<CONCURRENCY;i++)worker.scheduleWithFixedDelay(()->{
+        for(int i=0;i<concurrency;i++)worker.scheduleWithFixedDelay(()->{
             try{com.yingdao.aicommerce.ops.MaintenanceGate.runIfOpen(this::tick);}catch(RuntimeException ignored){/* Durable per-connection state is retried on the next tick. */}
         },40+i,1,TimeUnit.SECONDS);
     }
     @PreDestroy public void stop(){worker.shutdownNow();}
     public void tick(){
+        try(var permit=capacity.acquire()){
+            if(permit!=null)tick(permit.historyAllowed());
+        }
+    }
+    private void tick(boolean historyAllowed){
         var found=repo.jdbc().queryForList("""
             SELECT q.* FROM finance_qianyi_connections q JOIN finance_connections c ON c.organization_id=q.organization_id AND c.id=q.shop_id
             WHERE q.enabled=TRUE AND c.status<>'REMOVED' AND (q.lease_until IS NULL OR q.lease_until<UTC_TIMESTAMP(6))
-              AND q.next_at<=UTC_TIMESTAMP(6)
-            ORDER BY q.next_at,q.shop_id LIMIT 1
-            """);
+              AND q.next_at<=UTC_TIMESTAMP(6) AND (? OR %s=0)
+            ORDER BY %s,q.next_at,q.shop_id LIMIT 1
+            """.formatted(FinanceSyncRange.historicalRank("q.checkpoint_json","'Asia/Shanghai'",false),
+                FinanceSyncRange.historicalRank("q.checkpoint_json","'Asia/Shanghai'",false)),historyAllowed);
         if(found.isEmpty())return;
         var config=found.getFirst();String org=text(config.get("organization_id")),shop=text(config.get("shop_id")),lease=UUID.randomUUID().toString();
         if(repo.jdbc().update("""
@@ -57,6 +71,10 @@ public class FinanceQianyiWorker {
         if(number(config.get("source_version"))<2&&number(checkpoint.get("sourceVersion"))<2)checkpoint.clear();
         LocalDate today=LocalDate.now(ZoneId.of("Asia/Shanghai"));
         checkpoint=initializeCheckpoint(config,checkpoint,today);
+        LocalDate syncStart=LocalDate.parse(text(config.get("sync_start")));
+        var old=checkpoint;
+        checkpoint=new LinkedHashMap<>(FinanceSyncRange.prioritize(checkpoint,today,syncStart));
+        if(old.containsKey("sourceVersion"))checkpoint.put("sourceVersion",old.get("sourceVersion"));
         checkpoint=new LinkedHashMap<>(FinanceQianyiReceipt.plan(config,checkpoint,today));
         LocalDate from=LocalDate.parse(text(checkpoint.get("from"))),until=LocalDate.parse(text(checkpoint.get("until")));
         LocalDate to=from.plusDays(6);if(to.isAfter(until))to=until;
@@ -78,10 +96,17 @@ public class FinanceQianyiWorker {
         if(result.items().isEmpty()&&(page-1)*100<result.total())throw bad("千易售后分页不完整，保留当前页重试");
         boolean done=false;
         if(page*100<result.total())checkpoint.put("page",page+1);
-        else if(to.isBefore(until)){checkpoint.put("from",to.plusDays(1).toString());checkpoint.put("page",1);}
-        else done=true;
+        else{
+            LocalDate next=FinanceSyncRange.nextDay(checkpoint,to);
+            done=next.isAfter(until);
+            if(!done){checkpoint.put("from",next.toString());checkpoint.put("page",1);}
+        }
         boolean receiptFinished=done&&receiptScan;
-        if(done&&checkpoint.get("backfillResume") instanceof Map<?,?>){
+        Object sourceVersion=checkpoint.get("sourceVersion");
+        if(done&&FinanceSyncRange.resume(checkpoint)){
+            if(sourceVersion!=null)checkpoint.put("sourceVersion",sourceVersion);
+            done=markerOnly(checkpoint);
+        }else if(done&&checkpoint.get("backfillResume") instanceof Map<?,?>){
             checkpoint=new LinkedHashMap<>(map(checkpoint.get("backfillResume")));
             done=markerOnly(checkpoint);
         }
@@ -90,7 +115,7 @@ public class FinanceQianyiWorker {
     }
     /** Completion flags have no page/window to resume. Never discard a real cursor. */
     static boolean markerOnly(Map<String,Object> checkpoint){
-        return checkpoint.keySet().stream().allMatch(Set.of("sourceVersion","sourcesChanged")::contains);
+        return checkpoint.keySet().stream().allMatch(Set.of("sourceVersion","sourcesChanged",FinanceSyncRange.MONTH)::contains);
     }
     static LinkedHashMap<String,Object> initializeCheckpoint(Map<String,Object> config,Map<String,Object> saved,LocalDate today){
         var checkpoint=new LinkedHashMap<>(saved);

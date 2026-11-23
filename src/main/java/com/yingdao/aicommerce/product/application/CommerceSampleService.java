@@ -8,7 +8,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.http.HttpStatus;
 import tools.jackson.databind.ObjectMapper;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.function.Supplier;
 
 /** Example-only assets: no capture, batch, inventory or publication side effects. */
 @Service
@@ -23,7 +25,7 @@ public class CommerceSampleService {
  private final CommerceImageArchive archive;private final MarketplaceImageDownloader downloader;private final ObjectMapper json;
  public CommerceSampleService(JdbcTemplate db,ModelConfigService models,CommerceDesignImageGateway gateway,CommerceImageArchive archive,MarketplaceImageDownloader downloader,ObjectMapper json){this.db=db;this.models=models;this.gateway=gateway;this.archive=archive;this.downloader=downloader;this.json=json;}
  private void access(PlatformPrincipal u){if(u==null||u.organizationId()==null||!u.permissionCodes().contains("product:edit"))throw error(HttpStatus.FORBIDDEN,"无示例创作权限");}
- public List<View> list(PlatformPrincipal u){access(u);return db.query("SELECT * FROM commerce_sample_previews WHERE organization_id=? AND created_by=? ORDER BY created_at DESC LIMIT 40",(r,n)->new View(r.getString("id"),r.getString("product"),r.getInt("variant_index"),r.getString("status"),r.getString("model_id"),r.getString("storage_key")==null||!"READY".equals(r.getString("status"))?null:"/api/v1/commerce-samples/"+r.getString("id")+"/image",r.getString("parent_id"),r.getString("asset_kind")),u.organizationId(),u.userId());}
+ public List<View> list(PlatformPrincipal u){access(u);return db.query("SELECT * FROM commerce_sample_previews WHERE organization_id=? AND created_by=? AND request_key NOT LIKE 'capture-v2-%' ORDER BY created_at DESC LIMIT 40",(r,n)->new View(r.getString("id"),r.getString("product"),r.getInt("variant_index"),r.getString("status"),r.getString("model_id"),r.getString("storage_key")==null||!"READY".equals(r.getString("status"))?null:"/api/v1/commerce-samples/"+r.getString("id")+"/image",r.getString("parent_id"),r.getString("asset_kind")),u.organizationId(),u.userId());}
  private Map<String,Object> row(String id,PlatformPrincipal u){access(u);var rows=db.queryForList("SELECT * FROM commerce_sample_previews WHERE id=? AND organization_id=? AND created_by=?",id,u.organizationId(),u.userId());if(rows.isEmpty())throw error(HttpStatus.NOT_FOUND,"示例不存在");return rows.getFirst();}
  public CommerceDesignImageGateway.Reference image(String id,PlatformPrincipal u){var r=row(id,u);if(TRANSPARENCY_REJECTED.equals(r.get("status")))throw error(HttpStatus.CONFLICT,TRANSPARENCY_FAILURE);if(!"READY".equals(r.get("status")))throw error(HttpStatus.CONFLICT,"示例尚未归档");var reference=archive.read(u.organizationId(),(String)r.get("storage_key"));requireNativePrint(id,r,Base64.getDecoder().decode(reference.dataBase64()),u);return reference;}
  public CommerceDesignImageGateway.Reference printImage(String id,PlatformPrincipal u){var r=row(id,u);if(!Set.of("PRINT_EXTRACT","PRINT_VARIANT").contains(Objects.toString(r.get("asset_kind"),"")))throw error(HttpStatus.CONFLICT,"必须使用独立印花，不能把整件商品当作印花贴上去");return image(id,u);}
@@ -51,6 +53,43 @@ public class CommerceSampleService {
   var source=db.queryForMap("SELECT id FROM commerce_sample_previews WHERE organization_id=? AND created_by=? AND request_key=?",u.organizationId(),u.userId(),key);
   return generate(new Request("UPLOADED",0,true,(String)source.get("id"),"BLANK_PRODUCT"),"blank-volume-v2-"+original.sha256(),u);
  }
+
+ View extractCapturePrint(String requestKey, String captureId, String imageId, Supplier<byte[]> readImage,
+                          PlatformPrincipal user) {
+  access(user);
+  if(requestKey==null||!requestKey.matches("[A-Za-z0-9_-]{8,80}"))
+   throw error(HttpStatus.BAD_REQUEST,"请提供有效的印花提取请求编号");
+  String keyHash=CommerceImageArchive.sha(requestKey.getBytes(StandardCharsets.UTF_8));
+  String sourceKey="capture-v2-src-"+keyHash;
+  String extractKey="capture-v2-art-"+keyHash;
+  String binding="来源采集商品 "+captureId+" / "+imageId;
+  var params=new Object[]{user.organizationId(),user.userId(),sourceKey};
+  String sourceQuery="SELECT * FROM commerce_sample_previews WHERE organization_id=? AND created_by=? AND request_key=?";
+  var sources=db.queryForList(sourceQuery,params);
+  if(sources.isEmpty()){
+   byte[] bytes=readImage.get();
+   CommerceImageArchive.Archived stored;
+   try {
+    CommerceMockupComposer.decode(bytes);
+    stored=archive.store(user.organizationId(),bytes);
+   } catch(IllegalArgumentException invalid) {
+    throw error(HttpStatus.BAD_REQUEST,"请选择可读取且不超过 8 MiB 的商品图片");
+   }
+   db.update("""
+     INSERT IGNORE INTO commerce_sample_previews
+        (id,organization_id,created_by,request_key,product,variant_index,status,model_id,prompt,storage_key,asset_kind,created_at,updated_at)
+     VALUES (?,?,?,?, 'UPLOADED',0,'READY','UPLOAD',?,?,'PRODUCT_IMAGE',NOW(6),NOW(6))
+     """, UUID.randomUUID().toString(), user.organizationId(), user.userId(), sourceKey, binding, stored.storageKey());
+   sources=db.queryForList(sourceQuery,params);
+  }
+  if(sources.isEmpty())throw error(HttpStatus.CONFLICT,"来源图片未归档，请重试");
+  var source=sources.getFirst();
+  if(!binding.equals(source.get("prompt")) || !"READY".equals(source.get("status"))
+          || !"UPLOADED".equals(source.get("product")) || !"PRODUCT_IMAGE".equals(source.get("asset_kind")))
+   throw error(HttpStatus.CONFLICT,"同一请求编号不能更换来源图片");
+  return generate(new Request("UPLOADED",0,true,(String)source.get("id"),"PRINT_EXTRACT"),extractKey,user);
+ }
+
  public View generate(Request request,String key,PlatformPrincipal u){
   access(u);if(request==null||!request.confirmed()||key==null||!key.matches("[A-Za-z0-9_-]{8,80}"))throw error(HttpStatus.BAD_REQUEST,"请确认一次模型调用费用并提供请求编号");
   String prompt=printKind(request.assetKind())?printPrompt(request.assetKind(),request.variant()):"UPLOADED".equals(request.product()) && "BLANK_PRODUCT".equals(request.assetKind()) ? blankPrompt() : prompt(request.product(),request.variant());

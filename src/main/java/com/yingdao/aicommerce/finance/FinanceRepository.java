@@ -4,31 +4,101 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import tools.jackson.databind.ObjectMapper;
 import java.sql.Date;
+import java.time.Instant;
 import java.util.*;
 import static com.yingdao.aicommerce.finance.FinanceData.*;
 
 @Repository
 public class FinanceRepository {
-    static final String UPSERT="""
+    private static final String RECORD_INSERT="""
         INSERT INTO finance_records(id,organization_id,user_id,shop_id,platform,kind,external_id,order_id,
         statement_id,category,status,record_date,currency,amount,revenue,impressions,clicks,conversions,source,raw_json)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON DUPLICATE KEY UPDATE order_id=VALUES(order_id),statement_id=VALUES(statement_id),
+        VALUES
+        """;
+    private static final String RECORD_VALUES="(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+    private static final String RECORD_UPDATE="""
+         ON DUPLICATE KEY UPDATE order_id=VALUES(order_id),statement_id=VALUES(statement_id),
         category=VALUES(category),status=VALUES(status),record_date=VALUES(record_date),currency=VALUES(currency),
         amount=VALUES(amount),revenue=VALUES(revenue),impressions=VALUES(impressions),clicks=VALUES(clicks),
         conversions=VALUES(conversions),raw_json=VALUES(raw_json),updated_at=UTC_TIMESTAMP(6)
         """;
+    static final String UPSERT=RECORD_INSERT+RECORD_VALUES+RECORD_UPDATE;
     static final Set<String> RAW_PAGE_COUNT_KINDS=Set.of("SETTLEMENT","FEE","PENDING","COST");
     private static final int MAX_INDEXED_SHOP_DAYS=1024;
+    private static final int COVERING_SETTLEMENT_SHOP_DAYS=128;
     private static final int SHOP_DAY_BATCH=128;
     private static final int MAX_VISIBLE_SHOP_IDS=512;
     private final JdbcTemplate db; private final ObjectMapper json;
+    private final FinanceFeeDailyFacts feeDays=new FinanceFeeDailyFacts(this);
+    private boolean feeDaysEnabled;
+    private volatile Boolean costProgressInstalled;
     private final ThreadLocal<Map<Query,Long>> pageCounts=new ThreadLocal<>();
     private final ThreadLocal<Long> authoritativePageTotal=new ThreadLocal<>();
     private record ProjectionWindow(Filter semanticMonth,List<FinanceSettlementCostDays.Window> slices) {}
     private final ThreadLocal<ProjectionWindow> projectionWindow=new ThreadLocal<>();
     public FinanceRepository(JdbcTemplate db,ObjectMapper json){this.db=db;this.json=json;}
+    @org.springframework.beans.factory.annotation.Value("${app.finance.fee-days-enabled:true}")
+    void configureFeeDays(boolean enabled){feeDaysEnabled=enabled;}
+    void advanceFeeDays(){if(feeDaysEnabled)feeDays.advance();}
+    Optional<List<Map<String,Object>>> feeDays(Scope scope,Filter filter,boolean advertisingOnly){
+        if(!feeDaysEnabled)return Optional.empty();
+        var query=query(scope,filter,"d",false);
+        if(advertisingOnly)query=new Query(query.where()+" AND "+FinanceAdvertisingReport.ledgerPredicate("d"),query.args());
+        return feeDays.read(scope,filter,query).filter(rows->!excludedFeeInScope(scope,filter));
+    }
+    List<String> nonFeeKinds(Scope scope){
+        return db.queryForList("""
+            SELECT kind FROM finance_records FORCE INDEX(idx_finance_company_kind_date)
+            WHERE organization_id=? AND kind<>'FEE' GROUP BY organization_id,kind LIMIT 65
+            """,String.class,scope.organizationId());
+    }
+    private final FinanceDashboardOrderFacts dashboardOrderFacts=new FinanceDashboardOrderFacts(this);
+    private boolean dashboardOrderFactsEnabled;
+    private boolean dashboardLabelIndexEnabled;
+    private final FinanceDashboardLedgerDays dashboardLedgerDays=new FinanceDashboardLedgerDays(this);
+    private boolean dashboardLedgerDaysEnabled;
+    @org.springframework.beans.factory.annotation.Value("${app.finance.dashboard-ledger-days:false}")
+    void configureDashboardLedgerDays(boolean enabled){dashboardLedgerDaysEnabled=enabled;}
+    void advanceDashboardLedgerDays(Instant now){if(dashboardLedgerDaysEnabled)dashboardLedgerDays.advance(now);}
+    Optional<List<Map<String,Object>>> dashboardLedgerAmountGaps(Scope scope,Filter filter){
+        return dashboardLedgerDaysEnabled?dashboardLedgerDays.amountGaps(scope,filter):Optional.empty();
+    }
+    @org.springframework.beans.factory.annotation.Value("${app.finance.dashboard-order-facts:false}")
+    void configureDashboardOrderFacts(boolean enabled){dashboardOrderFactsEnabled=enabled;}
+    @org.springframework.beans.factory.annotation.Value("${app.finance.dashboard-label-index:false}")
+    void configureDashboardLabelIndex(boolean enabled){dashboardLabelIndexEnabled=enabled;}
+    void advanceDashboardOrderFacts(Instant now){if(dashboardOrderFactsEnabled)dashboardOrderFacts.advance(now);}
+    Optional<List<Map<String,Object>>> readDashboardOrderFacts(Scope scope,Filter filter){
+        return dashboardOrderFactsEnabled?dashboardOrderFacts.read(scope,filter):Optional.empty();
+    }
+    Optional<Query> dashboardSettledMembers(Scope scope,Filter filter){
+        return dashboardOrderFactsEnabled?dashboardOrderFacts.settledMembers(scope,filter):Optional.empty();
+    }
+    Optional<Map<String,Object>> dashboardLabelPeriod(Scope scope,Filter filter){
+        return dashboardOrderFactsEnabled?dashboardOrderFacts.labelPeriod(scope,filter,dashboardLabelIndexEnabled):Optional.empty();
+    }
+    Query dashboardRecordScope(Scope scope,Filter filter,String alias){
+        return query(scope,filter,alias,false,true,true,shopsInReadSnapshot(scope,filter));
+    }
     public JdbcTemplate jdbc(){return db;}
+    FinancePublishedCosts.Mode costProgressMode(Scope scope){
+        if(costProgressInstalled==null){
+            var installed=db.queryForObject("""
+                SELECT EXISTS(SELECT 1 FROM information_schema.tables
+                  WHERE table_schema=DATABASE() AND table_name='finance_cost_progress_companies')
+                """,Boolean.class);
+            costProgressInstalled=Boolean.TRUE.equals(installed);
+        }
+        if(!costProgressInstalled)return FinancePublishedCosts.Mode.LEGACY;
+        var rows=db.queryForList("""
+            SELECT enabled,DATE_FORMAT(changed_at,'%Y%m%d%H%i%s%f') stamp
+            FROM finance_cost_progress_companies WHERE organization_id=?
+            """,scope.organizationId());
+        if(rows.isEmpty())return FinancePublishedCosts.Mode.LEGACY;
+        var row=rows.getFirst();
+        return new FinancePublishedCosts.Mode(Boolean.TRUE.equals(row.get("enabled"))||number(row.get("enabled"))==1,text(row.get("stamp")));
+    }
+
     <T>T transaction(java.util.function.Supplier<T> action){
         var tx=new org.springframework.transaction.support.TransactionTemplate(
                 new org.springframework.jdbc.datasource.DataSourceTransactionManager(Objects.requireNonNull(db.getDataSource())));
@@ -101,11 +171,14 @@ public class FinanceRepository {
     public String write(Object value){return json.writeValueAsString(value);}
     public void save(Scope s,Entry e){
         validate(e);
+        writeLedger(()->{rejectDeletedWrite(s,e.shopId());saveEntry(s,e);});
+    }
+    private void writeLedger(Runnable action){
         // Retry only this idempotent database write, after its whole transaction
         // has rolled back. A caller-owned transaction must be retried by its owner.
         boolean nested=org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive();
         for(int attempt=0;;attempt++){
-            try{transaction(()->{rejectDeletedWrite(s,e.shopId());saveEntry(s,e);return null;});return;}
+            try{transaction(()->{action.run();return null;});return;}
             catch(org.springframework.dao.PessimisticLockingFailureException failure){
                 if(nested||attempt>=2||Thread.currentThread().isInterrupted())throw failure;
                 try{Thread.sleep(java.util.concurrent.ThreadLocalRandom.current().nextLong(25,76)*(attempt+1));}
@@ -113,11 +186,94 @@ public class FinanceRepository {
             }
         }
     }
+    /** An official page and its fee/cost side effects commit before the caller can advance its cursor. */
+    void saveSyncPage(Scope scope,String shop,List<Entry> entries,Entry statement,FinanceMarketplace.PageLease lease){
+        if(entries.isEmpty()&&statement==null)return;
+        String platform=statement==null?"SHOPEE":"TIKTOK_SHOP";
+        String kind=statement==null?"ORDER":"SETTLEMENT";
+        for(var entry:entries)validateSyncEntry(entry,shop,platform,kind);
+        if(statement!=null){
+            validateSyncEntry(statement,shop,platform,"BILL");
+            if(entries.stream().anyMatch(entry->!entry.statementId().equals(statement.externalId())))
+                throw bad("结算交易超出本页账单，已保留同步进度");
+        }
+        writeLedger(()->{
+            requireShopWrite(scope,shop);
+            if(lease!=null&&db.queryForList("""
+                SELECT lease_token FROM finance_sync_states WHERE organization_id=? AND user_id=? AND shop_id=?
+                  AND channel=? AND status='RUNNING' AND lease_token=? AND lease_until>UTC_TIMESTAMP(6) FOR UPDATE
+                """,scope.organizationId(),scope.userId(),shop,lease.channel(),lease.token()).isEmpty())
+                throw bad("同步租约已失效，已保留同步进度");
+            if(statement==null)saveOrderPage(scope,shop,entries);
+            else saveSettlementPage(scope,shop,entries,statement);
+        });
+    }
+    private static void validateSyncEntry(Entry entry,String shop,String platform,String kind){
+        validate(entry);
+        if(!entry.shopId().equals(shop)||!entry.platform().equals(platform)||!entry.kind().equals(kind)||!entry.source().equals("API"))
+            throw bad("财务记录超出同步页范围，已保留同步进度");
+    }
+    private void saveOrderPage(Scope scope,String shop,List<Entry> entries){
+        // Preserve the order of side effects if two provider identities may
+        // compare equal in the ledger collation.
+        if(!hasDistinctAsciiKeys(entries,Entry::orderId)){
+            for(var entry:entries)saveEntry(scope,entry);
+            return;
+        }
+        upsertRows(entries.stream().map(entry->entryArgs(scope,entry,entry.revenue())).toList());
+        FinanceOrderCosts.enqueuePage(this,scope,shop,entries);
+        var orders=entries.stream().map(Entry::orderId).distinct().toList();
+        new FinanceOrderCharges(this).ordersArrived(scope,shop,orders);
+        FinanceLabelCosts.ordersArrived(this,scope.organizationId(),orders);
+    }
+    private void saveSettlementPage(Scope scope,String shop,List<Entry> entries,Entry statement){
+        // The old prefix match permits unusual overlapping provider identifiers.
+        // Preserve its sequential behavior for those pages within the same transaction.
+        if(!hasDistinctAsciiKeys(entries,Entry::externalId)){
+            for(var entry:entries)saveEntry(scope,entry);
+        }else{
+            var corrected=new FinanceReportingMonths(this).applyPage(scope,shop,entries,statement.externalId());
+            var feeSources=new ArrayList<Entry>();
+            var components=new ArrayList<FinanceSettlementBreakdown.Result>();
+            var settlements=new ArrayList<Object[]>(corrected.size());
+            for(var entry:corrected){
+                var breakdown=settlementBreakdown(entry);
+                settlements.add(entryArgs(scope,entry,breakdown==null?entry.revenue():breakdown.goods()));
+                if(breakdown!=null){feeSources.add(entry);components.add(breakdown);}
+            }
+            upsertRows(settlements);
+            replacePageFees(scope,shop,feeSources,components);
+        }
+        // Bill revenue depends on the full committed statement plus the current page.
+        saveEntry(scope,statement);
+    }
+    private static boolean hasDistinctAsciiKeys(List<Entry> entries,java.util.function.Function<Entry,String> identity){
+        var seen=new HashSet<String>();
+        for(var entry:entries){
+            String key=identity.apply(entry);
+            if(!key.matches("[A-Za-z0-9_-]+")||!seen.add(key.toLowerCase(Locale.ROOT)))return false;
+        }
+        return true;
+    }
+    private void upsertRows(List<Object[]> rows){
+        // Bound each packet independently of the service's page size. The transaction
+        // still includes the full accepted page and the bill.
+        for(int start=0;start<rows.size();){
+            int end=start,chars=0;
+            while(end<rows.size()&&end-start<100&&(end==start||chars+text(rows.get(end)[19]).length()<=1_000_000))
+                chars+=text(rows.get(end++)[19]).length();
+            insertRows(RECORD_INSERT,RECORD_VALUES,RECORD_UPDATE,rows.subList(start,end));
+            start=end;
+        }
+    }
+    void insertRows(String prefix,String tuple,String suffix,List<Object[]> rows){
+        if(rows.isEmpty())return;
+        db.update(prefix+String.join(",",Collections.nCopies(rows.size(),tuple))+suffix,
+            rows.stream().flatMap(Arrays::stream).toArray());
+    }
     void saveEntry(Scope s,Entry e){
         e=new FinanceReportingMonths(this).apply(s,e);
-        boolean settlement=e.source().equals("API")&&e.kind().equals("SETTLEMENT")
-                &&FinanceSettlementBreakdown.supported(e.platform(),e.raw());
-        var breakdown=settlement?FinanceSettlementBreakdown.parse(e.platform(),e.raw(),e.amount()):null;
+        var breakdown=settlementBreakdown(e);
         var revenue=breakdown==null?e.revenue():breakdown.goods();
         if(e.kind().equals("BILL"))revenue=billGoods(s,e.shopId(),e.externalId(),e.currency(),e.status());
         db.update(UPSERT,entryArgs(s,e,revenue));
@@ -125,6 +281,10 @@ public class FinanceRepository {
         FinanceOrderCosts.enqueue(this,s,e);
         new FinanceOrderCharges(this).orderArrived(s,e);
         FinanceLabelCosts.orderArrived(this,s,e);
+    }
+    private static FinanceSettlementBreakdown.Result settlementBreakdown(Entry e){
+        return e.source().equals("API")&&e.kind().equals("SETTLEMENT")&&FinanceSettlementBreakdown.supported(e.platform(),e.raw())
+            ?FinanceSettlementBreakdown.parse(e.platform(),e.raw(),e.amount()):null;
     }
     Object[] entryArgs(Scope s,Entry e,java.math.BigDecimal revenue){
         return new Object[]{id(s,e),s.organizationId(),s.userId(),e.shopId(),e.platform(),e.kind(),e.externalId(),e.orderId(),
@@ -235,7 +395,7 @@ public class FinanceRepository {
     private void replaceFees(Scope s,Entry e,FinanceSettlementBreakdown.Result breakdown){
         // Reconcile this transaction's generated rows. Repeated sync must not delete and reinsert
         // identical fees across every index; imports and unrelated transactions remain untouched.
-        String prefix=e.externalId().replace("=","==").replace("%","=%").replace("_","=_")+":%";
+        String prefix=feePrefix(e);
         var existing=new LinkedHashMap<String,Map<String,Object>>();
         for(var row:db.queryForList("""
             SELECT * FROM finance_records WHERE organization_id=? AND shop_id=? AND kind='FEE'
@@ -243,16 +403,55 @@ public class FinanceRepository {
               FOR UPDATE
             """,s.organizationId(),e.shopId(),e.orderId(),e.statementId(),prefix))existing.put(text(row.get("id")),row);
         var batch=new ArrayList<Object[]>();
-        for(var args:derivedFees(s,e,breakdown)){
-            var old=existing.remove(text(args[0]));
-            if(old==null||!sameFee(old,args))batch.add(args);
-        }
-        if(!existing.isEmpty()){
-            var args=new ArrayList<Object>(List.of(s.organizationId(),e.shopId()));args.addAll(existing.keySet());
-            db.update("DELETE FROM finance_records WHERE organization_id=? AND shop_id=? AND kind='FEE' AND source='API' AND id IN ("
-                    +String.join(",",Collections.nCopies(existing.size(),"?"))+")",args.toArray());
-        }
+        collectChangedFees(s,e,breakdown,existing,batch);
+        removeFees(s,e.shopId(),List.copyOf(existing.keySet()));
         if(!batch.isEmpty())db.batchUpdate(UPSERT,batch);
+    }
+    private void replacePageFees(Scope scope,String shop,List<Entry> entries,List<FinanceSettlementBreakdown.Result> breakdowns){
+        if(entries.isEmpty())return;
+        var keys=entries.stream().map(entry->List.of(entry.orderId(),entry.statementId(),feePrefix(entry))).toList();
+        var existing=new ArrayList<Map<String,Map<String,Object>>>(entries.size());
+        entries.forEach(entry->existing.add(new LinkedHashMap<>()));
+        for(var row:db.queryForList("""
+            SELECT requested.row_num,r.* FROM JSON_TABLE(CAST(? AS JSON),'$[*]' COLUMNS(
+              row_num FOR ORDINALITY,
+              order_key VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci PATH '$[0]',
+              statement_key VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci PATH '$[1]',
+              external_prefix VARCHAR(602) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci PATH '$[2]'
+            )) requested STRAIGHT_JOIN finance_records r FORCE INDEX(idx_finance_cost_statement)
+              ON r.organization_id=? AND r.shop_id=? AND r.kind='FEE'
+                 AND r.statement_id=requested.statement_key AND r.source='API' AND r.order_id=requested.order_key
+                 AND r.external_id LIKE requested.external_prefix ESCAPE '='
+            FOR UPDATE OF r
+            """,write(keys),scope.organizationId(),shop)){
+            existing.get((int)number(row.get("row_num"))-1).put(text(row.get("id")),row);
+        }
+        var batch=new ArrayList<Object[]>();
+        var deleted=new ArrayList<String>();
+        for(int i=0;i<entries.size();i++){
+            collectChangedFees(scope,entries.get(i),breakdowns.get(i),existing.get(i),batch);
+            deleted.addAll(existing.get(i).keySet());
+        }
+        removeFees(scope,shop,deleted);
+        upsertRows(batch);
+    }
+    private static String feePrefix(Entry entry){
+        return entry.externalId().replace("=","==").replace("%","=%").replace("_","=_")+":%";
+    }
+    private void collectChangedFees(Scope scope,Entry entry,FinanceSettlementBreakdown.Result breakdown,
+                                    Map<String,Map<String,Object>> existing,List<Object[]> changed){
+        for(var args:derivedFees(scope,entry,breakdown)){
+            var old=existing.remove(text(args[0]));
+            if(old==null||!sameFee(old,args))changed.add(args);
+        }
+    }
+    private void removeFees(Scope scope,String shop,List<String> ids){
+        for(int start=0;start<ids.size();start+=500){
+            var batch=ids.subList(start,Math.min(ids.size(),start+500));
+            var args=new ArrayList<Object>(List.of(scope.organizationId(),shop));args.addAll(batch);
+            db.update("DELETE FROM finance_records WHERE organization_id=? AND shop_id=? AND kind='FEE' AND source='API' AND id IN ("
+                +String.join(",",Collections.nCopies(batch.size(),"?"))+")",args.toArray());
+        }
     }
     /** Shared derivation for live writes and bounded historical maintenance. */
     List<Object[]> derivedFees(Scope s,Entry e,FinanceSettlementBreakdown.Result breakdown){
@@ -322,6 +521,10 @@ public class FinanceRepository {
     Query query(Scope s,Filter f,String alias,boolean reporting,boolean dates) {
         return query(s,f,alias,reporting,dates,true,null);
     }
+    Query exportRateScope(Scope scope,Filter filter,boolean reporting,boolean dates){
+        return query(scope,filter,"r",reporting,dates,true,shopsInReadSnapshot(scope,filter));
+    }
+
     private Query query(Scope s,Filter f,String alias,boolean reporting,boolean dates,boolean physicalWindows,
                         List<String> allowedShops) {
         String p=alias.isEmpty()?"":alias+".";
@@ -419,20 +622,9 @@ public class FinanceRepository {
     }
     private List<Map<String,Object>> readDashboardBuckets(Scope s,Filter f,boolean includeCreatedOrders,List<Map<String,Object>> advertising,
                                                           List<Map<String,Object>> rawPageCounts){
-        String aggregate="""
-            SELECT shop_id,record_date,kind,currency,
-              CASE WHEN kind='FEE' THEN category ELSE '' END category,
-              CASE WHEN kind='ORDER' THEN status ELSE '' END status,
-              COUNT(*) records,COUNT(amount) known_amounts,COUNT(revenue) known_revenues,
-              COUNT(impressions) known_impressions,COUNT(clicks) known_clicks,COUNT(conversions) known_conversions,SUM(amount) amount,
-              SUM(revenue) revenue,SUM(impressions) impressions,SUM(clicks) clicks,SUM(conversions) conversions
-            FROM %s WHERE %s AND NOT(kind='BILL' AND source='IMPORT')
-            """
-                +(includeCreatedOrders?"":" AND kind NOT IN ('ORDER','REFUND')")
-                +" GROUP BY shop_id,record_date,kind,currency,"
-                +"CASE WHEN kind='FEE' THEN category ELSE '' END,CASE WHEN kind='ORDER' THEN status ELSE '' END";
-        var buckets=aggregateRecords(s,f,"",dashboardIndex(f),7,(source,range)->db.queryForList(
-            aggregate.formatted(source,range.where()),range.args().toArray()));
+        var buckets=includeCreatedOrders||!dashboardLedgerDaysEnabled
+            ?nativeDashboardBuckets(s,f,includeCreatedOrders)
+            :dashboardLedgerDays.read(s,f).orElseGet(()->nativeDashboardBuckets(s,f,false));
         // Exact list totals include tagged orders. Capture the count before
         // applying the operating rules. Imported bills have a separate basis.
         if(rawPageCounts!=null)for(var row:buckets){
@@ -477,6 +669,45 @@ public class FinanceRepository {
             FinanceFxDates.LEDGER_KEYS,FinanceFxDates.LEDGER_SUMS,"records","fx_date");
     }
 
+    private List<Map<String,Object>> nativeDashboardBuckets(Scope s,Filter f,boolean includeCreatedOrders){
+        var fees=feeDays(s,f,false);
+        // The existing kind/date covering index can skip the fee range entirely.
+        // Discover the kinds in the same snapshot, including imported or legacy values.
+        var nonFeeKinds=fees.isPresent()&&f.shopId().isBlank()?nonFeeKinds(s):List.<String>of();
+        boolean byKind=!nonFeeKinds.isEmpty()&&nonFeeKinds.size()<=64;
+        String aggregate="""
+            SELECT shop_id,record_date,kind,currency,
+              CASE WHEN kind='FEE' THEN category ELSE '' END category,
+              CASE WHEN kind='ORDER' THEN status ELSE '' END status,
+              COUNT(*) records,COUNT(amount) known_amounts,COUNT(revenue) known_revenues,
+              COUNT(impressions) known_impressions,COUNT(clicks) known_clicks,COUNT(conversions) known_conversions,SUM(amount) amount,
+              SUM(revenue) revenue,SUM(impressions) impressions,SUM(clicks) clicks,SUM(conversions) conversions
+            FROM %s WHERE %s AND NOT(kind='BILL' AND source='IMPORT')
+            """
+                +(includeCreatedOrders?"":" AND kind NOT IN ('ORDER','REFUND')")
+                +(fees.isPresent()?" AND kind<>'FEE'":"")
+                +(byKind?" AND kind IN ("+String.join(",",Collections.nCopies(nonFeeKinds.size(),"?"))+")":"")
+                +" GROUP BY shop_id,record_date,kind,currency,"
+                +"CASE WHEN kind='FEE' THEN category ELSE '' END,CASE WHEN kind='ORDER' THEN status ELSE '' END";
+        var buckets=aggregateRecords(s,f,"",byKind?"idx_finance_company_kind_date":dashboardIndex(f),7,(source,range)->{
+            var args=new ArrayList<>(range.args());
+            if(byKind)args.addAll(nonFeeKinds);
+            return db.queryForList(aggregate.formatted(source,range.where()),args.toArray());
+        });
+        fees.ifPresent(buckets::addAll);
+        return buckets;
+    }
+
+    private boolean excludedFeeInScope(Scope scope,Filter filter){
+        var excluded=FinanceReportingMonths.excludedRecords(scope,filter);
+        if(excluded.isEmpty())return false;
+        var visible=query(scope,filter,"r",false);
+        var args=new ArrayList<>(excluded.get().args());args.addAll(visible.args());
+        return !db.queryForList("SELECT 1 FROM (SELECT DISTINCT excluded.id FROM ("+excluded.get().where()+
+            ") excluded) blocked STRAIGHT_JOIN finance_records r FORCE INDEX(PRIMARY) ON r.id=blocked.id"+
+            " WHERE r.kind='FEE' AND "+visible.where()+" LIMIT 1",args.toArray()).isEmpty();
+    }
+
     private List<List<String>> indexedShopDays(Filter filter){
         var window=projectionWindow.get();
         if(window==null||!window.semanticMonth().equals(filter))return List.of();
@@ -493,10 +724,26 @@ public class FinanceRepository {
 
     List<Map<String,Object>> aggregateRecords(Scope scope,Filter filter,String alias,String rangeIndex,int days,
             java.util.function.BiFunction<String,Query,List<Map<String,Object>>> read){
+        return aggregateRecords(scope,filter,alias,rangeIndex,days,false,read);
+    }
+
+    List<Map<String,Object>> aggregateSettlementRecords(Scope scope,Filter filter,
+            java.util.function.BiFunction<String,Query,List<Map<String,Object>>> read){
+        return aggregateRecords(scope,filter,"r","idx_finance_company_kind_date",1,true,read);
+    }
+
+    private List<Map<String,Object>> aggregateRecords(Scope scope,Filter filter,String alias,String rangeIndex,int days,
+            boolean settlement,java.util.function.BiFunction<String,Query,List<Map<String,Object>>> read){
         String table=alias.isBlank()?"finance_records":"finance_records "+alias;
         String record=alias.isBlank()?"finance_records":alias;
         var shopDays=indexedShopDays(filter);
         var allowedShops=shopsInReadSnapshot(scope,filter);
+        // The settlement index covers order identity as well as the record day.
+        // For a wide repair use it once for the exact shop-day selection instead
+        // of probing the shop index and visiting the ledger rows for order IDs.
+        if(settlement&&shopDays.size()>=COVERING_SETTLEMENT_SHOP_DAYS
+                &&filter.start().withDayOfMonth(1).equals(filter.end().withDayOfMonth(1)))
+            return read.apply(table+" FORCE INDEX("+rangeIndex+")",query(scope,filter,alias,true,true,true,allowedShops));
         if(shopDays.isEmpty()){
             Query base=query(scope,filter,alias,true,true,true,allowedShops);
             String date=record+".record_date";
@@ -732,6 +979,10 @@ public class FinanceRepository {
         return reconciliation(s,f,1000);
     }
     public List<String> billCurrencies(Scope s,Filter f){
+        if(dashboardLedgerDaysEnabled){
+            var counts=dashboardLedgerDays.billCounts(s,f);
+            if(counts.isPresent())return counts.get().stream().map(row->(String)row.get("currency")).toList();
+        }
         Query q=query(s,f);
         return db.queryForList("SELECT DISTINCT currency FROM finance_records FORCE INDEX(idx_finance_company_kind_date) WHERE "+q.where
                 +" AND kind='BILL' ORDER BY currency",String.class,q.args.toArray());
@@ -745,8 +996,14 @@ public class FinanceRepository {
         Query q=FinanceRecordSearch.apply(query(s,f),"finance_records",numbers,true);int safeSize=Math.min(100,Math.max(1,size)),safePage=Math.max(1,page);
         var data=reconciliation(s,f,safeSize,(long)(safePage-1)*safeSize,numbers);
         String countIndex=FinanceRecordSearch.numbers(numbers).isEmpty()?"idx_finance_company_kind_date":"idx_finance_page";
-        long total=pageTotal("SELECT COUNT(*) FROM finance_records FORCE INDEX("+countIndex+") WHERE "+q.where+" AND kind='BILL'",
-                q.args,safePage,safeSize,data.size());
+        var known=dashboardLedgerDaysEnabled&&authoritativePageTotal.get()==null
+                &&(data.size()==safeSize||data.isEmpty()&&safePage>1)&&FinanceRecordSearch.numbers(numbers).isEmpty()
+            ?dashboardLedgerDays.billCounts(s,f).map(values->values.stream().mapToLong(row->number(row.get("records"))).sum())
+            :Optional.<Long>empty();
+        java.util.function.Supplier<Long> count=()->pageTotal(
+            "SELECT COUNT(*) FROM finance_records FORCE INDEX("+countIndex+") WHERE "+q.where+" AND kind='BILL'",
+            q.args,safePage,safeSize,data.size());
+        long total=known.isPresent()?withAuthoritativePageTotal(known.get(),count):count.get();
         return Map.of("items",data,"total",total,"page",safePage,"pageSize",safeSize);
     }
     public List<Map<String,Object>> hourlyOrders(Scope s,Filter f){

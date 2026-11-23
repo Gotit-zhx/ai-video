@@ -1,0 +1,194 @@
+{
+  "_LabelsPage-CC4Z1LTf.js": {
+    "file": "assets/LabelsPage-CC4Z1LTf.js",
+    "name": "LabelsPage",
+    "imports": [
+      "_jsx-runtime-Wy9s6hX0.js",
+      "_presentation-DF4mhiwM.js",
+      "_common-ORxpX7CN.js",
+      "_dialogs-C-a4JcYf.js"
+    ]
+  },
+  "_QianyiSettingsModal-B-cP6TS-.js": {
+    "file": "assets/QianyiSettingsModal-B-cP6TS-.js",
+    "name": "QianyiSettingsModal",
+    "imports": [
+      "_jsx-runtime-Wy9s6hX0.js",
+      "_presentation-DF4mhiwM.js",
+      "_dialogs-C-a4JcYf.js",
+      "_common-DK1ynqZB.js"
+    ]
+  },
+  "_RecordDetail-D5kfv_tC.js": {
+    "file": "assets/RecordDetail-D5kfv_tC.js",
+    "name": "RecordDetail",
+    "imports": [
+      "_jsx-runtime-Wy9s6hX0.js",
+      "_presentation-DF4mhiwM.js",
+      "_dialogs-C-a4JcYf.js"
+    ]
+  },
+  "_RecordsPage-B4LIk6Pl.js": {
+    "file": "assets/RecordsPage-B4LIk6Pl.js",
+    "name": "RecordsPage",
+    "imports": [
+      "_jsx-runtime-Wy9s6hX0.js",
+      "_presentation-DF4mhiwM.js",
+      "_dialogs-C-a4JcYf.js",
+      "_RecordDetail-D5kfv_tC.js"
+    ]
+  },
+  "_ShopeeAdsPanel-BzHifHco.js": {
+    "file": "assets/ShopeeAdsPanel-BzHifHco.js",
+    "name": "ShopeeAdsPanel",
+    "imports": [
+      "_jsx-runtime-Wy9s6hX0.js",
+      "_presentation-DF4mhiwM.js",
+      "_dialogs-C-a4JcYf.js",
+      "_common-DK1ynqZB.js"
+    ]
+  },
+  "_common-DK1ynqZB.js": {
+    "file": "assets/common-DK1ynqZB.js",
+    "name": "common",
+    "imports": [
+      "_jsx-runtime-Wy9s6hX0.js",
+      "_presentation-DF4mhiwM.js"
+    ]
+  },
+  "_common-ORxpX7CN.js": {
+    "file": "assets/common-ORxpX7CN.js",
+    "name": "common",
+    "imports": [
+      "_jsx-runtime-Wy9s6hX0.js",
+      "_presentation-DF4mhiwM.js"
+    ]
+  },
+  "_dialogs-C-a4JcYf.js": {
+    "file": "assets/dialogs-C-a4JcYf.js",
+    "name": "dialogs",
+    "imports": [
+      "_jsx-runtime-Wy9s6hX0.js",
+      "_presentation-DF4mhiwM.js"
+    ]
+  },
+  "_jsx-runtime-Wy9s6hX0.js": {
+    "file": "assets/jsx-runtime-Wy9s6hX0.js",
+    "name": "jsx-runtime"
+  },
+  "_preload-helper-rvN9UX75.js": {
+    "file": "assets/preload-helper-rvN9UX75.js",
+    "name": "preload-helper"
+  },
+  "_presentation-DF4mhiwM.js": {
+    "file": "assets/presentation-DF4mhiwM.js",
+    "name": "presentation",
+    "imports": [
+      "_jsx-runtime-Wy9s6hX0.js"
+    ]
+  },
+  "src/app/build-entry.ts": {
+    "file": "assets/build-entry-A3KLiQTj.js",
+    "name": "build-entry",
+    "src": "src/app/build-entry.ts",
+    "isEntry": true,
+    "imports": [
+      "_presentation-DF4mhiwM.js",
+      "_jsx-runtime-Wy9s6hX0.js",
+      "_preload-helper-rvN9UX75.js"
+    ],
+    "dynamicImports": [
+      "src/features/finance/reports/ReportsPage.tsx",
+      "_RecordsPage-B4LIk6Pl.js",
+      "src/features/finance/shops/ShopsPage.tsx",
+      "src/features/finance/costs/CostsPage.tsx",
+      "src/features/finance/charges/ChargesPage.tsx",
+      "src/features/finance/qianyi/QianyiPage.tsx"
+    ]
+  },
+  "src/features/finance/charges/ChargesPage.tsx": {
+    "file": "assets/ChargesPage-DKFxaJem.js",
+    "name": "ChargesPage",
+    "src": "src/features/finance/charges/ChargesPage.tsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "_jsx-runtime-Wy9s6hX0.js",
+      "_presentation-DF4mhiwM.js",
+      "_LabelsPage-CC4Z1LTf.js",
+      "_dialogs-C-a4JcYf.js",
+      "_common-ORxpX7CN.js"
+    ]
+  },
+  "src/features/finance/costs/CostsPage.tsx": {
+    "file": "assets/CostsPage-BmVlYX11.js",
+    "name": "CostsPage",
+    "src": "src/features/finance/costs/CostsPage.tsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "_jsx-runtime-Wy9s6hX0.js",
+      "_presentation-DF4mhiwM.js",
+      "_RecordDetail-D5kfv_tC.js",
+      "_LabelsPage-CC4Z1LTf.js",
+      "_dialogs-C-a4JcYf.js",
+      "_common-ORxpX7CN.js"
+    ]
+  },
+  "src/features/finance/qianyi/QianyiPage.tsx": {
+    "file": "assets/QianyiPage-J8doZM_N.js",
+    "name": "QianyiPage",
+    "src": "src/features/finance/qianyi/QianyiPage.tsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "_jsx-runtime-Wy9s6hX0.js",
+      "_presentation-DF4mhiwM.js",
+      "_dialogs-C-a4JcYf.js",
+      "_QianyiSettingsModal-B-cP6TS-.js",
+      "_common-ORxpX7CN.js"
+    ]
+  },
+  "src/features/finance/reports/ReportsPage.tsx": {
+    "file": "assets/ReportsPage-BL9rY0Q6.js",
+    "name": "ReportsPage",
+    "src": "src/features/finance/reports/ReportsPage.tsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "_RecordDetail-D5kfv_tC.js",
+      "_jsx-runtime-Wy9s6hX0.js",
+      "_presentation-DF4mhiwM.js",
+      "_dialogs-C-a4JcYf.js",
+      "_preload-helper-rvN9UX75.js",
+      "_RecordsPage-B4LIk6Pl.js",
+      "_ShopeeAdsPanel-BzHifHco.js"
+    ],
+    "dynamicImports": [
+      "src/shared/chart.tsx"
+    ]
+  },
+  "src/features/finance/shops/ShopsPage.tsx": {
+    "file": "assets/ShopsPage-BwHqSyIB.js",
+    "name": "ShopsPage",
+    "src": "src/features/finance/shops/ShopsPage.tsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "_jsx-runtime-Wy9s6hX0.js",
+      "_presentation-DF4mhiwM.js",
+      "_ShopeeAdsPanel-BzHifHco.js",
+      "_dialogs-C-a4JcYf.js",
+      "_common-DK1ynqZB.js",
+      "_QianyiSettingsModal-B-cP6TS-.js"
+    ]
+  },
+  "src/shared/chart.tsx": {
+    "file": "assets/chart-Cc91YDMe.js",
+    "name": "chart",
+    "src": "src/shared/chart.tsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "_jsx-runtime-Wy9s6hX0.js"
+    ]
+  },
+  "style.css": {
+    "file": "assets/style-Ckwr1SMG.css",
+    "src": "style.css"
+  }
+}

@@ -362,6 +362,91 @@ public class ProductCaptureService {
         return detail(requireCapture(id, principal.organizationId()));
     }
 
+    /** Print source snapshots are separate from the existing editable capture queue. */
+    @Transactional
+    public String importPrintSource(String url, String title, List<String> imageUrls, PlatformPrincipal principal) {
+        if (!principal.permissionCodes().contains("product:collect")) {
+            throw new BusinessException(HttpStatus.FORBIDDEN, "缺少商品采集权限");
+        }
+        SourceIdentity source = sourceUrlParser.parse(url, null, null, null);
+        if ("SHOPEE".equals(source.platform()) && source.shopId() == null) {
+            throw badRequest("缺少 Shopee 店铺编号");
+        }
+        if (title == null || title.isBlank() || imageUrls == null || imageUrls.isEmpty() || imageUrls.size() > 20) {
+            throw badRequest("需要商品名称和 1 至 20 张商品图");
+        }
+        String name = bounded(title.strip(), 500);
+        List<String> images = imageUrls.stream().map(safeImageUrl::validate).distinct().toList();
+        String key = sha256(writeJson(List.of("print-source-v2", principal.userId(), source.canonicalUrl(), name, images)));
+        var snapshot = new ProductCapture(principal.organizationId(), principal.userId(), "print-source-" + key,
+                key, source.platform(), source.canonicalUrl(), source.shopId(), source.productId(),
+                name, null, null, null, null, null, null, "{}", "{}");
+        snapshot.assignPrintSource();
+        try {
+            captureMapper.insert(snapshot);
+        } catch (DuplicateKeyException duplicate) {
+            ProductCapture existing = findByIdempotency(principal.organizationId(), snapshot.getIdempotencyKey());
+            if (existing == null || !CommerceModule.PRINT_SOURCE.equals(existing.getDataModule())
+                    || !key.equals(existing.getRequestFingerprint())) throw duplicate;
+            return existing.getId();
+        }
+        insertImages(snapshot, images);
+        return snapshot.getId();
+    }
+
+    public record PrintSourceSummary(String id, String sourcePlatform, String title) {}
+
+    @Transactional(readOnly = true)
+    public List<PrintSourceSummary> recentPrintSources(PlatformPrincipal principal) {
+        return captureMapper.selectList(new QueryWrapper<ProductCapture>()
+                .select("id", "source_platform", "title")
+                .eq("organization_id", principal.organizationId())
+                .eq("data_module", CommerceModule.PRINT_SOURCE)
+                .orderByDesc("created_at", "id")
+                .last("LIMIT 30"))
+                .stream().map(row -> new PrintSourceSummary(row.getId(), row.getSourcePlatform(), row.getTitle())).toList();
+    }
+
+    @Transactional(readOnly = true)
+    public PrintSource findPrintSource(String url, PlatformPrincipal principal) {
+        SourceIdentity source = sourceUrlParser.parse(url, null, null, null);
+        boolean shopee = "SHOPEE".equals(source.platform());
+        if (shopee && source.shopId() == null) {
+            throw badRequest("请粘贴包含店铺和商品编号的 Shopee 详情链接");
+        }
+        var candidates = captureMapper.selectList(new QueryWrapper<ProductCapture>()
+                .eq("organization_id", principal.organizationId())
+                .in("data_module", CommerceModule.CAPTURE, CommerceModule.PRINT_SOURCE)
+                .eq("source_platform", source.platform())
+                .eq("source_product_id", source.productId())
+                .eq(shopee, "source_shop_id", source.shopId())
+                .notExists("""
+                        SELECT 1 FROM commerce_batch_publications publication
+                        WHERE publication.organization_id = product_captures.organization_id
+                          AND publication.capture_id = product_captures.id
+                        """)
+                .orderByDesc("updated_at", "id")
+                .last("LIMIT 1"));
+        if (candidates.isEmpty()) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "未找到采集图片，请在商品页用插件采集后重试");
+        }
+        ProductCapture capture = candidates.getFirst();
+        return new PrintSource(capture, images(capture));
+    }
+
+    @Transactional(readOnly = true)
+    public PrintSource getPrintSource(String id, PlatformPrincipal principal) {
+        ProductCapture capture = requireCapture(id, principal.organizationId());
+        if (CommerceModule.PRINT_SOURCE.equals(capture.getDataModule())) return new PrintSource(capture, images(capture));
+        if (!CommerceModule.CAPTURE.equals(capture.getDataModule())
+                || !captureMapper.selectCommerceGeneratedCaptureIds(principal.organizationId(), List.of(id)).isEmpty()) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "找不到该采集商品");
+        }
+        return new PrintSource(capture, images(capture));
+    }
+
+    public record PrintSource(ProductCapture capture, List<ProductCaptureImage> images) {}
+
     @Transactional
     public CaptureDetail patch(String id, Map<String, Object> request, PlatformPrincipal principal) {
         ProductCapture capture = requireCapture(id, principal.organizationId());
@@ -911,6 +996,10 @@ public class ProductCaptureService {
         if (org.springframework.web.context.request.RequestContextHolder.getRequestAttributes()
                 instanceof org.springframework.web.context.request.ServletRequestAttributes attributes) {
             var request=attributes.getRequest();
+            if (CommerceModule.PRINT_SOURCE.equals(capture.getDataModule())
+                    && request.getRequestURI().startsWith("/api/v1/product-captures/" + id)) {
+                throw new BusinessException(HttpStatus.NOT_FOUND, "商品采集草稿不存在");
+            }
             if (!Set.of("GET","HEAD").contains(request.getMethod())
                     && request.getRequestURI().startsWith("/api/v1/product-captures/"+id)
                     && !CommerceModule.current().equals(capture.getDataModule()))

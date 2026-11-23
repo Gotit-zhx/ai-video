@@ -48,18 +48,13 @@ try{
   w.FinanceWorkspace.enter('settlements');await ready();assert.equal(reads.at(-1).searchParams.get('view'),'settlements');
   w.FinanceWorkspace.enter('ads');await ready();
   assert.equal(reads.at(-1).searchParams.get('view'),'ads');
-  const count=reads.length,support=d.querySelector('[data-ad-spend-support]');assert(support);
-  assert(!support.textContent.includes('独立投放明细'),'closed auxiliary section must not fetch or render ledger rows');
-  support.open=true;support.dispatchEvent(new w.Event('toggle'));await new Promise(r=>setTimeout(r,30));
-  assert.equal(reads.length,count+1);assert.equal(reads.at(-1).searchParams.get('view'),'ads-support');
-  const primaryReads=reads.filter(u=>u.pathname.endsWith('/workspace/query')&&u.searchParams.get('view')==='ads').length;
-  [...support.querySelectorAll('button')].find(n=>n.textContent.trim()==='下一页').click();await new Promise(r=>setTimeout(r,30));
-  assert.equal(reads.filter(u=>u.pathname.endsWith('/workspace/query')&&u.searchParams.get('view')==='ads').length,primaryReads,'auxiliary pagination cannot rebuild the primary spending report');
-  assert.equal(reads.at(-1).searchParams.get('view'),'ads-support');assert.equal(reads.at(-1).searchParams.get('page'),'2');
+  assert(d.querySelector('[data-ad-spend-workspace]'));
+  assert.equal(reads.filter(u=>u.searchParams.get('view')==='ads-support').length,0);
   const beforeRevisionPoll=reads.filter(u=>u.pathname.endsWith('/workspace/query')&&u.searchParams.get('view')==='ads').length;
   primaryRevision='v2';statusRevision='v2';await polls.pop()();await ready();
-  assert.equal(reads.filter(u=>u.pathname.endsWith('/workspace/query')&&u.searchParams.get('view')==='ads').length,beforeRevisionPoll+1,'auxiliary v2 cannot relabel the old v1 primary and suppress its refresh');
+  assert.equal(reads.filter(u=>u.pathname.endsWith('/workspace/query')&&u.searchParams.get('view')==='ads').length,beforeRevisionPoll+1,'a new advertising revision refreshes the primary report');
   w.FinanceWorkspace.reset();failPrimary=true;w.FinanceWorkspace.enter('ads');await ready();
-  assert(d.querySelector('[data-ad-spend-support]'),'primary spending failures retain an auxiliary lookup entry');
-  console.log('Finance dedicated page loads and lazy ad support passed');
+  assert.match(d.body.textContent,/店铺消耗读取失败/);
+  assert.equal(d.querySelector('[data-ad-spend-workspace]'),null);
+  console.log('Finance dedicated pages, background status and advertising failure state passed');
 }finally{w.FinanceWorkspace.reset();dom.window.close();}

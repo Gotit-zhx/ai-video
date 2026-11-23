@@ -41,6 +41,7 @@ applySidebarExpanded(true);
 const commerceSections = {
   "commerce-assets": "素材管理",
   "product-capture": "采集链接",
+  "product-print-capture": "采集链接",
   "product-capture-templates": "采集模板",
   "product-main-image-styles": "主图风格模板",
   "commerce-designs": "一键裂变",
@@ -54,11 +55,31 @@ function commerceDataModule(route = window.location.hash.slice(1).split("?")[0])
 }
 function commerceRouteFromHash() {
   const route = window.location.hash.slice(1).split("?")[0];
+  if (route === "product-main-image-styles-v2") return "product-capture-templates";
   return Object.hasOwn(commerceSections, route) ? route : null;
+}
+function isPrintCaptureRoute(route = commerceRouteFromHash()) {
+  return route === "product-print-capture";
 }
 function selectCommerceSection() {
   const route = commerceRouteFromHash() || "product-capture";
-  document.querySelectorAll("[data-commerce-panel]").forEach(panel => { panel.hidden = panel.dataset.commercePanel !== route; });
+  const suffix = window.location.hash.slice(1).replace(/^[^?]*/, "");
+  const insideCaptureTemplates = route === "product-capture-templates";
+  const mainStyleTab = insideCaptureTemplates && (
+    window.location.hash.split("?")[0] === "#product-main-image-styles-v2"
+    || new URLSearchParams(suffix).get("tab") === "main-image-styles"
+  );
+  const templatePage = insideCaptureTemplates || route === "product-main-image-styles";
+  const showMainStyles = mainStyleTab || route === "product-main-image-styles";
+  const panelRoute = templatePage ? "product-capture-templates" : route;
+  document.querySelectorAll("[data-commerce-panel]").forEach(panel => { panel.hidden = panel.dataset.commercePanel !== panelRoute; });
+  document.querySelector("#capture-templates-heading").hidden = !insideCaptureTemplates;
+  document.querySelector("#capture-template-workspace").hidden = !insideCaptureTemplates || mainStyleTab;
+  document.querySelector("#main-style-workspace").hidden = !showMainStyles;
+  document.querySelectorAll("#capture-templates-heading a").forEach(link => {
+    const selected = (link.id === "capture-main-style-tab") === mainStyleTab;
+    if (selected) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
+  });
   document.querySelectorAll("[data-commerce-route]").forEach(link => {
     const active = link.dataset.commerceRoute === route;
     link.classList.toggle("active", active);
@@ -67,11 +88,14 @@ function selectCommerceSection() {
   const workbenchActive=route==='product-capture';
   document.querySelector("#nav-publish").classList.toggle("active",workbenchActive);
   if(workbenchActive)document.querySelector('#nav-publish').setAttribute('aria-current','page');else document.querySelector('#nav-publish').removeAttribute('aria-current');
-  document.querySelector(".topbar h2").textContent = `${route === "product-capture-templates" ? "商品运营 v2.0" : "商品运营"} / ${commerceSections[route]}`;
-  window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#${route}${route === "product-capture" ? window.location.hash.slice(1).replace(/^[^?]*/, "") : ""}`);
+  const v2 = isPrintCaptureRoute(route) || insideCaptureTemplates;
+  document.querySelector(".topbar h2").textContent = `${v2 ? "商品运营 v2.0" : "商品运营"} / ${commerceSections[route]}`;
+  const routeQuery = mainStyleTab ? "?tab=main-image-styles" : route === "product-capture" || isPrintCaptureRoute(route) ? suffix : "";
+  window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#${route}${routeQuery}`);
   syncProductCaptureView();
-  window.dispatchEvent(new CustomEvent("heyi:commerce-section-entered", {detail:{route}}));
-  if(route!=="product-capture" && route!=="product-main-image-styles" && route!=="product-capture-templates"){
+  const contentRoute = showMainStyles ? "product-main-image-styles" : route;
+  window.dispatchEvent(new CustomEvent("heyi:commerce-section-entered", {detail:{route: contentRoute}}));
+  if(!isPrintCaptureRoute(route) && route!=="product-capture" && !templatePage){
     const panel=document.querySelector(`[data-commerce-panel="${route}"]`);
     const heading=route==="commerce-designs"?document.querySelector(".commerce-batch-hub header"):panel?.querySelector("header");
     if(heading&&!heading.querySelector("[data-module-listing-settings]")){
@@ -1015,6 +1039,7 @@ async function showDashboard(user) {
   pendingProductCaptureAfterLogin = "";
   if (returnToProducts && canAccessProductCenter()) {
     switchWorkspace("productPublish");
+    if (isPrintCaptureRoute()) return;
     await Promise.all([
       loadProductCaptures(returnCaptureId || null),
       loadMarketplaceShops({ silent: true })
@@ -1128,7 +1153,9 @@ function applyFeatureAccess() {
   document.querySelector("#nav-models").hidden = !hasAnyPermission("system:model:view", "system:model:manage");
   document.querySelector("#nav-system").hidden = !canOpenSystem;
   document.querySelector("#nav-assistant-test").hidden = !canViewAssistant;
-  document.querySelectorAll("[data-commerce-route]").forEach(link => { link.hidden = !canAccessProductCenter(); });
+  document.querySelectorAll("[data-commerce-route]").forEach(link => {
+    link.hidden = !canAccessProductCenter() || (isPrintCaptureRoute(link.dataset.commerceRoute) && !hasAnyPermission("product:edit"));
+  });
   document.querySelectorAll("[data-knowledge-route]").forEach(link => { link.hidden = !canAccessKnowledge(); });
   document.querySelectorAll("[data-hr-route]").forEach(link => {
     link.hidden = !((currentUser?.platformAdmin === true && currentUser?.username === "13800000000")
@@ -1362,6 +1389,7 @@ document.querySelectorAll("[data-commerce-route]").forEach(link => {
   link.addEventListener("click", async event => {
     event.preventDefault();
     if (!currentUser || !canAccessProductCenter()) return;
+    if (isPrintCaptureRoute(link.dataset.commerceRoute) && !hasAnyPermission("product:edit")) return;
     window.history.pushState(null, document.title, `${window.location.pathname}${window.location.search}#${link.dataset.commerceRoute}`);
     if (link.dataset.commerceRoute === "product-capture") resetProductCaptureDefaultFilter();
     switchWorkspace("productPublish");
@@ -1524,7 +1552,7 @@ window.addEventListener("hashchange", () => {
   }
   if (!commerceRouteFromHash() || !currentUser || !canAccessProductCenter()) return;
   switchWorkspace("productPublish");
-  loadProductCaptures(selectedProductCaptureId);
+  if (!isPrintCaptureRoute()) loadProductCaptures(selectedProductCaptureId);
 });
 
 function createAssistantSessionId() {
@@ -5143,7 +5171,7 @@ function syncProductCapturePolling() {
   if (productCapturePollTimer) clearInterval(productCapturePollTimer);
   productCapturePollTimer = null;
   const page = document.querySelector("#product-publish-page");
-  if (!page || page.hidden) return;
+  if (!page || page.hidden || isPrintCaptureRoute()) return;
   const active = (productCaptureStatusCountsKnown && productCaptureStatusCounts.PROCESSING > 0)
     || productCaptures.some(capture => productCaptureStatusGroup(capture.status) === "PROCESSING")
     || productCaptureStatusGroup(selectedProductCaptureDetail?.status) === "PROCESSING";

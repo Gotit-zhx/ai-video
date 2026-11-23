@@ -92,7 +92,6 @@ class FinanceCostExportFilesTest extends FinanceCostExportTest {
         final long total=50_001,firstNumber=100_000_000_000_000_000L;
         var template=new LinkedHashMap<>(row("INCOMPLETE","template"));
         template.put("raw_json","{}");template.put("cost_json","{}");template.put("amount_cny",null);template.put("known_amount_cny",null);
-        when(db.queryForObject(startsWith("SELECT COUNT(*)"),eq(Long.class),any(Object[].class))).thenReturn(total);
         streamKeys(()->new Iterator<>(){
             long next;
             public boolean hasNext(){return next<total;}
@@ -101,11 +100,16 @@ class FinanceCostExportFilesTest extends FinanceCostExportTest {
                 return Map.of("order_record_id","record-"+number,"shop_id","shop","reference",number,"first_settlement_date",java.sql.Date.valueOf("2026-10-23"));
             }
         });
+        var mapper=new tools.jackson.databind.ObjectMapper();
         when(db.queryForList(contains("cost_json"),any(Object[].class))).thenAnswer(call->{
-            Object[] args=(Object[])call.getRawArguments()[1];var data=new ArrayList<Map<String,Object>>();
-            for(int i=0;i<args.length;i+=6){
-                var value=new LinkedHashMap<>(template);value.put("order_record_id",args[i]);value.put("order_id",args[i+3]);
-                value.put("reference",args[i+3]);value.put("page_position",args[i+5]);data.add(value);
+            Object[] args=(Object[])call.getRawArguments()[1];
+            var keys=mapper.readTree((String)args[1]);
+            var data=new ArrayList<Map<String,Object>>();
+            for(int i=0;i<keys.size();i++){
+                var key=keys.get(i);
+                var value=new LinkedHashMap<>(template);
+                value.put("order_record_id",key.get(0).asString());value.put("order_id",key.get(2).asString());
+                value.put("reference",key.get(2).asString());value.put("page_position",i+1);data.add(value);
             }
             return data;
         });

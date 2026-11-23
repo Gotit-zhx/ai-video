@@ -157,7 +157,9 @@ class FinanceTest {
         var cp=new LinkedHashMap<String,Object>(Map.of("from",1,"to",2,"bills",List.of(bill),"lastBillPage",true));
         var step=reader.tik(new Scope("org","u"),connection,"SETTLEMENT","Asia/Manila",cp);
         assertFalse(step.done());assertEquals("cursor2",step.checkpoint().get("transactionCursor"));
-        verify(repo,times(2)).save(any(),any()); // Fee rows are now atomically derived by the repository.
+        verify(repo).saveSyncPage(any(),eq(shop.getId()),
+                argThat(entries->entries.size()==1&&entries.getFirst().externalId().equals("tx1")),
+                argThat(entry->entry.status().equals("PARTIAL")),isNull());
         when(tk.apiGet(anyString(),anyString(),anyString(),anyMap())).thenReturn(Map.of("data",Map.of("currency","PHP","total_settlement_amount","30","transactions",List.of())));
         assertTrue(reader.tik(new Scope("org","u"),connection,"SETTLEMENT","Asia/Manila",step.checkpoint()).done());
     }
@@ -185,9 +187,14 @@ class FinanceTest {
                 "transactions",List.of(Map.of("id","tx","type","ORDER","order_id","order","settlement_amount","80")))));
         var step=reader.tik(new Scope("org","u"),connection,"SETTLEMENT","Asia/Manila",Map.of("bills",List.of(pending,paid),"lastBillPage",true));
         assertFalse(step.done());assertEquals(List.of(paid),step.checkpoint().get("bills"));
-        verify(repo,times(3)).save(any(),argThat(e->FinanceSettlementDates.PENDING.equals(e.status())));
+        verify(repo).saveSyncPage(any(),eq(shop.getId()),
+                argThat(entries->entries.size()==1&&FinanceSettlementDates.PENDING.equals(entries.getFirst().status())),
+                argThat(entry->FinanceSettlementDates.PENDING.equals(entry.status())),isNull());
         assertTrue(reader.tik(new Scope("org","u"),connection,"SETTLEMENT","Asia/Manila",step.checkpoint()).done());
-        verify(repo).save(any(),argThat(e->e.kind().equals("SETTLEMENT")&&e.status().equals("SETTLED")&&e.date().equals(LocalDate.of(2026,9,1))));
+        verify(repo).saveSyncPage(any(),eq(shop.getId()),argThat(entries->entries.size()==1
+                &&entries.getFirst().kind().equals("SETTLEMENT")&&entries.getFirst().status().equals("SETTLED")
+                &&entries.getFirst().date().equals(LocalDate.of(2026,9,1))),
+                argThat(entry->entry.statementId().equals("bill-2")),isNull());
     }
     @Test void settledOrderRepairFetchesOldIdsDirectlyAndRetainsCheckpointOnPartialResponse(){
         var tk=mock(TikTokShopOfficialClient.class);var repo=mock(FinanceRepository.class);var db=mock(JdbcTemplate.class);

@@ -93,28 +93,8 @@
     }));
     const pager=el('div',null,detail.n,'fi-pagebar');el('span','共 '+numeric(report.total)+' 条 · 第 '+numeric(report.page)+' 页 · 每页 50 条',pager);const buttons=el('div',null,pager,'fi-actions');
     button('上一页',buttons,()=>ctx.page(-1)).disabled=report.page<=1;const next=button('下一页',buttons,()=>ctx.page(1));next.dataset.adSpendNext='';next.disabled=report.page*report.pageSize>=report.total;
-    const funding=el('details',null,main,'fi-card fi-ad-spend-support');funding.dataset.adFunding='';el('summary','账户级资金核对（不计入店铺合计）',funding);
-    el('p','普通账户投放与 BC 费用按各自来源核对。预估税额单列，净广告消耗按已取得数据展示。',funding,'fi-muted');
-    const fundingHeaders=displayAmounts.map(k=>k==='amount'?'来源费用合计':labels[k]);
-    if((report.accountFunding||[]).length)table(funding,['来源','平台','账户','账户 ID','展示币种',...fundingHeaders,'预估税额（单列）'],report.accountFunding.map(r=>[sources[r.source]||(!r.source?sources.API_BASIC:r.source),ctx.platformBadge(r.platform),r.account_name||'账户名称未提供',r.account_id,r.currency,...displayAmounts.map(k=>amount(r,k)),amount(r,'tax_amount')]));
-    else el('p','当前范围尚无可核对的账户资金日报；店铺已取得的 GMV Max 净广告消耗仍在上方展示。',funding,'fi-empty');
-    fundingDiagnostics(funding,ctx);
     el('p','资金消耗和投放效果、平台结算扣费是不同口径；本工作台不重复加计广告佣金，也不自动改写利润流水。原币保留；人民币金额按对应业务日期历史汇率换算。',main,'fi-muted');
     for(const t of main.querySelectorAll('table'))[...t.querySelectorAll('thead th')].forEach((th,i)=>{if(/消耗|合计/.test(th.textContent))for(const row of t.rows)if(row.cells[i])row.cells[i].dataset.adMoney='';});
-  }
-  function fundingDiagnostics(parent,ctx){
-    const statuses={NEEDS_PERMISSION:'资金权限待补齐',NEEDS_FINANCE_ROLE:'BC财务角色待配置',NEEDS_BC_ACCESS:'BC访问关系待确认',NEEDS_AUTHORIZATION:'资金授权待更新',PARTIAL_ACCESS:'部分 BC 财务范围可读',NO_DATA:'当前范围未取得资金记录',ERROR:'资金同步异常',PAUSED:'资金同步已暂停',READY:'资金等待同步',SYNCING:'资金同步中',SUCCESS:'已完成本轮资金查询'};
-    for(const account of ctx.fundingAccounts||ctx.accounts||[]){
-      const state=account.funding;if(!state)continue;
-      const status=String(state.status||'');
-      if(!state.permissionRequired&&!state.error_message&&!status.startsWith('NEEDS_')&&!['ERROR','PAUSED','PARTIAL_ACCESS','NO_DATA'].includes(status))continue;
-      const row=ctx.el('p',null,parent,'fi-muted');row.dataset.bcFundingStatus=account.advertiser_id;row.dataset.updateKey='bc-funding-status:'+account.advertiser_id;
-      ctx.el('strong',(account.name||account.advertiser_id)+' · '+(statuses[status]||'资金状态待核对'),row);
-      if(state.error_message)ctx.el('span',' · '+state.error_message,row);
-      ctx.el('span','。未取得的资金金额保持未知，不代表零消耗。',row);
-      const link=ctx.el('a','前往财务店铺管理',row);link.href='#finance-shops';
-      row.title=state.coverage_basis||'仅核对已取得的账户资金记录，不能视为完整对账。';
-    }
   }
   async function allocate(ctx,key){
     const owner=ctx.company(),d=ctx.dialog('核实店铺消耗分配');

@@ -11,7 +11,7 @@
     else if(!(status.items||[]).length)el('p','Shopee Ads 正式应用已配置，尚无独立广告授权。请在财务店铺管理由店铺管理员完成一次官方授权，之后自动采集。',box.n,'fi-muted');
     else el('p','Shopee 已连接 '+status.items.length+' 家广告店铺；分别采集全店 CPC 与已识别 GMS 日报，计算账单参考金额；未取得或异常日期不填零。',box.n,'fi-muted');
     const failures=['PARTIAL','NEEDS_PERMISSION','NEEDS_AUTHORIZATION','RATE_LIMITED','ERROR','WAITING_SHOP','PAUSED'];
-    for(const item of status.items||[])for(const [key,label,error]of [['status','CPC','error_message'],['gms_status','GMS','gms_error_message']])if(failures.includes(item[key]))el('p',(item.shop_alias||item.shop_name||item.external_shop_id)+' · '+label+' '+(states[item[key]]||'状态待核对')+'：'+(item[error]||'未取得的数据继续保留未知'),box.n,'fi-feedback');
+    if(compact)for(const item of status.items||[])for(const [key,label,error]of [['status','CPC','error_message'],['gms_status','GMS','gms_error_message']])if(failures.includes(item[key]))el('p',(item.shop_alias||item.shop_name||item.external_shop_id)+' · '+label+' '+(states[item[key]]||'状态待核对')+'：'+(item[error]||'未取得的数据继续保留未知'),box.n,'fi-feedback');
     el('p',status.coverageBasis||'Shopee 账单参考金额为全店 CPC 日报减已识别 GMS 同日费用；现金、授信、赠款及净额不倒算。',box.n,'fi-muted');
     if(compact){const link=el('a','查看 Shopee 授权与采集状态',box.n);link.href='#finance-shops';return;}
     if(ctx.canManage()&&status.configured)button('生成 Shopee 广告授权链接',box.h||box.n,()=>authorize(ctx),'fi-primary');
@@ -26,8 +26,15 @@
       const name=ctx.shops?.find(s=>s.id===item.shop_id);const scope=name?.display_name||name?.name||item.shop_name||'待连接对应财务店铺';
       return [scope,item.external_shop_id,item.currency,states[item.status]||'状态待核对',states[item.gms_status]||'等待采集',[item.error_message,item.gms_error_message].filter(Boolean).join('；')||'—','CPC '+Number(item.records||0)+' / GMS '+Number(item.gms_records||0)+' 日',item.last_success_at?new Date(item.last_success_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'尚未完成',item.gms_last_success_at?new Date(item.gms_last_success_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'尚未完成',controls];
     });
-    if(rows.length)ctx.table(box.n,['财务店铺','官方店铺 ID','原币','CPC 状态','GMS 状态','提示','已入库日记录','CPC 最近完整窗口','GMS 最近完整窗口','操作'],rows);
-    else el('p','当前范围暂无已授权的 Shopee 广告店铺。',box.n,'fi-empty');
+    if(rows.length){
+      const table=ctx.table(box.n,['财务店铺','官方店铺 ID','原币','CPC 状态','GMS 状态','提示','已入库日记录','CPC 最近完整窗口','GMS 最近完整窗口','操作'],rows,undefined,selected.map(item=>item.external_shop_id));
+      if(ctx.manageShopTable){
+        [...table.tBodies[0].rows].forEach((row,index)=>{
+          row.dataset.shopSearch=[...rows[index].slice(0,6),selected[index].shop_name].join(' ').toLocaleLowerCase();
+        });
+        ctx.manageShopTable(box.n,table,'shopee-ads','查询 Shopee 广告店铺','店铺 / 官方店铺 ID / 状态');
+      }
+    }else el('p','当前范围暂无已授权的 Shopee 广告店铺。',box.n,'fi-empty');
     el('p','首次补齐近 90 天，每小时回查近 7 天、每天回查近 31 天；日记录数不等于全广告产品覆盖。来源明确归店，不需要人工逐笔绑定。',box.n,'fi-muted');
   }
   async function authorize(ctx){

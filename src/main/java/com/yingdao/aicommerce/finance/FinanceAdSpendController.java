@@ -33,7 +33,12 @@ public class FinanceAdSpendController {
         return ApiResponse.ok(spend.saveImport(guard.s(p),p.userId(),entries,text(file.getOriginalFilename())));
     }
     @GetMapping("/export") public ResponseEntity<byte[]> export(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
-        var data=report(q,p);var sheets=new LinkedHashMap<String,List<List<String>>>();
+        return export(guard.s(p),guard.filter(q),q,List.of());
+    }
+    ResponseEntity<byte[]> export(Scope scope,Filter filter,Map<String,String> q,List<List<String>> receipt){
+        var data=spend.report(scope,filter,"CNY".equals(q.get("displayCurrency")),q.get("fxSnapshot"),q.get("search"),q.get("assignment"));
+        var sheets=new LinkedHashMap<String,List<List<String>>>();
+        if(!receipt.isEmpty())sheets.put("导出数据状态",receipt);
         sheets.put("分组广告消耗",sheet(rows(data.get("groups")),List.of("platform","group_name","currency","amount","net_amount","pending_records","all_shop_amount","gms_amount"),List.of("平台","分组","币种","广告消耗（投放 / 账单参考）","净广告消耗","待分配记录数","Shopee 全店 CPC 原额","Shopee 已扣除 GMS")));
         sheets.put("店铺广告消耗",sheet(rows(data.get("shops")),List.of("platform","shop_name","group_name","currency","amount","net_amount","records","all_shop_amount","gms_amount"),List.of("平台","店铺","分组","币种","广告消耗（投放 / 账单参考）","净广告消耗","记录数","Shopee 全店 CPC 原额","Shopee 已扣除 GMS")));
         var detailRows=new ArrayList<Map<String,Object>>();for(var original:rows(data.get("items"))){var row=new LinkedHashMap<>(original);var fx=map(row.get("fx"));row.put("fx_business_date",fx.getOrDefault("businessDate",row.get("record_date")));row.put("fx_rate_date",fx.get("rateDate"));row.put("fx_provider",fx.get("provider"));detailRows.add(row);}

@@ -193,7 +193,7 @@ public class FinanceQianyi {
                   source_version=IF(?,3,source_version),last_receipt_scan_at=IF(?,UTC_TIMESTAMP(6),last_receipt_scan_at),
                   failures=0,error_message=NULL,lease_token=NULL,lease_until=NULL,next_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL ? SECOND)
                 WHERE organization_id=? AND shop_id=? AND lease_token=?
-                """,done?null:repo.write(progress),done?"SUCCESS":"SYNCING",done,done,receiptFinished,done?300:1,org,shop,lease);
+                """,done&&FinanceSyncRange.marker(progress).isEmpty()?null:repo.write(done?FinanceSyncRange.marker(progress):progress),done?"SUCCESS":"SYNCING",done,done,receiptFinished,done?300:1,org,shop,lease);
             // Initial source collection and identical overlap pages do not alter
             // financial amounts. Do not evict the whole BI cache on every page.
             if(changed&&Boolean.TRUE.equals(config.get("cost_basis_verified"))||done&&Boolean.TRUE.equals(progress.get("sourcesChanged")))

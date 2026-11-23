@@ -13,14 +13,36 @@ import com.yingdao.aicommerce.finance.FinanceSettlementCostDays.Window;
 @Service
 public class FinanceQueryProjections {
     static final int SCHEMA_VERSION=1, EVENT_BATCH=2000;
+    private static final Map<String,Object> SPEND_READ_FROM_SOURCE=Map.of("readFromSource",true);
+    private static final int MAX_SPEND_PAYLOAD_BYTES=56*1024*1024;
     private static final int MAX_REPAIR_EVENTS=512;
     private static final int MAX_REPAIR_SHOP_DAYS=1024;
     private static final int SHOP_SCAN_LIMIT=24;
     private static final int ALL_SHOPS_DAY_WEIGHT=32;
+    private static final Set<String> SPEND_ONLY_GLOBAL=Set.of("finance_ad_accounts","finance_ad_stores",
+        "finance_ad_spend_allocation_sets","finance_ad_spend_allocations");
+    private static final Set<String> COST_INDEPENDENT=java.util.stream.Stream.concat(
+        SPEND_ONLY_GLOBAL.stream(),java.util.stream.Stream.of("finance_expenses")).collect(java.util.stream.Collectors.toUnmodifiableSet());
+    private boolean scopedAdRefresh;
+    @org.springframework.beans.factory.annotation.Value("${app.finance.scoped-ad-projection-refresh:false}")
+    void configureScopedAdRefresh(boolean enabled){scopedAdRefresh=enabled;}
+    private boolean usesScopedAdRefresh(String company){
+        return scopedAdRefresh&&scopedSettlementCompany.equals(company);
+    }
+    private boolean scopedSettlementRevisions;
+    private String scopedSettlementCompany="";
+    @org.springframework.beans.factory.annotation.Value("${app.finance.scoped-settlement-company:}")
+    void configureScopedSettlementCompany(String company){scopedSettlementCompany=company.strip();}
+    private boolean usesScopedSettlementRevisions(String company){
+        return scopedSettlementRevisions&&scopedSettlementCompany.equals(company);
+    }
+    @org.springframework.beans.factory.annotation.Value("${app.finance.scoped-settlement-revisions:false}")
+    void configureScopedSettlementRevisions(boolean enabled){scopedSettlementRevisions=enabled;}
     private final FinanceRepository repo;
     private final FinanceService finance;
     private final FinanceAdSpendService spend;
     private final FinanceSettlementCostDays settlementDays;
+    private final FinanceQueryPriority priority;
     private final JsonMapper json=JsonMapper.builder().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
     private final tools.jackson.databind.ObjectReader ledgerField=json.readerFor(Object.class)
         .without(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
@@ -32,6 +54,14 @@ public class FinanceQueryProjections {
     private record SnapshotBodies(Map<String,Object> ledger,Map<String,Object> firstDay,Map<String,Object> spend) {}
     private record OrderKey(String shop,String order) {}
     private record BillPrefix(String user,String shop,String source) {}
+    private record FeeFacet(Object day,Object shop,Object currency) {
+        static FeeFacet of(Map<String,Object> row){return new FeeFacet(row.get("record_date"),row.get("shop_id"),row.get("currency"));}
+        Map<String,Object> count(long records,int advertisingFee){
+            // Fee pages use all source types. Only the all-orders page filters source.
+            return Map.of("shop_id",shop,"record_date",day,"currency",currency,"kind","FEE","source","",
+                "basis","RECORD","advertising_fee",advertisingFee,"records",records);
+        }
+    }
     private record ShopDay(LocalDate day,String shop) {}
     private record RepairWindows(List<Window> ledger,List<Window> orders) {}
     private enum LedgerFields {
@@ -44,7 +74,8 @@ public class FinanceQueryProjections {
         LedgerFields(List<String> names){this.names=names;}
     }
     private static final class Change {
-        boolean all;
+        boolean all,allCosts,spendAll;
+        void requireFull(boolean costs){all=true;allCosts|=costs;}
         final Map<ShopDay,Boolean> shopDays=new LinkedHashMap<>();
         void add(Map<String,Object> row,boolean costs){
             if(row.get("record_date")!=null)shopDays.merge(
@@ -54,7 +85,7 @@ public class FinanceQueryProjections {
     static final class PollDeadlineElapsed extends RuntimeException {}
     @FunctionalInterface private interface MetadataQuery {List<Map<String,Object>> read(String sql,Object...args);}
     public FinanceQueryProjections(FinanceRepository repo,FinanceService finance,FinanceAdSpendService spend){
-        this.repo=repo;this.finance=finance;this.spend=spend;this.settlementDays=new FinanceSettlementCostDays(repo);
+        this.repo=repo;this.finance=finance;this.spend=spend;this.settlementDays=new FinanceSettlementCostDays(repo);this.priority=new FinanceQueryPriority(repo);
     }
 
     /** Only complete committed facts are returned. The caller keeps its original fallback. */
@@ -86,15 +117,17 @@ public class FinanceQueryProjections {
             // Only the last month can include day one while using a partial-month basis.
             boolean firstDayNeeded=dashboard&&!filter.start().isAfter(lastMonth)
                 &&filter.end().isBefore(YearMonth.from(lastMonth).atEndOfMonth());
-            String columns="partition_month,schema_version,built_revision,requested_revision,generated_at,full_rebuild,CASE WHEN full_month_json IS NOT NULL AND partial_first_day_json IS NOT NULL AND spend_json IS NOT NULL THEN 1 ELSE 0 END payload_present"
-                +(dashboard?",full_month_json":"")
-                +(firstDayNeeded?",CASE WHEN partition_month=? THEN partial_first_day_json END AS partial_first_day_json":"")
-                +(independentSpend?",spend_json":"");
-            var args=new ArrayList<Object>();
-            if(firstDayNeeded)args.add(lastMonth);
-            args.addAll(List.of(scope.organizationId(),filter.platform(),months.getFirst(),lastMonth));
-            var stored=repo.jdbc().queryForList("SELECT "+columns+" FROM finance_query_partitions WHERE organization_id=? AND platform_filter=? AND partition_month BETWEEN ? AND ? ORDER BY partition_month",
-                args.toArray());
+            // Decide whether this revision can be used before transferring the
+            // monthly payload, which may be tens of megabytes.
+            var stored=repo.jdbc().queryForList("""
+                SELECT partition_month,schema_version,built_revision,requested_revision,generated_at,full_rebuild,
+                       CASE WHEN full_month_json IS NOT NULL AND partial_first_day_json IS NOT NULL AND spend_json IS NOT NULL
+                            THEN 1 ELSE 0 END payload_present
+                """+(repair&&usesScopedAdRefresh(scope.organizationId())?",spend_full_revision ":"")+"""
+                FROM finance_query_partitions
+                WHERE organization_id=? AND platform_filter=? AND partition_month BETWEEN ? AND ?
+                ORDER BY partition_month
+                """,scope.organizationId(),filter.platform(),months.getFirst(),lastMonth);
             if(stored.size()!=months.size()||stored.stream().anyMatch(row->number(row.get("schema_version"))!=SCHEMA_VERSION
                     ||number(row.get("built_revision"))==0||!repair&&number(row.get("built_revision"))!=number(row.get("requested_revision"))
                     ||repair&&flag(row.get("full_rebuild"))||number(row.get("payload_present"))!=1))return Optional.empty();
@@ -107,16 +140,19 @@ public class FinanceQueryProjections {
             for(var row:stored){
                 LocalDate month=date(row.get("partition_month"));
                 boolean full=!filter.start().isAfter(month)&&!filter.end().isBefore(YearMonth.from(month).atEndOfMonth());
+                var body=readPayload(scope,filter.platform(),month,number(row.get("built_revision")),
+                    dashboard,firstDayNeeded&&month.equals(lastMonth),independentSpend);
                 if(dashboard){
-                    var data=readLedger(row.get("full_month_json"),fields);
-                    var first=row.get("partial_first_day_json")==null?Map.<String,Object>of():readLedger(row.get("partial_first_day_json"),fields);
+                    var data=readLedger(body.get("full_month_json"),fields);
+                    var first=body.get("partial_first_day_json")==null?Map.<String,Object>of():readLedger(body.get("partial_first_day_json"),fields);
                     appendRange(buckets,rows(data.get("buckets")),rows(first.get("buckets")),filter,month,full);
                     appendRange(orders,rows(data.get("orders")),rows(first.get("orders")),filter,month,full);
                     appendRange(advertising,rows(data.get("advertising")),rows(first.get("advertising")),filter,month,full);
                     appendRange(counts,rows(data.get("rawCounts")),rows(first.get("rawCounts")),filter,month,full);
                 }
                 if(independentSpend){
-                    var ads=read(row.get("spend_json"));
+                    var ads=read(body.get("spend_json"));
+                    if(flag(ads.get("readFromSource")))return Optional.empty();
                     sources.addAll(rows(ads.get("sources")).stream().filter(r->inRange(r,filter))
                         .filter(r->filter.currency().isBlank()||filter.currency().equals(text(r.get("currency")))).toList());
                     assignments.addAll(rows(ads.get("assignments")));
@@ -150,6 +186,18 @@ public class FinanceQueryProjections {
             }
             return Optional.of(new Snapshot(facts,Map.of("shops",shops,"sources",sources,"assignments",assignments),counts,generated,revision,repair));
         });
+    }
+
+    private Map<String,Object> readPayload(Scope scope,String platform,LocalDate month,long revision,
+                                           boolean ledger,boolean firstDay,boolean spend){
+        var columns=new StringJoiner(",");
+        if(ledger)columns.add("full_month_json");
+        if(firstDay)columns.add("partial_first_day_json");
+        if(spend)columns.add("spend_json");
+        return repo.jdbc().queryForMap("SELECT "+columns+" "+"""
+             FROM finance_query_partitions WHERE organization_id=? AND platform_filter=? AND partition_month=?
+               AND built_revision=?
+            """,scope.organizationId(),platform,month,revision);
     }
 
     /** Revision polling reads only partition metadata, never financial JSON payloads. */
@@ -240,69 +288,118 @@ public class FinanceQueryProjections {
         result.put("coverage","Only committed, complete partitions without relevant pending events are readable");return result;
     }
 
-    /** Claim concrete visible IDs. A MAX(event_id) watermark would lose late commits. */
-    int drainEvents(){
+    /** Claim concrete visible IDs. Open transactions must never be skipped by a guessed watermark. */
+    void advanceDashboardLedgerDays(Instant now){repo.advanceDashboardLedgerDays(now);}
+    void advanceDashboardOrderFacts(Instant now){repo.advanceDashboardOrderFacts(now);}
+    int drainEvents(){return drainEvents(false);}
+    int drainRecentEvents(){return drainEvents(true);}
+    private int drainEvents(boolean recent){
+        long legacyThrough=priority.cutover();
+        if(recent&&(legacyThrough<0||repo.jdbc().queryForList(
+                "SELECT organization_id FROM finance_query_priority_orgs LIMIT 1",String.class).isEmpty()))return 0;
         return repo.transaction(()->{
-            // Discover the batch without a range lock. A locking scan to the
-            // end of this append-only index can deadlock with ledger triggers
-            // appending more than one event per transaction.
-            var candidates=repo.jdbc().queryForList("SELECT event_id FROM finance_query_events ORDER BY event_id LIMIT "+EVENT_BATCH,Long.class);
+            // Discover the batch without a range lock. A locking scan to the end
+            // of this append-only index can deadlock with multi-row ledger writes.
+            var candidates=recent?repo.jdbc().queryForList("""
+                SELECT e.event_id FROM finance_query_events e FORCE INDEX(PRIMARY)
+                WHERE e.event_id>? AND EXISTS(
+                  SELECT 1 FROM finance_query_priority_orgs o WHERE o.organization_id=e.organization_id)
+                ORDER BY e.event_id LIMIT
+                """+EVENT_BATCH,Long.class,legacyThrough):
+                repo.jdbc().queryForList("SELECT event_id FROM finance_query_events ORDER BY event_id LIMIT "+EVENT_BATCH,Long.class);
             if(candidates.isEmpty())return 0;
             var events=repo.jdbc().queryForList("SELECT * FROM finance_query_events FORCE INDEX(PRIMARY) WHERE event_id IN ("
                 +placeholders(candidates.size())+") ORDER BY event_id FOR UPDATE SKIP LOCKED",candidates.toArray());
             if(events.isEmpty())return 0;
-            var changed=resolveChanges(events,true,true);
-            for(var item:changed.entrySet()){
-                String org=item.getKey();var change=item.getValue();
-                if(change.all){repo.jdbc().update("UPDATE finance_query_partitions SET full_rebuild_revision=requested_revision+1,requested_revision=requested_revision+1,full_rebuild=TRUE,requested_at=UTC_TIMESTAMP(6),next_attempt_at=UTC_TIMESTAMP(6) WHERE organization_id=?",org);continue;}
-                var days=new TreeSet<LocalDate>();change.shopDays.keySet().forEach(itemDay->days.add(itemDay.day().withDayOfMonth(1)));
-                for(LocalDate month:days)repo.jdbc().update("UPDATE finance_query_partitions SET requested_revision=requested_revision+1,requested_at=UTC_TIMESTAMP(6),next_attempt_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND partition_month=?",org,month);
-                var daily=change.shopDays.keySet().stream().map(ShopDay::day).distinct().sorted().toList();
-                var args=daily.stream().map(day->new Object[]{day,org,day.withDayOfMonth(1)}).toList();
-                if(!args.isEmpty())repo.jdbc().batchUpdate("""
-                    INSERT INTO finance_query_dirty_days(organization_id,platform_filter,partition_month,record_date,requested_revision)
-                    SELECT organization_id,platform_filter,partition_month,?,requested_revision
-                    FROM finance_query_partitions WHERE organization_id=? AND partition_month=?
-                    ON DUPLICATE KEY UPDATE requested_revision=GREATEST(finance_query_dirty_days.requested_revision,VALUES(requested_revision))
-                    """,args);
-                var shopArgs=change.shopDays.entrySet().stream().sorted(Comparator
-                    .comparing((Map.Entry<ShopDay,Boolean> value)->value.getKey().day())
-                    .thenComparing(value->value.getKey().shop())).map(value->new Object[]{
-                        value.getKey().day(),value.getKey().shop(),value.getValue(),org,value.getKey().day().withDayOfMonth(1)
-                    }).toList();
-                if(!shopArgs.isEmpty())repo.jdbc().batchUpdate("""
-                    INSERT INTO finance_query_dirty_shop_days(organization_id,platform_filter,partition_month,record_date,shop_id,requested_revision,cost_revision)
-                    SELECT organization_id,platform_filter,partition_month,?,?,requested_revision,IF(?,requested_revision,0)
-                    FROM finance_query_partitions WHERE organization_id=? AND partition_month=?
-                    ON DUPLICATE KEY UPDATE
-                      requested_revision=GREATEST(finance_query_dirty_shop_days.requested_revision,VALUES(requested_revision)),
-                      cost_revision=GREATEST(finance_query_dirty_shop_days.cost_revision,VALUES(cost_revision))
-                    """,shopArgs);
+            if(legacyThrough>0){
+                var split=events.stream().collect(java.util.stream.Collectors.partitioningBy(
+                    event->number(event.get("event_id"))<=legacyThrough));
+                invalidate(resolveChanges(split.get(true),true),legacyThrough);
+                invalidate(resolveChanges(split.get(false),true),0);
+            }else{
+                invalidate(resolveChanges(events,true),0);
             }
             var ids=events.stream().map(row->row.get("event_id")).toList();
-            repo.jdbc().update("DELETE FROM finance_query_events WHERE event_id IN ("+String.join(",",Collections.nCopies(ids.size(),"?"))+")",ids.toArray());
+            repo.jdbc().update("DELETE FROM finance_query_events WHERE event_id IN ("+placeholders(ids.size())+")",ids.toArray());
             return events.size();
         });
     }
 
-    private Map<String,Change> resolveChanges(List<Map<String,Object>> events,boolean checkBacklog,boolean includeBills){
+    private void invalidate(Map<String,Change> changed,long legacyThrough){
+        // Once a full snapshot covers the legacy prefix, draining that prefix
+        // only changes the remaining months. New events can touch any month.
+        String uncovered=legacyThrough<=0?"":("""
+             AND NOT EXISTS(
+                 SELECT 1 FROM finance_query_priority_baselines b
+                 WHERE b.organization_id=p.organization_id AND b.platform_filter=p.platform_filter
+                 AND b.partition_month=p.partition_month AND b.legacy_through>=%d)
+            """.formatted(legacyThrough));
+        for(var item:changed.entrySet()){
+            String org=item.getKey();var change=item.getValue();
+            boolean scopedCosts=usesScopedSettlementRevisions(org);
+            if(change.all){
+                String costReset=scopedCosts&&change.allCosts?"settlement_cost_full_revision=requested_revision+1,":"";
+                repo.jdbc().update("UPDATE finance_query_partitions p SET "+costReset
+                    +"full_rebuild_revision=requested_revision+1,requested_revision=requested_revision+1,full_rebuild=TRUE,"
+                    +"requested_at=UTC_TIMESTAMP(6),next_attempt_at=UTC_TIMESTAMP(6) WHERE p.organization_id=?"+uncovered,org);
+                if(!scopedCosts||change.allCosts)continue;
+            }else if(change.spendAll){
+                repo.jdbc().update("UPDATE finance_query_partitions p SET spend_full_revision=requested_revision+1,"
+                    +"requested_revision=requested_revision+1,requested_at=UTC_TIMESTAMP(6),next_attempt_at=UTC_TIMESTAMP(6) "
+                    +"WHERE p.organization_id=?"+uncovered,org);
+            }
+            var days=new TreeSet<LocalDate>();change.shopDays.keySet().forEach(itemDay->days.add(itemDay.day().withDayOfMonth(1)));
+            if(!change.all&&!change.spendAll)for(LocalDate month:days)repo.jdbc().update("UPDATE finance_query_partitions p SET requested_revision=requested_revision+1,requested_at=UTC_TIMESTAMP(6),next_attempt_at=UTC_TIMESTAMP(6) WHERE p.organization_id=? AND p.partition_month=?"+uncovered,org,month);
+            var daily=change.shopDays.keySet().stream().map(ShopDay::day).distinct().sorted().toList();
+            var args=daily.stream().map(day->new Object[]{day,org,day.withDayOfMonth(1)}).toList();
+            if(!args.isEmpty())repo.jdbc().batchUpdate("""
+                INSERT INTO finance_query_dirty_days(organization_id,platform_filter,partition_month,record_date,requested_revision)
+                SELECT organization_id,platform_filter,partition_month,?,requested_revision
+                FROM finance_query_partitions p WHERE organization_id=? AND partition_month=?
+                """+uncovered+"""
+                 ON DUPLICATE KEY UPDATE requested_revision=GREATEST(finance_query_dirty_days.requested_revision,VALUES(requested_revision))
+                """,args);
+            var shopArgs=change.shopDays.entrySet().stream().sorted(Comparator
+                .comparing((Map.Entry<ShopDay,Boolean> value)->value.getKey().day())
+                .thenComparing(value->value.getKey().shop())).map(value->new Object[]{
+                    value.getKey().day(),value.getKey().shop(),value.getValue(),org,value.getKey().day().withDayOfMonth(1)
+                }).toList();
+            if(!shopArgs.isEmpty())repo.jdbc().batchUpdate("""
+                INSERT INTO finance_query_dirty_shop_days(organization_id,platform_filter,partition_month,record_date,shop_id,requested_revision,cost_revision)
+                SELECT organization_id,platform_filter,partition_month,?,?,requested_revision,IF(?,requested_revision,0)
+                FROM finance_query_partitions p WHERE organization_id=? AND partition_month=?
+                """+uncovered+"""
+                 ON DUPLICATE KEY UPDATE
+                  requested_revision=GREATEST(finance_query_dirty_shop_days.requested_revision,VALUES(requested_revision)),
+                  cost_revision=GREATEST(finance_query_dirty_shop_days.cost_revision,VALUES(cost_revision))
+                """,shopArgs);
+        }
+    }
+
+    private Map<String,Change> resolveChanges(List<Map<String,Object>> events,boolean includeBills){
         var changed=new LinkedHashMap<String,Change>();
         var orders=new LinkedHashMap<String,Set<OrderKey>>();
         var records=new LinkedHashMap<String,Set<String>>();
         var statements=new LinkedHashMap<String,Map<String,Set<String>>>();
         for(var event:events){
-            String org=text(event.get("organization_id"));var change=changed.computeIfAbsent(org,key->{
-                var pending=new Change();
-                // Full invalidation safely covers every historical date, including a
-                // moved first settlement. Resolve individual dates only for normal bursts.
-                pending.all=checkBacklog&&!repo.jdbc().queryForList("SELECT event_id FROM finance_query_events FORCE INDEX(idx_finance_query_events_scope) WHERE organization_id=? ORDER BY event_id LIMIT 1 OFFSET "+EVENT_BATCH,org).isEmpty();
-                return pending;
-            });
-            if(change.all)continue;
-            if("ALL".equals(event.get("event_scope"))){change.all=true;continue;}
+            String org=text(event.get("organization_id"));
+            // The locked batch already bounds event identities. A subsequent batch may
+            // cover different months, so resolve and acknowledge only this batch.
+            var change=changed.computeIfAbsent(org,key->new Change());
+            if(change.allCosts)continue;
+            if("ALL".equals(event.get("event_scope"))){
+                String source=text(event.get("source_table"));
+                if(usesScopedAdRefresh(org)&&SPEND_ONLY_GLOBAL.contains(source)){
+                    change.spendAll=true;
+                }else{
+                    boolean affectsCosts=!usesScopedSettlementRevisions(org)||!COST_INDEPENDENT.contains(source);
+                    if(includeBills||affectsCosts)change.requireFull(affectsCosts);
+                }
+                continue;
+            }
             change.add(event,!"DAY".equals(event.get("event_scope")));
             addStatement(statements,org,text(event.get("shop_id")),text(event.get("statement_id")));
-            if(!"ORDER".equals(event.get("event_scope"))||change.all)continue;
+            if(!"ORDER".equals(event.get("event_scope")))continue;
             String shop=text(event.get("shop_id")),order=text(event.get("order_id"));
             if(order.isBlank()&&!text(event.get("record_id")).isBlank()){
                 records.computeIfAbsent(org,key->new LinkedHashSet<>()).add(text(event.get("record_id")));
@@ -312,21 +409,28 @@ public class FinanceQueryProjections {
             orders.computeIfAbsent(org,key->new LinkedHashSet<>()).add(new OrderKey(shop,order));
         }
         for(var item:records.entrySet()){
-            String org=item.getKey();if(changed.get(org).all)continue;
+            String org=item.getKey();if(changed.get(org).allCosts)continue;
             var args=new ArrayList<Object>();args.add(org);args.addAll(item.getValue());
             var found=repo.jdbc().queryForList("SELECT id,shop_id,order_id FROM finance_records WHERE organization_id=? AND id IN ("+placeholders(item.getValue().size())+")",args.toArray());
-            if(found.size()!=item.getValue().size()){changed.get(org).all=true;continue;}
+            if(found.size()!=item.getValue().size()){changed.get(org).requireFull(true);continue;}
             for(var row:found)if(!text(row.get("order_id")).isBlank())orders.computeIfAbsent(org,key->new LinkedHashSet<>()).add(new OrderKey(text(row.get("shop_id")),text(row.get("order_id"))));
         }
         for(var item:orders.entrySet()){
-            String org=item.getKey();var change=changed.get(org);if(change.all)continue;
-            var byShop=new LinkedHashMap<String,Set<String>>();
-            item.getValue().forEach(key->byShop.computeIfAbsent(key.shop,k->new LinkedHashSet<>()).add(key.order));
-            var clauses=new ArrayList<String>();var args=new ArrayList<Object>();args.add(org);
-            byShop.forEach((shop,ids)->{clauses.add("(shop_id=? AND order_id IN ("+placeholders(ids.size())+"))");args.add(shop);args.addAll(ids);});
-            // Include every date and API settlement link, once per batch rather than once per event.
-            var rows=repo.jdbc().queryForList("SELECT DISTINCT shop_id,record_date,CASE WHEN kind='SETTLEMENT' AND source='API' THEN statement_id ELSE '' END statement_id FROM finance_records FORCE INDEX(idx_finance_marketing_order) WHERE organization_id=? AND ("+String.join(" OR ",clauses)+") LIMIT 10001",args.toArray());
-            if(rows.size()>10000){change.all=true;continue;}
+            String org=item.getKey();var change=changed.get(org);if(change.allCosts)continue;
+            var keys=item.getValue().stream().map(key->List.of(key.shop,key.order)).toList();
+            // Probe the complete indexed key for each order. A large OR of shop/order lists
+            // can use only the shop prefix and rescan the same history in every event batch.
+            var rows=repo.jdbc().queryForList("""
+                SELECT DISTINCT r.shop_id,r.record_date,
+                  CASE WHEN r.kind='SETTLEMENT' AND r.source='API' THEN r.statement_id ELSE '' END statement_id
+                FROM JSON_TABLE(CAST(? AS JSON),'$[*]' COLUMNS(
+                  shop_key VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci PATH '$[0]',
+                  order_key VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci PATH '$[1]'
+                )) requested STRAIGHT_JOIN finance_records r FORCE INDEX(idx_finance_marketing_order)
+                  ON r.organization_id=? AND r.shop_id=requested.shop_key AND r.order_id=requested.order_key
+                LIMIT 10001
+                """,repo.write(keys),org);
+            if(rows.size()>10000){change.requireFull(true);continue;}
             for(var row:rows){change.add(row,true);addStatement(statements,org,text(row.get("shop_id")),text(row.get("statement_id")));}
         }
         if(includeBills)for(var item:statements.entrySet())if(!changed.get(item.getKey()).all)addBillDates(changed.get(item.getKey()),item.getKey(),item.getValue());
@@ -348,24 +452,43 @@ public class FinanceQueryProjections {
 
     /** The page already owns the read-only snapshot shared with its records and currency. */
     Optional<Map<String,Object>> settlementCosts(Scope scope,Filter filter){
+        boolean scopedCosts=usesScopedSettlementRevisions(scope.organizationId());
+        if(scopedCosts&&filter.platform().isBlank()&&filter.currency().isBlank()){
+            // The all-platform, all-original-currency scope counts each order once on
+            // its first settlement day, even when the provider sent several transactions.
+            var costFacts=repo.readDashboardOrderFacts(scope,filter);
+            if(costFacts.isPresent())
+                return Optional.of(new FinanceCostReport(repo).settlementSummaryFromDays(scope,costFacts.get()));
+        }
         var period=months(filter);
         var partitions=repo.jdbc().queryForList("""
             SELECT partition_month,settlement_cost_revision,built_revision,requested_revision,full_rebuild
+            """+(scopedCosts?",settlement_cost_full_revision ":"")+"""
             FROM finance_query_partitions WHERE organization_id=? AND platform_filter=? AND partition_month BETWEEN ? AND ?
             """,scope.organizationId(),filter.platform(),period.getFirst(),period.getLast());
         if(partitions.size()!=period.size()||partitions.stream().anyMatch(row->number(row.get("settlement_cost_revision"))==0
-                ||flag(row.get("full_rebuild"))))return Optional.empty();
+                ||requiresFullSettlement(row,scopedCosts)))return Optional.empty();
         return pendingWindows(scope,filter,partitions,true).map(repairs->settlementDays.summarize(scope,filter,repairs.orders()));
     }
 
+    private static boolean requiresFullSettlement(Map<String,Object> row,boolean scopedCosts){
+        return scopedCosts
+            ?number(row.get("settlement_cost_full_revision"))>number(row.get("settlement_cost_revision"))
+            :flag(row.get("full_rebuild"));
+    }
+
     private Optional<RepairWindows> pendingWindows(Scope scope,Filter filter,List<Map<String,Object>> partitions,boolean costsOnly){
-        var pending=repo.jdbc().queryForList("""
-            SELECT event_scope,record_date,shop_id,order_id,record_id,statement_id,organization_id
-            FROM finance_query_events FORCE INDEX(idx_finance_query_events_scope)
-            WHERE organization_id=?
-            """+(costsOnly?" AND event_scope<>'DAY'":"")+" ORDER BY event_id LIMIT "+(MAX_REPAIR_EVENTS+1),scope.organizationId());
-        if(pending.size()>MAX_REPAIR_EVENTS)return Optional.empty();
-        var active=resolveChanges(pending,false,!costsOnly).get(scope.organizationId());
+        long covered=priority.coveredThrough(repo.jdbc()::queryForList,scope.organizationId(),filter.platform(),months(filter));
+        var pending=pendingRepairEvents(scope,covered,costsOnly,MAX_REPAIR_EVENTS);
+        if(pending.size()>MAX_REPAIR_EVENTS){
+            if(costsOnly||pending.stream().allMatch(event->affectsRepairWindow(event,filter)))return Optional.empty();
+            // Use at most one existing event batch to establish that the selected range fits the repair budget.
+            var examined=pendingRepairEvents(scope,covered,false,EVENT_BATCH);
+            if(examined.size()>EVENT_BATCH)return Optional.empty();
+            pending=examined.stream().filter(event->affectsRepairWindow(event,filter)).toList();
+            if(pending.size()>MAX_REPAIR_EVENTS)return Optional.empty();
+        }
+        var active=resolveChanges(pending,!costsOnly).get(scope.organizationId());
         if(active!=null&&active.all)return Optional.empty();
 
         var ledger=new TreeMap<LocalDate,Set<String>>();
@@ -373,7 +496,9 @@ public class FinanceQueryProjections {
         for(var partition:partitions){
             var key=new Key(scope.organizationId(),filter.platform(),date(partition.get("partition_month")));
             var dirty=dirty(key,number(partition.get(costsOnly?"settlement_cost_revision":"built_revision")));
-            if(number(partition.get("built_revision"))!=number(partition.get("requested_revision"))&&dirty.ledger().isEmpty())
+            if((!costsOnly||!usesScopedSettlementRevisions(scope.organizationId()))
+                    &&number(partition.get("built_revision"))!=number(partition.get("requested_revision"))
+                    &&dirty.ledger().isEmpty()&&!needsSpendRefresh(partition))
                 return Optional.empty();
             if(!costsOnly)dirty.ledger().forEach((day,shops)->shops.forEach(shop->addRepair(ledger,filter,day,shop)));
             dirty.costs().forEach((day,shops)->shops.forEach(shop->addRepair(orders,filter,day,shop)));
@@ -385,6 +510,28 @@ public class FinanceQueryProjections {
         var repair=new RepairWindows(windows(ledger,false),windows(orders));
         return withinRepairBudget(costsOnly?repair.orders():repair.ledger())?Optional.of(repair):Optional.empty();
     }
+    private List<Map<String,Object>> pendingRepairEvents(Scope scope,long covered,boolean costsOnly,int budget){
+        Set<String> independentSources=costsOnly&&usesScopedSettlementRevisions(scope.organizationId())?COST_INDEPENDENT:
+            usesScopedAdRefresh(scope.organizationId())?SPEND_ONLY_GLOBAL:Set.of();
+        String independent=independentSources.isEmpty()?""
+            :" AND NOT (event_scope='ALL' AND source_table IN ('"+String.join("','",independentSources)+"'))";
+        return repo.jdbc().queryForList("""
+            SELECT event_scope,record_date,shop_id,order_id,record_id,statement_id,organization_id,source_table
+            FROM finance_query_events FORCE INDEX(idx_finance_query_events_scope)
+            WHERE organization_id=? AND event_id>?
+            """+(costsOnly?" AND event_scope<>'DAY'":"")+independent+" ORDER BY event_id LIMIT ?",
+            scope.organizationId(),covered,budget+1);
+    }
+
+    private static boolean affectsRepairWindow(Map<String,Object> event,Filter filter){
+        // An order or statement can affect a different period than the source row.
+        if(!"DAY".equals(event.get("event_scope"))||!text(event.get("statement_id")).isBlank())return true;
+        Object recordDate=event.get("record_date");
+        if(recordDate==null)return false;
+        String shop=text(event.get("shop_id"));
+        return inRange(event,filter)&&(filter.shopId().isBlank()||shop.isBlank()||filter.shopId().equals(shop));
+    }
+
     private static boolean withinRepairBudget(List<Window> windows){
         long shopDays=0;
         for(var window:windows){
@@ -405,37 +552,99 @@ public class FinanceQueryProjections {
     }
 
     /** One leased month per call; no source/provider requests are made by this worker. */
-    boolean buildNext(){
+    void advanceFeeDays(){repo.advanceFeeDays();}
+
+    boolean buildNext(){return buildNext(Instant.now(),false,false);}
+    boolean buildRecent(Instant now){return buildNext(now,true,false);}
+    boolean buildHistorical(Instant now){return buildNext(now,false,false);}
+    boolean publishedPreviousMonthEnabled(){return usesScopedAdRefresh(scopedSettlementCompany);}
+    boolean refreshPublishedPreviousMonth(Instant now){
+        return publishedPreviousMonthEnabled()&&buildNext(now,true,true);
+    }
+
+    private boolean buildNext(Instant now,boolean recent,boolean publishedPreviousMonth){
+        long legacyThrough=priority.cutover();
+        if(recent&&legacyThrough<0)return false;
         var claimed=repo.transaction(()->{
-            // During catch-up, source scans compete with the drainer while its next
-            // full invalidation may supersede their baseline. A bounded index probe prioritizes that
-            // company's invalidations; other companies and small normal bursts still build.
-            // Missing baselines lead; saved snapshots then take fair turns by oldest snapshot start.
-            var ready=repo.jdbc().queryForList("SELECT p.organization_id,p.platform_filter,p.partition_month,p.requested_revision,p.built_revision FROM finance_query_partitions p WHERE (p.built_revision<>p.requested_revision OR p.settlement_cost_requested) AND p.next_attempt_at<=UTC_TIMESTAMP(6) AND (p.lease_until IS NULL OR p.lease_until<UTC_TIMESTAMP(6)) AND NOT EXISTS(SELECT 1 FROM finance_query_events e WHERE e.organization_id=p.organization_id ORDER BY e.event_id LIMIT 1 OFFSET "+EVENT_BATCH+") ORDER BY (p.built_revision>0),p.generated_at,p.requested_at,p.organization_id,p.partition_month,p.platform_filter LIMIT 1 FOR UPDATE SKIP LOCKED");
+            // Outside the rollout, keep draining before competing with source
+            // scans. Enrolled companies use separate recent and historical build slots.
+            String pending="(p.built_revision<>p.requested_revision OR p.settlement_cost_requested)";
+            String available=" AND p.next_attempt_at<=UTC_TIMESTAMP(6) AND (p.lease_until IS NULL OR p.lease_until<UTC_TIMESTAMP(6))";
+            String belowBacklog="NOT EXISTS(SELECT 1 FROM finance_query_events e WHERE e.organization_id=p.organization_id ORDER BY e.event_id LIMIT 1 OFFSET "+EVENT_BATCH+")";
+            String pick=" ORDER BY (p.built_revision>0),p.generated_at,p.requested_at,p.organization_id,p.partition_month,p.platform_filter LIMIT 1 FOR UPDATE SKIP LOCKED";
+            String columns="SELECT p.organization_id,p.platform_filter,p.partition_month,p.requested_revision,p.built_revision";
+            String enabled="EXISTS(SELECT 1 FROM finance_query_priority_orgs o WHERE o.organization_id=p.organization_id)";
+            var lastMonth=FinanceCalendar.previousMonth(now).atDay(1);
+            List<Map<String,Object>> ready;
+            if(publishedPreviousMonth){
+                // Keep one bounded lane for the shared, published prior-month report. Its
+                // existing lease also prevents the general worker from claiming it twice.
+                String readyCosts=usesScopedSettlementRevisions(scopedSettlementCompany)
+                    ?" AND p.settlement_cost_full_revision<=p.settlement_cost_revision":"";
+                ready=repo.jdbc().queryForList(columns+"""
+                    ,FALSE needs_baseline FROM finance_query_partitions p
+                    JOIN finance_query_priority_baselines b ON b.organization_id=p.organization_id
+                      AND b.partition_month=p.partition_month AND b.platform_filter=p.platform_filter
+                    WHERE p.organization_id=? AND p.partition_month=? AND p.platform_filter=''
+                      AND b.legacy_through>=? AND p.built_revision>0 AND NOT p.full_rebuild
+                      AND p.settlement_cost_revision>0 AND p.built_revision<>p.requested_revision
+                    """+readyCosts+" AND "+enabled+available+pick,scopedSettlementCompany,lastMonth,legacyThrough);
+            }else if(recent){
+                ready=repo.jdbc().queryForList(columns+"""
+                    , b.legacy_through IS NULL needs_baseline FROM finance_query_partitions p
+                    LEFT JOIN finance_query_priority_baselines b ON b.organization_id=p.organization_id
+                    AND b.partition_month=p.partition_month AND b.platform_filter=p.platform_filter
+                    WHERE p.partition_month BETWEEN ? AND ? AND
+                    """+enabled+" AND ("+pending+" OR b.legacy_through IS NULL)"+available+pick,lastMonth,lastMonth.plusMonths(1));
+            }else if(legacyThrough<0){
+                ready=repo.jdbc().queryForList(columns+" FROM finance_query_partitions p WHERE "+pending+available+" AND "+belowBacklog+pick);
+            }else{
+                ready=repo.jdbc().queryForList(columns+" FROM finance_query_partitions p WHERE "+pending+available
+                    +" AND ((NOT "+enabled+" AND "+belowBacklog+") OR ("+enabled+" AND p.partition_month NOT BETWEEN ? AND ?))"+pick,
+                    lastMonth,lastMonth.plusMonths(1));
+            }
             if(ready.isEmpty())return Map.<String,Object>of();
             var row=new LinkedHashMap<>(ready.getFirst());String token=UUID.randomUUID().toString();
-            repo.jdbc().update("UPDATE finance_query_partitions SET lease_token=?,lease_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 5 MINUTE) WHERE organization_id=? AND platform_filter=? AND partition_month=?",token,row.get("organization_id"),row.get("platform_filter"),row.get("partition_month"));
+            // A full baseline must also have a fresh cache revision, even if
+            // the old published revision had no acknowledged dirty days yet.
+            long revision=number(row.get("requested_revision"))+(flag(row.get("needs_baseline"))?1:0);
+            repo.jdbc().update("""
+                UPDATE finance_query_partitions SET requested_revision=?,lease_token=?,
+                  lease_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 5 MINUTE)
+                WHERE organization_id=? AND platform_filter=? AND partition_month=?
+                """,revision,token,row.get("organization_id"),row.get("platform_filter"),row.get("partition_month"));
+            row.put("requested_revision",revision);
             row.put("lease_token",token);return row;
         });
         if(claimed.isEmpty())return false;
         var key=new Key(text(claimed.get("organization_id")),text(claimed.get("platform_filter")),date(claimed.get("partition_month")));
         try{
-            boolean costsOnly=number(claimed.get("built_revision"))==number(claimed.get("requested_revision"));
+            boolean newBaseline=flag(claimed.get("needs_baseline"));
+            boolean costsOnly=!newBaseline&&number(claimed.get("built_revision"))==number(claimed.get("requested_revision"));
             var snapshot=repo.readSnapshot(180,()->{
                 Instant started=Instant.now();
                 var previous=repo.jdbc().queryForMap("""
-                    SELECT full_rebuild,settlement_cost_revision,
-                           CASE WHEN partial_first_day_json IS NULL THEN 0 ELSE 1 END first_day_present
-                    """+(costsOnly?"":",full_month_json,spend_json")+"""
+                    SELECT full_rebuild,built_revision,settlement_cost_revision,
+                      CASE WHEN full_month_json IS NOT NULL AND partial_first_day_json IS NOT NULL AND spend_json IS NOT NULL
+                           THEN 1 ELSE 0 END payload_present
+                    """+(usesScopedSettlementRevisions(key.organization)?",settlement_cost_full_revision ":"")
+                      +(usesScopedAdRefresh(key.organization)?",spend_full_revision ":"")+"""
                      FROM finance_query_partitions
                     WHERE organization_id=? AND platform_filter=? AND partition_month=? AND lease_token=?
                     """,key.organization,key.platform,key.month,claimed.get("lease_token"));
+                if(newBaseline){
+                    previous.put("full_rebuild",true);
+                    previous.put("settlement_cost_full_revision",Long.MAX_VALUE);
+                }
                 return build(key,previous,costsOnly,started);
             });
             var built=snapshot.bodies();long revision=number(claimed.get("requested_revision"));
-            String full=built==null?null:json.writeValueAsString(normalize(built.ledger()));
+            String full=built==null||built.ledger()==null?null:json.writeValueAsString(normalize(built.ledger()));
             String first=built==null||built.firstDay()==null?null:json.writeValueAsString(normalize(built.firstDay()));
             String ads=built==null?null:json.writeValueAsString(normalize(built.spend()));
+            if(ads!=null&&ads.getBytes(java.nio.charset.StandardCharsets.UTF_8).length>MAX_SPEND_PAYLOAD_BYTES)
+                ads=json.writeValueAsString(SPEND_READ_FROM_SOURCE);
+            String spendPayload=ads;
             repo.transaction(()->{
                 // The lease/revision fences publication of both the month body and
                 // the changed cost days. Newer dirty rows remain queued.
@@ -445,7 +654,7 @@ public class FinanceQueryProjections {
                     WHERE organization_id=? AND platform_filter=? AND partition_month=? AND lease_token=?
                       AND lease_until>UTC_TIMESTAMP(6) AND requested_revision>=? AND built_revision<=?
                     """:"""
-                    UPDATE finance_query_partitions SET full_month_json=?,built_revision=?,schema_version=?,generated_at=?,
+                    UPDATE finance_query_partitions SET full_month_json=COALESCE(?,full_month_json),built_revision=?,schema_version=?,generated_at=?,
                       full_rebuild=(full_rebuild_revision>?),settlement_cost_revision=?,settlement_cost_requested=FALSE,
                       lease_token=NULL,lease_until=NULL,failures=0,error_code=NULL
                     WHERE organization_id=? AND platform_filter=? AND partition_month=? AND lease_token=?
@@ -453,10 +662,11 @@ public class FinanceQueryProjections {
                     """,publishArgs(key,claimed,built,snapshot.snapshotStarted(),full,revision));
                 if(published==1){
                     settlementDays.publish(companyScope(key.organization),monthFilter(key),snapshot.costs());
+                    if(newBaseline)priority.publishBaseline(key.organization,key.platform,key.month,legacyThrough);
                     if(built!=null){
                         if(first!=null)
                             repo.jdbc().update("UPDATE finance_query_partitions SET partial_first_day_json=? WHERE organization_id=? AND platform_filter=? AND partition_month=?",first,key.organization,key.platform,key.month);
-                        repo.jdbc().update("UPDATE finance_query_partitions SET spend_json=? WHERE organization_id=? AND platform_filter=? AND partition_month=?",ads,key.organization,key.platform,key.month);
+                        repo.jdbc().update("UPDATE finance_query_partitions SET spend_json=? WHERE organization_id=? AND platform_filter=? AND partition_month=?",spendPayload,key.organization,key.platform,key.month);
                         repo.jdbc().update("DELETE FROM finance_query_dirty_days WHERE organization_id=? AND platform_filter=? AND partition_month=? AND requested_revision<=?",key.organization,key.platform,key.month,revision);
                         repo.jdbc().update("DELETE FROM finance_query_dirty_shop_days WHERE organization_id=? AND platform_filter=? AND partition_month=? AND requested_revision<=?",key.organization,key.platform,key.month,revision);
                     }
@@ -474,7 +684,10 @@ public class FinanceQueryProjections {
 
     private static Object[] publishArgs(Key key,Map<String,Object> claimed,SnapshotBodies bodies,Instant started,String full,long revision){
         var args=new ArrayList<Object>();
-        if(bodies!=null)args.addAll(List.of(full,revision,SCHEMA_VERSION,java.sql.Timestamp.from(started),revision));
+        if(bodies!=null){
+            args.add(full);
+            args.addAll(List.of(revision,SCHEMA_VERSION,java.sql.Timestamp.from(started),revision));
+        }
         args.addAll(List.of(revision,key.organization,key.platform,key.month,claimed.get("lease_token"),revision,revision));
         return args.toArray();
     }
@@ -537,30 +750,45 @@ public class FinanceQueryProjections {
         // The compact partial-month strategy is valid only when corrections are anchored on month day one.
         var invalid=repo.jdbc().queryForList("SELECT r.id FROM finance_reporting_months m JOIN finance_records r FORCE INDEX(idx_finance_marketing_order) ON r.organization_id=m.organization_id AND r.shop_id=m.shop_id AND r.order_id=m.order_id AND r.statement_id=m.statement_id WHERE m.organization_id=? AND m.reporting_month=? AND r.kind IN ('SETTLEMENT','FEE') AND r.source='API' AND r.platform='TIKTOK_SHOP' AND JSON_EXTRACT(r.raw_json,'$._finance_reporting_month') IS NOT NULL AND r.record_date<>m.reporting_month LIMIT 1",key.organization,key.month);
         if(!invalid.isEmpty())throw new IllegalStateException("Reporting month anchor requires source repair");
-        boolean rebuild=flag(previous.get("full_rebuild"))
-            ||previous.get("full_month_json")==null||previous.get("spend_json")==null||number(previous.get("first_day_present"))!=1;
+        boolean rebuild=flag(previous.get("full_rebuild"))||number(previous.get("payload_present"))!=1;
+        boolean spendRefresh=needsSpendRefresh(previous);
         long costRevision=number(previous.get("settlement_cost_revision"));
         var fullWindow=new Window(month.start(),month.end(),List.of());
-        var dirty=rebuild||costsOnly?new Dirty(new TreeMap<>(),new TreeMap<>()):dirty(key,costRevision);
+        boolean scopedCosts=usesScopedSettlementRevisions(key.organization);
+        boolean rebuildCosts=costsOnly||costRevision==0||requiresFullSettlement(previous,scopedCosts)||(!scopedCosts&&rebuild);
+        var dirty=rebuild&&rebuildCosts||costsOnly?new Dirty(new TreeMap<>(),new TreeMap<>()):dirty(key,costRevision);
         var orderWindows=buildWindows(dirty.costs());
-        var costWindows=rebuild||costsOnly||costRevision==0?List.of(fullWindow):orderWindows;
+        var costWindows=rebuildCosts?List.of(fullWindow):orderWindows;
         var costs=settlementDays.calculate(scope,month,costWindows);
         if(costsOnly)return new Built(null,costs,started);
 
         var ledgerWindows=rebuild?List.of(fullWindow):buildWindows(dirty.ledger());
-        if(ledgerWindows.isEmpty())throw new IllegalStateException("Dirty partition has no affected days");
+        if(ledgerWindows.isEmpty()){
+            if(!spendRefresh)throw new IllegalStateException("Dirty partition has no affected days");
+            // Carry the already published ledger forward without transferring its JSON.
+            return new Built(new SnapshotBodies(null,null,fullSpend(scope,month)),costs,started);
+        }
         if(ledgerWindows.equals(List.of(fullWindow))){
-            var ads=spend.buildNativeSpendFacts(scope,month);
-            checkSpendLimit(ads);
+            var ads=fullSpend(scope,month);
             return new Built(new SnapshotBodies(nativeFacts(scope,month),nativeFacts(scope,firstDay),ads),costs,started);
         }
 
-        var ledger=repairLedger(scope,month,read(previous.get("full_month_json")),
+        var payload=readPayload(scope,key.platform,key.month,number(previous.get("built_revision")),true,false,!spendRefresh);
+        var ledger=repairLedger(scope,month,read(payload.get("full_month_json")),
             new RepairWindows(ledgerWindows,orderWindows),LedgerFields.ALL,"");
         var first=ledgerWindows.getFirst().start().equals(month.start())
             ?patchFirstDay(scope,key,firstDay,ledgerWindows.getFirst().shops()):null;
-        var ads=patchSpend(scope,month,read(previous.get("spend_json")),dirty.ledger().keySet());
+        var ads=spendRefresh?fullSpend(scope,month):patchSpend(scope,month,read(payload.get("spend_json")),dirty.ledger().keySet());
         return new Built(new SnapshotBodies(ledger,first,ads),costs,started);
+    }
+
+    private static boolean needsSpendRefresh(Map<String,Object> revision){
+        return number(revision.get("spend_full_revision"))>number(revision.get("built_revision"));
+    }
+
+    private Map<String,Object> fullSpend(Scope scope,Filter filter){
+        try{return spend.buildProjectedSpendFacts(scope,filter);}
+        catch(FinanceAdSpendService.RangeTooLarge limit){return SPEND_READ_FROM_SOURCE;}
     }
 
     private Map<String,Object> patchFirstDay(Scope scope,Key key,Filter firstDay,List<String> shops){
@@ -653,6 +881,7 @@ public class FinanceQueryProjections {
     }
 
     private Map<String,Object> patchSpend(Scope scope,Filter month,Map<String,Object> ads,Set<LocalDate> days){
+        if(flag(ads.get("readFromSource")))return SPEND_READ_FROM_SOURCE;
         var affectedKeys=new HashSet<String>();
         var unchangedSources=new ArrayList<Map<String,Object>>();
         for(var row:rows(ads.get("sources"))){
@@ -665,19 +894,15 @@ public class FinanceQueryProjections {
         var scanDays=new TreeMap<LocalDate,Set<String>>();days.forEach(day->scanDays.put(day,Set.of("")));
         for(var scan:windows(scanDays)){
             var slice=new Filter(scan.start(),scan.end(),"",month.platform(),"","day");
-            var refreshedSpend=spend.buildNativeSpendFacts(scope,slice);
+            var refreshedSpend=fullSpend(scope,slice);
+            if(flag(refreshedSpend.get("readFromSource")))return SPEND_READ_FROM_SOURCE;
             unchangedSources.addAll(rows(refreshedSpend.get("sources")));
+            if(unchangedSources.size()>FinanceAdSpendService.MAX_PROJECTED_RECORDS)return SPEND_READ_FROM_SOURCE;
             assignments.addAll(rows(refreshedSpend.get("assignments")));
             shops=rows(refreshedSpend.get("shops"));
         }
         ads.put("sources",unchangedSources);ads.put("assignments",assignments);ads.put("shops",shops);
-        checkSpendLimit(ads);
         return ads;
-    }
-
-    private static void checkSpendLimit(Map<String,Object> ads){
-        if(rows(ads.get("sources")).size()>FinanceAdSpendService.MAX_RECORDS)
-            throw new IllegalStateException("Projection source limit exceeded");
     }
 
     private Map<String,Object> nativeFacts(Scope scope,Filter filter){
@@ -708,15 +933,47 @@ public class FinanceQueryProjections {
         result.put("rawCounts",FinanceService.dailyFactRows(counts));return result;
     }
     private List<Map<String,Object>> recordCounts(Scope scope,Filter filter,String kind){
-        String index=kind.equals("BILL")?"idx_finance_company_kind_date":repo.dashboardIndex(filter);
+        var fees=kind.isBlank()||kind.equals("FEE")?feePageCounts(scope,filter):Optional.<List<Map<String,Object>>>empty();
+        if(kind.equals("FEE")&&fees.isPresent())return fees.get();
+        var nonFee=fees.isPresent()?repo.nonFeeKinds(scope):List.<String>of();
+        if(fees.isPresent()&&nonFee.isEmpty())return fees.get();
+        boolean reuseFees=fees.isPresent()&&nonFee.size()<=64;
+        String index=kind.equals("BILL")||reuseFees?"idx_finance_company_kind_date":repo.dashboardIndex(filter);
         String advertisingFee="CASE WHEN kind='FEE' AND "+FinanceAdvertisingReport.ledgerPredicate("finance_records")+" THEN 1 ELSE 0 END";
-        return repo.aggregateRecords(scope,filter,"",index,0,(source,query)->{
+        var counts=repo.aggregateRecords(scope,filter,"",index,0,(source,query)->{
             var args=new ArrayList<>(query.args());
             if(!kind.isBlank())args.add(kind);
-            return repo.jdbc().queryForList("SELECT shop_id,record_date,kind,currency,source,'RECORD' basis,"+advertisingFee
+            if(reuseFees)args.addAll(nonFee);
+            return repo.jdbc().queryForList("SELECT shop_id,record_date,kind,currency,source,'RECORD' basis,"+(reuseFees?"0":advertisingFee)
                 +" advertising_fee,COUNT(*) records FROM "+source+" WHERE "+query.where()
-                +(kind.isBlank()?"":" AND kind=?")+" GROUP BY shop_id,record_date,kind,currency,source,advertising_fee",args.toArray());
+                +(kind.isBlank()?"":" AND kind=?")+(reuseFees?" AND kind IN ("+placeholders(nonFee.size())+")":"")
+                +" GROUP BY shop_id,record_date,kind,currency,source,advertising_fee",args.toArray());
         });
+        if(!reuseFees)return counts;
+        var merged=new ArrayList<>(counts);
+        merged.addAll(fees.orElseThrow());
+        return merged;
+    }
+
+    private Optional<List<Map<String,Object>>> feePageCounts(Scope scope,Filter filter){
+        var fees=repo.feeDays(scope,filter,false);
+        if(fees.isEmpty())return Optional.empty();
+        var ads=repo.feeDays(scope,filter,true);
+        if(ads.isEmpty())return Optional.empty();
+        var allCounts=new LinkedHashMap<FeeFacet,Long>();
+        var adCounts=new HashMap<FeeFacet,Long>();
+        fees.get().forEach(row->allCounts.merge(FeeFacet.of(row),number(row.get("records")),Long::sum));
+        ads.get().forEach(row->adCounts.merge(FeeFacet.of(row),number(row.get("records")),Long::sum));
+        var rows=new ArrayList<Map<String,Object>>();
+        for(var total:allCounts.entrySet()){
+            long ad=adCounts.getOrDefault(total.getKey(),0L);
+            long other=total.getValue()-ad;
+            if(other<0)return Optional.empty();
+            if(ad>0)rows.add(total.getKey().count(ad,1));
+            if(other>0)rows.add(total.getKey().count(other,0));
+        }
+        if(!allCounts.keySet().containsAll(adCounts.keySet()))return Optional.empty();
+        return Optional.of(rows);
     }
     private List<Map<String,Object>> settledCounts(Scope scope,Filter filter,String kind){
         var q=repo.query(scope,filter,"r");
@@ -728,20 +985,21 @@ public class FinanceQueryProjections {
         return hasRelevantEvents(scope,filter,repo.jdbc()::queryForList);
     }
     private boolean hasRelevantEvents(Scope scope,Filter filter,MetadataQuery metadata){
-        if(metadata.read("SELECT event_id FROM finance_query_events WHERE organization_id=? LIMIT 1",scope.organizationId()).isEmpty())return false;
+        long covered=priority.coveredThrough(metadata::read,scope.organizationId(),filter.platform(),months(filter));
+        if(metadata.read("SELECT event_id FROM finance_query_events WHERE organization_id=? AND event_id>? LIMIT 1",scope.organizationId(),covered).isEmpty())return false;
         LocalDate start=filter.start().withDayOfMonth(1),end=YearMonth.from(filter.end()).atEndOfMonth();
-        if(!metadata.read("SELECT event_id FROM finance_query_events WHERE organization_id=? AND (event_scope='ALL' OR record_date BETWEEN ? AND ?) LIMIT 1",scope.organizationId(),start,end).isEmpty())return true;
+        if(!metadata.read("SELECT event_id FROM finance_query_events WHERE organization_id=? AND event_id>? AND (event_scope='ALL' OR record_date BETWEEN ? AND ?) LIMIT 1",scope.organizationId(),covered,start,end).isEmpty())return true;
         var prefixes=billPrefixes(scope.organizationId(),metadata);
         var pairs=prefixes.stream().map(p->List.of(p.user,p.source)).distinct().toList();
         // A pathological owner/source history is conservatively pending, never silently omitted.
         if(pairs.size()>128)return true;
         // ORDER events can alter a historical first-settlement month even when the source date is elsewhere.
-        var args=new ArrayList<Object>();args.add(scope.organizationId());
+        var args=new ArrayList<Object>();args.add(scope.organizationId());args.add(covered);
         String eventBill=billExists("e",pairs,start,end,args);
         String related="(r.record_date BETWEEN ? AND ? OR (r.kind='SETTLEMENT' AND ";
         args.add(start);args.add(end);String firstRelated=related+billExists("r",pairs,start,end,args)+"))";
         args.add(start);args.add(end);String secondRelated=related+billExists("r",pairs,start,end,args)+"))";
-        return !metadata.read("SELECT e.event_id FROM finance_query_events e WHERE e.organization_id=? AND ("
+        return !metadata.read("SELECT e.event_id FROM finance_query_events e WHERE e.organization_id=? AND e.event_id>? AND ("
             +" (e.statement_id IS NOT NULL AND e.statement_id<>'' AND "+eventBill+") OR (e.event_scope='ORDER' AND ("
             +" EXISTS(SELECT 1 FROM finance_records r FORCE INDEX(idx_finance_marketing_order) WHERE r.organization_id=e.organization_id AND r.shop_id=e.shop_id AND r.order_id=e.order_id AND "+firstRelated+")"
             +" OR (COALESCE(e.order_id,'')='' AND e.record_id IS NOT NULL AND (NOT EXISTS(SELECT 1 FROM finance_records o WHERE o.id=e.record_id AND o.organization_id=e.organization_id)"
