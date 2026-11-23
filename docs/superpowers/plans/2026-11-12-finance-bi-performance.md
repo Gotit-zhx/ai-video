@@ -52,7 +52,7 @@
 ## Task 4: 页面专用接口与加载链路
 
 **Files:** `FinanceController.java`、`FinanceService.java`、`FinanceAdSpendService.java`、`FinanceAdSpendController.java`、`frontend/finance-workspace.js`；新增 `FinanceWorkspaceQueryService.java` 和按页加载回归。
-**Interfaces:** 提供按页的上下文/汇总/列表读取，保留旧 API；兼容原 fieldSettings/dateBasis/filters/fx/productCosts，给新版前端提供同一权威结果契约。
+**Interfaces:** 提供按页的上下文、汇总和列表读取，保留旧 API，兼容原 fieldSettings/dateBasis/filters/fx/productCosts。
 
 - [x] 写失败回归：费用/结算/广告不依赖无关 overview；切新范围不显示旧金额；明细分页不触发整期广告计算。
 - [x] 将独立请求同版本并行，接入 Tasks 1–3，保留原卡片字段及 Shopee 新来源。
@@ -81,7 +81,7 @@
 **Files:** 更新 `docs/guides/finance-performance.md`、新增本轮回执与只读性能探针；受控维护脚本只保存脱敏小型回执。
 
 - [ ] 独立审查与财务等价检查通过，所有关键发现修复后再整合。
-- [ ] 与 Shopee/新版前端确认最新主机基线、V154/V155、文件所有权及串行窗口；只定向应用本任务差异。
+- [ ] 与 Shopee 会话确认最新主机基线、V154/V155、文件所有权及串行窗口，仅定向应用本任务差异。
 - [ ] 按既有双锁/门控/安全点执行必要新增迁移和源码编译/健康恢复；不碰备份和业务卷。
 - [ ] 回填完成再切读取；七页及子页、冷/热、筛选/分页、正常同步并发至少 30 次/核心用例；保存 P50/P95/P99/最大值和错误。
 - [ ] 不满足 5 秒的用例继续定位，不以均值、空壳或错误替代；明确全部未验证边界。

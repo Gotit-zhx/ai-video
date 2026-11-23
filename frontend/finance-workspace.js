@@ -29,6 +29,8 @@
   function dateGranularity(start,end){const days=Math.round((Date.parse(end)-Date.parse(start))/86400000)+1;return days<=45?'day':days<=200?'week':days<=400?'month':days<=900?'quarter':days<=1500?'halfyear':'year';}
   const defaultFilters=()=>({...monthRange(previousMonth()),shopId:'',groupId:'',platform:'',currency:'',granularity:'day',displayCurrency:'CNY',fxSnapshot:'',dateBasis:calendarVersion});
   let filters=defaultFilters(),numberQueries={},orderScope='ALL';
+  // The page entry has already sanitized finance deep-link parameters.
+  let initialFilterQuery=location.hash?.startsWith('#finance-')?new URLSearchParams(location.search):null;
   const allOrderView=()=>view==='orders'&&selectedKind==='ORDER'&&orderScope==='ALL';
   const detailNumbers=()=>numberQueries[view+':'+currentFieldView()]||'';
   let filterScope=null,pinnedDates=false,reportFilters=null,reportDateError='';
@@ -375,7 +377,10 @@
   function setLoading(busy){root.setAttribute('aria-busy',String(busy));const n=root.querySelector('.fi-loading');if(n){n.hidden=!busy;n.textContent=view==='shops'?'正在读取店铺同步进度…':view==='live'?'正在读取最新经营数据…':'正在加载所选店铺和日期…';n.title=filters.start+' 至 '+filters.end;}}
   function navigate(route){location.hash='finance-'+route;}
   function cleanup(){qianyiCleanup?.();qianyiCleanup=null;mountedSelection='';root.classList.remove('fi-selection-pending');clearInterval(clockTimer);clockTimer=null;charts.forEach(c=>c.dispose());charts=[];observer?.disconnect();themeObserver?.disconnect();observer=themeObserver=null;mountedView='';}
-  function reset(){clearTableSnapshots();tableOwner='';shopeeEpoch++;adSpendSearch='';adSpendAssignment='';adSpendPage=1;shopMonthFilter='ALL';shopTableStates.clear();qianyiSelection={};orderScope='ALL';active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();resetMarketFx();resetCostExports();globalThis.FinanceFeeExports?.reset();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();numberQueries={};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
+  function reset(){
+    initialFilterQuery=null;
+    clearTableSnapshots();tableOwner='';shopeeEpoch++;adSpendSearch='';adSpendAssignment='';adSpendPage=1;shopMonthFilter='ALL';shopTableStates.clear();qianyiSelection={};orderScope='ALL';active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();resetMarketFx();resetCostExports();globalThis.FinanceFeeExports?.reset();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();numberQueries={};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());
+  }
   function leave(){shopeeEpoch++;document.querySelectorAll('[data-shopee-authorization], [data-ad-shop-accounts]').forEach(d=>d.remove());active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();stopMarketFx();leaveCostExports();}
   async function refreshWhenIdle(){
     if(!active||reportDateError)return;
@@ -457,7 +462,6 @@
     el('span','FINANCE / ANALYTICS',copy,'fi-eyebrow');el('h1',routes[view],copy,'fi-title');
     el('p',view==='shops'?'统一管理财务店铺、广告账户与数据同步。':view==='costs'?'管理商品成本、SKU 关系与订单核算口径。':view==='ads'?'按店铺与分组核对广告资金消耗，追溯每笔归属。':'看清每一笔收入、每一项费用，与每家店铺的经营表现。',copy,'fi-subtitle');
     const actions=el('div',null,head,'fi-actions');
-    if(view==='overview')globalThis.FinanceEntry?.addExperienceLink(actions,location,filters,globalThis.FinanceEntry.enabled);
     loadingIndicator(actions);
     if(view!=='shops')action('财务店铺管理','shop',actions,()=>navigate('shops'));
     action('刷新','refresh',actions,()=>{filters.fxSnapshot='';return load();});
@@ -1869,13 +1873,17 @@
     }}
     finally{if(!labelPrefetchHandedOff)initialLabelPrefetch?.cancel();if(run===generation){activeLoadKey='';clearInterval(waitingTimer);setLoading(false);}}
   }
-  globalThis.FinanceWorkspace={allowed,canManage,enter(route,initialFilters){
+  globalThis.FinanceWorkspace={allowed,canManage,enter(route){
     syncTableOwner();if(!allowed())return;shopeeEpoch++;restoreFilters();const wasLive=view==='live';
     reportDateError='';
-    if(initialFilters&&globalThis.FinanceEntry){
-      const {start,end,...seed}=globalThis.FinanceEntry.cleanFilters(initialFilters);
+    if(initialFilterQuery){
+      const start=initialFilterQuery.get('start'),end=initialFilterQuery.get('end');
+      for(const key of ['shopId','groupId','platform','currency','displayCurrency']){
+        if(initialFilterQuery.has(key))filters[key]=initialFilterQuery.get(key);
+      }
+      initialFilterQuery=null;
       const from=start||filters.start,to=end||filters.end;
-      Object.assign(filters,seed,{fxSnapshot:''});
+      filters.fxSnapshot='';
       if((start||end)&&!reportDateIssue(from,to)){
         Object.assign(filters,{start:from,end:to,granularity:dateGranularity(from,to)});pinnedDates=true;
       }

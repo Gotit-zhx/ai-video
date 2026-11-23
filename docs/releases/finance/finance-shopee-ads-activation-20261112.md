@@ -7,7 +7,7 @@
 - 源码根 `/opt/heyi/dev/ai-video`，按现场摘要定向合并 15 个文件；保留原导航恢复、成本安全和其他会话 WIP。
 - 现场 V153 为 `V153__finance_cost_input_safety.sql`。原未应用的 Shopee 候选改为 V154，SQL SHA256 为 `c454ea318e4f794686e75a23cd3e17ab0e072e8706325d8784f9bc794cf4007e`。真实 Flyway 仅执行 V154，既有 history 前缀保持，未 repair 或修改已应用 SQL。
 - 私有配置复用 `/opt/heyi/shared/finance-ads` 的只读挂载，活动文件 `shopee-ads.properties` 的 owner 为 `10001:999`、mode 为 `0600`。原 TikTok 配置保留；凭据及令牌未进入 Git。
-- 与“开发（响应速度）”“开发（新版前端）”协调维护窗口；V154 由本轮使用，V155 留给查询投影。新前端入口仍关闭。
+- 与性能会话协调维护窗口。V154 由本轮使用，V155 留给查询投影。
 - 持共享维护锁和工作区编译锁暂停新工作、等待安全点，再迁移和编译；编译成功后才触发 DevTools。恢复 watcher 后等待独立初始编译和最终 ready。
 - 公开签名预检通过；不使用 ERP 授权替代独立广告授权。
 
