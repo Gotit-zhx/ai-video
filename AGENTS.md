@@ -5,6 +5,7 @@
 ## 项目入口
 
 - 项目范围与启动：[README.md](README.md)。
+- 新建或重构前端界面前，先读[前端设计标准](docs/design/frontend-design-standard.md)并使用项目内的 `antd` Skill 查询设计语言和组件 API。
 - 文档分类与业务规则：[文档中心](docs/README.md)。
 - 目录归类与模块图：[项目组织结构](docs/guides/project-structure.md)；语言与依赖版本：[技术栈](docs/guides/technology-stack.md)。
 - 服务边界与代码位置：[架构说明](docs/guides/architecture.md)。

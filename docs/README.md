@@ -13,6 +13,7 @@
 | 服务与数据流、代码位置 | [架构说明](guides/architecture.md) |
 | 本地环境、配置、调试与测试 | [开发指南](guides/development.md) |
 | 采集模板、版式颜色及 OSS 图片 | [采集模板](guides/capture-template-preview.md) |
+| 前端设计、组件选型及本地工具 | [Ant Design 前端设计标准](design/frontend-design-standard.md) |
 | 登录、权限及接口查找 | [接口导航](guides/api.md) |
 | 共享服务器源码运行、恢复、备份和排障 | [运维指南](guides/operations.md) |
 | 源码模式下的 CI、旧自动发布和网络传输边界 | [CI/CD 与统一运维](guides/cicd.md)、[CI/CD 加速历史边界](guides/cicd-acceleration.md) |
@@ -27,7 +28,7 @@
 | [业务说明](business/README.md) | 财务、电商、视频、招聘、知识库、文件存储 |
 | [发布与验收](releases/README.md) | 按财务、电商、视频、招聘、基础设施分类的历史记录 |
 | [研究与实验](research/README.md) | 服装重建、水印、财务时间来源、招聘风险与视频实验 |
-| [设计参考](design/README.md) | 当前源码运行设计、视觉参考及工作流设计依据 |
+| [设计说明](design/README.md) | 前端设计标准、源码开发运行与工作流方案 |
 | [来源与整合历史](history/README.md) | 源码快照、SHA-256 清单、分支与迁移来源 |
 | [文档清理记录](guides/documentation-maintenance.md) | 目录约定、删除依据、替代资料和维护规则 |
 

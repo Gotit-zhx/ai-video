@@ -1,0 +1,10 @@
+{
+  "name": "ai-video-antd-tools",
+  "private": true,
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "devDependencies": {
+    "@ant-design/cli": "6.7.1"
+  }
+}

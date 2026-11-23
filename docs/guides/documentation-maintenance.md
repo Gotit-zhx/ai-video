@@ -8,7 +8,7 @@
 - `docs/business/`：按财务、电商、视频、招聘、知识库与存储归集的业务说明。
 - `docs/releases/`：按领域保存仍有用的历史发布、故障与验收证据。
 - `docs/research/`：来源调查、实验、限制及风险研究，明确不代表生产验收。
-- `docs/design/`：设计依据及视觉参考，去除重复副本。
+- `docs/design/`：现行前端设计标准及工作流设计。已停用的视觉参考归入 `docs/history/frontend-design/`。
 - `docs/history/`：源码快照、指纹清单与分支整合背景。
 - 模块 README、安装/功能说明及运行时技能留在代码附近，由文档中心统一导航。
 - 文档整理时由旧版 [AGENTS.md](../../AGENTS.md) 固定引用的十一份生产规则/验收文档保留原路径；后续通过文档中心导航，规则文件不再固定发布快照。
@@ -23,7 +23,7 @@
 
 | 原路径 | 删除依据 | 保留或整合位置 |
 | --- | --- | --- |
-| `DESIGN.md` | 与 experiments/ui/apple/DESIGN.md 字节完全一致，删除重复副本，保留一份视觉参考 | [Apple 界面设计参考](../design/apple.md) |
+| `DESIGN.md` | 与 experiments/ui/apple/DESIGN.md 字节完全一致，删除重复副本，保留一份视觉参考 | [Apple 界面设计归档](../history/frontend-design/apple.md) |
 | `docs/batch-execution-next.md` | 2026-09-07 阶段待办已被后续执行实现替代，稳定约束整合到当前工作流说明 | [商品采集与创作发布工作流](../business/commerce/workflow.md) |
 | `docs/product-capture-extension.md` | 以手动绑定码和初版 Dry Run 为主的旧设计，当前扩展登录与发布入口已有完整说明 | [赫逸商品一键采集（Manifest V3）](../../apps/browser-extension/README.md) |
 | `docs/finance-label-brush-design-20261026.md` | 固定国家/分组贴单单价方案已停用，当前月度账单和刷单费规则集中在成本说明 | [SKU 成本与订单核算](../business/finance/costs.md) |
@@ -39,6 +39,10 @@
 | `docs/tiktok-order-completion-support-draft-20261027.md` | 未提交的对外支持草稿；来源调查结论、验证及未知边界保留在研究记录，不发送消息 | [Order completion: additional official API investigation](../research/finance/finance-completion-api-followup-20261027.md) |
 | `docs/赫逸智能化平台三大功能使用手册.docx` | 2026-08-17 V1.0 旧截图手册，操作范围及状态表已由当前视频指南替代 | [视频脚本生成与任务处理](../business/video/workflow.md) |
 | `docs/赫逸AI视频生产平台_三大模块使用说明书.docx` | 2026-08-20 V1.0 重复视频手册，含旧状态和预计耗时，当前以统一视频指南维护 | [视频脚本生成与任务处理](../business/video/workflow.md) |
+
+## 2026-11-23 前端设计标准更新
+
+[Ant Design 前端设计标准](../design/frontend-design-standard.md)成为新建及重构界面的入口。Apple 和 Resend 视觉参考归档至 `docs/history/frontend-design/`。`experiments/ui/apple/DESIGN.md` 的视觉内容已包含在 Apple 归档中，重复稿从当前文档树移除。
 
 ## 失效产物引用
 
