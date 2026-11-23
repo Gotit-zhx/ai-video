@@ -22,7 +22,9 @@ test('navigation groups and capture-template sections each expose a single entry
   assert.doesNotMatch(v2, /主图风格模板/);
   assert.equal(groups.filter(group => group.includes('data-commerce-route="product-print-capture"')).length, 1);
   assert.equal(groups.filter(group => group.includes('data-commerce-route="product-main-image-styles"')).length, 1);
-  assert.match(html, /id="capture-templates-page"[\s\S]*?href="#product-capture-templates\?tab=main-image-styles"[\s\S]*?id="main-style-workspace"/);
+  assert.match(html, /id="capture-template-workspace"[\s\S]*?id="ct-main-style"[\s\S]*?id="ct-listing-config"[\s\S]*?id="ct-main-style-host"/);
+  assert.doesNotMatch(html, /id="print-capture-listing-template"|id="capture-template-listing-config"|id="capture-main-style-tab"/);
+  assert.match(html, /id="open-product-listing-templates"/);
   for (const id of ['nav-ai-video-monitor', 'nav-video-scripts', 'nav-ai-video-tasks', 'nav-general-video', 'nav-shops', 'nav-publish', 'nav-automations', 'nav-automation-admin', 'nav-models', 'nav-system', 'nav-assistant-test']) {
     assert.equal(groups.filter(group => group.includes(`id="${id}"`)).length, 1, id);
   }
@@ -40,8 +42,7 @@ test('commerce routes show the correct content and preserve plugin capture hando
   };
   const panels = routes.filter(route => route !== 'product-main-image-styles').map(route => element('', { commercePanel: route }));
   const links = routes.slice(1).map(route => element('', { commerceRoute: route }));
-  const tabs = [element('capture-style-tab'), element('capture-main-style-tab')];
-  const headings = ['capture-templates-heading', 'capture-template-workspace', 'main-style-workspace', 'topbar h2'];
+  const headings = ['capture-templates-heading', 'capture-template-workspace', 'main-style-workspace', 'main-style-home', 'ct-main-style-host', 'topbar h2'];
   const nodes = Object.fromEntries(headings.map(id => [id, element(id)]));
   const entered = [];
   const location = { hash: '', pathname: '/', search: '' };
@@ -56,8 +57,7 @@ test('commerce routes show the correct content and preserve plugin capture hando
     document: {
       title: 'test', createElement: element,
       querySelector: selector => nodes[selector.replace(/^\./, '').replace(/^#/, '')] || element(),
-      querySelectorAll: selector => selector === '[data-commerce-panel]' ? panels
-        : selector === '#capture-templates-heading a' ? tabs : links
+      querySelectorAll: selector => selector === '[data-commerce-panel]' ? panels : links
     }
   };
   vm.createContext(context);
@@ -80,19 +80,17 @@ test('commerce routes show the correct content and preserve plugin capture hando
 
   for (const url of ['#product-main-image-styles-v2', '#product-capture-templates?tab=main-image-styles']) {
     navigate(url);
-    assert.equal(location.hash, '#product-capture-templates?tab=main-image-styles');
+    assert.equal(location.hash, '#product-capture-templates');
     assert.equal(nodes['capture-templates-heading'].hidden, false);
-    assert.equal(nodes['capture-template-workspace'].hidden, true);
-    assert.equal(nodes['main-style-workspace'].hidden, false);
+    assert.equal(nodes['capture-template-workspace'].hidden, false);
+    assert.equal(nodes['main-style-workspace'].hidden, true);
     assert.equal(nodes['topbar h2'].textContent, '商品运营 v2.0 / 采集模板');
-    assert.equal(tabs[1].attributes['aria-current'], 'page');
-    assert.equal(entered.at(-1).detail.route, 'product-main-image-styles');
+    assert.equal(entered.at(-1).detail.route, 'product-capture-templates');
   }
 
   navigate('#product-capture-templates');
   assert.equal(nodes['capture-template-workspace'].hidden, false);
   assert.equal(nodes['main-style-workspace'].hidden, true);
-  assert.equal(tabs[0].attributes['aria-current'], 'page');
   assert.equal(entered.at(-1).detail.route, 'product-capture-templates');
 
   navigate('#product-capture?id=test-product');

@@ -109,7 +109,7 @@ public class CommerceSampleService {
    if(!Objects.equals(request.product(),saved.get("product"))||!(saved.get("variant_index") instanceof Number variant)||variant.intValue()!=request.variant()
      ||!Objects.equals(kind,saved.get("asset_kind"))||!Objects.equals(request.parentId(),saved.get("parent_id")))throw error(HttpStatus.CONFLICT,"同一请求编号不能改变示例内容或原图");
    if (!"PREPARED".equals(saved.get("status"))) {
-    String savedId=(String)saved.get("id");collect(savedId,u);return view(row(savedId,u));
+    return collectView((String)saved.get("id"), u, capturePrint);
    }
   }
   List<CommerceDesignImageGateway.Reference> references=List.of();
@@ -170,24 +170,69 @@ public class CommerceSampleService {
    }
    catch(RuntimeException failure){db.update("UPDATE commerce_sample_previews SET status='UNKNOWN',updated_at=NOW(6) WHERE id=?",id);throw error(HttpStatus.CONFLICT,"示例结果待核查，请勿换请求编号重复生成");}
   }
-  collect(id,u);return view(row(id,u));
+  return collectView(id, u, capturePrint);
  }
- private void collect(String id,PlatformPrincipal u){var r=row(id,u);String status=Objects.toString(r.get("status"),"");
+ private View collectView(String id, PlatformPrincipal user, boolean capturePrint) {
+  boolean archivePending = collect(id, user, capturePrint);
+  var saved = view(row(id, user));
+  if (!archivePending || !"RESULT_RECEIVED".equals(saved.status())) return saved;
+  return new View(saved.id(), saved.product(), saved.variant(), "ARCHIVE_PENDING", saved.model(),
+    "/api/v1/product-print-capture/results/" + id + "/image", saved.parentId(), saved.assetKind());
+ }
+
+ CommerceDesignImageGateway.Reference captureResultImage(String id, PlatformPrincipal user) {
+  var saved = row(id, user);
+  if (!Objects.toString(saved.get("request_key"), "").startsWith("capture-v2-art-")
+      || !"PRINT_EXTRACT".equals(saved.get("asset_kind"))
+      || !Set.of("RESULT_RECEIVED", "READY").contains(Objects.toString(saved.get("status"), ""))) {
+   throw error(HttpStatus.NOT_FOUND, "找不到本次采集的印花结果");
+  }
+  var response = json.readValue((String) saved.get("result_json"), CommerceDesignImageGateway.Response.class);
+  if (response.artifact() == null || response.artifact().dataBase64() == null
+      || response.artifact().dataBase64().length() > 12_000_000) {
+   throw error(HttpStatus.NOT_FOUND, "找不到本次采集的印花结果");
+  }
+  String encoded = response.artifact().dataBase64();
+  try {
+   CommerceTransparentArtworkPolicy.requireNative(Base64.getDecoder().decode(encoded));
+  } catch (IllegalArgumentException invalid) {
+   throw error(HttpStatus.CONFLICT, "印花未通过原生透明 PNG 检查");
+  }
+  return new CommerceDesignImageGateway.Reference("image/png", encoded);
+ }
+
+ private boolean collect(String id,PlatformPrincipal u,boolean capturePrint){var r=row(id,u);String status=Objects.toString(r.get("status"),"");
   if("REJECTED".equals(status))throw error(HttpStatus.CONFLICT,json.readTree(Objects.toString(r.get("result_json"),"{}")).path("message").asText("模型明确拒绝本次请求")+"；同一请求不会自动重试生图");
-  if(!"RESULT_RECEIVED".equals(status)&&!(printKind(r.get("asset_kind"))&&Set.of(TRANSPARENCY_REJECTED,"READY").contains(status)))return;
+  if(!"RESULT_RECEIVED".equals(status)&&!(printKind(r.get("asset_kind"))&&Set.of(TRANSPARENCY_REJECTED,"READY").contains(status)))return false;
   byte[] bytes;
   if(r.get("storage_key") instanceof String key&&!key.isBlank())bytes=Base64.getDecoder().decode(archive.read(u.organizationId(),key).dataBase64());
   else{
    var response=json.readValue((String)r.get("result_json"),CommerceDesignImageGateway.Response.class);
    if(response.artifact()!=null&&response.artifact().dataBase64()!=null){if(response.artifact().dataBase64().length()>12_000_000)throw error(HttpStatus.CONFLICT,"示例图片过大");bytes=Base64.getDecoder().decode(response.artifact().dataBase64());}
    else{if(response.result()==null||response.result().url()==null)throw error(HttpStatus.CONFLICT,"模型没有返回图片");bytes=downloader.download(response.result().url()).bytes();}
-   var stored=archive.store(u.organizationId(),bytes);
+   CommerceImageArchive.Archived stored;
+   try {
+    stored=archive.store(u.organizationId(),bytes);
+   } catch (IllegalStateException failure) {
+    if (!capturePrint) throw failure;
+    if (response.artifact() != null && response.artifact().dataBase64() != null && "RESULT_RECEIVED".equals(status)) {
+     try {
+      // The response is already in the request ledger. Preview it while OSS is unavailable.
+      CommerceTransparentArtworkPolicy.requireNative(bytes);
+      return true;
+     } catch (IllegalArgumentException invalid) {
+      // Keep the saved response pending until OSS can preserve the original before rejection.
+     }
+    }
+    throw error(HttpStatus.SERVICE_UNAVAILABLE,"印花已生成，图片暂未归档。请稍后点击「查看提取结果」。");
+   }
    // Persist the paid output before enforcing quality. A rejection preserves both
    // the provider response and the exact original image, without whitening/cutout.
    db.update("UPDATE commerce_sample_previews SET storage_key=?,updated_at=NOW(6) WHERE id=? AND organization_id=? AND created_by=?",stored.storageKey(),id,u.organizationId(),u.userId());
   }
   requireNativePrint(id,r,bytes,u);
   if(!"READY".equals(status))db.update("UPDATE commerce_sample_previews SET status='READY',updated_at=NOW(6) WHERE id=? AND organization_id=? AND created_by=? AND status IN ('RESULT_RECEIVED','TRANSPARENCY_REJECTED')",id,u.organizationId(),u.userId());
+  return false;
  }
  private void requireNativePrint(String id,Map<String,Object> row,byte[] bytes,PlatformPrincipal u){
   if(!printKind(row.get("asset_kind")))return;

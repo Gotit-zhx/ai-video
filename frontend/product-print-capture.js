@@ -273,7 +273,8 @@
         showRejection(message);
         return;
       }
-      if (data.status !== 'READY' || !data.imageUrl) {
+      const archivePending = data.status === 'ARCHIVE_PENDING';
+      if ((!archivePending && data.status !== 'READY') || !data.imageUrl) {
         get('extract').textContent = '查看提取结果';
         get('monitor-print').textContent = data.status === 'UNKNOWN' ? '待核查' : '等待结果';
         const message = data.status === 'UNKNOWN' ? '提取结果待核查，请勿重复提交。' : '提取结果尚未就绪，可以稍后查看。';
@@ -285,9 +286,10 @@
       print = cropArtwork(loadedPrint);
       get('art').src = loadedPrint.src;
       get('print-tile').hidden = false;
-      get('extract-action').hidden = true;
-      status('extract-status', '已提取印花');
-      get('monitor-print').textContent = '已提取';
+      get('extract-action').hidden = !archivePending;
+      if (archivePending) get('extract').textContent = '重试归档';
+      status('extract-status', archivePending ? '印花已提取，待归档' : '已提取印花');
+      get('monitor-print').textContent = archivePending ? '待归档' : '已提取';
       await loadTemplates();
     } catch (error) {
       if (run !== revision) return;
@@ -297,7 +299,9 @@
         showRejection(message);
       } else {
         get('extract').textContent = '查看提取结果';
-        status('extract-status', error.message, true);
+        const message = error.status >= 500 && error.message === 'Internal server error'
+          ? '暂时无法读取结果，请稍后点击「查看提取结果」。' : error.message;
+        status('extract-status', message, true);
         get('monitor-print').textContent = '待查看';
       }
     } finally {

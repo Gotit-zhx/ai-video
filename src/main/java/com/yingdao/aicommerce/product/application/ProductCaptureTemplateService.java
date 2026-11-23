@@ -53,6 +53,13 @@ public class ProductCaptureTemplateService {
         access(user, false); uuid(id);
         return view(row(id, user.organizationId()), user.organizationId());
     }
+    /** An absent scope selects the existing enterprise configuration. A style scope must exist in this enterprise. */
+    public String settingsScope(String id, PlatformPrincipal user, boolean edit) {
+        if (id == null) return "";
+        access(user, edit);
+        uuid(id);
+        return (String) row(id, user.organizationId()).get("id");
+    }
     @Transactional
     public View save(String id, Save input, PlatformPrincipal user) {
         access(user, true); uuid(id);

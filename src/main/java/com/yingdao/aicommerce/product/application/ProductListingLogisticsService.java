@@ -8,6 +8,7 @@ import com.yingdao.aicommerce.shop.domain.MarketplacePlatform;
 import com.yingdao.aicommerce.shop.infrastructure.ShopeeOfficialClient;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.ObjectMapper;
 
@@ -32,19 +33,40 @@ public class ProductListingLogisticsService {
         return config(org, shopId, CommerceModule.current());
     }
     public Config config(String org, String shopId, String module) {
-        var rows = db.query("""
+        return config(org, shopId, module, "");
+    }
+    private Config config(String org, String shopId, String module, String captureTemplateId) {
+        String query = """
                 SELECT selection_mode,channel_ids_json,version FROM product_listing_logistics
                 WHERE organization_id=? AND shop_id=? AND data_module=?
-                """, (rs, n) -> new Config(rs.getString(1), ids(read(rs.getString(2))), rs.getLong(3)), org, shopId, CommerceModule.validate(module));
+                """;
+        RowMapper<Config> mapper =
+                (rs, n) -> new Config(rs.getString(1), ids(read(rs.getString(2))), rs.getLong(3));
+        String validated = CommerceModule.validate(module);
+        if (!captureTemplateId.isEmpty()) {
+            var scoped = db.query(query + " AND capture_template_id=?", mapper, org, shopId, validated, captureTemplateId);
+            if (!scoped.isEmpty()) return scoped.getFirst();
+            var seed = config(org, shopId, validated);
+            return new Config(seed.mode(), seed.channelIds(), 0);
+        }
+        var rows = db.query(query + " AND capture_template_id=''", mapper, org, shopId, validated);
         return rows.isEmpty() ? new Config("ALL_ENABLED", List.of(), 0) : rows.getFirst();
     }
     public View get(String shopId, PlatformPrincipal user) {
+        return get(shopId, user, "");
+    }
+    public View get(String shopId, PlatformPrincipal user, String captureTemplateId) {
         ProductListingTemplateService.requireAccess(user, false);
         var connection = shops.connectionForPublishing(user.organizationId(), shopId, MarketplacePlatform.SHOPEE);
-        return view(shopId, config(user.organizationId(), shopId), officialChannels(connection));
+        return view(shopId, config(user.organizationId(), shopId,
+                ProductListingTemplateService.settingsModule(captureTemplateId), captureTemplateId), officialChannels(connection));
     }
     public void save(Map<String, Object> body, PlatformPrincipal user) {
+        save(body, user, "");
+    }
+    public void save(Map<String, Object> body, PlatformPrincipal user, String captureTemplateId) {
         ProductListingTemplateService.requireAccess(user, true);
+        String module = ProductListingTemplateService.settingsModule(captureTemplateId);
         String shopId = String.valueOf(body.getOrDefault("shopId", ""));
         var connection = shops.connectionForPublishing(user.organizationId(), shopId, MarketplacePlatform.SHOPEE);
         List<Channel> channels = officialChannels(connection);
@@ -59,15 +81,15 @@ public class ProductListingLogisticsService {
         if (version == 0) {
             count = db.update("""
                     INSERT IGNORE INTO product_listing_logistics
-                    (organization_id,shop_id,data_module,selection_mode,channel_ids_json,version,updated_by)
-                    VALUES (?,?,?,?,?,1,?)
-                    """, user.organizationId(), shopId, CommerceModule.current(), mode, write(selected), user.userId());
+                    (organization_id,shop_id,data_module,capture_template_id,selection_mode,channel_ids_json,version,updated_by)
+                    VALUES (?,?,?,?,?,?,1,?)
+                    """, user.organizationId(), shopId, module, captureTemplateId, mode, write(selected), user.userId());
         } else if (version > 0) {
             count = db.update("""
                     UPDATE product_listing_logistics SET selection_mode=?,channel_ids_json=?,version=version+1,
                     updated_by=?,updated_at=CURRENT_TIMESTAMP(6)
-                    WHERE organization_id=? AND shop_id=? AND version=? AND data_module=?
-                    """, mode, write(selected), user.userId(), user.organizationId(), shopId, version, CommerceModule.current());
+                    WHERE organization_id=? AND shop_id=? AND version=? AND data_module=? AND capture_template_id=?
+                    """, mode, write(selected), user.userId(), user.organizationId(), shopId, version, module, captureTemplateId);
         } else throw bad("物流配置版本无效");
         if (count != 1) throw new BusinessException(HttpStatus.CONFLICT, "物流配置已被修改，请重新选择店铺后保存");
     }

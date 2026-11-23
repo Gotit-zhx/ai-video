@@ -5,6 +5,7 @@ import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.product.domain.ProductCapture;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.core.type.TypeReference;
@@ -46,8 +47,14 @@ public class ProductListingTemplateService {
     }
 
     public List<Template> list(PlatformPrincipal principal) {
+        return list(principal, "");
+    }
+
+    public List<Template> list(PlatformPrincipal principal, String captureTemplateId) {
         requireAccess(principal, false);
-        return List.of(get(principal.organizationId(), "SHOPEE"), get(principal.organizationId(), "TIKTOK_SHOP"));
+        String module = settingsModule(captureTemplateId);
+        return List.of(get(principal.organizationId(), "SHOPEE", module, captureTemplateId),
+                get(principal.organizationId(), "TIKTOK_SHOP", module, captureTemplateId));
     }
 
     public Template get(String organizationId, String platform) {
@@ -55,20 +62,40 @@ public class ProductListingTemplateService {
     }
 
     public Template get(String organizationId, String platform, String module) {
+        return get(organizationId, platform, module, "");
+    }
+
+    private Template get(String organizationId, String platform, String module, String captureTemplateId) {
         String target = platform(platform);
-        var rows = db.query("SELECT * FROM product_listing_templates WHERE organization_id=? AND platform=? AND data_module=?",
-                (rs, n) -> new Template(target, rs.getString("name"), rs.getBoolean("enabled"),
+        RowMapper<Template> mapper = (rs, n) ->
+                new Template(target, rs.getString("name"), rs.getBoolean("enabled"),
                 rs.getString("description"), rs.getBigDecimal("weight_grams"),
                 rs.getBigDecimal("package_length_cm"), rs.getBigDecimal("package_width_cm"),
                 rs.getBigDecimal("package_height_cm"), rs.getLong("version"),
-                rs.getString("size_chart_image_key")), organizationId, target, CommerceModule.validate(module));
+                rs.getString("size_chart_image_key"));
+        String query = "SELECT * FROM product_listing_templates WHERE organization_id=? AND platform=? AND data_module=?";
+        String validated = CommerceModule.validate(module);
+        if (!captureTemplateId.isEmpty()) {
+            var scoped = db.query(query + " AND capture_template_id=?", mapper, organizationId, target, validated, captureTemplateId);
+            if (!scoped.isEmpty()) return scoped.getFirst();
+            Template seed = get(organizationId, target, validated);
+            return new Template(seed.platform(), seed.name(), seed.enabled(), seed.description(), seed.weightGrams(),
+                    seed.packageLengthCm(), seed.packageWidthCm(), seed.packageHeightCm(), 0, seed.sizeChartImageKey());
+        }
+        var rows = db.query(query + " AND capture_template_id=''", mapper, organizationId, target, validated);
         return rows.isEmpty() ? defaults(target) : rows.getFirst();
     }
 
     @Transactional
     public Template save(String platform, Map<String, Object> body, PlatformPrincipal principal) {
+        return save(platform, body, principal, "");
+    }
+
+    @Transactional
+    public Template save(String platform, Map<String, Object> body, PlatformPrincipal principal, String captureTemplateId) {
         requireAccess(principal, true);
         String target = platform(platform);
+        String module = settingsModule(captureTemplateId);
         if (!(body.get("enabled") instanceof Boolean enabled)) throw bad("请选择是否自动应用模板");
         String name = text(body.get("name")), description = text(body.get("description"));
         if (name.isBlank() || name.length() > 100) throw bad("模板名称需为 1–100 个字符");
@@ -82,7 +109,7 @@ public class ProductListingTemplateService {
         catch (Exception e) { throw bad("请重新读取模板后保存"); }
         if (version < 0) throw bad("模板版本无效");
         String sizeChartKey = body.containsKey("sizeChartImageKey") ? text(body.get("sizeChartImageKey"))
-                : text(get(principal.organizationId(), target).sizeChartImageKey());
+                : text(get(principal.organizationId(), target, module, captureTemplateId).sizeChartImageKey());
         if (!sizeChartKey.isBlank()) {
             try { imageArchive.read(principal.organizationId(), sizeChartKey); }
             catch (RuntimeException e) { throw bad("尺码模板图片不存在或不属于当前公司，请重新上传"); }
@@ -92,22 +119,26 @@ public class ProductListingTemplateService {
         if (version == 0) {
             changed = db.update("""
                     INSERT IGNORE INTO product_listing_templates
-                    (organization_id,platform,data_module,name,enabled,description,size_chart_image_key,weight_grams,package_length_cm,
-                     package_width_cm,package_height_cm,version,updated_by)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?)
-                    """, principal.organizationId(), target, CommerceModule.current(), name, enabled, description, sizeChartKey, weight,
+                    (organization_id,platform,data_module,capture_template_id,name,enabled,description,size_chart_image_key,weight_grams,
+                     package_length_cm,package_width_cm,package_height_cm,version,updated_by)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?)
+                    """, principal.organizationId(), target, module, captureTemplateId, name, enabled, description, sizeChartKey, weight,
                     length, width, height, principal.userId());
         } else {
             changed = db.update("""
                     UPDATE product_listing_templates SET name=?,enabled=?,description=?,size_chart_image_key=?,weight_grams=?,
                     package_length_cm=?,package_width_cm=?,package_height_cm=?,version=version+1,
                     updated_by=?,updated_at=CURRENT_TIMESTAMP(6)
-                    WHERE organization_id=? AND platform=? AND version=? AND data_module=?
+                    WHERE organization_id=? AND platform=? AND version=? AND data_module=? AND capture_template_id=?
                     """, name, enabled, description, sizeChartKey, weight, length, width, height, principal.userId(),
-                    principal.organizationId(), target, version, CommerceModule.current());
+                    principal.organizationId(), target, version, module, captureTemplateId);
         }
         if (changed != 1) throw new BusinessException(HttpStatus.CONFLICT, "模板已被其他人修改，请重新打开后保存");
-        return get(principal.organizationId(), target);
+        return get(principal.organizationId(), target, module, captureTemplateId);
+    }
+
+    static String settingsModule(String captureTemplateId) {
+        return captureTemplateId.isEmpty() ? CommerceModule.current() : CommerceModule.CAPTURE;
     }
 
     public Map<String, Object> snapshot(String organizationId, String destination, ProductCapture capture) {

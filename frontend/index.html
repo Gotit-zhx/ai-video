@@ -79,7 +79,7 @@
   <link rel="stylesheet" href="/commerce-motion.css?v=workbench-layout-20260921">
   <link rel="stylesheet" href="/product-bulk-history.css?v=20260910-bulk-history-2">
   <link rel="stylesheet" href="/product-print-capture.css?v=4">
-  <link rel="stylesheet" href="/product-capture-templates.css?v=20261122-v2-entry-1">
+  <link rel="stylesheet" href="/product-capture-templates.css?v=20261122-style-settings-1">
   <link rel="stylesheet" href="/product-main-image-styles.css?v=20261019-detail-1">
   <link rel="stylesheet" href="/knowledge-workspace.css?v=20260923-3">
     <link rel="stylesheet" href="/finance-workspace.css?v=20261123-direct-entry-1">
@@ -941,7 +941,6 @@
             <div class="pc-tools">
               <button id="pc-monitor-toggle" class="quiet-button" type="button" aria-controls="pc-monitor" aria-expanded="true">监控</button>
               <button id="pc-layout" class="quiet-button" type="button" aria-pressed="false" title="切换上下布局">布局 · 左右</button>
-              <button id="print-capture-listing-template" class="quiet-button" type="button" data-listing-template-opener aria-haspopup="dialog" aria-controls="product-listing-template-dialog">定制模板配置</button>
               <a class="quiet-button" href="/assets/hoyee-print-collector-v2.zip" download>下载 v2.0 插件</a>
             </div>
           </header>
@@ -1018,19 +1017,18 @@
 
         <section data-commerce-panel="product-capture-templates" id="capture-templates-page" hidden>
           <header id="capture-templates-heading" class="capture-template-heading">
-            <div class="capture-template-title-row">
-              <h1>采集模板</h1>
-              <button id="capture-template-listing-config" class="quiet-button" type="button" data-listing-template-opener aria-haspopup="dialog" aria-controls="product-listing-template-dialog">定制模板配置</button>
-            </div>
-            <nav aria-label="模板类型">
-              <a href="#product-capture-templates" id="capture-style-tab" aria-controls="capture-template-workspace" aria-current="page">款式模板</a>
-              <a href="#product-capture-templates?tab=main-image-styles" id="capture-main-style-tab" aria-controls="main-style-workspace">主图风格模板</a>
-            </nav>
+            <h1>采集模板</h1>
           </header>
           <section id="capture-template-workspace" aria-label="款式模板" hidden>
 <div id="ct-toast" role="status" aria-live="polite" hidden></div>
 <div class="ct-workspace"><aside class="ct-template-rail"><div class="ct-rail-heading"><h2>我的模板 <span id="ct-template-count"></span></h2></div><label class="ct-search"><span data-icon="search"></span><input id="ct-search" type="search" placeholder="搜索模板" aria-label="搜索模板"></label><div id="ct-template-list" class="ct-template-list"></div><button id="ct-load-more-templates" class="ct-rail-more" hidden>加载更多</button></aside>
 <section class="ct-editor" aria-label="模板编辑"><header class="ct-editor-heading"><div><h2 id="ct-editor-title"></h2><span id="ct-save-state">未保存</span></div><button id="ct-save" class="ct-primary"><span data-icon="check"></span>保存</button></header>
+<div class="ct-style-settings" aria-label="款式配置">
+  <button id="ct-main-style" type="button" aria-controls="ct-main-style-host" aria-expanded="false" disabled>主图风格模板</button>
+  <button id="ct-listing-config" type="button" aria-haspopup="dialog" aria-controls="product-listing-template-dialog" disabled>定制模板配置</button>
+  <span id="ct-settings-hint">保存款式后可配置</span>
+</div>
+<section id="ct-main-style-host" aria-label="当前款式主图风格模板" hidden></section>
 <div class="ct-template-info"><label>模板名称<input id="ct-template-name" maxlength="50" placeholder="例如：基础圆领 T 恤"></label><label>模板说明 <span class="ct-optional">选填</span><input id="ct-template-description" maxlength="160" placeholder="适用商品或用途"></label></div>
 <div class="ct-section-heading"><h3>商品款式</h3></div>
 
@@ -1040,12 +1038,18 @@
 <input id="ct-image-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
 </section>
 
+          <div id="main-style-home">
           <section id="main-style-workspace" aria-label="主图风格模板" hidden>
           <header class="main-style-heading"><div><h1>主图风格模板</h1><span id="main-style-count">0 套模板</span></div><div class="main-style-actions"><button type="button" id="main-style-refresh" title="刷新模板" aria-label="刷新模板">↻</button><button type="button" id="main-style-new">＋ 新建模板</button></div></header>
+          <div id="main-style-copy" class="main-style-actions" hidden>
+            <select id="main-style-copy-source" aria-label="已有主图风格模板"></select>
+            <button id="main-style-copy-save" type="button">复制到此款式</button>
+          </div>
           <p id="main-style-status" role="status" aria-live="polite"></p>
           <div id="main-style-list" class="main-style-list"></div>
           <section id="main-style-detail" hidden></section>
           </section>
+          </div>
         </section>
         <div data-commerce-panel="product-capture">
         <section class="product-page-heading">
@@ -2166,14 +2170,14 @@
   <script src="/product-bulk-history.js?v=languages-20260921-2" defer></script>
   <script src="/video-script-terminal.js?v=languages-20260921-2" defer></script>
   <link rel="stylesheet" href="/product-listing-templates.css?v=20261014-multi-shop-1">
-  <script src="/product-listing-templates.js?v=20261122-v2-entry-1" defer></script>
+  <script src="/product-listing-templates.js?v=20261122-style-settings-1" defer></script>
   <script src="/incremental-dom.js?v=20261021-2" defer></script>
   <script src="/incremental-charts.js?v=20261021-1" defer></script>
   <script src="/video-direct-downloads.js?v=20261102-direct-download-1" defer></script>
-  <script src="/app.js?v=20261119-general-video-options-1-finance-bi-print-capture-v2-1-print-plugin-v2-capture-tabs-1" defer></script>
-  <script src="/product-print-capture.js?v=4" defer></script>
-  <script src="/product-capture-templates.js?v=20261115-codes-1" defer></script>
-  <script src="/product-main-image-styles.js?v=20261021-incremental-1" defer></script>
+  <script src="/app.js?v=20261122-style-settings-1" defer></script>
+  <script src="/product-print-capture.js?v=20261122-result-1" defer></script>
+  <script src="/product-capture-templates.js?v=20261122-style-settings-1" defer></script>
+  <script src="/product-main-image-styles.js?v=20261122-style-settings-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261019-94383ea9f5cb" defer></script>
   <script src="/hr-onboarding.js?v=20261021-incremental-1" defer></script>
   <script src="/finance-label-costs.js?v=20261120-report-date-range-page-tasks" defer></script>

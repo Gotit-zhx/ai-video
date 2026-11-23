@@ -78,6 +78,11 @@ public class ProductPrintCaptureService {
         }, user);
     }
 
+    public CommerceDesignImageGateway.Reference resultImage(String id, PlatformPrincipal user) {
+        requireEdit(user);
+        return samples.captureResultImage(id, user);
+    }
+
     private Image displayImage(ProductCaptureImage image) {
         if ("SIZE_CHART".equals(image.getRoleName())) return null;
         try {

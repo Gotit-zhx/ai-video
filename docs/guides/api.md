@@ -56,6 +56,7 @@ Content-Type: application/json
 | 商品运营 v2.0 专用插件 | `POST /api/v1/product-captures/print-source` | 接收 `sourceUrl`、`title`、`images`，返回采集记录 `id`。需要 `product:collect` |
 | 商品运营 v2.0 采集链接 / 提取印花 | `GET /api/v1/product-print-capture`、`GET /api/v1/product-print-capture/{captureId}`、`POST /api/v1/product-print-capture/lookup`、`POST /api/v1/product-print-capture/{captureId}/extract` | 最近 30 条记录、按 ID 查询、按 `url` 查询、按 `imageId` 提取。提取需传 `confirmed` 和 `Idempotency-Key` 请求头。需要 `product:edit` |
 | 主图模板 / 结果 | `/api/v1/product-main-image-templates`、`/api/v1/product-main-image-results` | `product/web/ProductMainImage*Controller.java` |
+| 款式级主图与定制配置 | 在主图模板和刊登模板配置请求传 `captureTemplateId`，同样适用于物流与发货仓明细接口 | 款式须已保存并属于当前企业。未提供款式 ID 时使用现有企业范围。 |
 | 模板 / 裂变批次 / 设计稿 | `/api/v1/commerce-templates`、`/api/v1/commerce-batches`、`/api/v1/commerce-designs` | `product/web/Commerce*Controller.java` |
 | 商品店铺 / 官方授权 | `/api/v1/shops`、`/api/v1/shop-authorizations` | `shop/web/` |
 | 财务 | `/api/v1/finance` | `finance/FinanceController.java` |

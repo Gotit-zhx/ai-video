@@ -4,9 +4,11 @@
   let shipping = null, shippingRequest = 0, shippingLoading = false;
   let warehouse = null, warehouseRequest = 0, warehouseLoading = false;
   let dataModule = '';
+  let dialogModule = '', dialogCaptureTemplateId = '', dialogTemplates = [], dialogOrganization = '';
   let revision = 0, dialogRequest = 0;
   const currentModule = () => typeof commerceDataModule === 'function' ? commerceDataModule() : 'CAPTURE';
-  function scoped(path, options = {}, scope = dataModule || currentModule()) {
+  function scoped(path, options = {}, scope = currentModule(), captureTemplateId = '') {
+    if (captureTemplateId) path += `?captureTemplateId=${encodeURIComponent(captureTemplateId)}`;
     return context.api(path,{...options,headers:{...(options.headers||{}),'X-Commerce-Module':scope}});
   }
   const normalize = value => ['TIKTOK','TIKTOK_SHOP'].includes(String(value).toUpperCase()) ? 'TIKTOK_SHOP' : 'SHOPEE';
@@ -15,14 +17,19 @@
     return organization === context?.getUser()?.organizationId && dataModule === currentModule()
       ? templates.find(item => item.platform === normalize(target)) : null;
   }
+  const dialogTemplate = target => dialogTemplates.find(item => item.platform === target);
+  const dialogApi = (path, options) => scoped(path, options, dialogModule, dialogCaptureTemplateId);
+  function dialogActive(request) {
+    return request === dialogRequest && dialogModule === currentModule()
+      && dialogOrganization === context.getUser()?.organizationId;
+  }
+
   async function ensure(force = false) {
     const org = context?.getUser()?.organizationId;
     if (!org) throw Error('请先登录');
     const scope = currentModule();
     if (org !== organization || scope !== dataModule) {
       organization = org; dataModule = scope; templates = []; pending = null;
-      draftValues.clear(); shipping = null; shippingRequest++;
-      warehouse = null; warehouseRequest++;
     }
     if (!force && templates.length) return templates;
     if (!pending || force) {
@@ -66,10 +73,10 @@
   function readDraft() {
     return {name:byId('listing-template-name').value,enabled:byId('listing-template-enabled').checked,
       description:byId('listing-template-description').value,
-      sizeChartImageKey:get(platform)?.sizeChartImageKey || '',
+      sizeChartImageKey:dialogTemplate(platform)?.sizeChartImageKey || '',
       weightGrams:String(Math.round(Number(byId('listing-template-weight').value)*1000000)/1000),
       packageLengthCm:byId('listing-template-length').value,packageWidthCm:byId('listing-template-width').value,
-      packageHeightCm:byId('listing-template-height').value,version:get(platform)?.version};
+      packageHeightCm:byId('listing-template-height').value,version:dialogTemplate(platform)?.version};
   }
   function shippingDraft() {
     const shopId = byId('listing-logistics-shop').value;
@@ -103,7 +110,7 @@
     select.replaceChildren(new Option('选择店铺设置物流','')); renderShipping();
     byId('listing-logistics-status').textContent = '默认启用目标店铺已开通的物流渠道。';
     try {
-      const result = await scoped('/api/v1/product-listing-templates/logistics/shops');
+      const result = await dialogApi('/api/v1/product-listing-templates/logistics/shops');
       if (request !== shippingRequest || context.getUser()?.organizationId !== org) return;
       for (const shop of result.data || []) select.append(new Option(`${shop.name || shop.externalShopId} · ${shop.region || 'Shopee'}`,shop.id));
       if (!result.data?.length) byId('listing-logistics-status').textContent = '暂无已连接的虾皮店铺；连接后可配置物流。';
@@ -117,7 +124,7 @@
     byId('listing-logistics-status').textContent = shopId ? '正在读取该店铺的官方物流渠道…' : '默认启用目标店铺已开通的物流渠道。';
     if (!shopId) return;
     try {
-      const result = await scoped('/api/v1/product-listing-templates/logistics/'+encodeURIComponent(shopId),{signal:AbortSignal.timeout(95000)});
+      const result = await dialogApi('/api/v1/product-listing-templates/logistics/'+encodeURIComponent(shopId),{signal:AbortSignal.timeout(95000)});
       if (request !== shippingRequest || context.getUser()?.organizationId !== org) return;
       if (result.data?.shopId !== shopId || !Array.isArray(result.data?.channels)) throw Error('物流返回不完整，请重试');
       shipping = result.data; renderShipping();
@@ -142,7 +149,7 @@
     byId('listing-warehouse-section').hidden=platform!=='TIKTOK_SHOP';
     const select=byId('listing-warehouse-choice');
     byId('listing-warehouse-choice-label').hidden=!warehouse;
-    if(!warehouse)return;
+    if (!warehouse) { select.replaceChildren(); return; }
     const automatic=[...warehouse.warehouses].sort((a,b)=>{
       const rank=w=>w.isDefault?0:w.subType==='CB_OVERSEA_WAREHOUSE'?1:2;
       return rank(a)-rank(b)||(a.id<b.id?-1:a.id>b.id?1:0);
@@ -169,33 +176,33 @@
       : warehouse.error||'未读取到可用发货仓库';
   }
   async function loadWarehouseShops() {
-    const request=++warehouseRequest,org=context.getUser()?.organizationId,scope=dataModule;
+    const request=++warehouseRequest,org=context.getUser()?.organizationId;
     warehouse=null;warehouseLoading=false;
     const select=byId('listing-warehouse-shop');select.replaceChildren(new Option('选择店铺查看发货地址',''));
     renderWarehouse();byId('listing-warehouse-status').textContent='上传自动读取目标店铺发货仓库，优先平台默认；没有默认时优先海外仓。';
     try{
-      const response=await scoped('/api/v1/product-listing-templates/warehouses/shops',{},scope);
-      if(request!==warehouseRequest||org!==context.getUser()?.organizationId||scope!==currentModule())return;
+      const response=await dialogApi('/api/v1/product-listing-templates/warehouses/shops');
+      if(request!==warehouseRequest||org!==context.getUser()?.organizationId||dialogModule!==currentModule())return;
       for(const shop of response.data||[])select.append(new Option(`${shop.name||shop.externalShopId} · ${shop.region||'TikTok Shop'}`,shop.id));
       if(!response.data?.length)byId('listing-warehouse-status').textContent='暂无已授权的 TikTok Shop 店铺。';
       if(response.data?.length===1){select.value=response.data[0].id;await loadWarehouse();}
     }catch(error){if(request===warehouseRequest)byId('listing-warehouse-status').textContent=error.message;}
   }
   async function loadWarehouse() {
-    const shopId=byId('listing-warehouse-shop').value,request=++warehouseRequest,org=context.getUser()?.organizationId,scope=dataModule;
+    const shopId=byId('listing-warehouse-shop').value,request=++warehouseRequest,org=context.getUser()?.organizationId;
     warehouse=null;warehouseLoading=Boolean(shopId);renderWarehouse();setBusy(busy);
     byId('listing-warehouse-status').textContent=shopId?'正在读取该店铺的官方发货仓库…':'上传时自动读取目标店铺发货仓库。';
     if(!shopId)return;
     try{
-      const response=await scoped('/api/v1/product-listing-templates/warehouses/'+encodeURIComponent(shopId),{signal:AbortSignal.timeout(180000)},scope);
-      if(request!==warehouseRequest||org!==context.getUser()?.organizationId||scope!==currentModule())return;
+      const response=await dialogApi('/api/v1/product-listing-templates/warehouses/'+encodeURIComponent(shopId),{signal:AbortSignal.timeout(180000)});
+      if(request!==warehouseRequest||org!==context.getUser()?.organizationId||dialogModule!==currentModule())return;
       if(response.data?.shopId!==shopId||!Array.isArray(response.data.warehouses))throw Error('发货仓库读取不完整，请重试');
       warehouse=response.data;renderWarehouse();
     }catch(error){if(request===warehouseRequest)byId('listing-warehouse-status').textContent=error.message;}
     finally{if(request===warehouseRequest){warehouseLoading=false;setBusy(busy);}}
   }
   function render() {
-    const template = draftValues.get(platform) || get(platform);
+    const template = draftValues.get(platform) || dialogTemplate(platform);
     if (!template) return;
     byId('listing-template-name').value = template.name;
     byId('listing-template-enabled').checked = template.enabled;
@@ -205,27 +212,52 @@
       byId('listing-template-'+id).value = template[key];
     document.querySelectorAll('[data-listing-platform]').forEach(button => button.setAttribute('aria-selected',String(button.dataset.listingPlatform === platform)));
     byId('listing-template-error').textContent = '';
-    byId('listing-template-status').textContent = template.version ? `已保存 · 版本 ${template.version}` : '通用默认模板';
+    byId('listing-template-status').textContent = template.version ? `已保存 · 版本 ${template.version}` : dialogCaptureTemplateId ? '未保存到此款式' : '通用默认模板';
     byId('listing-logistics-section').hidden = platform !== 'SHOPEE';
     byId('listing-warehouse-section').hidden = platform !== 'TIKTOK_SHOP';
     setBusy(false);
   }
-  async function open() {
-    const request=++dialogRequest;
-    const name={CAPTURE:'采集链接',FISSION:'一键裂变',TEMPLATES:'模板配置',ADS:'广告测款',ASSETS:'素材管理'}[currentModule()];
-    byId('listing-template-title').textContent=name+' · 上传配置';
-    platform = 'SHOPEE'; draftValues.clear();
+  function resetDialog() {
+    dialogRequest++; shippingRequest++; warehouseRequest++;
+    dialogModule = ''; dialogCaptureTemplateId = ''; dialogOrganization = ''; dialogTemplates = [];
+    shipping = null; shippingLoading = false; warehouse = null; warehouseLoading = false;
+    draftValues.clear();
+  }
+
+  async function open(captureTemplateId = '', captureName = '') {
+    const dialog = byId('product-listing-template-dialog');
+    if (dialog.open) return;
+    resetDialog();
+    const request = dialogRequest;
+    dialogModule = currentModule();
+    dialogCaptureTemplateId = captureTemplateId;
+    dialogOrganization = context.getUser()?.organizationId;
+    const name = {CAPTURE:'采集链接',FISSION:'一键裂变',TEMPLATES:'模板配置',ADS:'广告测款',ASSETS:'素材管理'}[dialogModule];
+    byId('listing-template-title').textContent = captureTemplateId ? captureName + ' · 定制模板配置' : name + ' · 上传配置';
+    platform = 'SHOPEE';
     byId('listing-template-error').textContent = '';
     byId('listing-template-status').textContent = '正在读取模板…';
-    byId('product-listing-template-dialog').showModal(); setBusy(true);
-    try { await Promise.all([ensure(true),loadShippingShops()]); if(request === dialogRequest) {render();void loadWarehouseShops();} }
-    catch (error) { if(request === dialogRequest) {byId('listing-template-error').textContent = error.message; setBusy(false); byId('save-product-listing-template').disabled = true;} }
+    dialog.showModal(); setBusy(true);
+    try {
+      const requestTemplates = captureTemplateId
+        ? dialogApi('/api/v1/product-listing-templates').then(result => result.data) : ensure(true);
+      const [loaded] = await Promise.all([requestTemplates, loadShippingShops()]);
+      if (!dialogActive(request)) return;
+      if (!Array.isArray(loaded) || loaded.length !== 2) throw Error('模板读取不完整，请重试');
+      dialogTemplates = loaded;
+      render(); void loadWarehouseShops();
+    } catch (error) {
+      if (dialogActive(request)) {
+        byId('listing-template-error').textContent = error.message;
+        setBusy(false); byId('save-product-listing-template').disabled = true;
+      }
+    }
   }
   async function save(event) {
     event.preventDefault();
-    if (busy || !context.canEdit()) return;
-    const org = organization, target = platform, scope = dataModule, body = readDraft();
-    if(scope !== currentModule()) { byId('product-listing-template-dialog').close(); return; }
+    const request = dialogRequest;
+    if (busy || !context.canEdit() || !dialogActive(request) || !dialogTemplate(platform)) return;
+    const target = platform, body = readDraft();
     let shippingBody;
     try {
       shippingBody = shippingDraft();
@@ -234,10 +266,11 @@
     } catch(error) {byId('listing-template-error').textContent = error.message;return;}
     setBusy(true); byId('listing-template-error').textContent = '';
     try {
-      const result = await scoped('/api/v1/product-listing-templates/'+target,
-        {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)},scope);
-      if (context.getUser()?.organizationId !== org || organization !== org || dataModule !== scope || currentModule() !== scope) return;
-      templates = templates.map(item => item.platform === target ? result.data : item);
+      const result = await dialogApi('/api/v1/product-listing-templates/'+target,
+        {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if (!dialogActive(request)) return;
+      dialogTemplates = dialogTemplates.map(item => item.platform === target ? result.data : item);
+      if (!dialogCaptureTemplateId) templates = dialogTemplates;
       if (shippingBody && shipping?.shopId === shippingBody.shopId) {
         shipping.version = shippingBody.version+1; shipping.mode = shippingBody.mode;
         shipping.channels = shipping.channels.map(channel=>({...channel,selected:channel.enabled && (shipping.mode === 'ALL_ENABLED' || shippingBody.channelIds.includes(channel.id))}));
@@ -248,9 +281,12 @@
         warehouse.version=body.warehouseConfig.version+1;warehouse.warehouseId=body.warehouseConfig.warehouseId;renderWarehouse();
       }
       byId('listing-template-status').textContent = '保存成功';
-      context.onSaved?.();
-    } catch(error) { if (organization === org && dataModule === scope && currentModule() === scope) byId('listing-template-error').textContent = error.message; }
-    finally { if (organization === org && dataModule === scope && currentModule() === scope) setBusy(false); }
+      if (!dialogCaptureTemplateId) context.onSaved?.();
+    } catch(error) {
+      if (dialogActive(request)) byId('listing-template-error').textContent = error.message;
+    } finally {
+      if (dialogActive(request)) setBusy(false);
+    }
   }
   function preview(capture) {
     const section = byId('product-listing-template-preview');
@@ -269,15 +305,22 @@
   }
   function init(config) {
     context = config;
-    root.addEventListener?.('hashchange',()=>{
-      if(dataModule && dataModule !== currentModule()){
-        shippingRequest++;revision++;dialogRequest++;pending=null;shipping=null;draftValues.clear();
-        warehouseRequest++;warehouse=null;warehouseLoading=false;
-        byId('product-listing-template-dialog').close();
+    const dialog = byId('product-listing-template-dialog');
+    dialog.addEventListener('close', () => { if (!dialog.open) resetDialog(); });
+    root.addEventListener?.('hashchange', () => {
+      const route = root.location.hash.split('?')[0];
+      if (dialog.open && (dialogModule !== currentModule()
+          || (dialogCaptureTemplateId && route !== '#product-capture-templates'))) {
+        resetDialog(); dialog.close();
       }
     });
+    root.addEventListener?.('heyi:company-reset', () => {
+      revision++; pending = null; templates = []; organization = ''; dataModule = '';
+      resetDialog();
+      if (dialog.open) dialog.close();
+    });
     for (const button of document.querySelectorAll('#open-product-listing-templates, [data-listing-template-opener]')) {
-      button.addEventListener('click', open);
+      button.addEventListener('click', () => void open());
     }
     for (const id of ['close-product-listing-templates','cancel-product-listing-templates'])
       byId(id).addEventListener('click', () => byId('product-listing-template-dialog').close());

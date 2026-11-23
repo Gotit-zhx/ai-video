@@ -16,11 +16,18 @@
   const uploadLabel = document.querySelector('#main-style-upload-label');
   const uploadBar = document.querySelector('#main-style-upload-bar');
   const uploadMeta = document.querySelector('#main-style-upload-meta');
+  const copyPanel = document.querySelector('#main-style-copy');
+  const copySource = document.querySelector('#main-style-copy-source');
+  const copySave = document.querySelector('#main-style-copy-save');
   const select = document.querySelector('#product-bulk-main-style');
   const bulkStatus = document.querySelector('#product-bulk-main-style-status');
   const labels = {READY: '已就绪', ANALYZING: '提取中', PENDING: '排队中', QUEUED: '排队中', FAILED: '提取失败'};
   let rows = [], selectedId = '', files = [], busy = false, requestKey = '', generation = 0, timer, bulkRevision = 0, detailSignature = '';
   let uploadRequest, uploadTimer, uploadState;
+  let captureTemplateId = '', bulkRows = [], copyKey = '';
+  const editorEndpoint = (path = '') => endpoint + path
+    + (captureTemplateId ? `?captureTemplateId=${encodeURIComponent(captureTemplateId)}` : '');
+
   const promptDrafts = new Map();
   const isAnalyzing = row => row.images.some(image => ['PENDING', 'QUEUED', 'ANALYZING'].includes(image.status));
   const preservesOriginal = image => image.status === 'READY' && image.analysis?.mode === 'PRESERVE_ORIGINAL';
@@ -71,7 +78,8 @@
   }
   function render() {
     document.querySelector('#main-style-count').textContent = `${rows.length} 套模板`;
-    document.querySelector('#main-style-new').hidden = !canEdit();
+    document.querySelector('#main-style-new').hidden = !canEdit() || Boolean(captureTemplateId && rows.length);
+    if (!captureTemplateId || !canEdit() || rows.length) copyPanel.hidden = true;
     list.hidden = Boolean(selectedId);
     detail.hidden = !selectedId;
     if (!selectedId) {
@@ -80,7 +88,9 @@
           <div class="main-style-contact-sheet">${row.images.slice(0, 4).map(image => `<img src="${esc(image.imageUrl)}" alt="${esc(row.name)}参考海报" loading="lazy">`).join('')}</div>
           <strong>${esc(row.name)}</strong><span>${row.imageCount} 张 <span class="main-style-badge is-${esc(row.status.toLowerCase())}">${statusLabel(row)}</span></span>
           ${analysisProgress(row, true)}
-        </button></article>`).join('') : '<div class="main-style-empty"><strong>暂无主图风格模板</strong><button type="button" data-style-action="new">＋ 新建模板</button></div>');
+        </button></article>`).join('') : `<div class="main-style-empty"><strong>暂无主图风格模板</strong>${canEdit() ? captureTemplateId
+        ? '<button type="button" data-style-action="copy-existing">复制已有风格</button>'
+        : '<button type="button" data-style-action="new">＋ 新建模板</button>' : ''}</div>`);
       return;
     }
     const row = rows.find(row => row.id === selectedId);
@@ -117,7 +127,7 @@
     clearTimeout(timer);
     try {
       if (!quiet) notify('正在读取模板…');
-      const response = await api(endpoint);
+      const response = await api(editorEndpoint());
       if (ticket !== generation || currentUser?.organizationId !== org) return;
       rows = response.data;
       render();
@@ -163,7 +173,7 @@
     return new Promise((resolve, reject) => {
       const request = new XMLHttpRequest();
       uploadRequest = request;
-      request.open('POST', endpoint);
+      request.open('POST', editorEndpoint());
       request.responseType = 'json';
       request.withCredentials = true;
       request.timeout = 10 * 60 * 1000;
@@ -205,7 +215,7 @@
     uploadList.innerHTML = files.map((item, index) => `<figure><img src="${esc(item.url)}" alt="${esc(item.file.name)}"><figcaption><span>${index + 1}. ${esc(item.file.name)}</span><div>${button('up', '前移', '←', `data-index="${index}" ${index === 0 || busy ? 'disabled' : ''}`)}${button('down', '后移', '→', `data-index="${index}" ${index === files.length - 1 || busy ? 'disabled' : ''}`)}${button('remove', '移除图片', '×', `data-index="${index}" ${busy ? 'disabled' : ''}`)}</div></figcaption></figure>`).join('');
   }
   function openCreate() {
-    if (!canEdit() || busy) return;
+    if (!canEdit() || busy || (captureTemplateId && rows.length)) return;
     clearFiles(); clearUploadProgress(); form.reset(); error.textContent = ''; renderUploads(); dialog.showModal();
     document.querySelector('#main-style-name').focus();
   }
@@ -265,7 +275,47 @@
       }
     }
   });
+  async function loadCopySources() {
+    const ticket = generation;
+    try {
+      const response = await api(endpoint);
+      if (ticket !== generation || !captureTemplateId || rows.length) return;
+      const choices = response.data.filter(row => row.status === 'READY');
+      if (!choices.length) { notify('暂无已完成提取的主图风格模板'); return; }
+      copySource.replaceChildren(new Option('选择已有风格', ''),
+        ...choices.map(row => new Option(row.name, row.id)));
+      copySave.disabled = true;
+      copyPanel.hidden = false;
+      copySource.focus();
+    } catch (failure) {
+      if (ticket === generation) notify(failure.message);
+    }
+  }
+  copySource.addEventListener('change', () => {
+    copyKey = '';
+    copySave.disabled = !copySource.value;
+  });
+  copySave.addEventListener('click', async () => {
+    if (!captureTemplateId || !canEdit() || busy || rows.length || !copySource.value) return;
+    const ticket = generation;
+    copyKey ||= crypto.randomUUID();
+    busy = true; copySource.disabled = true; copySave.disabled = true;
+    try {
+      const result = await api(editorEndpoint(`/${encodeURIComponent(copySource.value)}/copy-to-capture`),
+        {method: 'POST', headers: {'Idempotency-Key': copyKey}});
+      if (ticket !== generation) return;
+      rows = [result.data]; selectedId = result.data.id; detailSignature = '';
+      notify('已复制'); render();
+    } catch (failure) {
+      if (ticket === generation) notify(failure.message);
+    } finally {
+      if (ticket === generation) { busy = false; copySource.disabled = false; copySave.disabled = !copySource.value; }
+    }
+  });
+
   list.addEventListener('click', event => {
+    const action = event.target.closest('[data-style-action]')?.dataset.styleAction;
+    if (action === 'copy-existing') { void loadCopySources(); return; }
     const control = event.target.closest('[data-style-id]');
     if (control) { selectedId = control.dataset.styleId; detailSignature = ''; render(); }
     if (event.target.closest('[data-style-action="new"]')) openCreate();
@@ -287,7 +337,7 @@
         imageStatus.textContent = '已复制';
       } else if (action === 'save-prompt') {
         const submitted = imageRow.querySelector('textarea').value;
-        const response = await api(`${endpoint}/${encodeURIComponent(id)}/images/${encodeURIComponent(imageRow.dataset.imageId)}`,
+        const response = await api(editorEndpoint(`/${encodeURIComponent(id)}/images/${encodeURIComponent(imageRow.dataset.imageId)}`),
           {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({prompt: submitted})});
         if (ticket !== generation) return;
         const changed = (promptDrafts.get(imageRow.dataset.imageId) ?? submitted) !== submitted;
@@ -301,11 +351,11 @@
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       } else if (action === 'archive') {
         if (!window.confirm('归档此模板？尚未完成的关联上传将停止生成。')) return;
-        await api(`${endpoint}/${encodeURIComponent(id)}`, {method: 'DELETE'});
+        await api(editorEndpoint(`/${encodeURIComponent(id)}`), {method: 'DELETE'});
         if (ticket !== generation) return;
         selectedId = ''; detailSignature = ''; await refresh();
       } else if (action === 'retry') {
-        await api(`${endpoint}/${encodeURIComponent(id)}/retry`, {method: 'POST'});
+        await api(editorEndpoint(`/${encodeURIComponent(id)}/retry`), {method: 'POST'});
         if (ticket === generation) await refresh();
       }
     } catch (failure) { if (ticket === generation) { if (imageStatus) imageStatus.textContent = failure.message; else notify(failure.message); } }
@@ -314,7 +364,7 @@
 
   function bulkPreview() {
     const preview = document.querySelector('#product-bulk-main-style-preview');
-    const row = rows.find(row => row.id === select.value);
+    const row = bulkRows.find(row => row.id === select.value);
     preview.hidden = !row;
     preview.innerHTML = row ? row.images.map(image => `<img src="${esc(image.imageUrl)}" alt="${esc(row.name)}参考图" loading="lazy">`).join('') : '';
     const count = productBulkItems.length || document.querySelectorAll('[data-bulk-item]').length
@@ -333,10 +383,10 @@
     try {
       const response = await api(endpoint);
       if (revision !== bulkRevision || currentUser?.organizationId !== org || view !== productBulkViewGeneration) return;
-      rows = response.data;
+      bulkRows = response.data;
       const value = select.value;
       select.replaceChildren(new Option('不使用风格模板', ''));
-      rows.forEach(row => {
+      bulkRows.forEach(row => {
         const option = new Option(`${row.name} · ${row.imageCount} 张${row.status === 'READY' ? '' : ` · ${labels[row.status]}`}`, row.id);
         option.disabled = row.status !== 'READY'; select.add(option);
       });
@@ -361,18 +411,38 @@
       bulkStatus.textContent = failure.message;
     }
   });
-  window.ProductMainImageStyles = {loadBulk, syncBulkLock: disabled => { select.disabled = disabled || !canEdit(); bulkPreview(); }};
-  window.addEventListener('heyi:commerce-section-entered', event => {
-    if (event.detail.route === 'product-main-image-styles') void refresh();
-    else clearTimeout(timer);
-  });
-  window.addEventListener('heyi:company-reset', () => {
-    generation++; bulkRevision++; clearTimeout(timer);
+  function resetEditor() {
+    generation++; clearTimeout(timer);
     uploadRequest?.abort(); uploadRequest = null; clearUploadProgress();
     clearFiles(); promptDrafts.clear(); rows = []; selectedId = ''; detailSignature = ''; busy = false;
     if (dialog.open) dialog.close();
     form.querySelectorAll('input, button').forEach(node => { node.disabled = false; });
-    save.textContent = '保存并自动提取'; error.textContent = ''; notify(''); renderUploads(); render();
+    save.textContent = '保存并自动提取';
+    copyPanel.hidden = true; copySource.disabled = false; copyKey = '';
+    error.textContent = ''; notify(''); renderUploads(); render();
+  }
+
+  function setCaptureTemplate(id) {
+    captureTemplateId = id;
+    root.hidden = !id;
+    resetEditor();
+    if (id) void refresh();
+  }
+
+  window.ProductMainImageStyles = {
+    loadBulk, setCaptureTemplate,
+    syncBulkLock: disabled => { select.disabled = disabled || !canEdit(); bulkPreview(); }
+  };
+  window.addEventListener('heyi:commerce-section-entered', event => {
+    if (event.detail.route === 'product-main-image-styles') {
+      captureTemplateId = ''; resetEditor(); void refresh();
+    } else if (event.detail.route !== 'product-capture-templates' || root.hidden) {
+      captureTemplateId = ''; resetEditor();
+    }
+  });
+  window.addEventListener('heyi:company-reset', () => {
+    captureTemplateId = ''; resetEditor();
+    bulkRevision++; bulkRows = [];
     select.replaceChildren(new Option('不使用风格模板', '')); bulkPreview();
   });
   if (!root.hidden && currentUser?.organizationId) void refresh();

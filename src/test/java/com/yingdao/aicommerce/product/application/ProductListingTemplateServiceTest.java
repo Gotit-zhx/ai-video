@@ -64,6 +64,34 @@ class ProductListingTemplateServiceTest {
         verify(db).query(anyString(),any(RowMapper.class),eq("org-a"),eq("SHOPEE"),eq("CAPTURE"));
         verify(db).query(anyString(),any(RowMapper.class),eq("org-b"),eq("TIKTOK_SHOP"),eq("CAPTURE"));
     }
+    @Test void savedStyleListingConfigIsIsolatedAndUnsavedStyleStartsWithCurrentCompanyValues() {
+        var db = mock(JdbcTemplate.class);
+        var service = new ProductListingTemplateService(db, new ObjectMapper());
+        var user = principal("org-a", "product:edit");
+        var shared = new ProductListingTemplateService.Template("SHOPEE", "Shared", true, "Shared detail",
+                BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, 4);
+        var own = new ProductListingTemplateService.Template("SHOPEE", "Style A", true, "Own detail",
+                BigDecimal.TEN, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, 1);
+        when(db.query(contains("capture_template_id=''"), any(RowMapper.class), eq("org-a"), eq("SHOPEE"), eq("CAPTURE")))
+                .thenReturn(List.of(shared));
+        when(db.query(contains("capture_template_id=?"), any(RowMapper.class), eq("org-a"), eq("SHOPEE"), eq("CAPTURE"), eq("style-a")))
+                .thenReturn(List.of(own));
+        var body = new LinkedHashMap<String, Object>(Map.of("name", "Style A", "enabled", true,
+                "description", "Own detail", "weightGrams", "10", "packageLengthCm", "1", "packageWidthCm", "1",
+                "packageHeightCm", "1", "version", 0, "sizeChartImageKey", ""));
+        when(db.update(contains("INSERT IGNORE INTO product_listing_templates"), eq("org-a"), eq("SHOPEE"),
+                eq("CAPTURE"), eq("style-a"), eq("Style A"), eq(true), eq("Own detail"), isNull(),
+                any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class), eq("user")))
+                .thenReturn(1);
+
+        assertEquals(own, service.save("SHOPEE", body, user, "style-a"));
+        assertEquals(own, service.list(user, "style-a").getFirst());
+        var other = service.list(user, "style-b").getFirst();
+        assertEquals("Shared detail", other.description());
+        assertEquals(0L, other.version());
+        assertEquals(shared, service.list(user).getFirst());
+    }
+
     @Test void unauthorizedReadAndReadOnlyWriteNeverTouchDatabase() {
         var db=mock(JdbcTemplate.class);
         var service=new ProductListingTemplateService(db,new ObjectMapper());

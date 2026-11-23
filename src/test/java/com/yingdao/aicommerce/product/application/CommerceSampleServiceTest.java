@@ -168,10 +168,37 @@ class CommerceSampleServiceTest {
    assertEquals(result, fixture.service.extractCapturePrint("request-id", "capture-a", "image-a",
      () -> fail("Replay must reuse the source"), fixture.user));
    verify(fixture.models).requireCapturePrintConnection("org");
+   var archived = fixture.service.image("parent", fixture.user);
    verify(fixture.gateway).generateCapturePrintArtwork(eq(prompt), eq(result.id()), same(model),
-     eq(java.util.List.of(fixture.service.image("parent", fixture.user))));
+     eq(java.util.List.of(archived)));
    verifyNoMoreInteractions(fixture.models, fixture.gateway);
   }
+ }
+
+ @Test void capturePrintRemainsViewableWhileArchiveIsUnavailableAndReusesTheSamePaidResult() throws Exception {
+  var fixture = new SubmittedSample("UPLOADED", "PRINT_EXTRACT", archiveDirectory.resolve("capture-archive"));
+  var model = new com.yingdao.aicommerce.saas.application.ModelConfigService.RuntimeModelConnection(
+    "capture", "https://image.example", "gpt-image-2.6", "OPENAI_COMPATIBLE", "CUSTOM", "test");
+  byte[] bytes = png(true, false);
+  String encoded = java.util.Base64.getEncoder().encodeToString(bytes);
+  var result = new CommerceDesignImageGateway.Response(
+    new CommerceDesignImageGateway.Artifact(encoded, "image/png", "gpt-image-2.6", "EDIT", null), null);
+  fixture.db.parent.put("prompt", "来源采集商品 capture-a / image-a");
+  when(fixture.models.requireCapturePrintConnection("org")).thenReturn(model);
+  when(fixture.gateway.generateCapturePrintArtwork(anyString(), anyString(), same(model), anyList())).thenReturn(result);
+  doThrow(new IllegalStateException("storage unavailable")).doCallRealMethod().when(fixture.archive).store(eq("org"), any(byte[].class));
+
+  var pending = fixture.service.extractCapturePrint("old-key-a", "capture-a", "image-a", () -> fail("already archived"), fixture.user);
+  assertEquals("ARCHIVE_PENDING", pending.status());
+  assertTrue(pending.imageUrl().endsWith("/" + pending.id() + "/image"));
+  assertEquals("RESULT_RECEIVED", fixture.db.row.get("status"));
+  assertNull(fixture.db.row.get("storage_key"));
+  assertEquals(encoded, fixture.service.captureResultImage(pending.id(), fixture.user).dataBase64());
+  var ready = fixture.service.extractCapturePrint("old-key-a", "capture-a", "image-a", () -> fail("already archived"), fixture.user);
+  assertEquals(pending.id(), ready.id());
+  assertEquals("READY", ready.status());
+  verify(fixture.gateway, times(1)).generateCapturePrintArtwork(anyString(), eq(pending.id()), same(model), anyList());
+  verify(fixture.models, times(1)).requireCapturePrintConnection("org");
  }
 
  @Test void missingImg2ConnectionDoesNotFallBackOrStartASampleAttempt()throws Exception{
@@ -212,9 +239,10 @@ class CommerceSampleServiceTest {
   final com.yingdao.aicommerce.saas.application.ModelConfigService.RuntimeModelConnection img2=new com.yingdao.aicommerce.saas.application.ModelConfigService.RuntimeModelConnection("img2","https://image.example","gpt-image-2","OPENAI","CUSTOM","test");
   final com.yingdao.aicommerce.saas.application.ModelConfigService.RuntimeModelConnection standard=new com.yingdao.aicommerce.saas.application.ModelConfigService.RuntimeModelConnection("default","https://image.example","default-image-model","OPENAI","CUSTOM","test");
   final com.yingdao.aicommerce.auth.PlatformPrincipal user=new com.yingdao.aicommerce.auth.PlatformPrincipal("u","org","c","u","u","",true,java.util.List.of(),java.util.List.of("product:edit"));
+  final CommerceImageArchive archive;
   final CommerceSampleService service;final CommerceSampleService.Request request;
   SubmittedSample(String product,String kind,java.nio.file.Path directory)throws Exception{
-   var archive=new CommerceImageArchive(directory.toString());
+   archive=spy(new CommerceImageArchive(directory.toString()));
    boolean print=kind.startsWith("PRINT_");
    var source=archive.store("org",png(kind.equals("PRINT_VARIANT"),false));
    db.parent.putAll(java.util.Map.of("id","parent","product",product,"variant_index",0,"status","READY","asset_kind",kind.equals("PRINT_VARIANT")?"PRINT_EXTRACT":"PRODUCT_IMAGE","storage_key",source.storageKey()));
@@ -240,7 +268,7 @@ class CommerceSampleServiceTest {
   @Override public int update(String sql,Object... arguments){
    if(sql.startsWith("INSERT IGNORE")){
     if(!row.isEmpty())return 0;
-    row.put("id",arguments[0]);row.put("product",arguments[4]);row.put("variant_index",arguments[5]);row.put("model_id",arguments[6]);
+    row.put("id",arguments[0]);row.put("request_key",arguments[3]);row.put("product",arguments[4]);row.put("variant_index",arguments[5]);row.put("model_id",arguments[6]);
     row.put("prompt",arguments[7]);row.put("parent_id",arguments[8]);row.put("asset_kind",arguments[9]);row.put("status","PREPARED");
    }else if(sql.contains("SET storage_key="))row.put("storage_key",arguments[0]);
    else if(sql.contains("SET status='SUBMITTING'")){

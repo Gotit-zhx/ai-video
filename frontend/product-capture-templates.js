@@ -11,9 +11,8 @@
   const uid = () => crypto.randomUUID();
   const color = (name,hex) => ({id:uid(),name,hex,colorCode:''});
   const variant = (name='',image='',filename='',sample=false) => ({id:uid(),name,image,filename,sample,styleCode:'',colors:[color('','')]});
-  const firstVariant = variant();
-  let blankTemplate = {id:uid(),name:'',description:'',variants:[firstVariant]};
-  let templates = [blankTemplate];
+  const newTemplate = () => ({id:uid(),name:'',description:'',variants:[variant()]});
+  let templates = [newTemplate()];
   let selected = templates[0].id, dirty = false, toastTimer, picking = null;
   const dirtyIds=new Set(), controllers=new Set();
   let generation=0, organization=null, entering=false;
@@ -38,13 +37,26 @@
   };
   let canEdit=false, ready=false, busy=false, loaded=0, total=0;
   function lockControls(){
-    all('.ct-editor input, .ct-editor button').forEach(node=>node.disabled=busy||!canEdit);
+    all('.ct-editor input, .ct-editor button').forEach(node => {
+      if (!node.closest('#ct-main-style-host, .ct-style-settings')) node.disabled = busy || !canEdit;
+    });
+    const saved = Boolean(current()?.version);
+    $('main-style').disabled = busy || !ready || !saved;
+    $('listing-config').disabled = busy || !ready || !saved;
+    $('settings-hint').hidden = saved;
     all('.ct-template-item').forEach(node=>node.disabled=busy||!ready);
     $('load-more-templates').disabled=busy;
   }
   function setBusy(value){busy=value;lockControls();}
   const current = () => templates.find(t => t.id === selected);
   const active = () => current().variants[0];
+  function showStyleSettings(open) {
+    $('main-style-host').hidden = !open;
+    $('main-style').setAttribute('aria-expanded', String(open));
+    window.ProductMainImageStyles?.setCaptureTemplate(open ? current().id : '');
+  }
+  $('main-style').onclick = () => showStyleSettings($('main-style-host').hidden);
+  $('listing-config').onclick = () => ProductListingTemplates.open(current().id, current().name);
   function el(tag,className,text){const node=document.createElement(tag);if(className)node.className=className.split(' ').map(name=>'ct-'+name).join(' ');if(text!==undefined)node.textContent=text;return node;}
   function toast(message){if(!message||!currentUser?.organizationId)return;$('toast').textContent=message;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,4500);}
   function changed(){dirtyIds.add(selected);dirty=true;$('save-state').textContent='未保存';}
@@ -57,7 +69,7 @@
       const image=t.variants.find(v=>v.image)?.image;
       if(image){const img=el('img');img.src=image;img.alt='';button.append(img);}else{const blank=el('span','template-thumb-empty');blank.innerHTML=icon('layers');button.append(blank);}
       const text=el('span');text.append(el('strong','',t.name||'填写模板'),el('small','',`${t.variants[0]?.styleCode || '未填写编码'} · ${t.variants.reduce((n,v)=>n+v.colors.length,0)} 个颜色`));button.append(text);
-      button.onclick=async()=>{if(busy)return;const ticket=generation;setBusy(true);try{if(t.version&&!dirtyIds.has(t.id))Object.assign(t,await transport.get(t.id));selected=t.id;drawEditor();drawList();$('save-state').textContent=dirtyIds.has(t.id)||!t.version?'未保存':'已保存';}catch(error){if(ticket===generation&&error.name!=='AbortError')toast(error.message);}finally{if(ticket===generation)setBusy(false);}};list.append(button);
+      button.onclick=async()=>{if(busy)return;const ticket=generation;setBusy(true);try{if(t.version&&!dirtyIds.has(t.id))Object.assign(t,await transport.get(t.id));if(selected!==t.id)showStyleSettings(false);selected=t.id;drawEditor();drawList();$('save-state').textContent=dirtyIds.has(t.id)||!t.version?'未保存':'已保存';}catch(error){if(ticket===generation&&error.name!=='AbortError')toast(error.message);}finally{if(ticket===generation)setBusy(false);}};list.append(button);
     });
     if(!list.children.length)list.append(el('p','empty-list','未找到模板'));lockControls();
   }
@@ -145,6 +157,7 @@
     try{
       const saved=await transport.save(template);Object.assign(template,saved);
       dirtyIds.delete(template.id);dirty=dirtyIds.size>0;
+      if (!templates.some(item => !item.version)) templates.unshift(newTemplate());
       drawEditor();drawList();$('save-state').textContent='已保存';toast('已保存');
     }catch(error){if(ticket===generation){$('save-state').textContent='未保存';if(error.name!=='AbortError')toast(error.message);}}
     finally{if(ticket===generation)setBusy(false);}
@@ -160,7 +173,7 @@
     generation++;controllers.forEach(controller=>controller.abort());controllers.clear();
     organization=null;entering=false;dirtyIds.clear();dirty=false;busy=false;ready=false;canEdit=false;loaded=0;total=0;
     clearTimeout(toastTimer);$('toast').hidden=true;$('image-input').value='';$('search').value='';
-    const v=variant();blankTemplate={id:uid(),name:'',description:'',variants:[v]};templates=[blankTemplate];selected=blankTemplate.id;
+    showStyleSettings(false);templates=[newTemplate()];selected=templates[0].id;
     $('load-more-templates').hidden=true;drawEditor();drawList();lockControls();$('save-state').textContent='';
   }
   async function enter(){
@@ -177,7 +190,15 @@
     }catch(error){if(ticket===generation&&error.name!=='AbortError'){$('save-state').textContent=error.message;toast(error.message);}}
     finally{if(ticket===generation){entering=false;setBusy(false);}}
   }
-  window.addEventListener('heyi:commerce-section-entered',event=>{if(event.detail.route==='product-capture-templates')void enter();});
+  window.addEventListener('heyi:commerce-section-entered', event => {
+    if (event.detail.route === 'product-capture-templates') {
+      if (!$('main-style-host').hidden) showStyleSettings(true);
+      void enter();
+    } else {
+      $('main-style-host').hidden = true;
+      $('main-style').setAttribute('aria-expanded', 'false');
+    }
+  });
   window.addEventListener('heyi:company-reset',reset);
   drawEditor();drawList();lockControls();
   if(!root.hidden&&currentUser?.organizationId)void enter();

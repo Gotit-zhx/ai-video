@@ -4,6 +4,9 @@ import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.common.api.ApiResponse;
 import com.yingdao.aicommerce.product.application.CommerceSampleService;
 import com.yingdao.aicommerce.product.application.ProductPrintCaptureService;
+import org.springframework.http.CacheControl;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -41,6 +44,13 @@ public class ProductPrintCaptureController {
     public ApiResponse<ProductPrintCaptureService.Lookup> fromCapture(@PathVariable String captureId,
             @AuthenticationPrincipal PlatformPrincipal user) {
         return ApiResponse.ok(service.fromCapture(captureId, user));
+    }
+
+    @GetMapping("/results/{id}/image")
+    public ResponseEntity<byte[]> resultImage(@PathVariable String id, @AuthenticationPrincipal PlatformPrincipal user) {
+        var image = service.resultImage(id, user);
+        return ResponseEntity.ok().contentType(MediaType.IMAGE_PNG).cacheControl(CacheControl.noStore())
+                .header("X-Content-Type-Options", "nosniff").body(java.util.Base64.getDecoder().decode(image.dataBase64()));
     }
 
     @PostMapping("/{captureId}/extract")

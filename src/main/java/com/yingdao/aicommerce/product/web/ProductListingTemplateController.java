@@ -2,6 +2,7 @@ package com.yingdao.aicommerce.product.web;
 
 import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.common.api.ApiResponse;
+import com.yingdao.aicommerce.product.application.ProductCaptureTemplateService;
 import com.yingdao.aicommerce.product.application.ProductListingTemplateService;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
@@ -18,10 +19,15 @@ public class ProductListingTemplateController {
     private com.yingdao.aicommerce.product.application.ProductListingWarehouseService warehouses;
     @org.springframework.beans.factory.annotation.Autowired
     private com.yingdao.aicommerce.product.application.CommerceImageArchive imageArchive;
-    public ProductListingTemplateController(ProductListingTemplateService service) { this.service = service; }
+    private final ProductCaptureTemplateService captureTemplates;
+    public ProductListingTemplateController(ProductListingTemplateService service, ProductCaptureTemplateService captureTemplates) {
+        this.service = service;
+        this.captureTemplates = captureTemplates;
+    }
     @GetMapping
-    public ApiResponse<List<ProductListingTemplateService.Template>> list(@AuthenticationPrincipal PlatformPrincipal principal) {
-        return ApiResponse.ok(service.list(principal));
+    public ApiResponse<List<ProductListingTemplateService.Template>> list(@RequestParam(required = false) String captureTemplateId,
+            @AuthenticationPrincipal PlatformPrincipal principal) {
+        return ApiResponse.ok(service.list(principal, captureTemplates.settingsScope(captureTemplateId, principal, false)));
     }
     @PostMapping(value="/size-chart-image", consumes="multipart/form-data")
     public ApiResponse<Map<String, String>> uploadSizeChart(
@@ -67,17 +73,19 @@ public class ProductListingTemplateController {
     @PutMapping("/{platform}")
     @org.springframework.transaction.annotation.Transactional
     public ApiResponse<ProductListingTemplateService.Template> save(@PathVariable String platform,
-            @RequestBody Map<String, Object> body, @AuthenticationPrincipal PlatformPrincipal principal) {
-        var template = service.save(platform, body, principal);
+            @RequestParam(required = false) String captureTemplateId, @RequestBody Map<String, Object> body,
+            @AuthenticationPrincipal PlatformPrincipal principal) {
+        String scope = captureTemplates.settingsScope(captureTemplateId, principal, true);
+        var template = service.save(platform, body, principal, scope);
         if ("SHOPEE".equals(template.platform()) && body.get("logisticsConfig") instanceof Map<?, ?> config) {
             var shipping = new java.util.LinkedHashMap<String, Object>();
             config.forEach((key, value) -> shipping.put(String.valueOf(key), value));
-            logistics.save(shipping, principal);
+            logistics.save(shipping, principal, scope);
         }
         if ("TIKTOK_SHOP".equals(template.platform()) && body.get("warehouseConfig") instanceof Map<?,?> config) {
             var selection = new java.util.LinkedHashMap<String,Object>();
             config.forEach((key,value)->selection.put(String.valueOf(key),value));
-            warehouses.save(selection,principal);
+            warehouses.save(selection, principal, scope);
         }
         return ApiResponse.ok(template);
     }

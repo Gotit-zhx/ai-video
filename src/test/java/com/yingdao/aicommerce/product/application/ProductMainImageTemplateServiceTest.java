@@ -128,6 +128,17 @@ class ProductMainImageTemplateServiceTest {
         verify(db).update(contains("SET status='READY'"), contains("{{product}}"), eq("image"));
     }
 
+    @Test void aScopedStyleCannotBeReadOrArchivedThroughAnotherStyleOrLegacyRoute() {
+        when(db.queryForList(contains("SELECT * FROM product_main_image_templates"), eq(id), eq("org")))
+                .thenReturn(List.of(Map.of("id", id, "organization_id", "org", "name", "Style", "capture_template_id", "style-a")));
+        var editor = user("org", "product:edit");
+        assertEquals(HttpStatus.NOT_FOUND, assertThrows(BusinessException.class, () -> service.get(id, editor)).getStatus());
+        assertEquals(HttpStatus.NOT_FOUND, assertThrows(BusinessException.class,
+                () -> service.archive(id, editor, "style-b")).getStatus());
+        assertEquals(id, service.get(id, editor, "style-a").id());
+        verify(db, never()).update(contains("SET archived=TRUE"), eq(id), eq("org"));
+    }
+
     private Map<String,Object> readyTemplate() {
         when(db.queryForList(contains("SELECT * FROM product_main_image_templates"), eq(id), eq("org")))
                 .thenReturn(List.of(Map.of("id", id, "organization_id", "org", "name", "Style")));

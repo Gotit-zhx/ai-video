@@ -36,6 +36,11 @@ public class ProductMainImageTemplateService {
 
     @Transactional
     public View create(String name, List<MultipartFile> files, String key, PlatformPrincipal user) {
+        return create(name, files, key, user, "");
+    }
+
+    @Transactional
+    public View create(String name, List<MultipartFile> files, String key, PlatformPrincipal user, String captureTemplateId) {
         access(user, true);
         if (name == null || name.isBlank() || name.trim().length() > 120) throw bad("模板名称须为1至120字");
         if (files == null || files.isEmpty() || files.size() > ProductMainImageStylePolicy.MAX_IMAGES)
@@ -54,10 +59,7 @@ public class ProductMainImageTemplateService {
         }
         String fingerprint = ProductMainImageStylePolicy.fingerprint(Map.of("name", name.trim(), "images", uploads), json);
         String id = UUID.randomUUID().toString();
-        db.update("INSERT IGNORE INTO product_main_image_templates(id,organization_id,created_by,name,request_key,request_fingerprint,created_at) VALUES(?,?,?,?,?,?,NOW(6))",
-                id, user.organizationId(), user.userId(), name.trim(), key, fingerprint);
-        var row = db.queryForMap("SELECT * FROM product_main_image_templates WHERE organization_id=? AND request_key=?", user.organizationId(), key);
-        if (!fingerprint.equals(row.get("request_fingerprint"))) throw conflict("同一请求编号不能保存不同图集");
+        var row = createOrReplay(id, name.trim(), key, fingerprint, user, captureTemplateId);
         if (id.equals(row.get("id"))) {
             for (int index = 0; index < uploads.size(); index++) {
                 var image = uploads.get(index);
@@ -65,32 +67,100 @@ public class ProductMainImageTemplateService {
                         UUID.randomUUID().toString(), id, user.organizationId(), index, image.get("storageKey"), image.get("width"), image.get("height"));
             }
         }
-        return get((String) row.get("id"), user);
+        return view(row);
     }
-
-    public List<View> list(PlatformPrincipal user) {
-        access(user, false);
-        return db.queryForList("SELECT * FROM product_main_image_templates WHERE organization_id=? AND archived=FALSE ORDER BY created_at DESC LIMIT 100",
-                user.organizationId()).stream().map(this::view).toList();
-    }
-
-    public View get(String id, PlatformPrincipal user) { access(user, false); return view(row(id, user.organizationId(), true)); }
 
     @Transactional
-    public void archive(String id, PlatformPrincipal user) {
-        access(user, true); row(id, user.organizationId(), true);
+    public View copyToCapture(String sourceId, String key, PlatformPrincipal user, String captureTemplateId) {
+        access(user, true);
+        if (captureTemplateId.isEmpty() || key == null || !key.matches("[A-Za-z0-9_-]{8,80}")) {
+            throw bad("缺少款式或模板保存请求编号");
+        }
+        var source = scopedRow(sourceId, user.organizationId(), true, "");
+        var sourceImages = imageRows(sourceId, user.organizationId());
+        if (sourceImages.isEmpty() || sourceImages.stream().anyMatch(image -> !"READY".equals(image.get("status")))) {
+            throw conflict("请选择已完成提取的主图风格模板");
+        }
+        String id = UUID.randomUUID().toString();
+        String fingerprint = ProductMainImageStylePolicy.fingerprint(Map.of("copyFrom", sourceId), json);
+        var row = createOrReplay(id, (String) source.get("name"), key, fingerprint, user, captureTemplateId);
+        if (id.equals(row.get("id"))) {
+            for (var image : sourceImages) {
+                db.update("""
+                        INSERT INTO product_main_image_template_images
+                            (id,template_id,organization_id,sort_order,storage_key,width,height,status,analysis_json,updated_at)
+                        VALUES(?,?,?,?,?,?,?,'READY',?,NOW(6))
+                        """, UUID.randomUUID().toString(), id, user.organizationId(), image.get("sort_order"),
+                        image.get("storage_key"), image.get("width"), image.get("height"), image.get("analysis_json"));
+            }
+        }
+        return view(row);
+    }
+
+    private Map<String, Object> createOrReplay(String id, String name, String key, String fingerprint,
+            PlatformPrincipal user, String captureTemplateId) {
+        db.update("""
+                INSERT IGNORE INTO product_main_image_templates
+                    (id,organization_id,created_by,name,request_key,request_fingerprint,capture_template_id,created_at)
+                VALUES(?,?,?,?,?,?,NULLIF(?,''),NOW(6))
+                """, id, user.organizationId(), user.userId(), name, key, fingerprint, captureTemplateId);
+        var rows = db.queryForList("""
+                SELECT * FROM product_main_image_templates WHERE organization_id=? AND request_key=? FOR UPDATE
+                """, user.organizationId(), key);
+        if (rows.isEmpty()) throw conflict("该款式已有主图风格模板，请刷新查看");
+        var row = rows.getFirst();
+        if (!fingerprint.equals(row.get("request_fingerprint")) || !scope(row).equals(captureTemplateId)) {
+            throw conflict("同一请求编号不能保存不同款式或图集");
+        }
+        if (Boolean.TRUE.equals(row.get("archived"))) throw missing();
+        return row;
+    }
+
+    public List<View> list(PlatformPrincipal user, String captureTemplateId) {
+        access(user, false);
+        if (!captureTemplateId.isEmpty()) {
+            return db.queryForList("""
+                    SELECT * FROM product_main_image_templates WHERE organization_id=? AND active_capture_template_id=?
+                    """, user.organizationId(), captureTemplateId).stream().map(this::view).toList();
+        }
+        return db.queryForList("""
+                SELECT * FROM product_main_image_templates WHERE organization_id=? AND archived=FALSE
+                AND capture_template_id IS NULL ORDER BY created_at DESC LIMIT 100
+                """, user.organizationId()).stream().map(this::view).toList();
+    }
+
+    public View get(String id, PlatformPrincipal user) { return get(id, user, ""); }
+
+    public View get(String id, PlatformPrincipal user, String captureTemplateId) {
+        access(user, false);
+        return view(scopedRow(id, user.organizationId(), true, captureTemplateId));
+    }
+
+    @Transactional
+    public void archive(String id, PlatformPrincipal user) { archive(id, user, ""); }
+
+    @Transactional
+    public void archive(String id, PlatformPrincipal user, String captureTemplateId) {
+        access(user, true); scopedRow(id, user.organizationId(), true, captureTemplateId);
         db.update("UPDATE product_main_image_templates SET archived=TRUE WHERE id=? AND organization_id=?", id, user.organizationId());
     }
 
-    public View retry(String id, PlatformPrincipal user) {
-        access(user, true); row(id, user.organizationId(), true);
+    public View retry(String id, PlatformPrincipal user) { return retry(id, user, ""); }
+
+    public View retry(String id, PlatformPrincipal user, String captureTemplateId) {
+        access(user, true); scopedRow(id, user.organizationId(), true, captureTemplateId);
         db.update("UPDATE product_main_image_template_images SET status='PENDING',error_message=NULL,updated_at=NOW(6) WHERE template_id=? AND organization_id=? AND status='FAILED'", id, user.organizationId());
-        return get(id, user);
+        return get(id, user, captureTemplateId);
     }
 
     @Transactional
     public View savePrompt(String id, String imageId, String prompt, PlatformPrincipal user) {
-        access(user, true); row(id, user.organizationId(), true);
+        return savePrompt(id, imageId, prompt, user, "");
+    }
+
+    @Transactional
+    public View savePrompt(String id, String imageId, String prompt, PlatformPrincipal user, String captureTemplateId) {
+        access(user, true); scopedRow(id, user.organizationId(), true, captureTemplateId);
         if (prompt == null || prompt.isBlank() || prompt.length() > 4000 || !prompt.contains("{{product}}"))
             throw bad("提示词须保留{{product}}，且不超过4000字");
         var rows = db.queryForList("SELECT * FROM product_main_image_template_images WHERE id=? AND template_id=? AND organization_id=? AND status='READY' FOR UPDATE",
@@ -102,11 +172,15 @@ public class ProductMainImageTemplateService {
         ProductMainImageStylePolicy.validateAnalysis(analysis);
         db.update("UPDATE product_main_image_template_images SET analysis_json=?,updated_at=NOW(6) WHERE id=? AND organization_id=?",
                 json.writeValueAsString(analysis), imageId, user.organizationId());
-        return get(id, user);
+        return get(id, user, captureTemplateId);
     }
 
     public CommerceDesignImageGateway.Reference image(String id, String imageId, PlatformPrincipal user) {
-        access(user, false); row(id, user.organizationId(), false);
+        return image(id, imageId, user, "");
+    }
+
+    public CommerceDesignImageGateway.Reference image(String id, String imageId, PlatformPrincipal user, String captureTemplateId) {
+        access(user, false); scopedRow(id, user.organizationId(), false, captureTemplateId);
         var rows = db.queryForList("SELECT storage_key FROM product_main_image_template_images WHERE id=? AND template_id=? AND organization_id=?", imageId, id, user.organizationId());
         if (rows.isEmpty()) throw missing();
         return archive.read(user.organizationId(), (String) rows.getFirst().get("storage_key"));
@@ -119,7 +193,7 @@ public class ProductMainImageTemplateService {
 
     /** Workers read the current template each time; edits apply to unfinished uploads. */
     public Map<String, Object> current(String id, String org) {
-        var template = row(id, org, true);
+        var template = scopedRow(id, org, true, "");
         var images = imageRows(id, org);
         if (images.isEmpty() || images.size() > ProductMainImageStylePolicy.MAX_IMAGES
                 || images.stream().anyMatch(image -> !"READY".equals(image.get("status")))) throw conflict("主图风格模板尚未全部识别完成");
@@ -174,8 +248,10 @@ public class ProductMainImageTemplateService {
 
     private View view(Map<String, Object> row) {
         String id = (String) row.get("id"), org = (String) row.get("organization_id");
+        String captureTemplateId = scope(row);
+        String query = captureTemplateId.isEmpty() ? "" : "?captureTemplateId=" + captureTemplateId;
         var images = imageRows(id, org).stream().map(image -> new ImageView((String) image.get("id"), ((Number) image.get("sort_order")).intValue(),
-                "/api/v1/product-main-image-templates/" + id + "/images/" + image.get("id"), (String) image.get("status"),
+                "/api/v1/product-main-image-templates/" + id + "/images/" + image.get("id") + query, (String) image.get("status"),
                 ((Number) image.get("width")).intValue(), ((Number) image.get("height")).intValue(),
                 map(image.get("analysis_json")), (String) image.get("error_message"))).toList();
         String status = images.stream().anyMatch(image -> "FAILED".equals(image.status())) ? "FAILED"
@@ -190,6 +266,16 @@ public class ProductMainImageTemplateService {
         if (rows.isEmpty()) throw missing();
         return rows.getFirst();
     }
+    private Map<String, Object> scopedRow(String id, String org, boolean active, String captureTemplateId) {
+        var row = row(id, org, active);
+        if (!scope(row).equals(captureTemplateId)) throw missing();
+        return row;
+    }
+
+    private static String scope(Map<String, Object> row) {
+        return Objects.toString(row.get("capture_template_id"), "");
+    }
+
     private Map<String, Object> map(Object value) {
         return value == null ? new LinkedHashMap<>() : json.readValue(value.toString(), new TypeReference<LinkedHashMap<String, Object>>() {});
     }
