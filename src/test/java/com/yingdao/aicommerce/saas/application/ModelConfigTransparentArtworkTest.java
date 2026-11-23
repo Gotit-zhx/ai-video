@@ -121,6 +121,29 @@ class ModelConfigTransparentArtworkTest {
         verifyNoInteractions(cipher);
     }
 
+    @Test void capturePrintRequiresTheExactActiveModelFromTheSameEnterprise() {
+        var previous = config("org", "IMAGE", "gpt-image-2", "previous-cipher", true);
+        var variant = config("org", "IMAGE", "gpt-image-2.6-flare", "variant-cipher", false);
+        var foreign = config("different-org", "IMAGE", "gpt-image-2.6", "foreign-cipher", false);
+        var own = config("org", "IMAGE", "gpt-image-2.6", "own-cipher", false);
+        when(mapper.selectList(any())).thenReturn(List.of(previous, variant, foreign), List.of(previous, variant, foreign, own));
+        when(cipher.decrypt("own-cipher")).thenReturn("configured-key");
+
+        assertThatThrownBy(() -> service.requireCapturePrintConnection("org"))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("gpt-image-2.6");
+        verifyNoInteractions(cipher);
+
+        var connection = service.requireCapturePrintConnection("org");
+        assertThat(connection.id()).isEqualTo(own.getId());
+        assertThat(connection.modelId()).isEqualTo("gpt-image-2.6");
+        assertThat(connection.copyrightFallbackModels()).isEmpty();
+        verify(cipher).decrypt("own-cipher");
+        verifyNoMoreInteractions(cipher);
+        ModelConfigService.requireCapturePrintModel(connection);
+        assertThatThrownBy(() -> ModelConfigService.requireCapturePrintModel(connection("gpt-image-2")))
+                .isInstanceOf(BusinessException.class);
+    }
+
     @Test void missingTenantNeverQueriesOrDecryptsAnyCompanyConfiguration() {
         for(String organization : Arrays.asList(null,"","  "))
             assertThatThrownBy(() -> service.transparentArtworkConnection(organization)).isInstanceOf(BusinessException.class).hasMessageContaining("公司信息");

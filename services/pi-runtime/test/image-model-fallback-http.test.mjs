@@ -47,6 +47,23 @@ test("explicit input fidelity is preserved for GPT image edits and configured mo
   }
 });
 
+test("GPT Image 2.6 capture sends a single transparent edit with the original reference", async () => {
+  const h = harness(() => generatedResponse());
+  const modelId = "gpt-image-2.6";
+  const result = await h.call({ ...modelConfig(), modelId, copyrightFallbackModels: [] }, {
+    mode: "edit", prompt: "Capture print", size: "1024x1024", background: "transparent", outputFormat: "png"
+  });
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].url, "https://images.unit.invalid/v1/images/edits");
+  assert.deepEqual(h.calls[0].fields, {
+    model: modelId, prompt: "Capture print", size: "1024x1024", background: "transparent", output_format: "png"
+  });
+  assert.equal(h.calls[0].images.length, 1);
+  assert.equal(h.calls[0].images[0].field, "image");
+  assert.deepEqual(h.calls[0].images[0].bytes, OUTPUT_BYTES);
+  assert.equal(result.artifact.modelId, modelId);
+});
+
 function harness(reply) {
   const calls = [];
   const context = vm.createContext({

@@ -19,6 +19,10 @@ public class ModelConfigService {
 
     private static final String COPYRIGHT_FALLBACK_MODEL_ID = "grok-imagine-image-2.0";
     private static final String BANANA_IMAGE_MODEL_ID = "gemini-nano-banana-2.1";
+    public static final String CAPTURE_PRINT_MODEL_ID = "gpt-image-2.6";
+    private static final List<String> CAPTURE_PRINT_MODEL_IDS = List.of(CAPTURE_PRINT_MODEL_ID);
+    private static final String CAPTURE_PRINT_MODEL_UNAVAILABLE =
+            "当前企业未启用可用的 GPT Image 2.6（gpt-image-2.6），请在模型接入中配置后重试。";
     private static final List<String> IMG2_ARTWORK_MODEL_IDS = List.of("gpt-image-2", "gpt-image-2-2026-04-21");
     private static final String IMG2_ARTWORK_UNAVAILABLE = "当前公司没有可用的 IMG2.0（gpt-image-2）图片模型；请在模型接入中配置并启用 IMG2.0 后重试，透明印花不会改用其他模型。";
 
@@ -189,7 +193,7 @@ public class ModelConfigService {
                 .eq(ModelConfig::getStatus, "ACTIVE")
                 .orderByDesc(ModelConfig::isDefaultModel)
                 .orderByDesc(ModelConfig::getUpdatedAt).last("LIMIT 1"));
-        var current = transparentArtworkRuntime(organizationId, selected);
+        var current = artworkRuntime(organizationId, selected, IMG2_ARTWORK_MODEL_IDS);
         if (current.isPresent()) return current;
 
         return mapper.selectList(new LambdaQueryWrapper<ModelConfig>()
@@ -201,7 +205,7 @@ public class ModelConfigService {
                         .orderByDesc(ModelConfig::getUpdatedAt)
                         .orderByAsc(ModelConfig::getId))
                 .stream().filter(candidate -> candidate != null && (selected == null || !Objects.equals(selected.getId(), candidate.getId())))
-                .map(candidate -> transparentArtworkRuntime(organizationId, candidate))
+                .map(candidate -> artworkRuntime(organizationId, candidate, IMG2_ARTWORK_MODEL_IDS))
                 .flatMap(Optional::stream).findFirst();
     }
 
@@ -210,26 +214,57 @@ public class ModelConfigService {
                 .orElseThrow(() -> new BusinessException(HttpStatus.CONFLICT, IMG2_ARTWORK_UNAVAILABLE));
     }
 
+    public RuntimeModelConnection requireCapturePrintConnection(String organizationId) {
+        if (organizationId == null || organizationId.isBlank()) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "印花提取缺少公司信息");
+        }
+        return mapper.selectList(new LambdaQueryWrapper<ModelConfig>()
+                        .eq(ModelConfig::getOrganizationId, organizationId)
+                        .eq(ModelConfig::getModelType, "IMAGE")
+                        .eq(ModelConfig::getStatus, "ACTIVE")
+                        .eq(ModelConfig::getModelId, CAPTURE_PRINT_MODEL_ID)
+                        .orderByDesc(ModelConfig::isDefaultModel)
+                        .orderByDesc(ModelConfig::getUpdatedAt)
+                        .orderByAsc(ModelConfig::getId))
+                .stream()
+                .map(candidate -> artworkRuntime(organizationId, candidate, CAPTURE_PRINT_MODEL_IDS))
+                .flatMap(Optional::stream).findFirst()
+                .orElseThrow(() -> new BusinessException(HttpStatus.CONFLICT, CAPTURE_PRINT_MODEL_UNAVAILABLE));
+    }
+
+    public static void requireCapturePrintModel(RuntimeModelConnection connection) {
+        if (!configuredArtworkConnection(connection) || !CAPTURE_PRINT_MODEL_ID.equals(connection.modelId())
+                || !connection.fallbackModels().isEmpty()) {
+            throw new BusinessException(HttpStatus.CONFLICT, CAPTURE_PRINT_MODEL_UNAVAILABLE);
+        }
+    }
+
     public static boolean isImg2ArtworkModel(String modelId) {
         return modelId != null && IMG2_ARTWORK_MODEL_IDS.contains(modelId);
     }
 
     /** Defense at a submission boundary; a name substitution is not a configured IMG2.0 connection. */
     public static void requireImg2ArtworkModel(RuntimeModelConnection connection) {
-        if (connection == null || !isImg2ArtworkModel(connection.modelId())
-                || !"OPENAI_COMPATIBLE".equals(connection.apiFormat())
-                || connection.id() == null || connection.id().isBlank()
-                || connection.baseUrl() == null || connection.baseUrl().isBlank()
-                || connection.apiKey() == null || connection.apiKey().isBlank()
-                || !connection.copyrightFallbackModels().isEmpty())
+        if (!configuredArtworkConnection(connection) || !isImg2ArtworkModel(connection.modelId())) {
             throw new BusinessException(HttpStatus.CONFLICT,
                     "透明印花提取与裂变固定使用已配置的 IMG2.0（gpt-image-2），不允许使用其他模型或备用路由。");
+        }
     }
 
-    private Optional<RuntimeModelConnection> transparentArtworkRuntime(String organizationId, ModelConfig config) {
+    private static boolean configuredArtworkConnection(RuntimeModelConnection connection) {
+        return connection != null && "OPENAI_COMPATIBLE".equals(connection.apiFormat())
+                && connection.id() != null && !connection.id().isBlank()
+                && connection.baseUrl() != null && !connection.baseUrl().isBlank()
+                && connection.apiKey() != null && !connection.apiKey().isBlank()
+                && connection.copyrightFallbackModels().isEmpty();
+    }
+
+    private Optional<RuntimeModelConnection> artworkRuntime(String organizationId, ModelConfig config,
+                                                            List<String> modelIds) {
         if (config == null || !organizationId.equals(config.getOrganizationId())
                 || !"IMAGE".equals(config.getModelType()) || !"ACTIVE".equals(config.getStatus())
-                || !isImg2ArtworkModel(config.getModelId()) || !"OPENAI_COMPATIBLE".equals(config.getApiFormat())
+                || config.getModelId() == null || !modelIds.contains(config.getModelId())
+                || !"OPENAI_COMPATIBLE".equals(config.getApiFormat())
                 || config.getId() == null || config.getId().isBlank()
                 || config.getBaseUrl() == null || config.getBaseUrl().isBlank()) return Optional.empty();
         try {

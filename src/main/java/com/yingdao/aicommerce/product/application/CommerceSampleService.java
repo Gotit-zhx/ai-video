@@ -16,6 +16,8 @@ import java.util.function.Supplier;
 @Service
 public class CommerceSampleService {
  private static final String TRANSPARENCY_REJECTED="TRANSPARENCY_REJECTED";
+ private static final String CAPTURE_PRINT_PROMPT =
+         "将参考照片中 T 恤胸前的主印花整理为一张正视、独立的平面图稿。仅呈现清楚可见的图形、线条、原有文字和配色，保留设计中的白色细节。输出单张带 alpha 通道的透明 PNG。";
  private static final String TRANSPARENCY_FAILURE="独立印花未通过原生透明 PNG 检查；原始生成结果已归档保留，同一请求只重新校验已有结果，不会再次调用生图模型";
  public record Request(String product,int variant,boolean confirmed,String parentId,String assetKind){public Request(String product,int variant,boolean confirmed,String parentId){this(product,variant,confirmed,parentId,"PRODUCT_IMAGE");}}
  public record View(String id,String product,int variant,String status,String model,String imageUrl,String parentId,String assetKind){
@@ -87,10 +89,14 @@ public class CommerceSampleService {
   if(!binding.equals(source.get("prompt")) || !"READY".equals(source.get("status"))
           || !"UPLOADED".equals(source.get("product")) || !"PRODUCT_IMAGE".equals(source.get("asset_kind")))
    throw error(HttpStatus.CONFLICT,"同一请求编号不能更换来源图片");
-  return generate(new Request("UPLOADED",0,true,(String)source.get("id"),"PRINT_EXTRACT"),extractKey,user);
+  return generate(new Request("UPLOADED",0,true,(String)source.get("id"),"PRINT_EXTRACT"),extractKey,user,true);
  }
 
  public View generate(Request request,String key,PlatformPrincipal u){
+  return generate(request,key,u,false);
+ }
+
+ private View generate(Request request,String key,PlatformPrincipal u,boolean capturePrint){
   access(u);if(request==null||!request.confirmed()||key==null||!key.matches("[A-Za-z0-9_-]{8,80}"))throw error(HttpStatus.BAD_REQUEST,"请确认一次模型调用费用并提供请求编号");
   String prompt=printKind(request.assetKind())?printPrompt(request.assetKind(),request.variant()):"UPLOADED".equals(request.product()) && "BLANK_PRODUCT".equals(request.assetKind()) ? blankPrompt() : prompt(request.product(),request.variant());
   String kind=request.assetKind()==null?"PRODUCT_IMAGE":request.assetKind();
@@ -98,11 +104,13 @@ public class CommerceSampleService {
   // Replaying a received/failed result must not depend on a still-configured model,
   // a live provider URL, or a new parent read. It never claims another paid attempt.
   var previous=db.queryForList("SELECT * FROM commerce_sample_previews WHERE organization_id=? AND created_by=? AND request_key=?",u.organizationId(),u.userId(),key);
-  if(!previous.isEmpty()&&!"PREPARED".equals(previous.getFirst().get("status"))){
+  if(!previous.isEmpty()&&(capturePrint||!"PREPARED".equals(previous.getFirst().get("status")))){
    var saved=previous.getFirst();
    if(!Objects.equals(request.product(),saved.get("product"))||!(saved.get("variant_index") instanceof Number variant)||variant.intValue()!=request.variant()
      ||!Objects.equals(kind,saved.get("asset_kind"))||!Objects.equals(request.parentId(),saved.get("parent_id")))throw error(HttpStatus.CONFLICT,"同一请求编号不能改变示例内容或原图");
-   String savedId=(String)saved.get("id");collect(savedId,u);return view(row(savedId,u));
+   if (!"PREPARED".equals(saved.get("status"))) {
+    String savedId=(String)saved.get("id");collect(savedId,u);return view(row(savedId,u));
+   }
   }
   List<CommerceDesignImageGateway.Reference> references=List.of();
   if("MOCKUP_CANDIDATE".equals(kind)){
@@ -127,7 +135,8 @@ public class CommerceSampleService {
    String expected=kind.equals("PRINT_VARIANT")?"PRINT_EXTRACT":"PRODUCT_IMAGE";
    if(!"READY".equals(parent.get("status"))||!expected.equals(parent.get("asset_kind"))||!request.product().equals(parent.get("product")))throw error(HttpStatus.CONFLICT,"来源素材类型或商品类型不匹配，必须先提取再裂变印花");
    if(kind.equals("BLANK_PRODUCT")&&request.variant()!=0)throw error(HttpStatus.BAD_REQUEST,"去除印花仅使用基础版本，不允许同时改变配色或构图");
-   references=List.of(image(request.parentId(),u));prompt=kind.equals("BLANK_PRODUCT")?blankPrompt():printPrompt(kind,request.variant());
+   references=List.of(image(request.parentId(),u));
+   prompt=capturePrint ? CAPTURE_PRINT_PROMPT : kind.equals("BLANK_PRODUCT") ? blankPrompt() : printPrompt(kind,request.variant());
    if("UPLOADED".equals(request.product())&&"BLANK_PRODUCT".equals(kind))prompt="以参考照片中的同一商品生成去印花后的纯色商品底图。清除原装饰印花，保持原有颜色、款式、缝线、材质和可见面向。让商品像隐形人台自然撑起一样呈现体积、合理衣身空间、自然褶皱与真实光影，不是平铺或压扁；不得改变袖长、领口或剪裁，不添加人、手、人台本体、新印花或文字。只输出原照片对应的一个面，不拼接多视图。";
   }else if(request.variant()>0){
    if(request.parentId()==null)throw error(HttpStatus.BAD_REQUEST,"请先选择一张基础示例作为裂变原图");
@@ -136,15 +145,23 @@ public class CommerceSampleService {
    references=List.of(image(request.parentId(),u));
    prompt+=" 原图是唯一产品参考。保留原图产品外形、缝线、尺寸比例、位置、背景和拍摄角度；只改变正面印花的配色或构图，不改变产品结构。";
   }else if(request.parentId()!=null)throw error(HttpStatus.BAD_REQUEST,"基础示例不应关联原图");
-  var model=(printKind(kind)?models.transparentArtworkConnection(u.organizationId()):models.imageConnection(u.organizationId()))
+  var model=capturePrint ? models.requireCapturePrintConnection(u.organizationId())
+    : (printKind(kind)?models.transparentArtworkConnection(u.organizationId()):models.imageConnection(u.organizationId()))
     .orElseThrow(()->error(HttpStatus.CONFLICT,printKind(kind)?"当前公司没有可用的 IMG2.0 透明印花模型":"当前公司没有可用图片模型"));
   String id=UUID.randomUUID().toString();
   db.update("INSERT IGNORE INTO commerce_sample_previews(id,organization_id,created_by,request_key,product,variant_index,status,model_id,prompt,parent_id,asset_kind,created_at,updated_at) VALUES(?,?,?,?,?,?,'PREPARED',?,?,?,?,NOW(6),NOW(6))",id,u.organizationId(),u.userId(),key,request.product(),request.variant(),model.modelId(),prompt,request.parentId(),kind);
   var stored=db.queryForMap("SELECT * FROM commerce_sample_previews WHERE organization_id=? AND created_by=? AND request_key=?",u.organizationId(),u.userId(),key);id=(String)stored.get("id");
-  if(!prompt.equals(stored.get("prompt"))||!Objects.equals(request.parentId(),stored.get("parent_id")))throw error(HttpStatus.CONFLICT,"同一请求编号不能改变示例内容或原图");
-  if(db.update("UPDATE commerce_sample_previews SET status='SUBMITTING',updated_at=NOW(6) WHERE id=? AND status='PREPARED'",id)==1){
-   try{var result=Set.of("PRINT_EXTRACT","PRINT_VARIANT").contains(kind)
-     ?gateway.generateTransparentArtwork(prompt,id,model,references):gateway.generateSample(prompt,id,model,references);
+  if(!Objects.equals(request.parentId(),stored.get("parent_id"))
+      ||(capturePrint ? !Objects.equals(kind,stored.get("asset_kind")) : !prompt.equals(stored.get("prompt"))))
+   throw error(HttpStatus.CONFLICT,"同一请求编号不能改变示例内容或原图");
+  // A PREPARED row has not submitted to any provider. Update its model and prompt in the claim.
+  int claimed = capturePrint
+    ? db.update("UPDATE commerce_sample_previews SET status='SUBMITTING',model_id=?,prompt=?,updated_at=NOW(6) WHERE id=? AND status='PREPARED'", model.modelId(), prompt, id)
+    : db.update("UPDATE commerce_sample_previews SET status='SUBMITTING',updated_at=NOW(6) WHERE id=? AND status='PREPARED'", id);
+  if (claimed == 1) {
+   try{var result = capturePrint ? gateway.generateCapturePrintArtwork(prompt,id,model,references)
+     : printKind(kind) ? gateway.generateTransparentArtwork(prompt,id,model,references)
+     : gateway.generateSample(prompt,id,model,references);
     db.update("UPDATE commerce_sample_previews SET status='RESULT_RECEIVED',result_json=?,updated_at=NOW(6) WHERE id=?",json.writeValueAsString(result),id);}
    catch(CommerceImageRejectedException failure){
     var refusal=new LinkedHashMap<String,Object>();refusal.put("message",failure.getMessage());refusal.put("failureKind",failure.failureKind());refusal.put("providerStatus",failure.providerStatus());

@@ -13,16 +13,12 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.matches;
-import static org.mockito.ArgumentMatchers.same;
-import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -67,18 +63,22 @@ class ProductPrintCaptureServiceTest {
     @Test
     void extractionRetryUsesTheSameArchivedSourceAndRefusesChangingImage() {
         var db = mock(JdbcTemplate.class);
-        var actual = spy(new CommerceSampleService(db, null, null, archive, downloader, null));
+        var actual = new CommerceSampleService(db, null, null, archive, downloader, null);
         var existing = Map.<String, Object>of("id", "original-id", "prompt", "来源采集商品 capture-a / image-a",
                 "status", "READY", "product", "UPLOADED", "asset_kind", "PRODUCT_IMAGE");
         when(db.queryForList(contains("request_key=?"), eq("org-a"), eq("u"),
                 matches("capture-v2-src-[a-f0-9]{64}"))).thenReturn(List.of(existing));
-        var request = new CommerceSampleService.Request("UPLOADED", 0, true, "original-id", "PRINT_EXTRACT");
-        var result = new CommerceSampleService.View("print-id", "UPLOADED", 0, "READY", "model",
-                "/api/v1/commerce-samples/print-id/image", "original-id", "PRINT_EXTRACT");
-        doReturn(result).when(actual).generate(eq(request), matches("capture-v2-art-[a-f0-9]{64}"), same(editor));
+        var started = Map.<String, Object>of("id", "print-id", "parent_id", "original-id", "product", "UPLOADED",
+                "variant_index", 0, "status", "SUBMITTING", "asset_kind", "PRINT_EXTRACT", "model_id", "gpt-image-2");
+        when(db.queryForList(contains("request_key=?"), eq("org-a"), eq("u"),
+                matches("capture-v2-art-[a-f0-9]{64}"))).thenReturn(List.of(started));
+        when(db.queryForList(contains("WHERE id=?"), eq("print-id"), eq("org-a"), eq("u")))
+                .thenReturn(List.of(started));
 
-        assertSame(result, actual.extractCapturePrint("request-id", "capture-a", "image-a",
-                () -> fail("Retry must reuse the archived product image"), editor));
+        var result = actual.extractCapturePrint("request-id", "capture-a", "image-a",
+                () -> fail("Retry must reuse the archived product image"), editor);
+        assertEquals("print-id", result.id());
+        assertEquals("gpt-image-2", result.model());
         assertEquals(HttpStatus.CONFLICT, assertThrows(BusinessException.class,
                 () -> actual.extractCapturePrint("request-id", "capture-a", "another-image",
                         () -> fail("The same key is bound to the original image"), editor)).getStatus());

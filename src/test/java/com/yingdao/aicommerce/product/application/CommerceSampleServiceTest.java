@@ -141,6 +141,39 @@ class CommerceSampleServiceTest {
   }
  }
 
+ @Test void capturePrintUsesTestedModelAndPromptForNewAndPreparedRequests() throws Exception {
+  var model = new com.yingdao.aicommerce.saas.application.ModelConfigService.RuntimeModelConnection(
+    "capture-model", "https://image.example", "gpt-image-2.6", "OPENAI_COMPATIBLE", "CUSTOM", "test");
+  String prompt = "将参考照片中 T 恤胸前的主印花整理为一张正视、独立的平面图稿。仅呈现清楚可见的图形、线条、原有文字和配色，保留设计中的白色细节。输出单张带 alpha 通道的透明 PNG。";
+  for (boolean prepared : new boolean[]{false, true}) {
+   var fixture = new SubmittedSample("UPLOADED", "PRINT_EXTRACT", archiveDirectory.resolve("capture-" + prepared));
+   fixture.db.parent.put("prompt", "来源采集商品 capture-a / image-a");
+   if (prepared) {
+    fixture.db.row.putAll(java.util.Map.of("id", "earlier-request", "product", "UPLOADED",
+      "variant_index", 0, "parent_id", "parent", "asset_kind", "PRINT_EXTRACT",
+      "status", "PREPARED", "model_id", "gpt-image-2", "prompt", "old prompt"));
+   }
+   when(fixture.models.requireCapturePrintConnection("org")).thenReturn(model);
+   var output = new CommerceDesignImageGateway.Artifact(java.util.Base64.getEncoder().encodeToString(png(true, false)),
+     "image/png", "gpt-image-2.6", "EDIT", null);
+   when(fixture.gateway.generateCapturePrintArtwork(eq(prompt), anyString(), same(model), anyList()))
+     .thenReturn(new CommerceDesignImageGateway.Response(output, null));
+
+   var result = fixture.service.extractCapturePrint("request-id", "capture-a", "image-a",
+     () -> fail("The source is already archived"), fixture.user);
+   assertEquals("READY", result.status());
+   assertEquals("gpt-image-2.6", result.model());
+   assertEquals(prompt, fixture.db.row.get("prompt"));
+   if (prepared) assertEquals("earlier-request", result.id());
+   assertEquals(result, fixture.service.extractCapturePrint("request-id", "capture-a", "image-a",
+     () -> fail("Replay must reuse the source"), fixture.user));
+   verify(fixture.models).requireCapturePrintConnection("org");
+   verify(fixture.gateway).generateCapturePrintArtwork(eq(prompt), eq(result.id()), same(model),
+     eq(java.util.List.of(fixture.service.image("parent", fixture.user))));
+   verifyNoMoreInteractions(fixture.models, fixture.gateway);
+  }
+ }
+
  @Test void missingImg2ConnectionDoesNotFallBackOrStartASampleAttempt()throws Exception{
   var fixture=new SubmittedSample("UPLOADED","PRINT_EXTRACT",archiveDirectory.resolve("missing-img2"));
   when(fixture.models.transparentArtworkConnection("org")).thenReturn(java.util.Optional.empty());
@@ -199,15 +232,24 @@ class CommerceSampleServiceTest {
   final java.util.Map<String,Object> row=new java.util.LinkedHashMap<>(),parent=new java.util.LinkedHashMap<>();
   @Override public java.util.List<java.util.Map<String,Object>> queryForList(String sql,Object... arguments){
    if(sql.contains("WHERE id=?")&&"parent".equals(arguments[0]))return java.util.List.of(parent);
+   if(sql.contains("request_key=?")&&arguments[2].toString().startsWith("capture-v2-src-"))
+    return java.util.List.of(parent);
    return row.isEmpty()?java.util.List.of():java.util.List.of(row);
   }
   @Override public java.util.Map<String,Object> queryForMap(String sql,Object... arguments){return row;}
   @Override public int update(String sql,Object... arguments){
    if(sql.startsWith("INSERT IGNORE")){
+    if(!row.isEmpty())return 0;
     row.put("id",arguments[0]);row.put("product",arguments[4]);row.put("variant_index",arguments[5]);row.put("model_id",arguments[6]);
     row.put("prompt",arguments[7]);row.put("parent_id",arguments[8]);row.put("asset_kind",arguments[9]);row.put("status","PREPARED");
    }else if(sql.contains("SET storage_key="))row.put("storage_key",arguments[0]);
-   else if(sql.contains("SET status='SUBMITTING'"))row.put("status","SUBMITTING");
+   else if(sql.contains("SET status='SUBMITTING'")){
+    if(!"PREPARED".equals(row.get("status")))return 0;
+    row.put("status","SUBMITTING");
+    if(sql.contains("model_id=?")){
+     row.put("model_id",arguments[0]);row.put("prompt",arguments[1]);
+    }
+   }
    else if(sql.contains("SET status='RESULT_RECEIVED'")){row.put("status","RESULT_RECEIVED");row.put("result_json",arguments[0]);}
    else if(sql.contains("SET status='REJECTED'")){row.put("status","REJECTED");row.put("result_json",arguments[0]);}
    else if(sql.contains("SET status='UNKNOWN'"))row.put("status","UNKNOWN");
