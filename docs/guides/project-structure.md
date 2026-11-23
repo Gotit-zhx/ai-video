@@ -21,6 +21,7 @@ ai-video/
 │   ├── erp/                     独立 HOYEE ERP
 │   └── household/               独立家务应用
 ├── scripts/                     工程与运维工具，按用途分类
+│   ├── antd/                    前端设计与组件查询 CLI
 │   ├── release/                 历史及专项发布 helpers
 │   ├── finance/                 财务 Java 核对及维护程序
 │   ├── qa/                      测试、模拟与冒烟脚本
@@ -35,11 +36,11 @@ ai-video/
 │   └── heyi-mysql-backup.py     保持稳定路径的备份实现
 ├── experiments/                 隔离实验与参考，非默认生产服务
 │   ├── garment-reconstruction/ 服装几何重建与计算实验
-│   ├── video/scripts/           MiniMax 实验及提示词
-│   └── ui/apple/                保留的视觉参考
+│   └── video/scripts/           MiniMax 实验及提示词
 ├── ops/                         系统服务、备份、反代与管理配置
 ├── config/                      私有配置的公开模板
 ├── docs/                        开发、业务、发布、设计、研究与历史文档
+├── .agents/skills/antd/         项目级 Ant Design Skill
 ├── .github/                     GitHub Actions 服务 CI/CD、巡检与桌面构建
 ├── .circleci/                   显式触发的备用 Windows 构建
 ├── pom.xml / maven-settings.xml Maven 构建入口

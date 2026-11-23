@@ -5,6 +5,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [legacy-release-workflows/](legacy-release-workflows/) | 旧 Candidate、正式标签、OCI/镜像传输与自动发布工作流的原配置归档 |
+| [Apple](frontend-design/apple.md)、[Resend](frontend-design/resend.md) | 已归档的界面视觉参考 |
 | [finance-advertising-development-20261106.md](finance-advertising-development-20261106.md) | 广告费用统计开发、验证范围与多会话合并边界 |
 | [finance-ad-automation-20261109.md](finance-ad-automation-20261109.md) | 广告自动发现、多店 GMV Max 采集、数据覆盖与本地候选验收 |
 | [2026-09-04-test-merge.md](2026-09-04-test-merge.md) | 2026-09-04 测试分支合并记录 |

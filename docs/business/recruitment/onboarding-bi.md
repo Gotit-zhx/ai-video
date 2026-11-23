@@ -24,6 +24,8 @@ Excel 导出包含统计口径、指标、部门和职位汇总、周期趋势�
 
 ## BI 视觉改版
 
+本节记录 2026-10-09 的已发布界面。后续界面重构遵循[前端设计标准](../../design/frontend-design-standard.md)。
+
 2026-10-09 的第二版参考 GitHub `tabler/tabler` 和官方预览的视觉层级，采用蓝色主色、青绿及紫色辅助色，突出六项核心指标，其他十八项指标和详细表格可展开查看。Tabler 项目为 MIT 许可，视觉参考来源为 `https://github.com/tabler/tabler`、`https://preview.tabler.io/`，未引入其整套页面框架。
 
 图表使用 Apache ECharts 6.1.0（Apache-2.0），来自官方 npm 包，版本及许可已核验。脚本与 LICENSE、NOTICE 放在 `frontend/vendor/echarts/`，浏览器按需从本站加载；无需第三方 CDN，也不发送业务数据到外部服务。项目来源为 `https://github.com/apache/echarts`。

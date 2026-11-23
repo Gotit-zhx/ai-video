@@ -13,6 +13,7 @@
 | `maintenance/` | 修复、恢复、清理及专用维护程序，包含相应单元测试 |
 | `local/` | 本地 cpolar 回调白名单网关及启动器 |
 | `build/` | 前端国际化等显式构建辅助工具；不是日常前端源码运行前置步骤 |
+| [antd/](antd/) | 独立的 Ant Design CLI，见[前端设计标准](../docs/design/frontend-design-standard.md#项目工具) |
 | `ci/` | 协作检查、历史发布辅助及 Windows/macOS 独立分发构建 |
 | `video/` | 既有视频专项操作入口 |
 | [compact-release-image.py](compact-release-image.py) | 保持原路径的镜像压缩保护 |

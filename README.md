@@ -10,6 +10,7 @@
 | --- | --- |
 | 确认交接范围、账号归属和待确认事项 | [开发交接清单](docs/guides/handoff.md) |
 | 第一次启动、配置和运行测试 | [开发指南](docs/guides/development.md) |
+| 设计、开发或重构前端界面 | [Ant Design 前端设计标准](docs/design/frontend-design-standard.md) |
 | 理解服务边界、代码位置和数据流 | [架构说明](docs/guides/architecture.md) |
 | 查找登录、业务接口和权限入口 | [接口导航](docs/guides/api.md) |
 | 共享服务器源码运行、恢复、备份和排障 | [运维指南](docs/guides/operations.md) |

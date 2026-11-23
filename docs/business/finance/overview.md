@@ -167,4 +167,4 @@ GMV Max 需在广告账户连接弹窗填写可选的广告平台店铺 ID（不
 - 历史参考率：`https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html`
 - Frankfurter v2：`https://frankfurter.dev/`
 
-实时大屏视觉参考：阿里云 DataV 官方模板库中的“双11网店销售看板”，采用醒目的成交主数字、暖白卡片、橙红与金色重点；未复制模板图片或示例数据。官方模板库：`https://cn.aliyun.com/activity/intelligent/datav-showcase`。
+既有实时大屏的视觉参考来自阿里云 DataV 官方模板库中的“双11网店销售看板”，采用醒目的成交主数字、暖白卡片、橙红与金色重点；未复制模板图片或示例数据。官方模板库：`https://cn.aliyun.com/activity/intelligent/datav-showcase`。大屏重构遵循[前端设计标准](../../design/frontend-design-standard.md)。
