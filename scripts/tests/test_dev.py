@@ -54,6 +54,22 @@ class SourceWatcherTest(unittest.TestCase):
         self.settle()
         self.assertEqual(original, (self.root / '.dev/source-state.json').read_bytes())
 
+    def test_optional_finance_assets_do_not_reload_the_current_page(self):
+        state = self.root / '.dev/source-state.json'
+        original = state.read_bytes()
+        for name in ('modern/entry.js', 'assets/finance-modern/manifest.json'):
+            path = self.root / 'frontend' / name
+            path.parent.mkdir(parents=True)
+            path.write_text('new finance asset')
+        self.settle()
+        self.assertEqual(original, state.read_bytes())
+        self.assertEqual([], self.compiles)
+
+        (self.root / 'frontend/app.css').write_text('body {color:blue}')
+        self.settle()
+        self.assertNotEqual(original, state.read_bytes())
+        self.assertEqual([], self.compiles)
+
     def test_java_burst_debounces_and_triggers_once_after_success(self):
         source = self.root / 'src/main/java/example/Main.java'
         source.write_text('class Main { int a; }')

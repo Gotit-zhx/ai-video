@@ -110,6 +110,43 @@ class ProductCaptureServiceTest {
     }
 
     @Test
+    void printSourceLookupUsesExactTenantAndMarketplaceIdentity() {
+        ProductCapture capture = capture("org-a");
+        when(captureMapper.selectList(any())).thenReturn(List.of(capture));
+
+        var source = service.findPrintSource("https://shopee.ph/product/105/209?tracking=123", principal("org-a"));
+
+        assertEquals(capture.getId(), source.capture().getId());
+        var query = ArgumentCaptor.forClass(QueryWrapper.class);
+        verify(captureMapper).selectList(query.capture());
+        String where = query.getValue().getSqlSegment();
+        assertTrue(where.contains("organization_id ="));
+        assertTrue(where.contains("data_module IN"));
+        assertTrue(where.contains("source_shop_id ="));
+        assertTrue(where.contains("source_product_id ="));
+        assertTrue(where.contains("NOT EXISTS"));
+        assertTrue(query.getValue().getParamNameValuePairs().values().containsAll(
+                List.of("org-a", CommerceModule.CAPTURE, CommerceModule.PRINT_SOURCE, "SHOPEE", "105", "209")));
+        verify(skuMapper, never()).selectList(any());
+    }
+
+    @Test
+    void pluginStoresImageOnlySnapshotOutsideTheOriginalCaptureQueue() {
+        String photo = "https://images.example.com/print.jpg";
+        String id = service.importPrintSource("https://shopee.ph/product/105/209", "花朵印花", List.of(photo, photo), principal("org-a"));
+        var capture = ArgumentCaptor.forClass(ProductCapture.class);
+        verify(captureMapper).insert(capture.capture());
+        assertEquals(id, capture.getValue().getId());
+        assertEquals(CommerceModule.PRINT_SOURCE, capture.getValue().getDataModule());
+        assertTrue(capture.getValue().getIdempotencyKey().startsWith("print-source-"));
+        var image = ArgumentCaptor.forClass(ProductCaptureImage.class);
+        verify(imageMapper).insert(image.capture());
+        assertEquals(photo, image.getValue().getOriginalUrl());
+        assertEquals(id, image.getValue().getCaptureId());
+        org.mockito.Mockito.verifyNoInteractions(skuMapper);
+    }
+
+    @Test
     void listsPagedSummariesWithoutLoadingSkuRawDataOrDetailCollections() {
         ProductCapture capture = capture("org-a");
         Page<ProductCapture> databasePage = new Page<>(1, 2);
