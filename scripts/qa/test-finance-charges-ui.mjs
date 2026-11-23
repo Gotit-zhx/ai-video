@@ -65,6 +65,9 @@ const dateInput=d.querySelector('[aria-label="开始日期"]');dateInput.value='
 assert(reads.at(-1).includes('start=2026-09-01'));
 assert.equal(metric('范围内刷单合计'),'51');assert.equal(metric('范围内刷单费合计（¥）'),'357.00','source totals retain the audit-table scope when the settlement range changes');
 dateInput.value='2026-11-01';dateInput.dispatchEvent(new w.Event('change'));await wait();assert(root.textContent.includes('开始日期不能晚于结束日期'));
+const dateReads=reads.length;
+dateInput.value='';dateInput.dispatchEvent(new w.Event('change'));await wait();
+assert.equal(dateInput.value,'2026-09-01');assert.equal(reads.length,dateReads);
 btn('导入 Excel').click();await wait();
 assert(d.querySelector('input[type=file]').accept.includes('.xlsx'));assert(btn('确认导入').disabled);d.querySelector('dialog').close();
 const select=d.querySelector('[aria-label="费用分组"]');fail=true;select.value='other';select.dispatchEvent(new w.Event('change'));await wait();

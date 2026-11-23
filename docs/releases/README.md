@@ -1,13 +1,14 @@
 # 历史发布与验收记录
 
-更新日期：2026-11-13。按业务领域保存仍有追溯价值的发布、故障修复和验收证据。记录中的活动镜像、数量、测试与未完成项都适用于该次时间，不代表今天的部署。当前版本及发布规则见[运维指南](../guides/operations.md)，业务入口见[业务说明](../business/README.md)。
+更新日期为 2026-11-23。按业务领域归档发布、故障修复和验收证据。每份记录以对应的核对时间和验证范围为准。当前运行情况见[源码运行现场状态](../guides/source-runtime-status.md)，业务入口见[业务说明](../business/README.md)。
 
-生产固定引用的最新十一份规则/验收文档仍位于 `docs/` 根目录，见[当前入口](../README.md#当前生产规则与验收)。历史 helper 可能仍被线上 Compose 链依赖，本次只移动文档。
+仍被引用的根目录文档见[业务规则与验收索引](../README.md#当前业务规则与历史验收)。
 
 ## 财务
 
 | 文档 | 内容 |
 | --- | --- |
+| [财务报表日期筛选](finance/finance-report-date-range-20261120.md) | 起止日成对校验、切换期间隐藏旧结果以及线上前端验收 |
 | [财务 BI 全月写入下的回退查询](finance/finance-bi-indexed-fallback-20261119.md) | 店铺与业务日索引、订单精确计数与九页真实脱敏写入复测 |
 | [TikTok 店铺广告账户明细](finance/finance-ad-shop-account-detail-20261119.md) | 店铺内按账户核对已归属消耗及生产界面验收 |
 | [订单成本筛选](finance/order-cost-filters-20261114.md) | 全部分组和店铺、查询与导出范围及生产验证 |
@@ -225,6 +226,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [三处仓库核对](infrastructure/source-sync-20261123.md) | GitHub、本地与运行目录的提交基线、V187 现场证据和归档范围 |
 | [devops-phase1-closure-20261107.md](infrastructure/devops-phase1-closure-20261107.md) | 一期收尾、v7 调度恢复、缺陷回滚资格隔离与 v8 交接 |
 | [devops-phase1-closure-20261107.json](infrastructure/devops-phase1-closure-20261107.json) | v7 当前基线、真实受限回滚拒绝与验收边界摘要 |
 | [devops-phase1-20261106.md](infrastructure/devops-phase1-20261106.md) | 原 v4 结构验收及后续调度缺陷说明，非当前业务健康证明 |

@@ -18,6 +18,8 @@ spend.shops.push({...summary,shop_id:'UNASSIGNED',shop_name:'待分配店铺'});
 spend.shopAccounts=[
  {shop_id:'a',account_id:'100001',currency:'CNY',amount:7,net_amount:0},
  {shop_id:'a',account_id:'100003',account_name:'历史投放账户',currency:'CNY',amount:3,net_amount:null,known_net_amount:1,partial_net_amount:2},
+ {shop_id:'a',account_id:'100004',account_name:'零消耗账户',currency:'CNY',amount:0,net_amount:null,reason_net_amount:'尚未取得'},
+ {shop_id:'a',account_id:'100005',account_name:'无可确认金额账户',currency:'CNY',amount:null,net_amount:null,known_amount:0,partial_amount:0,reason_amount:'尚未取得'},
  {shop_id:'other',account_id:'100001',currency:'CNY',amount:99,net_amount:99},
  {shop_id:'a',account_id:'100001',currency:'USD',amount:80,net_amount:70}
 ];
@@ -66,9 +68,18 @@ try{
  assert.deepEqual([...accountsDialog.querySelectorAll('tbody tr')].map(r=>[...r.cells].map(c=>c.textContent)),[
    ['演示广告账户','100001','CNY','7.00','0.00'],
    ['历史投放账户','100003','CNY','3.00','2.00（已知部分）'],
-   ['已关联待同步账户','100002','CNY','尚未取得','尚未取得']
+   ['零消耗账户','100004','CNY','0.00','—']
  ]);
  accountsDialog.querySelector('.fi-dialog-foot button').click();assert(!accountsDialog.isConnected);
+ const originalShopAccounts=spend.shopAccounts;
+ spend.shopAccounts=originalShopAccounts.filter(r=>r.account_id==='100005');
+ w.FinanceWorkspace.enter('ads');await ready();
+ root.querySelector('[aria-label="演示菲律宾店的广告账户明细"]').click();
+ const emptyAccountsDialog=d.querySelector('dialog[data-ad-shop-accounts]');
+ assert(emptyAccountsDialog.open);assert.equal(emptyAccountsDialog.querySelectorAll('tbody tr').length,0);
+ assert.match(emptyAccountsDialog.querySelector('.fi-empty').textContent,/没有已取得的广告账户消耗/);
+ emptyAccountsDialog.querySelector('.fi-dialog-foot button').click();
+ spend.shopAccounts=originalShopAccounts;
  assert(!main.querySelector('[data-ad-spend-allocate]'),'read-only viewer has no assignment action');
  assert(root.querySelector('details[data-ad-spend-support]'));assert(!root.querySelector('details[data-ad-spend-support]').open);
  const originalFunding=spend.accountFunding;
@@ -111,5 +122,25 @@ try{
  spend.items=[{...spend.items[0],amount:null,original_amount:null,original_gms_amount:null,gms_amount:null,reason_amount:'GMS 日报待补齐',reason_gms_amount:'GMS 日报待补齐'}];
  w.FinanceWorkspace.enter('ads');await ready();assert.equal(root.querySelector('[data-ad-amount="amount"] strong').textContent,'12.50（已知部分）','missing GMS cannot restore the 15.00 CPC total');assert(root.querySelector('[data-ad-spend-workspace]').textContent.includes('GMS 日报待补齐'));
  failSpend=true;w.FinanceWorkspace.enter('ads');await ready();assert(root.textContent.includes('店铺消耗读取失败'));assert(!root.querySelector('[data-ad-spend-workspace]'),'failed reads must not display stale primary amounts');
+ failSpend=false;
+ const missingNet={net_amount:null,known_net_amount:0,reason_net_amount:'接口未返回净消耗'};
+ const shopeeGroup={...spend.groups[0],...missingNet};
+ const shopeeShop={...spend.shops[0],...missingNet};
+ spend.totals=[{currency:'CNY',amount:12.5,...missingNet}];
+ spend.groups=[shopeeGroup];
+ spend.shops=[shopeeShop];
+ const shopeeDetail={...spend.items[0],...shopeeShop,source:'API_SHOPEE_CPC',assignment_status:'OFFICIAL'};
+ spend.items=[shopeeDetail,{...shopeeDetail,net_amount:0},
+   {...shopeeDetail,known_net_amount:1,partial_net_amount:2},
+   {...shopeeDetail,reason_net_amount:'业务日汇率缺失'},
+   {...shopeeDetail,platform:'TIKTOK_SHOP',source:'API_GMV',currency:'USD'}];
+ w.FinanceWorkspace.enter('ads');await ready();
+ main=root.querySelector('[data-ad-spend-workspace]');
+ assert.equal(main.querySelector('[data-ad-amount="net_amount"] strong').textContent,'-');
+ const netCells=[...main.querySelectorAll(':scope > .fi-card:not(details) table')].map(t=>{
+   const index=[...t.tHead.rows[0].cells].findIndex(c=>c.textContent==='净广告消耗');
+   return [...t.tBodies[0].rows].map(row=>row.cells[index].textContent);
+ });
+ assert.deepEqual(netCells,[['-'],['-'],['-','0.00','2.00（已知部分）','业务日汇率缺失','接口未返回净消耗']]);
  console.log('Finance advertising spending workspace UI passed');
 }finally{w.FinanceWorkspace.leave();dom.window.close();}
