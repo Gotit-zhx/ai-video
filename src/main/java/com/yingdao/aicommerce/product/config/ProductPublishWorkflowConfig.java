@@ -10,6 +10,8 @@ import java.util.concurrent.ThreadPoolExecutor;
 
 @Configuration
 public class ProductPublishWorkflowConfig {
+    public static final int PRINT_IMAGE_CONCURRENCY = 4;
+
     @Bean(name = "productPublishWorkflowExecutor")
     public Executor productPublishWorkflowExecutor(
             @Value("${app.product-publish-workflow.concurrency:2}") int configuredConcurrency) {
@@ -19,6 +21,18 @@ public class ProductPublishWorkflowConfig {
         executor.setMaxPoolSize(concurrency);
         executor.setQueueCapacity(concurrency * 10);
         executor.setThreadNamePrefix("product-publish-workflow-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
+        com.yingdao.aicommerce.ops.MaintenanceGate.initialize(executor);
+        return executor;
+    }
+
+    @Bean(name = "productPrintImageExecutor")
+    public ThreadPoolTaskExecutor productPrintImageExecutor() {
+        var executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(PRINT_IMAGE_CONCURRENCY);
+        executor.setMaxPoolSize(PRINT_IMAGE_CONCURRENCY);
+        executor.setQueueCapacity(0);
+        executor.setThreadNamePrefix("product-print-image-");
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
         com.yingdao.aicommerce.ops.MaintenanceGate.initialize(executor);
         return executor;

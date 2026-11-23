@@ -1,5 +1,6 @@
 package com.yingdao.aicommerce.product.application;
 
+import com.yingdao.aicommerce.product.config.ProductPublishWorkflowConfig;
 import com.yingdao.aicommerce.product.domain.ProductCapture;
 import com.yingdao.aicommerce.product.domain.ProductPublishWorkflow;
 import com.yingdao.aicommerce.product.mapper.ProductCaptureImageMapper;
@@ -10,6 +11,10 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import tools.jackson.databind.ObjectMapper;
 import java.util.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.AdditionalMatchers.aryEq;
 import static org.mockito.ArgumentMatchers.*;
@@ -26,7 +31,7 @@ class ProductMainImageStyleServiceTest {
     private final ObjectMapper json = new ObjectMapper();
     private final ProductCapture capture = mock(ProductCapture.class);
     private final ProductPublishWorkflow workflow = mock(ProductPublishWorkflow.class);
-    private final ProductMainImageStyleService service = new ProductMainImageStyleService(db, images, archive, downloader, gateway, models, json, templates);
+    private final ProductMainImageStyleService service = imageService(Runnable::run);
     private final String templateId = "12345678-1234-1234-1234-123456789012";
     private Map<String,Object> slot;
     private Map<String,Object> job;
@@ -84,6 +89,77 @@ class ProductMainImageStyleServiceTest {
         assertTrue(service.ensureReady(other, capture));
         assertEquals(List.of("/api/v1/product-main-image-results/" + id), service.progress(other).imageUrls());
         verifyNoMoreInteractions(gateway);
+    }
+
+    @Test void printListingStartsFourPaidCallsTogetherAndSharesTheBatchAcrossShops() throws Exception {
+        var rows = printPlanRows("PREPARED", "PREPARED", "PREPARED", "PREPARED", "PREPARED");
+        var model = new ModelConfigService.RuntimeModelConnection("model", "https://model.example",
+                "gpt-image-2.6", "OPENAI_COMPATIBLE", "CUSTOM", "test");
+        when(models.capturePrintConnectionById("org", "model")).thenReturn(Optional.of(model));
+        when(db.update(contains("SET status='SUBMITTING'"), anyString(), eq(0))).thenReturn(1);
+        var busy = new CountDownLatch(4);
+        var finish = new CountDownLatch(1);
+        var response = new CommerceDesignImageGateway.Response(null,
+                new CommerceDesignImageGateway.PendingResult("https://result.example/image.png", "image/png", "model", "edit", null));
+        when(gateway.generatePrintListingMockup(anyString(), anyString(), eq(model), any())).thenAnswer(invocation -> {
+            busy.countDown();
+            assertTrue(finish.await(10, TimeUnit.SECONDS));
+            return response;
+        });
+
+        var executor = new ProductPublishWorkflowConfig().productPrintImageExecutor();
+        try (var workflowExecutor = Executors.newSingleThreadExecutor()) {
+            var parallel = imageService(executor);
+            var firstShop = workflowExecutor.submit(() -> parallel.ensureReady(workflow, capture));
+            try {
+                assertTrue(busy.await(3, TimeUnit.SECONDS), "All four image calls should start before any returns");
+                var otherShop = mock(ProductPublishWorkflow.class);
+                String request = workflow.getRequestJson();
+                when(otherShop.getRequestJson()).thenReturn(request);
+                when(otherShop.getOrganizationId()).thenReturn("org");
+                when(otherShop.getCaptureId()).thenReturn("capture");
+                assertFalse(parallel.ensureReady(otherShop, capture), "A second shop must reuse the four active jobs");
+                verify(gateway, never()).generatePrintListingMockup(anyString(), eq((String) rows.getLast().get("id")), eq(model), any());
+                assertFalse(firstShop.isDone());
+            } finally {
+                finish.countDown();
+            }
+            assertFalse(firstShop.get(3, TimeUnit.SECONDS));
+            verify(gateway, times(4)).generatePrintListingMockup(anyString(), anyString(), eq(model), any());
+            verify(db, times(4)).update(contains("SET status='RESULT_RECEIVED'"), anyString(), anyString(), eq(0));
+        } finally {
+            executor.shutdown();
+        }
+    }
+
+    @Test void printListingRecoversAnExistingFullBatchBeforePreparingMorePaidCalls() {
+        var rows = printPlanRows("PREPARED", "SUBMITTING", "SUBMITTING", "SUBMITTING", "SUBMITTING");
+        assertFalse(service.ensureReady(workflow, capture));
+        for (var row : rows.subList(1, rows.size())) verify(gateway).operation((String) row.get("id"));
+        verify(gateway, never()).generatePrintListingMockup(anyString(), anyString(), any(), any());
+    }
+
+    private ProductMainImageStyleService imageService(Executor executor) {
+        return new ProductMainImageStyleService(db, images, archive, downloader, gateway, models, json, templates, executor);
+    }
+
+    private List<Map<String, Object>> printPlanRows(String... statuses) {
+        var slots = new ArrayList<ProductPrintImagePlan.Slot>();
+        var rows = new ArrayList<Map<String, Object>>();
+        when(workflow.getCaptureId()).thenReturn("capture");
+        for (int index = 0; index < statuses.length; index++) {
+            var slot = new ProductPrintImagePlan.Slot("图 " + (index + 1), List.of(), "Prompt", ProductPrintImagePlan.MOCKUP, null);
+            slots.add(slot);
+            var row = new LinkedHashMap<>(job);
+            row.put("id", slot.jobId("org", "capture", index, json));
+            row.put("size", slot.size());
+            row.put("status", statuses[index]);
+            rows.add(row);
+        }
+        when(workflow.getRequestJson()).thenReturn(json.writeValueAsString(Map.of("executionMode", "LIVE",
+                "printDirectListing", true, ProductPrintImagePlan.SNAPSHOT, new ProductPrintImagePlan("并发测试", slots))));
+        when(db.queryForList(contains("AND id IN"), any(Object[].class))).thenReturn(rows);
+        return rows;
     }
 
     @Test void originalOnlyTemplateCopiesArchivedReferenceWithoutProductSourceOrAnyModel() {

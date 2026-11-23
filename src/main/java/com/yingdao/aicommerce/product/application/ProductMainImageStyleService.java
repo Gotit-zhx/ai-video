@@ -2,12 +2,15 @@ package com.yingdao.aicommerce.product.application;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yingdao.aicommerce.common.exception.BusinessException;
+import com.yingdao.aicommerce.ops.MaintenanceGate;
+import com.yingdao.aicommerce.product.config.ProductPublishWorkflowConfig;
 import com.yingdao.aicommerce.product.domain.ProductCapture;
 import com.yingdao.aicommerce.product.domain.ProductCaptureImage;
 import com.yingdao.aicommerce.product.domain.ProductPublishWorkflow;
 import com.yingdao.aicommerce.product.mapper.ProductCaptureImageMapper;
 import com.yingdao.aicommerce.saas.application.ModelConfigService;
 import com.yingdao.aicommerce.shop.infrastructure.MarketplaceImageDownloader;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -15,6 +18,11 @@ import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 
 /** Each slot and paid attempt is durable; original capture images are never mutated. */
 @Service
@@ -30,6 +38,8 @@ public class ProductMainImageStyleService {
     private final ModelConfigService models;
     private final ObjectMapper json;
     private final ProductMainImageTemplateService templates;
+    private final Executor printImageExecutor;
+    private final Set<String> activePrintJobs = ConcurrentHashMap.newKeySet();
 
     public record Progress(String templateName, int totalImages, int processedImages, List<String> imageUrls,
                            List<ImageProgress> images) {}
@@ -38,9 +48,11 @@ public class ProductMainImageStyleService {
 
     public ProductMainImageStyleService(JdbcTemplate db, ProductCaptureImageMapper images, CommerceImageArchive archive,
             MarketplaceImageDownloader downloader, CommerceDesignImageGateway gateway,
-            ModelConfigService models, ObjectMapper json, ProductMainImageTemplateService templates) {
+            ModelConfigService models, ObjectMapper json, ProductMainImageTemplateService templates,
+            @Qualifier("productPrintImageExecutor") Executor printImageExecutor) {
         this.db = db; this.images = images; this.archive = archive; this.downloader = downloader;
         this.gateway = gateway; this.models = models; this.json = json; this.templates = templates;
+        this.printImageExecutor = printImageExecutor;
     }
 
     public boolean selected(ProductPublishWorkflow workflow) {
@@ -108,7 +120,7 @@ public class ProductMainImageStyleService {
                 attempt, elapsed, 0, error, "READY".equals(status) ? "/api/v1/product-main-image-results/" + job.get("id") : null, label);
     }
 
-    /** Process at most one slot per workflow claim, releasing the worker between slots. */
+    /** Release the workflow claim between bounded batches of durable image jobs. */
     public boolean ensureReady(ProductPublishWorkflow workflow, ProductCapture capture) {
         if (!selected(workflow)) return true;
         if (directPrint(request(workflow))) {
@@ -120,8 +132,7 @@ public class ProductMainImageStyleService {
                     jobs = printJobs(workflow, plan, true);
                 }
                 if (jobs.contains(null)) throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "图片合成任务尚未完整保存");
-                var pending = jobs.stream().filter(job -> !"READY".equals(job.get("status"))).findFirst();
-                return pending.isEmpty() || processJob(workflow, pending.get());
+                return processPrintJobs(workflow, jobs);
             }
             var job = printJob(workflow);
             if (job == null) {
@@ -138,6 +149,45 @@ public class ProductMainImageStyleService {
         var pending = currentJobs.stream().filter(job -> !"READY".equals(job.get("status"))).findFirst();
         if (pending.isEmpty()) return true;
         return processJob(workflow, pending.get());
+    }
+
+    private boolean processPrintJobs(ProductPublishWorkflow workflow, List<Map<String, Object>> jobs) {
+        var pending = jobs.stream().filter(job -> !"READY".equals(job.get("status"))).toList();
+        if (pending.isEmpty()) return true;
+        for (var job : pending) {
+            if ("FAILED".equals(job.get("status")))
+                throw conflict(Objects.toString(job.get("error_message"), "风格主图生成失败"));
+        }
+
+        // Reserve this batch's capacity for unresolved model calls before starting another paid slot.
+        var batch = pending.stream().sorted(Comparator.comparingInt(job -> switch ((String) job.get("status")) {
+            case "SUBMITTING" -> 0;
+            case "RESULT_RECEIVED" -> 1;
+            default -> 2;
+        })).limit(ProductPublishWorkflowConfig.PRINT_IMAGE_CONCURRENCY).toList();
+        var started = new ArrayList<CompletableFuture<Void>>();
+        for (var job : batch) {
+            if (MaintenanceGate.instance().closed()) break;
+            String id = (String) job.get("id");
+            // Shop workflows can share the same image plan and its job IDs.
+            if (!activePrintJobs.add(id)) continue;
+            try {
+                started.add(CompletableFuture.runAsync(() -> {
+                    try { processJob(workflow, job); }
+                    finally { activePrintJobs.remove(id); }
+                }, printImageExecutor));
+            } catch (RejectedExecutionException busy) {
+                activePrintJobs.remove(id);
+                break;
+            }
+        }
+        try {
+            CompletableFuture.allOf(started.toArray(CompletableFuture<?>[]::new)).join();
+        } catch (CompletionException failure) {
+            if (failure.getCause() instanceof RuntimeException runtime) throw runtime;
+            throw failure;
+        }
+        return false;
     }
 
     private boolean processJob(ProductPublishWorkflow workflow, Map<String, Object> job) {
