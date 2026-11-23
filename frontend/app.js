@@ -7123,7 +7123,7 @@ function renderProductBulkCard(item, shops = [], preview = false) {
   const error = [workflow?.errorMessage || item.error, item.syncError].filter(Boolean).join(' · ');
   const retries = item.retryMessage || (item.retryCount ? `已自动重试 ${item.retryCount} 次` : '');
   const thumb = productBulkThumbnail(item);
-  return `<section class="bulk-product-card is-${tone}" ${item.printProduction ? `data-print-stock="${Number(item.stock)}"` : ""} ${preview ? `data-bulk-item="${escapeHtml(item.id)}"` : ''}>
+  return `<section class="bulk-product-card is-${tone}" ${item.printProduction ? `data-print-stock="${Number(item.stock)}" data-print-skus="${Number(item.skuCount) || 1}"` : ""} ${preview ? `data-bulk-item="${escapeHtml(item.id)}"` : ''}>
     <div class="bulk-product-visual"><span class="bulk-product-placeholder" aria-hidden="true">▧</span>${thumb ? `<img src="${escapeHtml(thumb)}" alt="" loading="lazy" onerror="this.hidden=true">` : ''}
       <span class="bulk-product-badge">${success ? '✓' : failed ? '!' : active ? '◌' : '·'} ${escapeHtml(status)}</span>
       <div class="bulk-product-overlay"><div><span>${escapeHtml(progress)}</span>${percent !== null && !failed ? `<b>${percent}%</b>` : ''}</div><div class="bulk-product-track ${active && percent === null ? 'is-indeterminate' : ''}"><span style="width:${percent === null ? 0 : percent}%"></span></div></div>
@@ -7167,7 +7167,7 @@ function renderProductBulkProgress() {
     const target = shops.find(shop => String(shop.id) === shopId)?.platform;
     const template = target && ProductListingTemplates.get(target);
     const draft = document.querySelector('#product-bulk-items [data-print-stock]');
-    summary.textContent = draft ? `库存 ${Number(draft.dataset.printStock)} · 各店铺应用该款式对应平台的尺码图`
+    summary.textContent = draft ? `${Number(draft.dataset.printSkus) > 1 ? `${Number(draft.dataset.printSkus)} 个规格 · 每个规格` : ''}库存 ${Number(draft.dataset.printStock)} · 各店铺应用该款式对应平台的尺码图`
       : productBulkShopIds().length > 1 ? '各店铺独立应用对应平台模板、类目与物流 · 库存 999 · 原售价换汇'
       : template?.enabled
       ? `${template.name} · ${Number(template.weightGrams)/1000} kg · ${template.packageLengthCm} × ${template.packageWidthCm} × ${template.packageHeightCm} cm · 库存 999 · 自动匹配类目与物流`

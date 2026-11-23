@@ -184,7 +184,9 @@ test('a network failure without a saved attempt can be retried with the same key
 
 
 test('outline dragging and resizing update placement and the adjusted PNG goes to shop selection', async t => {
-  const app = await workspace(t, () => assert.fail('production must not extract again'), [result('a')]);
+  const latest = {...shortSleeve, version: 3, variants: [{...shortSleeve.variants[0], colors: [{name: '黑色', colorCode: 'BK'}, {name: '红色', colorCode: 'RED'}], sizes: [{name: 'Small'}, {name: 'Medium'}]}]};
+  const app = await workspace(t, () => assert.fail('production must not extract again'), [result('a')],
+    {ready: [shortSleeve], editable: [latest]});
   const {get, window} = app;
   assert.equal(get('produce').disabled, true);
   await app.chooseStyle();
@@ -206,6 +208,7 @@ test('outline dragging and resizing update placement and the adjusted PNG goes t
   assert.ok(Number(get('size').value) > 26);
   get('produce').click();
   const form = get('production-form');
+  assert.match(get('production-sizes').textContent, /黑色、红色.*Small、Medium.*4 个规格/);
   assert.equal(form.elements.title.value, '示例');
   for (const [name, value] of Object.entries({category: 'T-shirts', description: 'Cotton', currency: 'PHP', price: '170', stock: '18'})) {
     form.elements[name].value = value;

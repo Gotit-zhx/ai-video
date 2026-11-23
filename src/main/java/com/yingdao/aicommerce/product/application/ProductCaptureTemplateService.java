@@ -1,5 +1,6 @@
 package com.yingdao.aicommerce.product.application;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.common.exception.BusinessException;
 import org.springframework.dao.DuplicateKeyException;
@@ -11,6 +12,7 @@ import org.springframework.web.multipart.MultipartFile;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import javax.imageio.ImageIO;
+import java.math.BigDecimal;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -24,7 +26,14 @@ public class ProductCaptureTemplateService {
     private final CommerceImageArchive archive;
     private final ObjectMapper json;
     public record Color(String id, String name, String hex, String colorCode) {}
-    public record Variant(String id, String name, String imageId, List<Color> colors, String styleCode) {}
+    public record Size(String id, String name, String sizeCode, BigDecimal chestCm, BigDecimal lengthCm,
+                       BigDecimal shoulderCm, BigDecimal sleeveCm) {}
+    public record Variant(String id, String name, String imageId, List<Color> colors, String styleCode,
+                          @JsonInclude(JsonInclude.Include.NON_EMPTY) List<Size> sizes) {
+        public Variant(String id, String name, String imageId, List<Color> colors, String styleCode) {
+            this(id, name, imageId, colors, styleCode, List.of());
+        }
+    }
     public record Save(long version, String name, String description, List<Variant> variants, boolean draft) {
         public Save(long version, String name, String description, List<Variant> variants) {
             this(version, name, description, variants, false);
@@ -32,7 +41,8 @@ public class ProductCaptureTemplateService {
     }
     private record Draft(String name, String description, List<Variant> variants) {}
     public record Image(String id, String imageUrl, String filename, String mimeType, int width, int height) {}
-    public record VariantView(String id, String name, String imageId, String image, String filename, List<Color> colors, String styleCode) {}
+    public record VariantView(String id, String name, String imageId, String image, String filename,
+                              List<Color> colors, String styleCode, List<Size> sizes) {}
     public record View(String id, long version, String name, String description, List<VariantView> variants, boolean draft) {}
     public record Page(List<View> items, long total, int offset, int limit) {}
 
@@ -64,14 +74,15 @@ public class ProductCaptureTemplateService {
         access(user, false); uuid(id);
         return view(row(id, user.organizationId()), user.organizationId(), false);
     }
-    String requirePrintBase(String id, PlatformPrincipal user) {
+    View requirePrintBase(String id, PlatformPrincipal user) {
         access(user, false);
         uuid(id);
         var saved = row(id, user.organizationId());
-        boolean hasBase = view(saved, user.organizationId(), true).variants().stream().anyMatch(variant -> variant.imageId() != null)
-                || view(saved, user.organizationId(), false).variants().stream().anyMatch(variant -> variant.imageId() != null);
+        var current = view(saved, user.organizationId(), false);
+        boolean hasBase = current.variants().stream().anyMatch(variant -> variant.imageId() != null)
+                || view(saved, user.organizationId(), true).variants().stream().anyMatch(variant -> variant.imageId() != null);
         if (!hasBase) throw bad("请先为采集模板保存款式底图");
-        return (String) saved.get("id");
+        return current;
     }
 
     /** An absent scope selects the existing enterprise configuration. A style scope must exist in this enterprise. */
@@ -84,7 +95,7 @@ public class ProductCaptureTemplateService {
     @Transactional
     public View save(String id, Save input, PlatformPrincipal user) {
         access(user, true); uuid(id);
-        Save value = normalize(input);
+        Save value = normalize(preserveUnspecifiedSizes(id, input, user));
         // Only ledger-owned image ids are accepted. Never accept URLs, storage keys or organization ids from a client.
         for (Variant variant : value.variants()) {
             if (variant.imageId() != null) imageRow(variant.imageId(), user.organizationId());
@@ -123,6 +134,18 @@ public class ProductCaptureTemplateService {
             throw fail(HttpStatus.CONFLICT, "模板已被修改，请重新打开后再保存");
         return view(saved, user.organizationId(), false);
     }
+    private Save preserveUnspecifiedSizes(String id, Save input, PlatformPrincipal user) {
+        if (input == null || input.version() <= 0 || input.variants() == null || input.variants().size() != 1) return input;
+        var variant = input.variants().getFirst();
+        if (variant == null || variant.sizes() != null) return input;
+        var stored = view(row(id, user.organizationId()), user.organizationId(), false).variants().stream()
+                .filter(candidate -> Objects.equals(candidate.id(), variant.id())).findFirst();
+        if (stored.isEmpty() || stored.get().sizes().isEmpty()) return input;
+        var merged = new Variant(variant.id(), variant.name(), variant.imageId(),
+                variant.colors(), variant.styleCode(), stored.get().sizes());
+        return new Save(input.version(), input.name(), input.description(), List.of(merged), input.draft());
+    }
+
     public Image upload(MultipartFile file, PlatformPrincipal user) {
         access(user, true);
         if (!archive.usesOss()) throw fail(HttpStatus.SERVICE_UNAVAILABLE, "OSS 未配置，无法上传图片");
@@ -185,10 +208,43 @@ public class ProductCaptureTemplateService {
                 if (required && !hex.matches("#[A-F0-9]{6}")) throw bad("颜色须为有效的 HEX 色值");
                 colors.add(new Color(c.id(), colorName, hex, colorCode));
             }
-            variants.add(new Variant(v.id(), variantName, imageId.isEmpty() ? null : imageId, List.copyOf(colors), styleCode));
+            variants.add(new Variant(v.id(), variantName, imageId.isEmpty() ? null : imageId, List.copyOf(colors), styleCode, normalizeSizes(v.sizes(), required)));
         }
         return new Save(input.version(), name, description, List.copyOf(variants), input.draft());
     }
+    static List<Size> normalizeSizes(List<Size> sizes, boolean required) {
+        if (sizes == null || sizes.isEmpty()) return List.of();
+        if (sizes.size() > 30) throw bad("每个款式最多配置 30 个尺码");
+        var ids = new HashSet<String>();
+        var names = new HashSet<String>();
+        var codes = new HashSet<String>();
+        var result = new ArrayList<Size>();
+        for (Size size : sizes) {
+            if (size == null) throw bad("尺码信息无效");
+            uuid(size.id());
+            if (!ids.add(size.id())) throw bad("尺码编号重复");
+            String name = text(size.name(), 24, required, "尺码名称");
+            if (name.chars().anyMatch(Character::isISOControl)) throw bad("尺码名称须填写在一行内");
+            String code = text(size.sizeCode(), 16, false, "尺码编码").toUpperCase(Locale.ROOT);
+            if (required && code.isEmpty() && name.matches("[A-Za-z0-9]{1,16}")) code = name.toUpperCase(Locale.ROOT);
+            if (required && !code.matches("[A-Z0-9]{1,16}")) throw bad("尺码编码请输入 1 至 16 位英文字母或数字");
+            if (required && (!names.add(name.toUpperCase(Locale.ROOT)) || !codes.add(code))) {
+                throw bad("同一款式的尺码名称和编码不能重复");
+            }
+            result.add(new Size(size.id(), name, code, measurement(size.chestCm()), measurement(size.lengthCm()),
+                    measurement(size.shoulderCm()), measurement(size.sleeveCm())));
+        }
+        return List.copyOf(result);
+    }
+
+    private static BigDecimal measurement(BigDecimal cm) {
+        if (cm == null) return null;
+        if (cm.signum() <= 0 || cm.compareTo(BigDecimal.valueOf(999)) > 0 || cm.stripTrailingZeros().scale() > 2) {
+            throw bad("尺码尺寸须大于 0 且不超过 999 cm，最多两位小数");
+        }
+        return cm.stripTrailingZeros();
+    }
+
     private View view(Map<String, Object> row, String org, boolean readyOnly) {
         Draft draft = !readyOnly && row.get("draft_json") != null
                 ? json.readValue(row.get("draft_json").toString(), Draft.class) : null;
@@ -197,7 +253,7 @@ public class ProductCaptureTemplateService {
         var result = variants.stream().map(v -> {
             Image image = v.imageId() == null ? null : imageView(imageRow(v.imageId(), org));
             return new VariantView(v.id(), v.name(), v.imageId(), image == null ? null : image.imageUrl(),
-                    image == null ? null : image.filename(), v.colors(), v.styleCode());
+                    image == null ? null : image.filename(), v.colors(), v.styleCode(), v.sizes() == null ? List.of() : v.sizes());
         }).toList();
         return new View((String) row.get("id"), ((Number) row.get("version")).longValue(),
                 draft == null ? (String) row.get("name") : draft.name(),

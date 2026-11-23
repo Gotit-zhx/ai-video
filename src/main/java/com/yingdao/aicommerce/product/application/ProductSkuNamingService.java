@@ -1,5 +1,6 @@
 package com.yingdao.aicommerce.product.application;
 
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.security.SecureRandom;
 import java.util.function.IntSupplier;
@@ -36,6 +37,11 @@ public class ProductSkuNamingService {
         var codes = new HashMap<String,ProductSkuNaming.PatternCode>();
         return ProductSkuNaming.assign(organization, sourceIdentity, requested, previous,
                 identity -> codes.computeIfAbsent(identity, key -> resolve(organization, key)));
+    }
+
+    ProductSkuNaming.PatternCode printArtworkCode(String organization, String artworkId) {
+        String key = CommerceImageArchive.sha(("print-artwork\n" + artworkId).getBytes(StandardCharsets.UTF_8));
+        return resolve(organization, key);
     }
 
     private ProductSkuNaming.PatternCode resolve(String organization, String identity) {

@@ -121,6 +121,7 @@ public class ProductPublishWorkflowService {
             if (template.containsKey("captureTemplateId")) {
                 body.remove(ProductMainImageStylePolicy.TEMPLATE);
                 body.put("publishStock", savedRequest.get("publishStock"));
+                if (savedRequest.containsKey("skuStocks")) body.put("skuStocks", savedRequest.get("skuStocks"));
             }
             ProductListingTemplateService.apply(body, template);
             ProductListingLogisticsService.apply(body, ProductListingLogisticsService.snapshotFrom(savedRequest));
@@ -141,12 +142,15 @@ public class ProductPublishWorkflowService {
         String initialStep = initialStep(capture.getStatus());
         String printTemplate = ProductPrintProductionService.templateId(capture, objectMapper);
         if (!printTemplate.isEmpty()) {
-            if (captureDetail.skus().size() != 1 || captureDetail.skus().getFirst().getStock() == null) {
-                throw badRequest("套版商品须有一个规格并填写库存");
+            if (captureDetail.skus().isEmpty() || captureDetail.skus().stream().anyMatch(sku -> sku.getStock() == null)) {
+                throw badRequest("请为每个套版商品规格填写库存");
             }
             body.remove(ProductMainImageStylePolicy.TEMPLATE);
             styleTemplateId = null;
             body.put("publishStock", captureDetail.skus().getFirst().getStock());
+            var skuStocks = new LinkedHashMap<String, Integer>();
+            captureDetail.skus().forEach(sku -> skuStocks.put(sku.getSkuKey(), sku.getStock()));
+            body.put("skuStocks", skuStocks);
         }
         boolean generated = commerceDb != null && commerceDb.queryForObject("SELECT COUNT(*) FROM commerce_batch_publications WHERE organization_id=? AND capture_id=?",Integer.class,principal.organizationId(),captureId)>0;
         // A second shop reuses the approved published assets; reprocessing them would alter

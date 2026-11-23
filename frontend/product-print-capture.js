@@ -525,9 +525,14 @@
       ]);
       if (source !== capture) return;
       const previewable = new Map();
+      const current = new Map(editable.map(item => [item.id, item]));
       for (const item of [...ready, ...editable]) {
-        if (!previewable.has(item.id) && imageUrl(item.variants?.[0]?.image, true)) {
-          previewable.set(item.id, item);
+        const variant = item.variants?.[0];
+        if (!previewable.has(item.id) && imageUrl(variant?.image, true)) {
+          const latest = current.get(item.id) || item;
+          previewable.set(item.id, {...item, version: latest.version,
+            variants: [{...variant, colors: latest.variants?.[0]?.colors || [],
+              sizes: latest.variants?.[0]?.sizes || []}]});
         }
       }
       templates = [...previewable.values()];
@@ -714,7 +719,19 @@
     if (!capture || !activeResult || canvas.dataset.preview !== 'composition' || !hasAnyPermission('product:publish')) return;
     const captureId = capture.captureId;
     const sameSource = preparation?.captureId === captureId;
-    preparation = {captureId, resultId: activeResult, templateId: get('style').value, org: currentUser?.organizationId};
+    const template = templates.find(item => item.id === get('style').value);
+    if (!template) return;
+    preparation = {captureId, resultId: activeResult, templateId: template.id,
+      templateVersion: template.version, org: currentUser?.organizationId};
+    const variant = template.variants[0];
+    const colors = variant.colors.filter(color => color.name?.trim() || color.colorCode?.trim());
+    const sizes = variant.sizes;
+    const options = [];
+    if (colors.length) options.push(`颜色 ${colors.map(color => color.name?.trim() || '未填写').join('、')}`);
+    if (sizes.length) options.push(`尺码 ${sizes.map(size => size.name?.trim() || '未填写').join('、')}`);
+    const count = Math.max(1, colors.length) * Math.max(1, sizes.length);
+    status('production-sizes', options.length
+      ? `${options.join(' · ')} · ${count} 个规格` : '规格 · 默认规格');
     if (!sameSource) {
       productionForm.reset();
       productionForm.elements.title.value = capture.title?.slice(0, 500) || '';
@@ -734,7 +751,8 @@
       return;
     }
     const settings = Object.fromEntries(new FormData(productionForm));
-    Object.assign(settings, {resultId: pending.resultId, templateId: pending.templateId, stock: Number(settings.stock)});
+    Object.assign(settings, {resultId: pending.resultId, templateId: pending.templateId,
+      templateVersion: pending.templateVersion, stock: Number(settings.stock)});
     settings.price = Number(settings.price);
     preparing = true;
     for (const button of productionForm.querySelectorAll('button')) button.disabled = true;

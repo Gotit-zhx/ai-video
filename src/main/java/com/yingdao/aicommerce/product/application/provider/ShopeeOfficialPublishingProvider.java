@@ -118,6 +118,10 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         List<ProductCaptureSku> allSkus = skus(capture);
         if (!com.yingdao.aicommerce.product.application.ProductPublicationSkuNaming.style(request.get("merchantStyleCode")).isEmpty())
             allSkus = publicationSkuNaming.apply(capture, allSkus, request);
+        boolean printProduction = !com.yingdao.aicommerce.product.application.ProductPrintProductionService.skuSuffix(capture, objectMapper).isEmpty();
+        if (client.isSandboxEnvironment() && printProduction && allSkus.size() > 50) {
+            throw conflict("Shopee 沙盒最多上传 50 个规格，请减少颜色或尺码后重试");
+        }
         List<ProductCaptureSku> skus = client.isSandboxEnvironment() ? allSkus.stream().limit(50).toList() : allSkus;
         List<ProductCaptureImage> images = images(capture);
         var styleGallery = mainImageAssets == null ? null : mainImageAssets.gallery(capture, request);
@@ -192,8 +196,9 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         addItem.remove("video_upload_id");
         if (video.present()) addItem.put("video_upload_id", List.of(video.uploadId()));
 
+        boolean sharedColorImage = com.yingdao.aicommerce.product.application.ProductPrintProductionService.sharedColorImage(capture, objectMapper);
         Map<String, Object> fullVariationPayload = variants
-                ? variationPayload("0", skus, publishStock, uploadedByUrl, request)
+                ? variationPayload("0", skus, publishStock, sharedColorImage ? Map.of() : uploadedByUrl, request)
                 : Map.of();
 
         // Everything above is local validation or media staging. Once ADD_ITEM can start,

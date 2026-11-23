@@ -79,7 +79,7 @@
   <link rel="stylesheet" href="/commerce-motion.css?v=workbench-layout-20260921">
   <link rel="stylesheet" href="/product-bulk-history.css?v=20260910-bulk-history-2">
   <link rel="stylesheet" href="/product-print-capture.css?v=20261123-print-production-1">
-  <link rel="stylesheet" href="/product-capture-templates.css?v=20261123-capture-1">
+  <link rel="stylesheet" href="/product-capture-templates.css?v=20261123-size-options-1">
   <link rel="stylesheet" href="/product-main-image-styles.css?v=20261019-detail-1">
   <link rel="stylesheet" href="/knowledge-workspace.css?v=20260923-3">
     <link rel="stylesheet" href="/finance-workspace.css?v=20261123-direct-entry-1">
@@ -1028,10 +1028,11 @@
               <label>商品名称 <input name="title" required maxlength="500"></label>
               <label>商品类目 <input name="category" required maxlength="255" placeholder="输入平台类目名称"></label>
               <label>商品描述 <textarea name="description" required maxlength="10000" rows="3"></textarea></label>
+              <p id="pc-production-sizes" class="pc-status" hidden></p>
               <div class="pc-production-fields">
                 <label>币种 <input name="currency" required maxlength="3" pattern="[A-Za-z]{3}" placeholder="例如 PHP"></label>
-                <label>单规格售价 <input name="price" type="number" min="0.01" step="0.01" max="999999999999.99" required></label>
-                <label>库存 <input name="stock" type="number" min="0" max="999999" step="1" required></label>
+                <label>每个规格售价 <input name="price" type="number" min="0.01" step="0.01" max="999999999999.99" required></label>
+                <label>每个规格库存 <input name="stock" type="number" min="0" max="999999" step="1" required></label>
               </div>
               <p id="pc-production-status" class="pc-status" role="status" hidden></p>
               <div class="dialog-actions">
@@ -1056,7 +1057,13 @@
 
 <div class="ct-variant-editor"><section class="ct-image-section"><div class="ct-field-heading"><h3>款式图片</h3><span>1 张</span></div><div id="ct-dropzone" class="ct-image-preview"><img id="ct-product-image" alt="当前商品款式预览" hidden><div id="ct-image-empty" class="ct-image-empty"><span data-icon="upload"></span><strong>上传款式图片</strong><span>支持拖拽上传</span><button id="ct-choose-image">选择图片</button></div><span id="ct-sample-tag" class="ct-sample-tag" hidden>示例版式</span><button id="ct-replace-image" class="ct-replace-button" hidden><span data-icon="upload"></span>更换图片</button></div><div class="ct-image-caption"><span id="ct-image-filename"></span><span>PNG / JPG / WebP · 最大 8 MiB</span></div><p class="ct-image-hint" id="ct-image-hint" hidden></p></section>
 <section class="ct-color-section"><div class="ct-style-fields"><label>款式名称<input id="ct-variant-name" maxlength="40" placeholder="例如：圆领短袖"></label><label>款式编码<input id="ct-style-code" maxlength="3" placeholder="例如：A01" autocomplete="off" spellcheck="false"></label></div><div class="ct-field-heading ct-color-heading"><h3>对应颜色 <span id="ct-color-count"></span></h3><button id="ct-add-color" class="ct-text-button"><span data-icon="plus"></span>添加颜色</button></div><div class="ct-color-labels"><span>颜色名称</span><span>颜色编码</span><span>HEX 色值</span></div><div id="ct-colors" class="ct-colors"></div><div class="ct-palette-summary"><span>颜色预览</span><div id="ct-palette"></div></div></section></div>
-<footer class="ct-editor-footer"><span id="ct-footer-count"></span></footer>
+<section class="ct-size-section" aria-labelledby="ct-size-heading">
+  <div class="ct-field-heading">
+    <h3 id="ct-size-heading">尺码信息</h3>
+    <button id="ct-add-size" class="ct-text-button" type="button"><span data-icon="plus"></span>添加尺码</button>
+  </div>
+  <div id="ct-sizes"></div>
+</section>
 <section id="ct-main-style-host" class="ct-settings-section" aria-label="主图风格模板"></section>
 <section id="ct-listing-host" class="ct-settings-section listing-template-dialog" aria-labelledby="listing-template-title"></section>
 </section></div>
@@ -2209,9 +2216,9 @@
   <script src="/incremental-dom.js?v=20261021-2" defer></script>
   <script src="/incremental-charts.js?v=20261021-1" defer></script>
   <script src="/video-direct-downloads.js?v=20261102-direct-download-1" defer></script>
-  <script src="/app.js?v=20261123-print-production-1" defer></script>
-  <script src="/product-print-capture.js?v=20261123-print-production-1" defer></script>
-  <script src="/product-capture-templates.js?v=20261123-capture-1" defer></script>
+  <script src="/app.js?v=20261123-size-options-1" defer></script>
+  <script src="/product-print-capture.js?v=20261123-size-options-1" defer></script>
+  <script src="/product-capture-templates.js?v=20261123-size-options-1" defer></script>
   <script src="/product-main-image-styles.js?v=20261123-capture-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261019-94383ea9f5cb" defer></script>
   <script src="/hr-onboarding.js?v=20261021-incremental-1" defer></script>

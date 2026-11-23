@@ -151,7 +151,12 @@ public class ProductListingTemplateService {
         snapshot.put("name", template.name());
         snapshot.put("version", template.version());
         snapshot.put("enabled", template.enabled());
-        snapshot.put("description", template.enabled() ? template.description() : originalDescription(capture));
+        String description = template.enabled() ? template.description() : originalDescription(capture);
+        var measurements = ProductPrintProductionService.sizeMeasurements(capture, json);
+        if (!measurements.isEmpty()) {
+            description = description.stripTrailing() + "\n\nSize measurements\n" + String.join("\n", measurements);
+        }
+        snapshot.put("description", description);
         if (!scope.isEmpty()) snapshot.put("captureTemplateId", scope);
         if (template.enabled() || !scope.isEmpty()) {
             snapshot.put("sizeChartImageKey", text(template.sizeChartImageKey()));

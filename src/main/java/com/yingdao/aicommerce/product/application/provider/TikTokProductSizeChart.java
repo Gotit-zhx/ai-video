@@ -3,6 +3,7 @@ package com.yingdao.aicommerce.product.application.provider;
 import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.product.application.CommerceImageArchive;
 import com.yingdao.aicommerce.product.application.ProductListingTemplateService;
+import com.yingdao.aicommerce.product.application.ProductPrintProductionService;
 import com.yingdao.aicommerce.product.domain.ProductCapture;
 import com.yingdao.aicommerce.product.domain.ProductCaptureImage;
 import com.yingdao.aicommerce.shop.application.MarketplaceAccess;
@@ -100,8 +101,12 @@ public class TikTokProductSizeChart {
             String templateKey = ProductListingTemplateService.sizeChartImageKey(request);
             if (!templateKey.isBlank()) return uploadArchived(capture, connection, templateKey, "TEMPLATE_IMAGE");
             // Listing copy may replace the displayed description; measurements must come from the source.
-            List<String> lines = sourceAttributeLines(normalized.get("attributes"));
-            sourceType = "SOURCE_ATTRIBUTES";
+            List<String> lines = ProductPrintProductionService.sizeMeasurements(capture, json);
+            sourceType = "TEMPLATE_MEASUREMENTS";
+            if (lines.isEmpty()) {
+                lines = sourceAttributeLines(normalized.get("attributes"));
+                sourceType = "SOURCE_ATTRIBUTES";
+            }
             if (lines.isEmpty()) {
                 lines = sourceMeasurementLines(ProductListingTemplateService.sourceDescription(capture, json));
                 sourceType = "SOURCE_MEASUREMENTS";

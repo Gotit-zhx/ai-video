@@ -9,7 +9,7 @@
   all('[data-icon]').forEach((el) => el.outerHTML = icon(el.dataset.icon));
   const uid = () => crypto.randomUUID();
   const color = (name,hex) => ({id:uid(),name,hex,colorCode:''});
-  const variant = (name='',image='',filename='',sample=false) => ({id:uid(),name,image,filename,sample,styleCode:'',colors:[color('','')]});
+  const variant = (name='',image='',filename='',sample=false) => ({id:uid(),name,image,filename,sample,styleCode:'',colors:[color('','')],sizes:[]});
   const newTemplate = () => ({id:uid(),name:'',description:'',variants:[variant()]});
   let templates = [newTemplate()];
   let selected = templates[0].id, toastTimer, picking = null;
@@ -30,7 +30,11 @@
     upload:file=>{const body=new FormData();body.append('file',file);return request(`${endpoint}/images`,{method:'POST',body});},
     save:(template,draft)=>request(`${endpoint}/${encodeURIComponent(template.id)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({
       version:template.version||0,draft,name:template.name,description:template.description,
-      variants:template.variants.map(v=>({id:v.id,name:v.name,imageId:v.imageId,styleCode:v.styleCode,colors:v.colors.map(c=>({id:c.id,name:c.name,hex:c.hex,colorCode:c.colorCode}))}))
+      variants: template.variants.map(v => ({
+        id: v.id, name: v.name, imageId: v.imageId, styleCode: v.styleCode,
+        colors: v.colors.map(c => ({id: c.id, name: c.name, hex: c.hex, colorCode: c.colorCode})),
+        sizes: v.sizes || []
+      }))
     })})
   };
   let canEdit=false, ready=false, busy=false, loaded=0, total=0;
@@ -97,16 +101,13 @@
     });
     if(!list.children.length)list.append(el('p','empty-list','未找到模板'));lockControls();
   }
-  function drawSummary(){
-    $('footer-count').textContent=`${active().colors.length} 个颜色配置`;
-  }
-  function drawEditor(){const t=current();$('editor-title').textContent=t.name||'填写模板';$('template-name').value=t.name;$('template-description').value=t.description;drawSummary();drawVariant();}
+  function drawEditor(){const t=current();$('editor-title').textContent=t.name||'填写模板';$('template-name').value=t.name;$('template-description').value=t.description;drawVariant();drawSizes();}
   function drawVariant(){const v=active();picking=null;$('dropzone').classList.remove('picking');$('image-hint').textContent='';$('image-hint').hidden=true;$('variant-name').value=v.name;$('style-code').value=v.styleCode||'';
     $('product-image').hidden=!v.image;if(v.image)$('product-image').src=v.image;else $('product-image').removeAttribute('src');
     $('image-empty').hidden=!!v.image;$('replace-image').hidden=!v.image;$('sample-tag').hidden=!v.sample;$('image-filename').textContent=v.filename||'尚未上传图片';drawColors();
   }
   function normalize(value){const hex=value.trim().replace(/^#/,'');if(/^[a-f\d]{3}$/i.test(hex))return '#'+hex.split('').map(c=>c+c).join('').toUpperCase();return /^[a-f\d]{6}$/i.test(hex)?'#'+hex.toUpperCase():null;}
-  function drawPalette(){const v=active();$('color-count').textContent=`(${v.colors.length})`;$('palette').replaceChildren();v.colors.filter(c=>normalize(c.hex)).forEach(c=>{const swatch=el('span','palette-chip');swatch.style.backgroundColor=c.hex;swatch.title=`${c.name} ${c.hex}`;$('palette').append(swatch);});drawSummary();drawList();lockControls();}
+  function drawPalette(){const v=active();$('color-count').textContent=`(${v.colors.length})`;$('palette').replaceChildren();v.colors.filter(c=>normalize(c.hex)).forEach(c=>{const swatch=el('span','palette-chip');swatch.style.backgroundColor=c.hex;swatch.title=`${c.name} ${c.hex}`;$('palette').append(swatch);});drawList();lockControls();}
   function drawColors(){
     const container=$('colors');container.replaceChildren();const v=active();
     v.colors.forEach((c,i)=>{const row=el('div','color-row');const swatch=el('input');swatch.type='color';swatch.value=c.hex||'#FFFFFF';swatch.setAttribute('aria-label',`选择第 ${i+1} 个颜色`);
@@ -130,7 +131,75 @@
   $('template-description').oninput=()=>{current().description=$('template-description').value;changed();};
   $('style-code').oninput=()=>{active().styleCode=$('style-code').value;changed();drawList();};
   $('style-code').onblur=()=>{active().styleCode=$('style-code').value.trim().toUpperCase();$('style-code').value=active().styleCode;drawList();};
-  $('variant-name').oninput=()=>{active().name=$('variant-name').value;changed();drawSummary();};$('search').oninput=drawList;
+  $('variant-name').oninput=()=>{active().name=$('variant-name').value;changed();};$('search').oninput=drawList;
+  const sizeFields = [
+    ['name', '尺码名称', '如 M'],
+    ['sizeCode', '尺码编码', '英数可沿用名称'],
+    ['chestCm', '胸围 (cm)'],
+    ['lengthCm', '衣长 (cm)'],
+    ['shoulderCm', '肩宽 (cm)'],
+    ['sleeveCm', '袖长 (cm)']
+  ];
+
+  function drawSizes() {
+    const sizes = active().sizes ||= [];
+    const container = $('sizes');
+    container.replaceChildren();
+    if (!sizes.length) container.append(el('p', 'empty-list', '暂无尺码'));
+    sizes.forEach((size, index) => {
+      const row = el('div', 'size-row');
+      for (const [key, title, placeholder] of sizeFields) {
+        const label = el('label', '', title);
+        const input = el('input');
+        input.value = size[key] ?? '';
+        if (placeholder) {
+          input.placeholder = placeholder;
+          input.maxLength = key === 'name' ? 24 : 16;
+          if (key === 'sizeCode') {
+            input.spellcheck = false;
+            input.onblur = () => { input.value = size[key] = input.value.trim().toUpperCase(); };
+          }
+        } else {
+          input.type = 'number';
+          input.inputMode = 'decimal';
+          input.min = '0.01';
+          input.max = '999';
+          input.step = '0.01';
+        }
+        input.oninput = () => {
+          size[key] = placeholder ? input.value : input.value === '' ? null : input.valueAsNumber;
+          changed();
+        };
+        label.append(input);
+        row.append(label);
+      }
+      const remove = el('button');
+      remove.type = 'button';
+      remove.innerHTML = icon('close');
+      remove.title = '删除尺码';
+      remove.setAttribute('aria-label', `删除第 ${index + 1} 个尺码`);
+      remove.onclick = () => {
+        sizes.splice(index, 1);
+        changed();
+        drawSizes();
+        (container.children[index]?.querySelector('input') || $('add-size')).focus();
+      };
+      row.append(remove);
+      container.append(row);
+    });
+    lockControls();
+  }
+
+  $('add-size').onclick = () => {
+    if (!canEdit || busy) return;
+    const sizes = active().sizes ||= [];
+    if (sizes.length >= 30) { toast('每个款式最多配置 30 个尺码'); return; }
+    sizes.push({id: uid(), name: '', sizeCode: ''});
+    changed();
+    drawSizes();
+    $('sizes').lastElementChild.querySelector('input').focus();
+  };
+
   $('add-color').onclick=()=>{if(!canEdit||busy)return;if(active().colors.length>=30){toast('每个款式最多 30 个颜色');return;}active().colors.push(color('',''));changed();drawColors();$('colors').lastElementChild.querySelectorAll('input')[1].focus();};
   $('choose-image').onclick=$('replace-image').onclick=()=>$('image-input').click();
   async function upload(files){
@@ -164,6 +233,14 @@
       const code = (c.colorCode || '').trim().toUpperCase();
       if (!c.name.trim() || !normalize(c.hex) || !/^[A-Z0-9]{1,16}$/.test(code) || codes.has(code)) return false;
       codes.add(code);
+    }
+    const sizeNames = new Set(), sizeCodes = new Set();
+    for (const size of v.sizes || []) {
+      const name = (size.name || '').trim().toUpperCase();
+      const code = (size.sizeCode || '').trim().toUpperCase() || name;
+      if (!name || sizeNames.has(name) || sizeCodes.has(code) || !/^[A-Z0-9]{1,16}$/.test(code)) return false;
+      sizeNames.add(name);
+      sizeCodes.add(code);
     }
     return true;
   }

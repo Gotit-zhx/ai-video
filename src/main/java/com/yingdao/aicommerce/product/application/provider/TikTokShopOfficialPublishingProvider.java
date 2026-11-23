@@ -151,7 +151,8 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
                 capture, images, connection, categoryRules, request);
 
         TikTokProductVideoUploader.UploadedVideo video = videoUploader.upload(capture, connection, text(request.get("idempotencyKey")));
-        UploadedImages uploaded = uploadImages(connection, images, skus, styleGallery);
+        boolean sharedColorImage = com.yingdao.aicommerce.product.application.ProductPrintProductionService.sharedColorImage(capture, objectMapper);
+        UploadedImages uploaded = uploadImages(connection, images, sharedColorImage ? List.of() : skus, styleGallery);
         if (uploaded.mainImages().isEmpty()) {
             throw conflict("TikTok Shop 发布至少需要一张处理完成的商品图");
         }

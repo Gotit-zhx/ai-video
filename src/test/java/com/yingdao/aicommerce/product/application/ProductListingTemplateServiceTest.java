@@ -42,7 +42,8 @@ class ProductListingTemplateServiceTest {
         var capture = new ProductCapture("org-a", "user", "print-production-hash", "hash", "SHOPEE",
                 "https://shopee.ph/p", null, "1", "Printed T-shirt", "Cotton shirt", "Women > T-shirts",
                 null, "PHP", BigDecimal.TEN, BigDecimal.TEN, "{}",
-                json.writeValueAsString(Map.of("printProductionTemplateId", scope)));
+                json.writeValueAsString(Map.of("printProductionTemplateId", scope,
+                        "printSizeMeasurements", List.of("M  Chest 94 cm / Length 65 cm"))));
         var shopee = new ProductListingTemplateService.Template("SHOPEE", "Shopee", true, "Text",
                 BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, 3, "shopee-chart");
         var tiktok = new ProductListingTemplateService.Template("TIKTOK_SHOP", "TikTok", false, "",
@@ -55,6 +56,9 @@ class ProductListingTemplateServiceTest {
             var body = new LinkedHashMap<String, Object>();
             ProductListingTemplateService.apply(body, service.snapshot("org-a", template.platform(), capture));
             assertEquals(template.sizeChartImageKey(), ProductListingTemplateService.sizeChartImageKey(body));
+            assertEquals((template.enabled() ? "Text" : "Cotton shirt")
+                            + "\n\nSize measurements\nM  Chest 94 cm / Length 65 cm",
+                    ProductListingTemplateService.publicationDescription(capture, body));
         }
     }
     @Test void sourceMeasurementsSurviveMarketingDescriptionReplacement() {

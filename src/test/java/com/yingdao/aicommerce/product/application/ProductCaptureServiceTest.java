@@ -88,12 +88,14 @@ class ProductCaptureServiceTest {
         );
     }
 
-    @Test
-    void printProductionCreatesAnApprovableDraftAndReusesItOnRetry() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void printProductionCreatesAnApprovableDraftAndReusesItOnRetry(boolean sized) throws Exception {
         var json = new ObjectMapper();
         var print = mock(ProductPrintCaptureService.class);
         var captureTemplates = mock(ProductCaptureTemplateService.class);
         var archive = mock(CommerceImageArchive.class);
+        var naming = mock(ProductSkuNamingService.class);
         var user = new PlatformPrincipal("maker", "org-a", "org-a", "maker", "Maker", "",
                 true, List.of(), List.of("product:edit", "product:publish"));
         var source = new ProductCapture(user.organizationId(), user.userId(), "print-source", "hash",
@@ -103,7 +105,21 @@ class ProductCaptureServiceTest {
         when(captureMapper.selectOne(any())).thenReturn(source, (ProductCapture) null);
         when(print.results(source.getId(), user)).thenReturn(List.of(
                 new CommerceSampleService.CaptureResult("photo", "artwork", "READY", "/artwork.png", "")));
-        when(captureTemplates.requirePrintBase("style", user)).thenReturn("style");
+        var sizes = sized ? List.of(
+                new ProductCaptureTemplateService.Size(java.util.UUID.randomUUID().toString(), "Small", "S",
+                        BigDecimal.valueOf(88), BigDecimal.valueOf(62), null, null),
+                new ProductCaptureTemplateService.Size(java.util.UUID.randomUUID().toString(), "Medium", "M",
+                        BigDecimal.valueOf(94), BigDecimal.valueOf(65), null, null)) : List.<ProductCaptureTemplateService.Size>of();
+        var colors = sized ? List.of(
+                new ProductCaptureTemplateService.Color("black", "黑色", "#0A0A0A", "BK"),
+                new ProductCaptureTemplateService.Color("red", "红色", "#81151B", "RED"))
+                : List.<ProductCaptureTemplateService.Color>of();
+        var variant = new ProductCaptureTemplateService.VariantView("variant", "T-shirt", "base", "/base.png",
+                "base.png", colors, "A01", sizes);
+        when(naming.printArtworkCode(user.organizationId(), "artwork"))
+                .thenReturn(new ProductSkuNaming.PatternCode("Z99", "8F3A6C2D"));
+        when(captureTemplates.requirePrintBase("style", user)).thenReturn(
+                new ProductCaptureTemplateService.View("style", 3, "T-shirt", "", List.of(variant), false));
         when(archive.store(eq(user.organizationId()), any(byte[].class)))
                 .thenReturn(new CommerceImageArchive.Archived("tenant/artwork", "hash", "image/png", 128));
 
@@ -112,24 +128,38 @@ class ProductCaptureServiceTest {
         javax.imageio.ImageIO.write(image, "PNG", png);
         var file = new org.springframework.mock.web.MockMultipartFile("image", "layout.png", "image/png", png.toByteArray());
         var settings = new ProductPrintProductionService.Settings("artwork", "style", "Printed T-shirt", "T-Shirts",
-                "Cotton shirt", "PHP", BigDecimal.TEN, 18);
+                "Cotton shirt", "PHP", BigDecimal.TEN, 18, 3L);
         var production = new ProductPrintProductionService(service, print, captureTemplates, archive,
-                captureMapper, imageMapper, skuMapper, json);
+                captureMapper, imageMapper, skuMapper, json, naming);
         var draft = production.prepare(source.getId(), settings, file, user);
 
         var saved = org.mockito.ArgumentCaptor.forClass(ProductCapture.class);
         var sku = org.mockito.ArgumentCaptor.forClass(ProductCaptureSku.class);
         var gallery = org.mockito.ArgumentCaptor.forClass(ProductCaptureImage.class);
         verify(captureMapper).insert(saved.capture());
-        verify(skuMapper).insert(sku.capture());
+        verify(skuMapper, times(sized ? 4 : 1)).insert(sku.capture());
         verify(imageMapper).insert(gallery.capture());
         assertEquals("READY", draft.status());
-        assertEquals(18, sku.getValue().getStock());
+        assertEquals(sized ? 4 : 1, draft.skuCount());
+        var skus = sku.getAllValues();
+        assertTrue(skus.stream().allMatch(row -> row.getStock() == 18));
         assertEquals("style", ProductPrintProductionService.templateId(saved.getValue(), json));
-        assertEquals(List.of(), service.approvalMissingFields(saved.getValue(), List.of(sku.getValue()), List.of(gallery.getValue())));
+        assertEquals(List.of(), service.approvalMissingFields(saved.getValue(), skus, List.of(gallery.getValue())));
+        if (sized) {
+            assertEquals(Map.of("Color", "黑色", "Size", "Small"), json.readValue(skus.getFirst().getAttributesJson(), Map.class));
+            assertEquals(Map.of("Color", "红色", "Size", "Medium"), json.readValue(skus.getLast().getAttributesJson(), Map.class));
+            assertEquals(List.of("BK-A01-S-8F3A6C2D", "BK-A01-M-8F3A6C2D", "RED-A01-S-8F3A6C2D", "RED-A01-M-8F3A6C2D"),
+                    skus.stream().map(ProductCaptureSku::getSellerSku).toList());
+            assertTrue(ProductPrintProductionService.sharedColorImage(saved.getValue(), json));
+            var overrides = new ProductPublicationSkuNaming(naming, json).apply(saved.getValue(), skus, Map.of("merchantStyleCode", "B02"));
+            assertEquals("RED-B02-M-8F3A6C2D", overrides.getLast().getSellerSku());
+            assertEquals(List.of("Small  Chest 88 cm / Length 62 cm", "Medium  Chest 94 cm / Length 65 cm"),
+                    ProductPrintProductionService.sizeMeasurements(saved.getValue(), json));
+        }
         when(captureMapper.selectOne(any())).thenReturn(source, saved.getValue());
         assertEquals(draft.id(), production.prepare(source.getId(), settings, file, user).id());
         verify(captureMapper, times(1)).insert(any(ProductCapture.class));
+        verify(naming).printArtworkCode(user.organizationId(), "artwork");
     }
 
     @Test

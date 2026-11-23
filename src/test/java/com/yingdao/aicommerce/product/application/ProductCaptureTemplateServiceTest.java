@@ -31,6 +31,20 @@ class ProductCaptureTemplateServiceTest {
         assertThrows(BusinessException.class,()->ProductCaptureTemplateService.normalize(new ProductCaptureTemplateService.Save(0,"t","",List.of(invalid))));
         for(String hex:List.of("red","#ZZZZZZ","#12345",""))assertThrows(BusinessException.class,()->ProductCaptureTemplateService.normalize(input(0,hex)));
     }
+    @Test void sizeRowsSupportLegacyTemplatesAndRejectDuplicateOptionsOrInvalidMeasurements() {
+        assertEquals(List.of(), ProductCaptureTemplateService.normalizeSizes(null, true));
+        var small = new ProductCaptureTemplateService.Size(UUID.randomUUID().toString(), " S ", "",
+                new java.math.BigDecimal("88.50"), null, null, null);
+        var normalized = ProductCaptureTemplateService.normalizeSizes(List.of(small), true).getFirst();
+        assertEquals("S", normalized.name());
+        assertEquals("S", normalized.sizeCode());
+        assertEquals("88.5", normalized.chestCm().toPlainString());
+        var duplicate = new ProductCaptureTemplateService.Size(UUID.randomUUID().toString(), "s", "S2", null, null, null, null);
+        assertThrows(BusinessException.class, () -> ProductCaptureTemplateService.normalizeSizes(List.of(small, duplicate), true));
+        var invalid = new ProductCaptureTemplateService.Size(UUID.randomUUID().toString(), "M", "M",
+                java.math.BigDecimal.valueOf(-1), null, null, null);
+        assertThrows(BusinessException.class, () -> ProductCaptureTemplateService.normalizeSizes(List.of(invalid), false));
+    }
     @Test void unauthorizedAndReadonlyWritesStopBeforeAnyDatabaseOrStorageAccess() {
         var db=mock(JdbcTemplate.class);var archive=mock(CommerceImageArchive.class);
         var service=new ProductCaptureTemplateService(db,archive,new ObjectMapper());

@@ -1,6 +1,8 @@
 package com.yingdao.aicommerce.product.application.provider;
 
 import com.yingdao.aicommerce.common.exception.BusinessException;
+import com.yingdao.aicommerce.product.application.ProductListingTemplateService;
+import com.yingdao.aicommerce.product.application.ProductPrintProductionService;
 import com.yingdao.aicommerce.product.domain.*;
 import com.yingdao.aicommerce.saas.application.ModelConfigService;
 import com.yingdao.aicommerce.shop.application.MarketplaceAccess;
@@ -47,7 +49,12 @@ public class ShopeeSizeChartExtractor {
         if(!Objects.equals(capture.getOrganizationId(),connection.shop().getOrganizationId()))throw bad("尺码表与店铺不属于同一企业");
         var response=MarketplaceHttp.object(client.shopGet(ShopeeProductTitle.LIMITS,connection,Map.of("category_id",category)),"response");
         var rule=MarketplaceHttp.object(response,"size_chart_limit");
-        if(!Boolean.TRUE.equals(rule.get("size_chart_mandatory")))return Map.of();
+        var configuredMeasurements = ProductPrintProductionService.sizeMeasurements(capture, json);
+        var configuredChart = ProductListingTemplateService.sizeChartImageKey(request);
+        boolean optionalPrintChart = Boolean.TRUE.equals(rule.get("support_image_size_chart"))
+                && ProductListingTemplateService.snapshotFrom(request).containsKey("captureTemplateId")
+                && (!configuredChart.isBlank() || !configuredMeasurements.isEmpty());
+        if (!Boolean.TRUE.equals(rule.get("size_chart_mandatory")) && !optionalPrintChart) return Map.of();
         if(Boolean.FALSE.equals(rule.get("support_image_size_chart")))throw bad("目标类目不支持图片尺码表，需要选择官方尺码模板");
         try {
             String batchKey = String.valueOf(request.getOrDefault("sizeChartImageKey", "")).strip();
@@ -65,14 +72,18 @@ public class ShopeeSizeChartExtractor {
                 byte[] original = originalImage(capture, sourceCharts.getFirst());
                 return upload(connection, png(ImageIO.read(new ByteArrayInputStream(original))), "image/png");
             }
-            String templateKey = com.yingdao.aicommerce.product.application.ProductListingTemplateService.sizeChartImageKey(request);
+            String templateKey = configuredChart;
             if (!templateKey.isBlank()) {
                 var template = archive.read(capture.getOrganizationId(), templateKey);
                 // The configured, tenant-owned chart is already selected by the operator.
                 // Publish it directly: model OCR is not required to use an explicit template.
                 return upload(connection, Base64.getDecoder().decode(template.dataBase64()), template.mimeType());
             }
-            String sourceDescription = com.yingdao.aicommerce.product.application.ProductListingTemplateService.sourceDescription(capture, json);
+            if (!configuredMeasurements.isEmpty()) {
+                var chart = TikTokProductSizeChart.renderSourceMeasurements(configuredMeasurements);
+                return upload(connection, chart.bytes(), chart.contentType());
+            }
+            String sourceDescription = ProductListingTemplateService.sourceDescription(capture, json);
             var candidates=images.stream().filter(i->List.of("SIZE_CHART","DETAIL","MAIN","GALLERY").contains(i.getRoleName()))
                     .sorted(Comparator.comparingInt(i->"SIZE_CHART".equals(i.getRoleName())?0:"DETAIL".equals(i.getRoleName())?1:2)).limit(24).toList();
             for(var i:candidates)if(!Objects.equals(i.getOrganizationId(),capture.getOrganizationId())||!Objects.equals(i.getCaptureId(),capture.getId()))throw bad("尺码图归属不一致");
