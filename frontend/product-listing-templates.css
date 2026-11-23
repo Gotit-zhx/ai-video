@@ -28,3 +28,10 @@
 #product-bulk-size-chart-status,#product-bulk-size-chart-error{flex-basis:100%;font-size:12px;color:var(--muted)}
 #product-bulk-size-chart-error:empty{display:none}
 #product-bulk-size-chart-error{color:var(--danger)}
+
+
+#listing-template-chart-preview {display:block;max-width:100%;max-height:160px;object-fit:contain;margin:0 0 12px}
+#listing-template-chart-preview[hidden] {display:none}
+.listing-chart-actions {display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+#capture-template-workspace .listing-chart-actions input[type=file] {width:auto;max-width:100%;padding:6px}
+#capture-template-workspace #listing-template-chart-status {margin-top:8px;color:var(--muted);font-size:12px}

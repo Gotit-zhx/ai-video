@@ -78,7 +78,7 @@
   <link rel="stylesheet" href="/commerce-artwork-library.css?v=artwork-library-20260916-1">
   <link rel="stylesheet" href="/commerce-motion.css?v=workbench-layout-20260921">
   <link rel="stylesheet" href="/product-bulk-history.css?v=20260910-bulk-history-2">
-  <link rel="stylesheet" href="/product-print-capture.css?v=20261123-print-preview-1">
+  <link rel="stylesheet" href="/product-print-capture.css?v=20261123-print-production-1">
   <link rel="stylesheet" href="/product-capture-templates.css?v=20261123-capture-1">
   <link rel="stylesheet" href="/product-main-image-styles.css?v=20261019-detail-1">
   <link rel="stylesheet" href="/knowledge-workspace.css?v=20260923-3">
@@ -994,7 +994,8 @@
                 <h2 id="pc-composition-heading">套版预览</h2>
                 <div class="pc-tools">
                   <button id="pc-arrange" class="quiet-button" type="button" aria-expanded="false" aria-controls="pc-placement" disabled>排版</button>
-                  <button id="pc-download" class="primary-button" type="button" disabled>下载图片</button>
+                  <button id="pc-download" class="quiet-button" type="button" disabled>下载图片</button>
+                  <button id="pc-produce" class="primary-button" type="button" disabled hidden>开始制作</button>
                 </div>
               </header>
               <div id="pc-style-controls" hidden>
@@ -1004,9 +1005,13 @@
                 <a href="#product-capture-templates" id="pc-template-link" hidden>前往采集模板</a>
               </div>
               <div class="pc-preview">
-                <canvas id="pc-canvas" aria-label="印花套版预览" hidden></canvas>
+                <div class="pc-preview-art">
+                  <canvas id="pc-canvas" aria-label="印花套版预览" hidden></canvas>
+                  <div id="pc-print-box" aria-hidden="true" hidden><span id="pc-print-resize"></span></div>
+                </div>
                 <p id="pc-preview-state" role="status">提取印花后，选择款式预览。</p>
               </div>
+              <p id="pc-adjust-hint" class="pc-status" hidden>拖动印花移动位置，拖右下角缩放。</p>
               <div id="pc-placement" hidden>
                 <label>大小 <output for="pc-size" id="pc-size-value">26%</output><input type="range" id="pc-size" min="5" max="85" value="26"></label>
                 <label>左右 <output for="pc-x" id="pc-x-value">50%</output><input type="range" id="pc-x" min="0" max="100" value="50"></label>
@@ -1015,6 +1020,26 @@
               </div>
             </section>
           </div>
+          <dialog id="pc-production" class="manage-dialog compact-dialog" aria-labelledby="pc-production-title">
+            <form id="pc-production-form">
+              <div class="dialog-heading"><h2 id="pc-production-title">开始制作</h2>
+                <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+              </div>
+              <label>商品名称 <input name="title" required maxlength="500"></label>
+              <label>商品类目 <input name="category" required maxlength="255" placeholder="输入平台类目名称"></label>
+              <label>商品描述 <textarea name="description" required maxlength="10000" rows="3"></textarea></label>
+              <div class="pc-production-fields">
+                <label>币种 <input name="currency" required maxlength="3" pattern="[A-Za-z]{3}" placeholder="例如 PHP"></label>
+                <label>单规格售价 <input name="price" type="number" min="0.01" step="0.01" max="999999999999.99" required></label>
+                <label>库存 <input name="stock" type="number" min="0" max="999999" step="1" required></label>
+              </div>
+              <p id="pc-production-status" class="pc-status" role="status" hidden></p>
+              <div class="dialog-actions">
+                <button type="button" class="quiet-button" data-close-dialog>取消</button>
+                <button id="pc-production-next" type="submit" class="primary-button">制作并选择店铺</button>
+              </div>
+            </form>
+          </dialog>
           <p id="pc-no-access" hidden>当前账号没有商品编辑权限。</p>
         </section>
 
@@ -2079,7 +2104,7 @@
             <select id="product-bulk-shop" multiple hidden aria-label="目标店铺"></select>
             <details class="product-bulk-shop-picker"><summary id="product-bulk-shop-summary">请选择目标店铺（可多选）</summary><div id="product-bulk-shop-options" role="group" aria-label="选择上传店铺"></div></details>
           </div>
-          <label>主图风格模板 <span class="main-style-optional">可选</span><select id="product-bulk-main-style"><option value="">不使用风格模板</option></select></label>
+          <label id="product-bulk-main-style-field">主图风格模板 <span class="main-style-optional">可选</span><select id="product-bulk-main-style"><option value="">不使用风格模板</option></select></label>
         </div>
         <div id="product-bulk-main-style-preview" class="main-style-bulk-preview" hidden></div>
         <p id="product-bulk-main-style-status" role="status"></p>
@@ -2153,6 +2178,16 @@
           <p class="listing-template-note">只使用当前店铺已启用的发货仓，不使用退货仓。可选择其他仓库并保存。</p>
         </section>
         <label>详情文案<textarea id="listing-template-description" rows="12" maxlength="9000" translate="no"></textarea></label>
+        <section id="listing-template-chart" class="listing-logistics-section" aria-label="尺码图" hidden>
+          <header><strong>尺码图</strong></header>
+          <img id="listing-template-chart-preview" alt="当前平台尺码图" hidden>
+          <div class="listing-chart-actions">
+            <label for="listing-template-chart-file">上传尺码图</label>
+            <input id="listing-template-chart-file" type="file" accept="image/png,image/jpeg">
+            <button id="listing-template-chart-remove" type="button" hidden>移除尺码图</button>
+          </div>
+          <p id="listing-template-chart-status" role="status"></p>
+        </section>
         <p class="listing-template-note">SKU、原价、原图与原类目保留。两个平台独立保存；已提交的任务沿用提交时的模板。</p>
         <p id="listing-template-status" role="status"></p><p id="listing-template-error" role="alert"></p>
       </div>
@@ -2169,13 +2204,13 @@
   <script src="/product-bulk-size-chart.js?v=20261029-size-chart-repair" defer></script>
   <script src="/product-bulk-history.js?v=languages-20260921-2" defer></script>
   <script src="/video-script-terminal.js?v=languages-20260921-2" defer></script>
-  <link rel="stylesheet" href="/product-listing-templates.css?v=20261123-capture-1">
-  <script src="/product-listing-templates.js?v=20261123-capture-1" defer></script>
+  <link rel="stylesheet" href="/product-listing-templates.css?v=20261123-print-production-1">
+  <script src="/product-listing-templates.js?v=20261123-print-production-1" defer></script>
   <script src="/incremental-dom.js?v=20261021-2" defer></script>
   <script src="/incremental-charts.js?v=20261021-1" defer></script>
   <script src="/video-direct-downloads.js?v=20261102-direct-download-1" defer></script>
-  <script src="/app.js?v=20261123-capture-1" defer></script>
-  <script src="/product-print-capture.js?v=20261123-print-preview-1" defer></script>
+  <script src="/app.js?v=20261123-print-production-1" defer></script>
+  <script src="/product-print-capture.js?v=20261123-print-production-1" defer></script>
   <script src="/product-capture-templates.js?v=20261123-capture-1" defer></script>
   <script src="/product-main-image-styles.js?v=20261123-capture-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261019-94383ea9f5cb" defer></script>

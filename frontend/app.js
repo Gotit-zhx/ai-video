@@ -7123,12 +7123,12 @@ function renderProductBulkCard(item, shops = [], preview = false) {
   const error = [workflow?.errorMessage || item.error, item.syncError].filter(Boolean).join(' · ');
   const retries = item.retryMessage || (item.retryCount ? `已自动重试 ${item.retryCount} 次` : '');
   const thumb = productBulkThumbnail(item);
-  return `<section class="bulk-product-card is-${tone}" ${preview ? `data-bulk-item="${escapeHtml(item.id)}"` : ''}>
+  return `<section class="bulk-product-card is-${tone}" ${item.printProduction ? `data-print-stock="${Number(item.stock)}"` : ""} ${preview ? `data-bulk-item="${escapeHtml(item.id)}"` : ''}>
     <div class="bulk-product-visual"><span class="bulk-product-placeholder" aria-hidden="true">▧</span>${thumb ? `<img src="${escapeHtml(thumb)}" alt="" loading="lazy" onerror="this.hidden=true">` : ''}
       <span class="bulk-product-badge">${success ? '✓' : failed ? '!' : active ? '◌' : '·'} ${escapeHtml(status)}</span>
       <div class="bulk-product-overlay"><div><span>${escapeHtml(progress)}</span>${percent !== null && !failed ? `<b>${percent}%</b>` : ''}</div><div class="bulk-product-track ${active && percent === null ? 'is-indeterminate' : ''}"><span style="width:${percent === null ? 0 : percent}%"></span></div></div>
     </div><div class="bulk-product-info"><strong title="${escapeHtml(item.title)}" translate="no">${escapeHtml(item.title)}</strong>
-      ${shopName ? `<small title="${escapeHtml(shopName)}">${escapeHtml(shopName)}</small>` : '<small>原价换汇 · 库存 999 · 自动匹配类目</small>'}
+      ${shopName ? `<small title="${escapeHtml(shopName)}">${escapeHtml(shopName)}</small>` : `<small>售价换汇 · 库存 ${item.printProduction ? Number(item.stock) : 999} · 自动匹配类目</small>`}
       ${renderProductMainImageProgress(workflow, true)}
       ${error ? `<details class="bulk-product-error"><summary>${success ? '查看状态同步提示' : '查看失败原因'}</summary><p>${escapeHtml(error)}</p></details>` : ''}
       ${retries ? `<small class="bulk-product-retry">${escapeHtml(retries)}</small>` : ''}</div></section>`;
@@ -7166,7 +7166,9 @@ function renderProductBulkProgress() {
     const shopId = productBulkShopIds()[0];
     const target = shops.find(shop => String(shop.id) === shopId)?.platform;
     const template = target && ProductListingTemplates.get(target);
-    summary.textContent = productBulkShopIds().length > 1 ? '各店铺独立应用对应平台模板、类目与物流 · 库存 999 · 原售价换汇'
+    const draft = document.querySelector('#product-bulk-items [data-print-stock]');
+    summary.textContent = draft ? `库存 ${Number(draft.dataset.printStock)} · 各店铺应用该款式对应平台的尺码图`
+      : productBulkShopIds().length > 1 ? '各店铺独立应用对应平台模板、类目与物流 · 库存 999 · 原售价换汇'
       : template?.enabled
       ? `${template.name} · ${Number(template.weightGrams)/1000} kg · ${template.packageLengthCm} × ${template.packageWidthCm} × ${template.packageHeightCm} cm · 库存 999 · 自动匹配类目与物流`
       : '自动套用目标平台配置 · 库存 999 · 默认无品牌 · 自动匹配类目与物流 · 原售价换汇';
@@ -7305,7 +7307,8 @@ async function pollProductBulkProgress() {
 async function openProductBulkUpload(historyKey, captureId) {
   if (!hasAnyPermission("product:publish")) return;
   if (typeof historyKey !== 'string') historyKey = '';
-  const directCapture = typeof captureId === 'string' ? productCaptures.find(item => item.id === captureId) : null;
+  const directCapture = captureId?.printProduction === true ? captureId
+    : typeof captureId === 'string' ? productCaptures.find(item => item.id === captureId) : null;
   if (captureId && !productCaptureCanUpload(directCapture)) return;
   if (!historyKey && !directCapture && !productBulkSelectedIds.size) return;
   const org = currentUser?.organizationId;
@@ -7329,11 +7332,17 @@ async function openProductBulkUpload(historyKey, captureId) {
   document.querySelector('#product-bulk-merchant-style').value = merchantItem?.payload?.merchantStyleCode || merchantItem?.merchantStyleCode || '';
   document.querySelector('#product-bulk-merchant-style').setCustomValidity('');
   ProductBulkSizeChart.open(org,productBulkStorageKey,productBulkItems);
-  void globalThis.ProductMainImageStyles?.loadBulk(productBulkItems, {org, view});
+  const style = document.querySelector('#product-bulk-main-style');
+  document.querySelector('#product-bulk-main-style-field').hidden = !!directCapture?.printProduction;
+  if (directCapture?.printProduction) {
+    style.value = '';
+    document.querySelector('#product-bulk-main-style-preview').hidden = true;
+    document.querySelector('#product-bulk-main-style-status').textContent = '';
+  } else void globalThis.ProductMainImageStyles?.loadBulk(productBulkItems, {org, view});
   const shops = crossPlatformPublishShops();
   const select = document.querySelector('#product-bulk-shop');
   select.innerHTML = `<option value="">${shops.length ? '请选择目标店铺' : '没有可发布的授权店铺'}</option>` + shops.map(shop => `<option value="${escapeHtml(shop.id)}">${escapeHtml(shop.name || shop.shopName || shop.externalShopId)} · ${escapeHtml(shop.region || '')} · ${escapeHtml(shop.platform === 'TIKTOK_SHOP' ? 'TikTok Shop' : 'Shopee')}</option>`).join('');
-  const selected = selectedIds.map(id => productCaptures.find(item => item.id === id) || productBulkSelectedCaptures.get(id)
+  const selected = selectedIds.map(id => (directCapture?.id === id ? directCapture : null) || productCaptures.find(item => item.id === id) || productBulkSelectedCaptures.get(id)
     || (saved && {id, title:saved.items.find(item => item.captureId === id)?.title})).filter(Boolean);
   const republishing = selected.some(item => item.status === 'PUBLISHED');
   setProductBulkShopIds(shops.length === 1 && !republishing ? [String(shops[0].id)] : []);

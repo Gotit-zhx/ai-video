@@ -34,6 +34,29 @@ class ProductListingTemplateServiceTest {
         assertEquals("",ProductListingTemplateService.sizeChartImageKey(Map.of(
                 "listingTemplateSnapshot",Map.of("enabled",false,"sizeChartImageKey","tenant/chart"))));
     }
+    @Test void producedPrintUsesTheSelectedStylesChartForEachPlatform() {
+        var db = mock(JdbcTemplate.class);
+        var json = new ObjectMapper();
+        var service = new ProductListingTemplateService(db, json);
+        var scope = "30a96487-b38d-46cb-a4eb-c35d60db4564";
+        var capture = new ProductCapture("org-a", "user", "print-production-hash", "hash", "SHOPEE",
+                "https://shopee.ph/p", null, "1", "Printed T-shirt", "Cotton shirt", "Women > T-shirts",
+                null, "PHP", BigDecimal.TEN, BigDecimal.TEN, "{}",
+                json.writeValueAsString(Map.of("printProductionTemplateId", scope)));
+        var shopee = new ProductListingTemplateService.Template("SHOPEE", "Shopee", true, "Text",
+                BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, 3, "shopee-chart");
+        var tiktok = new ProductListingTemplateService.Template("TIKTOK_SHOP", "TikTok", false, "",
+                BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, 4, "tiktok-chart");
+        when(db.query(contains("capture_template_id=?"), any(RowMapper.class), eq("org-a"), eq("SHOPEE"), eq("CAPTURE"), eq(scope)))
+                .thenReturn(List.of(shopee));
+        when(db.query(contains("capture_template_id=?"), any(RowMapper.class), eq("org-a"), eq("TIKTOK_SHOP"), eq("CAPTURE"), eq(scope)))
+                .thenReturn(List.of(tiktok));
+        for (var template : List.of(shopee, tiktok)) {
+            var body = new LinkedHashMap<String, Object>();
+            ProductListingTemplateService.apply(body, service.snapshot("org-a", template.platform(), capture));
+            assertEquals(template.sizeChartImageKey(), ProductListingTemplateService.sizeChartImageKey(body));
+        }
+    }
     @Test void sourceMeasurementsSurviveMarketingDescriptionReplacement() {
         var json=new ObjectMapper();
         var original="Size (cm) Chest Length\\nS 80 55\\nM 84 57";

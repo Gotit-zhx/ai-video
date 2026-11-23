@@ -89,6 +89,50 @@ class ProductCaptureServiceTest {
     }
 
     @Test
+    void printProductionCreatesAnApprovableDraftAndReusesItOnRetry() throws Exception {
+        var json = new ObjectMapper();
+        var print = mock(ProductPrintCaptureService.class);
+        var captureTemplates = mock(ProductCaptureTemplateService.class);
+        var archive = mock(CommerceImageArchive.class);
+        var user = new PlatformPrincipal("maker", "org-a", "org-a", "maker", "Maker", "",
+                true, List.of(), List.of("product:edit", "product:publish"));
+        var source = new ProductCapture(user.organizationId(), user.userId(), "print-source", "hash",
+                "SHOPEE", "https://shopee.ph/product/1/2", "1", "2", "source", "", "",
+                null, "PHP", null, null, "{}", "{}");
+        source.assignPrintSource();
+        when(captureMapper.selectOne(any())).thenReturn(source, (ProductCapture) null);
+        when(print.results(source.getId(), user)).thenReturn(List.of(
+                new CommerceSampleService.CaptureResult("photo", "artwork", "READY", "/artwork.png", "")));
+        when(captureTemplates.requirePrintBase("style", user)).thenReturn("style");
+        when(archive.store(eq(user.organizationId()), any(byte[].class)))
+                .thenReturn(new CommerceImageArchive.Archived("tenant/artwork", "hash", "image/png", 128));
+
+        var image = new java.awt.image.BufferedImage(160, 160, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        var png = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(image, "PNG", png);
+        var file = new org.springframework.mock.web.MockMultipartFile("image", "layout.png", "image/png", png.toByteArray());
+        var settings = new ProductPrintProductionService.Settings("artwork", "style", "Printed T-shirt", "T-Shirts",
+                "Cotton shirt", "PHP", BigDecimal.TEN, 18);
+        var production = new ProductPrintProductionService(service, print, captureTemplates, archive,
+                captureMapper, imageMapper, skuMapper, json);
+        var draft = production.prepare(source.getId(), settings, file, user);
+
+        var saved = org.mockito.ArgumentCaptor.forClass(ProductCapture.class);
+        var sku = org.mockito.ArgumentCaptor.forClass(ProductCaptureSku.class);
+        var gallery = org.mockito.ArgumentCaptor.forClass(ProductCaptureImage.class);
+        verify(captureMapper).insert(saved.capture());
+        verify(skuMapper).insert(sku.capture());
+        verify(imageMapper).insert(gallery.capture());
+        assertEquals("READY", draft.status());
+        assertEquals(18, sku.getValue().getStock());
+        assertEquals("style", ProductPrintProductionService.templateId(saved.getValue(), json));
+        assertEquals(List.of(), service.approvalMissingFields(saved.getValue(), List.of(sku.getValue()), List.of(gallery.getValue())));
+        when(captureMapper.selectOne(any())).thenReturn(source, saved.getValue());
+        assertEquals(draft.id(), production.prepare(source.getId(), settings, file, user).id());
+        verify(captureMapper, times(1)).insert(any(ProductCapture.class));
+    }
+
+    @Test
     void collectionPersistsMerchantCodesAndRetainsOriginalSkuFacts() {
         ProductSkuNamingService naming = mock(ProductSkuNamingService.class);
         org.springframework.test.util.ReflectionTestUtils.setField(service, "skuNaming", naming);

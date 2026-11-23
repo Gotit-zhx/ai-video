@@ -117,7 +117,12 @@ public class ProductPublishWorkflowService {
         if (sameKey != null) {
             body.put("executionMode", executionMode(sameKey));
             var savedRequest = request(sameKey);
-            ProductListingTemplateService.apply(body, ProductListingTemplateService.snapshotFrom(savedRequest));
+            var template = ProductListingTemplateService.snapshotFrom(savedRequest);
+            if (template.containsKey("captureTemplateId")) {
+                body.remove(ProductMainImageStylePolicy.TEMPLATE);
+                body.put("publishStock", savedRequest.get("publishStock"));
+            }
+            ProductListingTemplateService.apply(body, template);
             ProductListingLogisticsService.apply(body, ProductListingLogisticsService.snapshotFrom(savedRequest));
             if (savedRequest.containsKey("exchangeRateSnapshot")) body.put("exchangeRateSnapshot", savedRequest.get("exchangeRateSnapshot"));
             if (savedRequest.containsKey("visionWatermarkCheck")) body.put("visionWatermarkCheck",savedRequest.get("visionWatermarkCheck"));
@@ -134,10 +139,19 @@ public class ProductPublishWorkflowService {
         ProductCaptureService.CaptureDetail captureDetail = captureService.get(captureId, principal);
         ProductCapture capture = captureDetail.capture();
         String initialStep = initialStep(capture.getStatus());
+        String printTemplate = ProductPrintProductionService.templateId(capture, objectMapper);
+        if (!printTemplate.isEmpty()) {
+            if (captureDetail.skus().size() != 1 || captureDetail.skus().getFirst().getStock() == null) {
+                throw badRequest("套版商品须有一个规格并填写库存");
+            }
+            body.remove(ProductMainImageStylePolicy.TEMPLATE);
+            styleTemplateId = null;
+            body.put("publishStock", captureDetail.skus().getFirst().getStock());
+        }
         boolean generated = commerceDb != null && commerceDb.queryForObject("SELECT COUNT(*) FROM commerce_batch_publications WHERE organization_id=? AND capture_id=?",Integer.class,principal.organizationId(),captureId)>0;
         // A second shop reuses the approved published assets; reprocessing them would alter
         // the local images referenced by the first shop's retained publication history.
-        boolean watermarkCheck = "AI_WATERMARK_V1".equals(watermarkProvider) && !generated
+        boolean watermarkCheck = "AI_WATERMARK_V1".equals(watermarkProvider) && !generated && printTemplate.isEmpty()
                 && !"PUBLISHED".equals(capture.getStatus());
         body.put("visionWatermarkCheck", watermarkCheck);
         if (watermarkCheck) initialStep = "IMAGES";
@@ -162,7 +176,10 @@ public class ProductPublishWorkflowService {
             requestJson = writeJson(body);
         }
         if (listingLogistics != null && "SHOPEE".equals(destination) && MODE_LIVE.equals(executionMode)) {
-            ProductListingLogisticsService.apply(body, listingLogistics.snapshot(principal.organizationId(), storedShopId, capture.getDataModule()));
+            var logistics = printTemplate.isEmpty()
+                    ? listingLogistics.snapshot(principal.organizationId(), storedShopId, capture.getDataModule())
+                    : listingLogistics.snapshot(principal.organizationId(), storedShopId, capture.getDataModule(), printTemplate);
+            ProductListingLogisticsService.apply(body, logistics);
             requestJson = writeJson(body);
         }
         if (requestJson.length() > MAX_REQUEST_JSON_LENGTH) {

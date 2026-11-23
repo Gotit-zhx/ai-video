@@ -142,7 +142,9 @@ public class ProductListingTemplateService {
     }
 
     public Map<String, Object> snapshot(String organizationId, String destination, ProductCapture capture) {
-        Template template = get(organizationId, destination, capture.getDataModule());
+        String scope = ProductPrintProductionService.templateId(capture, json);
+        Template template = scope.isEmpty() ? get(organizationId, destination, capture.getDataModule())
+                : get(organizationId, destination, capture.getDataModule(), scope);
         var snapshot = new LinkedHashMap<String, Object>();
         snapshot.put("platform", template.platform());
         snapshot.put("dataModule", capture.getDataModule());
@@ -150,8 +152,11 @@ public class ProductListingTemplateService {
         snapshot.put("version", template.version());
         snapshot.put("enabled", template.enabled());
         snapshot.put("description", template.enabled() ? template.description() : originalDescription(capture));
-        if (template.enabled()) {
+        if (!scope.isEmpty()) snapshot.put("captureTemplateId", scope);
+        if (template.enabled() || !scope.isEmpty()) {
             snapshot.put("sizeChartImageKey", text(template.sizeChartImageKey()));
+        }
+        if (template.enabled()) {
             snapshot.put("weightGrams", template.weightGrams().toPlainString());
             snapshot.put("packageLengthCm", template.packageLengthCm().toPlainString());
             snapshot.put("packageWidthCm", template.packageWidthCm().toPlainString());
@@ -214,7 +219,8 @@ public class ProductListingTemplateService {
         String selected = text(request.get("sizeChartImageKey"));
         if (!selected.isBlank()) return selected;
         var snapshot = snapshotFrom(request);
-        return Boolean.TRUE.equals(snapshot.get("enabled")) ? text(snapshot.get("sizeChartImageKey")) : "";
+        return Boolean.TRUE.equals(snapshot.get("enabled")) || snapshot.containsKey("captureTemplateId")
+                ? text(snapshot.get("sizeChartImageKey")) : "";
     }
 
     private String originalDescription(ProductCapture capture) {

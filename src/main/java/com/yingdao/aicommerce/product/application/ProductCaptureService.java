@@ -439,6 +439,7 @@ public class ProductCaptureService {
         ProductCapture capture = requireCapture(id, principal.organizationId());
         if (CommerceModule.PRINT_SOURCE.equals(capture.getDataModule())) return new PrintSource(capture, images(capture));
         if (!CommerceModule.CAPTURE.equals(capture.getDataModule())
+                || !ProductPrintProductionService.templateId(capture, objectMapper).isEmpty()
                 || !captureMapper.selectCommerceGeneratedCaptureIds(principal.organizationId(), List.of(id)).isEmpty()) {
             throw new BusinessException(HttpStatus.NOT_FOUND, "找不到该采集商品");
         }

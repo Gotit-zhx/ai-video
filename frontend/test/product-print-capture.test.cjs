@@ -23,6 +23,14 @@ async function workspace(t, submit, history = [], styles = {ready: [shortSleeve]
   const { window } = dom;
   const get = name => window.document.querySelector(`#pc-${name}`);
   const submissions = [];
+  const drafts = [];
+  const bulk = [];
+  window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  window.HTMLDialogElement.prototype.close = function () { this.open = false; };
+  window.HTMLCanvasElement.prototype.toBlob = function (callback) {
+    callback(new window.Blob(['fixture'], {type: 'image/png'}));
+  };
+  window.openProductBulkUpload = async (history, draft) => bulk.push({history, draft});
   window.currentUser = { organizationId: 'company', userId: 'user' };
   window.hasAnyPermission = () => true;
   window.Image = class {
@@ -43,6 +51,10 @@ async function workspace(t, submit, history = [], styles = {ready: [shortSleeve]
       if (!items) throw new Error('款式暂不可用');
       return success({total: items.length, items});
     }
+    if (path === `${endpoint}/${captureId}/production`) {
+      drafts.push(options.body);
+      return success({id: 'draft-id', title: '印花上衣', status: 'READY', stock: 18});
+    }
     assert.equal(path, `${endpoint}/${captureId}/extract`);
     const imageId = JSON.parse(options.body).imageId;
     assert.equal(JSON.parse(options.body).confirmed, true);
@@ -54,7 +66,7 @@ async function workspace(t, submit, history = [], styles = {ready: [shortSleeve]
   await flush();
 
   return {
-    get,
+    window, get, drafts, bulk,
     submissions,
     resultButtons: () => [...get('results').querySelectorAll('[data-result]')],
     sourceImages: () => [...get('source-images').querySelectorAll('input')],
@@ -168,4 +180,42 @@ test('a network failure without a saved attempt can be retried with the same key
   assert.equal(app.submissions.length, 2);
   assert.equal(app.submissions[0].key, app.submissions[1].key);
   assert.equal(app.resultButtons().length, 1);
+});
+
+
+test('outline dragging and resizing update placement and the adjusted PNG goes to shop selection', async t => {
+  const app = await workspace(t, () => assert.fail('production must not extract again'), [result('a')]);
+  const {get, window} = app;
+  assert.equal(get('produce').disabled, true);
+  await app.chooseStyle();
+  const box = get('print-box');
+  box.setPointerCapture = () => {};
+  get('canvas').getBoundingClientRect = () => ({left: 0, top: 0, width: 100, height: 100});
+  function pointer(target, type, clientX, clientY) {
+    const event = new window.MouseEvent(type, {bubbles: true, button: 0, clientX, clientY});
+    Object.defineProperty(event, 'pointerId', {value: 1});
+    target.dispatchEvent(event);
+  }
+  pointer(box, 'pointerdown', 40, 40);
+  pointer(box, 'pointermove', 50, 45);
+  assert.ok(Number(get('x').value) > 50);
+  assert.ok(Number(get('y').value) > 43);
+  pointer(box, 'lostpointercapture', 50, 45);
+  pointer(get('print-resize'), 'pointerdown', 60, 60);
+  pointer(box, 'pointermove', 70, 70);
+  assert.ok(Number(get('size').value) > 26);
+  get('produce').click();
+  const form = get('production-form');
+  assert.equal(form.elements.title.value, '示例');
+  for (const [name, value] of Object.entries({category: 'T-shirts', description: 'Cotton', currency: 'PHP', price: '170', stock: '18'})) {
+    form.elements[name].value = value;
+  }
+  form.dispatchEvent(new window.Event('submit', {cancelable: true}));
+  await flush();
+  assert.equal(app.drafts.length, 1);
+  assert.equal(app.drafts[0].get('image').name, 'composition.png');
+  assert.equal(app.drafts[0].get('settings').type, 'application/json');
+  assert.equal(app.bulk[0].draft.id, 'draft-id');
+  assert.equal(app.bulk[0].draft.printProduction, true);
+  assert.equal(get('production').open, false);
 });

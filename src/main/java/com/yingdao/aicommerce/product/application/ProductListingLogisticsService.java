@@ -97,7 +97,10 @@ public class ProductListingLogisticsService {
         return snapshot(org, shopId, CommerceModule.current());
     }
     public Map<String, Object> snapshot(String org, String shopId, String module) {
-        Config config = config(org, shopId, module);
+        return snapshot(org, shopId, module, "");
+    }
+    Map<String, Object> snapshot(String org, String shopId, String module, String scope) {
+        Config config = config(org, shopId, module, scope);
         return Map.of("organizationId", org, "shopId", shopId, "mode", config.mode(),
                 "channelIds", config.channelIds(), "version", config.version(), "dataModule", CommerceModule.validate(module));
     }

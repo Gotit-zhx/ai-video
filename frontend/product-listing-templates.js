@@ -6,6 +6,7 @@
   let dataModule = '';
   let dialogModule = '', dialogCaptureTemplateId = '', dialogTemplates = [], dialogOrganization = '';
   let revision = 0, dialogRequest = 0, inlineScope = null;
+  let chartKey = '', chartLoading = false;
   const currentModule = () => typeof commerceDataModule === 'function' ? commerceDataModule() : 'CAPTURE';
   function scoped(path, options = {}, scope = currentModule(), captureTemplateId = '') {
     if (captureTemplateId) path += `?captureTemplateId=${encodeURIComponent(captureTemplateId)}`;
@@ -66,14 +67,14 @@
         control.disabled = value || control.dataset.logisticsEnabled === 'false'
           || (!control.dataset.listingPlatform && !context.canEdit());
     });
-    byId('save-product-listing-template').disabled = value || !context.canEdit() || (platform === 'SHOPEE' ? shippingLoading : warehouseLoading);
+    byId('save-product-listing-template').disabled = value || chartLoading || !context.canEdit() || (platform === 'SHOPEE' ? shippingLoading : warehouseLoading);
     byId('save-product-listing-template').textContent = value ? '保存中…' : '保存模板';
   }
   const draftValues = new Map();
   function readDraft() {
     return {name:byId('listing-template-name').value,enabled:byId('listing-template-enabled').checked,
       description:byId('listing-template-description').value,
-      sizeChartImageKey:dialogTemplate(platform)?.sizeChartImageKey || '',
+      sizeChartImageKey:inlineScope ? chartKey : dialogTemplate(platform)?.sizeChartImageKey || '',
       weightGrams:String(Math.round(Number(byId('listing-template-weight').value)*1000000)/1000),
       packageLengthCm:byId('listing-template-length').value,packageWidthCm:byId('listing-template-width').value,
       packageHeightCm:byId('listing-template-height').value,version:dialogTemplate(platform)?.version};
@@ -201,9 +202,56 @@
     }catch(error){if(request===warehouseRequest)byId('listing-warehouse-status').textContent=error.message;}
     finally{if(request===warehouseRequest){warehouseLoading=false;setBusy(busy);}}
   }
+  function renderChart() {
+    const section = byId('listing-template-chart');
+    section.hidden = !inlineScope;
+    if (!inlineScope) return;
+    const preview = byId('listing-template-chart-preview');
+    preview.hidden = !chartKey;
+    if (chartKey) preview.src = '/api/v1/product-listing-templates/size-chart-image?key=' + encodeURIComponent(chartKey);
+    else preview.removeAttribute('src');
+    byId('listing-template-chart-remove').hidden = !chartKey;
+  }
+
+  async function uploadChart(file) {
+    if (!inlineScope || !file || busy || chartLoading || !context.canEdit()) return;
+    const request = dialogRequest, target = platform;
+    const message = byId('listing-template-chart-status');
+    if (!['image/png', 'image/jpeg'].includes(file.type) || !file.size || file.size > 8 * 1024 * 1024) {
+      message.textContent = '请选择 8 MB 以内的 PNG 或 JPG 尺码图';
+      return;
+    }
+    chartLoading = true;
+    setBusy(true);
+    message.textContent = '正在上传尺码图…';
+    try {
+      const body = new FormData();
+      body.append('file', file);
+      const response = await scoped('/api/v1/product-listing-templates/size-chart-image',
+        {method: 'POST', body, signal: AbortSignal.timeout(60000)}, dialogModule);
+      if (!dialogActive(request) || target !== platform) return;
+      const key = response.data?.storageKey;
+      if (!/^[a-f0-9]{64}\/[a-f0-9]{64}$/.test(key || '')) throw Error('尺码图上传失败，请重试');
+      chartKey = key;
+      renderChart();
+      message.textContent = '已上传，保存模板后生效。';
+    } catch (error) {
+      if (dialogActive(request) && target === platform) message.textContent = error.message;
+    } finally {
+      if (dialogActive(request) && target === platform) {
+        chartLoading = false;
+        byId('listing-template-chart-file').value = '';
+        setBusy(false);
+      }
+    }
+  }
+
   function render() {
     const template = draftValues.get(platform) || dialogTemplate(platform);
     if (!template) return;
+    chartKey = template.sizeChartImageKey || '';
+    byId('listing-template-chart-status').textContent = '';
+    renderChart();
     byId('listing-template-name').value = template.name;
     byId('listing-template-enabled').checked = template.enabled;
     byId('listing-template-description').value = template.description;
@@ -221,7 +269,7 @@
     dialogRequest++; shippingRequest++; warehouseRequest++;
     dialogModule = ''; dialogCaptureTemplateId = ''; dialogOrganization = ''; dialogTemplates = [];
     shipping = null; shippingLoading = false; warehouse = null; warehouseLoading = false; warehouseShopsLoaded = false;
-    draftValues.clear();
+    draftValues.clear(); chartKey = ''; chartLoading = false; renderChart();
   }
 
   function unmountInline() {
@@ -353,6 +401,16 @@
     for (const id of ['close-product-listing-templates','cancel-product-listing-templates'])
       byId(id).addEventListener('click', () => byId('product-listing-template-dialog').close());
     byId('product-listing-template-form').addEventListener('submit', save);
+    byId('listing-template-chart-file').addEventListener('change', event => {
+      void uploadChart(event.target.files?.[0]);
+      event.target.value = '';
+    });
+    byId('listing-template-chart-remove').addEventListener('click', () => {
+      if (!inlineScope || busy || chartLoading || !context.canEdit()) return;
+      chartKey = '';
+      renderChart();
+      byId('listing-template-chart-status').textContent = '保存模板后移除尺码图。';
+    });
     byId('listing-logistics-shop').addEventListener('change',loadShipping);
     byId('listing-warehouse-shop').addEventListener('change',loadWarehouse);
     byId('listing-warehouse-choice').addEventListener('change',()=>{

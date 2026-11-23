@@ -64,6 +64,16 @@ public class ProductCaptureTemplateService {
         access(user, false); uuid(id);
         return view(row(id, user.organizationId()), user.organizationId(), false);
     }
+    String requirePrintBase(String id, PlatformPrincipal user) {
+        access(user, false);
+        uuid(id);
+        var saved = row(id, user.organizationId());
+        boolean hasBase = view(saved, user.organizationId(), true).variants().stream().anyMatch(variant -> variant.imageId() != null)
+                || view(saved, user.organizationId(), false).variants().stream().anyMatch(variant -> variant.imageId() != null);
+        if (!hasBase) throw bad("请先为采集模板保存款式底图");
+        return (String) saved.get("id");
+    }
+
     /** An absent scope selects the existing enterprise configuration. A style scope must exist in this enterprise. */
     public String settingsScope(String id, PlatformPrincipal user, boolean edit) {
         if (id == null) return "";

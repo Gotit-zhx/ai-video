@@ -6,6 +6,12 @@
   const route = 'product-print-capture';
   const endpoint = '/api/v1/product-print-capture';
   const canvas = get('canvas');
+  const printBox = get('print-box');
+  const production = get('production');
+  const productionForm = get('production-form');
+  let drag = null;
+  let preparation = null;
+  let preparing = false;
   const positionDefaults = {size: 26, x: 50, y: 43};
   const attempts = new Map();
   const selectedIds = new Set();
@@ -145,6 +151,9 @@
     get('arrange').disabled = true;
     get('monitor-layout').textContent = '待套版';
     get('download').disabled = true;
+    get('produce').disabled = true;
+    get('adjust-hint').hidden = printBox.hidden = true;
+    drag = null;
   }
 
   function clearPreview(message) {
@@ -571,17 +580,68 @@
     return {bitmap, left, top, width: right - left + 1, height: bottom - top + 1};
   }
 
+  function placement() {
+    const width = Math.min(canvas.width * Number(get('size').value) / 100, canvas.height * print.width / print.height);
+    const height = width * print.height / print.width;
+    return {
+      width, height,
+      x: (canvas.width - width) * Number(get('x').value) / 100,
+      y: (canvas.height - height) * Number(get('y').value) / 100
+    };
+  }
+
   function draw() {
     if (!base || !print) return;
     const context = canvas.getContext('2d');
-    const width = Math.min(canvas.width * Number(get('size').value) / 100, canvas.height * print.width / print.height);
-    const height = width * print.height / print.width;
-    const x = (canvas.width - width) * Number(get('x').value) / 100;
-    const y = (canvas.height - height) * Number(get('y').value) / 100;
+    const {x, y, width, height} = placement();
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.drawImage(base, 0, 0, canvas.width, canvas.height);
     context.drawImage(print.bitmap, print.left, print.top, print.width, print.height, x, y, width, height);
+    Object.assign(printBox.style, {
+      left: `${x / canvas.width * 100}%`, top: `${y / canvas.height * 100}%`,
+      width: `${width / canvas.width * 100}%`, height: `${height / canvas.height * 100}%`
+    });
   }
+
+  function relativePoint(event) {
+    const rect = canvas.getBoundingClientRect();
+    return {x: (event.clientX - rect.left) * canvas.width / rect.width,
+      y: (event.clientY - rect.top) * canvas.height / rect.height};
+  }
+
+  function placeAt(x, y, width, height) {
+    const percent = (coordinate, space) => space <= 0 ? 50 : Math.max(0, Math.min(100, 100 * coordinate / space));
+    get('x').value = percent(x, canvas.width - width);
+    get('y').value = percent(y, canvas.height - height);
+  }
+
+  printBox.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || drag) return;
+    const point = relativePoint(event);
+    drag = {pointer: event.pointerId, point, start: placement(), resize: event.target === get('print-resize')};
+    printBox.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+
+  printBox.addEventListener('pointermove', event => {
+    if (event.pointerId !== drag?.pointer) return;
+    const point = relativePoint(event);
+    const dx = point.x - drag.point.x;
+    const dy = point.y - drag.point.y;
+    const start = drag.start;
+    if (drag.resize) {
+      const aspect = print.width / print.height;
+      const change = (dx + dy / aspect) / (1 + 1 / (aspect * aspect));
+      const width = Math.min(start.width + change, canvas.width - start.x, (canvas.height - start.y) * aspect);
+      get('size').value = Math.max(5, Math.min(85, Math.round(100 * width / canvas.width)));
+      const next = placement();
+      placeAt(start.x, start.y, next.width, next.height);
+    } else {
+      placeAt(start.x + dx, start.y + dy, start.width, start.height);
+    }
+    updatePosition();
+  });
+  printBox.addEventListener('lostpointercapture', () => { drag = null; });
 
   function updatePosition(reset = false) {
     for (const [name, value] of Object.entries(positionDefaults)) {
@@ -602,6 +662,8 @@
     get('composition-heading').textContent = '套版预览';
     status('preview-state');
     canvas.hidden = false;
+    printBox.hidden = get('adjust-hint').hidden = false;
+    get('produce').disabled = false;
     get('arrange').disabled = false;
     get('monitor-layout').textContent = '可排版';
     get('download').disabled = false;
@@ -648,6 +710,58 @@
 
   for (const name of Object.keys(positionDefaults)) get(name).addEventListener('input', () => updatePosition());
   get('reset-position').addEventListener('click', () => updatePosition(true));
+  get('produce').addEventListener('click', () => {
+    if (!capture || !activeResult || canvas.dataset.preview !== 'composition' || !hasAnyPermission('product:publish')) return;
+    const captureId = capture.captureId;
+    const sameSource = preparation?.captureId === captureId;
+    preparation = {captureId, resultId: activeResult, templateId: get('style').value, org: currentUser?.organizationId};
+    if (!sameSource) {
+      productionForm.reset();
+      productionForm.elements.title.value = capture.title?.slice(0, 500) || '';
+    }
+    status('production-status');
+    production.showModal();
+  });
+
+  productionForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (preparing || !preparation || !hasAnyPermission('product:publish')) return;
+    const pending = preparation;
+    const current = () => preparation === pending && currentUser?.organizationId === pending.org;
+    if (capture?.captureId !== pending.captureId || activeResult !== pending.resultId
+        || get('style').value !== pending.templateId || canvas.dataset.preview !== 'composition') {
+      status('production-status', '排版已变化，请重新开始制作。', true);
+      return;
+    }
+    const settings = Object.fromEntries(new FormData(productionForm));
+    Object.assign(settings, {resultId: pending.resultId, templateId: pending.templateId, stock: Number(settings.stock)});
+    settings.price = Number(settings.price);
+    preparing = true;
+    for (const button of productionForm.querySelectorAll('button')) button.disabled = true;
+    status('production-status', '正在制作商品草稿…');
+    try {
+      const png = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      if (!current() || !production.open) return;
+      if (!png || png.size > 8 * 1024 * 1024) throw new Error('套版图导出失败或大于 8 MiB，请调整后重试。');
+      const body = new FormData();
+      body.append('settings', new Blob([JSON.stringify(settings)], {type: 'application/json'}));
+      body.append('image', png, 'composition.png');
+      const draft = await request(`${endpoint}/${encodeURIComponent(pending.captureId)}/production`, {
+        method: 'POST', body, headers: {'X-Commerce-Module': 'CAPTURE'}
+      });
+      if (!current() || !production.open) return;
+      await openProductBulkUpload('', {...draft, printProduction: true});
+      if (current()) production.close();
+    } catch (error) {
+      if (current()) status('production-status', error.message || '商品制作失败，请重试。', true);
+    } finally {
+      preparing = false;
+      for (const button of productionForm.querySelectorAll('button')) button.disabled = false;
+    }
+  });
+
+  production.addEventListener('cancel', event => { if (preparing) event.preventDefault(); });
+
   get('download').addEventListener('click', () => {
     if (canvas.hidden || canvas.dataset.preview !== 'composition') return;
     const selectedStyle = templates.find(item => item.id === get('style').value);
@@ -675,6 +789,7 @@
     get('monitor-toggle').hidden = get('layout').hidden = !allowed;
     get('monitor').hidden = !allowed || get('monitor-toggle').getAttribute('aria-expanded') === 'false';
     get('no-access').hidden = allowed;
+    get('produce').hidden = !hasAnyPermission('product:publish');
     if (!allowed) return;
     void loadRecent();
     const id = new URLSearchParams(location.hash.split('?')[1] || '').get('capture');
@@ -691,6 +806,8 @@
   });
   window.addEventListener('heyi:company-reset', () => {
     revision++;
+    preparation = null;
+    if (production.open) production.close();
     for (const request of requests) request.abort();
     attempts.clear();
     handoffId = null;

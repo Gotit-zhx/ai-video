@@ -75,6 +75,21 @@
   border-radius: 8px;
   background: var(--surface-soft);
 }
+.pc-preview-art { position: relative; max-width: 100%; }
+.pc-preview-art:has(canvas[hidden]) { display: none; }
+#pc-print-box { position: absolute; outline: 1px dashed #fff; box-shadow: 0 0 0 1px #111; cursor: move; touch-action: none; }
+#pc-print-box:active { cursor: grabbing; }
+#pc-print-resize {
+  position: absolute; right: -1px; bottom: -1px; width: 20px; height: 20px;
+  border: 1px solid #fff; border-radius: 3px; background: #171717;
+  cursor: nwse-resize; touch-action: none;
+}
+#pc-print-resize::after {
+  content: ''; position: absolute; right: 4px; bottom: 4px; width: 7px; height: 7px;
+  border-right: 1px solid white; border-bottom: 1px solid white;
+}
+#pc-adjust-hint { margin: 8px 0 0; }
+.pc-production-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 10px; }
 .pc-preview canvas { display: block; max-width: 100%; max-height: 420px; height: auto; width: auto; object-fit: contain; }
 .pc-preview canvas[data-preview=artwork] {
   background: repeating-conic-gradient(var(--line) 0 25%, var(--surface) 0 50%) 0 0 / 16px 16px;
