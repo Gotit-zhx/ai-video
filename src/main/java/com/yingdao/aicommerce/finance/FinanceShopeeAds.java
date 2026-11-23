@@ -87,8 +87,11 @@ public class FinanceShopeeAds {
             SELECT g.organization_id,g.external_shop_id,g.token_group_id FROM finance_shopee_ad_grants g
             WHERE g.enabled=TRUE AND g.partner_id=? AND g.next_at<=UTC_TIMESTAMP(6) AND (g.lease_until IS NULL OR g.lease_until<UTC_TIMESTAMP(6))
               AND EXISTS(SELECT 1 FROM finance_connections c WHERE c.organization_id=g.organization_id AND c.external_shop_id=g.external_shop_id AND c.platform='SHOPEE' AND c.enabled=TRUE AND c.status='ACTIVE')
-            ORDER BY g.next_at,g.organization_id,g.external_shop_id LIMIT 30
-            """,app.partnerId());
+              AND (%s=0 OR %s)
+            ORDER BY %s,g.next_at,g.organization_id,g.external_shop_id LIMIT 30
+            """.formatted(FinanceSyncRange.historicalRank("g.checkpoint_json","g.timezone",false),
+                    FinanceShopeeAdsApi.noReadyPeer(true),
+                    FinanceSyncRange.historicalRank("g.checkpoint_json","g.timezone",false)),app.partnerId());
         for(var candidate:due){
             String org=text(candidate.get("organization_id")),external=text(candidate.get("external_shop_id")),lease=UUID.randomUUID().toString();
             var claimed=repo.transaction(()->{
@@ -122,17 +125,18 @@ public class FinanceShopeeAds {
         String org=text(grant.get("organization_id")),external=text(grant.get("external_shop_id"));
         var connection=connection(app,grant,lease);if(connection==null)return;
         ZoneId zone=ZoneId.of(text(grant.get("timezone")));LocalDate today=LocalDate.now(zone);
-        var cp=grant.get("checkpoint_json")==null?new LinkedHashMap<String,Object>():new LinkedHashMap<>(repo.read(text(grant.get("checkpoint_json"))));
-        if(!cp.containsKey("from"))cp.putAll(FinanceShopeeAdsApi.plan(today,grant.get("last_success_at")==null?null:instant(grant.get("last_success_at")).atZone(zone).toLocalDate()));
-        if(LocalDate.parse(text(cp.get("from"))).isBefore(today.minusMonths(6))){
+        var saved=grant.get("checkpoint_json")==null?new LinkedHashMap<String,Object>():new LinkedHashMap<>(repo.read(text(grant.get("checkpoint_json"))));
+        if(!saved.containsKey("from"))saved.putAll(FinanceShopeeAdsApi.plan(today,grant.get("last_success_at")==null?null:instant(grant.get("last_success_at")).atZone(zone).toLocalDate()));
+        if(LocalDate.parse(text(saved.get("from"))).isBefore(today.minusMonths(6))){
             // Expired provider windows cannot be retried. Keep their coverage unknown while resuming readable history.
-            cp.clear();cp.put("from",today.minusMonths(6).toString());cp.put("until",today.toString());cp.put("unavailableBefore",today.minusMonths(6).toString());
+            var marker=FinanceSyncRange.marker(saved);saved.clear();saved.putAll(marker);saved.put("from",today.minusMonths(6).toString());saved.put("until",today.toString());saved.put("unavailableBefore",today.minusMonths(6).toString());
         }
+        var cp=FinanceSyncRange.prioritize(saved,today,today.minusMonths(6));
         LocalDate from=LocalDate.parse(text(cp.get("from"))),until=LocalDate.parse(text(cp.get("until"))),to=FinanceShopeeAdsApi.windowEnd(from,until);
         if(from.isAfter(to)||until.isAfter(today)||from.isBefore(today.minusMonths(6)))throw bad("广告历史窗口超出官方可读取范围");
         boolean forward=from.equals(to)&&from.equals(today.minusMonths(6));
         LocalDate requestFrom=from.equals(to)&&!forward?from.minusDays(1):from,requestTo=forward?to.plusDays(1):to;final LocalDate end=to;
-        int saved=repo.jdbc().update("UPDATE finance_shopee_ad_grants SET checkpoint_json=? WHERE organization_id=? AND external_shop_id=? AND lease_token=?",repo.write(cp),org,external,lease);if(saved!=1)return;
+        int stored=repo.jdbc().update("UPDATE finance_shopee_ad_grants SET checkpoint_json=? WHERE organization_id=? AND external_shop_id=? AND lease_token=?",repo.write(cp),org,external,lease);if(stored!=1)return;
         var response=app.client().shopGetExact(FinanceShopeeAdsApi.PATH,connection,FinanceShopeeAdsApi.query(requestFrom,requestTo));var facts=FinanceShopeeAdsApi.daily(response,requestFrom,requestTo);
         FinanceShopeeAdsApi.requireClosedDays(facts,requestFrom,requestTo,today);
         repo.transaction(()->{
@@ -149,9 +153,7 @@ public class FinanceShopeeAds {
                     VALUES(?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE amount=VALUES(amount),source_json=VALUES(source_json),observed_at=UTC_TIMESTAMP(6)
                     """,org,external,identity,day,currency,row.get("amount"),repo.write(row.get("raw")));
             }
-            boolean done=!end.isBefore(until);
-            if(done){var remaining=new ArrayList<>(rows(cp.get("remaining")));String unavailable=text(cp.get("unavailableBefore"));cp.clear();if(!unavailable.isBlank())cp.put("unavailableBefore",unavailable);if(!remaining.isEmpty()){cp.putAll(remaining.removeFirst());if(!remaining.isEmpty())cp.put("remaining",remaining);done=false;}}
-            else cp.put("from",end.plusDays(1).toString());
+            boolean done=FinanceSyncRange.advanceShopee(cp,end,until);
             release(org,external,lease,done?"SUCCESS":"SYNCING",cp,done);return null;
         });
     }

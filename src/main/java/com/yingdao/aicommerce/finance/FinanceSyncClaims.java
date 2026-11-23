@@ -14,19 +14,16 @@ final class FinanceSyncClaims {
     private final FinanceRepository repo;
     private final Map<String,Semaphore> platforms=new ConcurrentHashMap<>();
     FinanceSyncClaims(FinanceRepository repo){this.repo=repo;}
-    Claim claim(){
+    Claim claim(){return claim(true);}
+    Claim claim(boolean historyAllowed){
         var db=repo.jdbc();
         var due=db.queryForList("""
-            WITH candidates AS (
+            WITH eligible AS (
             SELECT st.organization_id,st.user_id,st.shop_id,st.channel,f.platform,
+              CASE WHEN st.channel='ORDER_REPAIR' THEN 1 ELSE %s END history_rank,
               st.priority_requested_at,
               CASE WHEN JSON_EXTRACT(st.checkpoint_json,'$.missingSettlementPass')=TRUE THEN 0 ELSE 1 END recovery_rank,
-              TIMESTAMPADD(SECOND,CASE WHEN st.channel='ORDER_LIVE' THEN -30 ELSE 0 END,st.next_at) due_at,
-              ROW_NUMBER() OVER (PARTITION BY f.platform ORDER BY
-                st.priority_requested_at IS NULL,st.priority_requested_at,
-                CASE WHEN JSON_EXTRACT(st.checkpoint_json,'$.missingSettlementPass')=TRUE THEN 0 ELSE 1 END,
-                TIMESTAMPADD(SECOND,CASE WHEN st.channel='ORDER_LIVE' THEN -30 ELSE 0 END,st.next_at),
-                st.shop_id,st.channel) platform_rank
+              TIMESTAMPADD(SECOND,CASE WHEN st.channel='ORDER_LIVE' THEN -30 ELSE 0 END,st.next_at) due_at
             FROM finance_sync_states st JOIN finance_connections f
               ON f.id=st.shop_id AND f.organization_id=st.organization_id AND f.user_id=st.user_id
             WHERE f.enabled=TRUE AND f.status='ACTIVE' AND st.next_at<=UTC_TIMESTAMP(6)
@@ -37,9 +34,14 @@ final class FinanceSyncClaims {
                 WHERE busy.organization_id=st.organization_id AND busy.user_id=st.user_id AND busy.shop_id=st.shop_id
                   AND busy.lease_until>UTC_TIMESTAMP(6))
             )
-            SELECT organization_id,user_id,shop_id,channel,platform FROM candidates WHERE platform_rank<=32
-            ORDER BY priority_requested_at IS NULL,priority_requested_at,recovery_rank,due_at,shop_id,channel
-            """);
+            , candidates AS (
+              SELECT eligible.*,ROW_NUMBER() OVER (PARTITION BY platform ORDER BY
+                history_rank,priority_requested_at IS NULL,priority_requested_at,recovery_rank,due_at,shop_id,channel) platform_rank
+              FROM eligible
+            )
+            SELECT organization_id,user_id,shop_id,channel,platform FROM candidates WHERE platform_rank<=32 AND (? OR history_rank=0)
+            ORDER BY history_rank,priority_requested_at IS NULL,priority_requested_at,recovery_rank,due_at,shop_id,channel
+            """.formatted(FinanceSyncRange.historicalRank("st.checkpoint_json","f.timezone",true)),historyAllowed);
         if(due.isEmpty())return null;
         var tx=new TransactionTemplate(new DataSourceTransactionManager(Objects.requireNonNull(db.getDataSource())));
         for(var candidate:due){
@@ -70,7 +72,9 @@ final class FinanceSyncClaims {
                           lease_token=?,status='RUNNING' WHERE organization_id=? AND user_id=? AND shop_id=? AND channel=?
                           AND (lease_until IS NULL OR lease_until<UTC_TIMESTAMP(6))
                         """,token,shop[0],shop[1],shop[2],candidate.get("channel"));
-                    return updated==1?new Claim(rows.getFirst(),token,permit):null;
+                    if(updated!=1)return null;
+                    rows.getFirst().put("lease_token",token);
+                    return new Claim(rows.getFirst(),token,permit);
                 });
                 if(result!=null)return result;
             }finally{if(result==null)permit.release();}

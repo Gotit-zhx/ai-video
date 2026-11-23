@@ -103,6 +103,7 @@ class FinanceAdHttpTest {
             context.registerBean(org.springframework.transaction.PlatformTransactionManager.class,
                     ()->mock(org.springframework.transaction.PlatformTransactionManager.class));
             context.registerBean(FinanceAdApplicationSettings.class,()->mock(FinanceAdApplicationSettings.class));
+            context.registerBean(FinanceWorkerCapacity.class,FinanceWorkerCapacity::unrestricted);
             context.register(FinanceAdHttp.class,FinanceAds.class,FinanceAdAuthorization.class);context.refresh();
             var advertising=context.getBean(FinanceAdHttp.class).transport();
             assertNotSame(direct,advertising);assertSame(direct,context.getBean(MarketplaceHttp.class));

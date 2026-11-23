@@ -32,8 +32,11 @@ public class FinanceShopeeGms {
             WHERE g.enabled=TRUE AND g.status<>'REMOVED' AND g.partner_id=? AND s.next_at<=UTC_TIMESTAMP(6)
               AND (g.lease_until IS NULL OR g.lease_until<=UTC_TIMESTAMP(6))
               AND EXISTS(SELECT 1 FROM finance_connections c WHERE c.organization_id=g.organization_id AND c.external_shop_id=g.external_shop_id AND c.platform='SHOPEE' AND c.enabled=TRUE AND c.status='ACTIVE')
-            ORDER BY s.next_at,g.organization_id,g.external_shop_id LIMIT 30
-            """,app.partnerId());
+              AND (%s=0 OR %s)
+            ORDER BY %s,s.next_at,g.organization_id,g.external_shop_id LIMIT 30
+            """.formatted(FinanceSyncRange.historicalRank("s.checkpoint_json","g.timezone",false),
+                    FinanceShopeeAdsApi.noReadyPeer(false),
+                    FinanceSyncRange.historicalRank("s.checkpoint_json","g.timezone",false)),app.partnerId());
         for(var candidate:due){
             String org=text(candidate.get("organization_id")),external=text(candidate.get("external_shop_id")),lease=UUID.randomUUID().toString();
             var grant=repo.transaction(()->claim(app,candidate,lease));if(grant.isEmpty())continue;
@@ -64,9 +67,10 @@ public class FinanceShopeeGms {
         var connection=ads.connection(app,grant,lease);if(connection==null)return;
         String org=text(grant.get("organization_id")),external=text(grant.get("external_shop_id"));var sync=map(grant.get("gms"));
         ZoneId zone=ZoneId.of(text(grant.get("timezone")));LocalDate today=LocalDate.now(zone);
-        var cp=text(sync.get("checkpoint_json")).isBlank()?new LinkedHashMap<String,Object>():new LinkedHashMap<>(repo.read(text(sync.get("checkpoint_json"))));
-        if(!cp.containsKey("from"))cp.putAll(FinanceShopeeAdsApi.plan(today,sync.get("last_success_at")==null?null:instant(sync.get("last_success_at")).atZone(zone).toLocalDate()));
-        if(LocalDate.parse(text(cp.get("from"))).isBefore(today.minusMonths(6))){cp.clear();cp.put("from",today.minusMonths(6).toString());cp.put("until",today.toString());cp.put("unavailableBefore",today.minusMonths(6).toString());}
+        var saved=text(sync.get("checkpoint_json")).isBlank()?new LinkedHashMap<String,Object>():new LinkedHashMap<>(repo.read(text(sync.get("checkpoint_json"))));
+        if(!saved.containsKey("from"))saved.putAll(FinanceShopeeAdsApi.plan(today,sync.get("last_success_at")==null?null:instant(sync.get("last_success_at")).atZone(zone).toLocalDate()));
+        if(LocalDate.parse(text(saved.get("from"))).isBefore(today.minusMonths(6))){var marker=FinanceSyncRange.marker(saved);saved.clear();saved.putAll(marker);saved.put("from",today.minusMonths(6).toString());saved.put("until",today.toString());saved.put("unavailableBefore",today.minusMonths(6).toString());}
+        var cp=FinanceSyncRange.prioritize(saved,today,today.minusMonths(6));
         LocalDate from=LocalDate.parse(text(cp.get("from"))),until=LocalDate.parse(text(cp.get("until"))),end=FinanceShopeeAdsApi.windowEnd(from,until);
         if(from.isAfter(end)||until.isAfter(today)||from.isBefore(today.minusMonths(6)))throw bad("GMS 历史窗口超出官方可读取范围");
         boolean forward=from.equals(end)&&from.equals(today.minusMonths(6));
@@ -124,9 +128,7 @@ public class FinanceShopeeGms {
                 VALUES(?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE amount=VALUES(amount),campaign_revision=VALUES(campaign_revision),source_json=VALUES(source_json),observed_at=UTC_TIMESTAMP(6)
                 """,org,external,row.get("record_date"),grant.get("currency"),row.get("amount"),revision,repo.write(row.get("raw")));
             cp.remove("phase");cp.remove("campaignIds");cp.remove("campaignRevision");
-            boolean done=!end.isBefore(until);
-            if(done){var remaining=new ArrayList<>(rows(cp.get("remaining")));String unavailable=text(cp.get("unavailableBefore"));cp.clear();if(!unavailable.isBlank())cp.put("unavailableBefore",unavailable);if(!remaining.isEmpty()){cp.putAll(remaining.removeFirst());if(!remaining.isEmpty())cp.put("remaining",remaining);done=false;}}
-            else cp.put("from",end.plusDays(1).toString());
+            boolean done=FinanceSyncRange.advanceShopee(cp,end,until);
             boolean partial=!text(cp.get("unavailableBefore")).isBlank();
             String note=partial?"部分 GMS 历史已超出接口范围；未取得日期仍未知，保留旧事实":null;
             if(noCampaign)note=ZERO_NOTE+(note==null?"":"；"+note);

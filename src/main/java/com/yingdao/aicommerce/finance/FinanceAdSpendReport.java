@@ -27,11 +27,20 @@ final class FinanceAdSpendReport {
         FinanceAdFunding.api(r,raw);return r;
     }
     static List<Map<String,Object>> allocated(Map<String,Object> source,List<Map<String,Object>> assignments,List<Map<String,Object>> shops){
-        var known=new HashMap<String,Map<String,Object>>();shops.forEach(s->known.put(text(s.get("id")),s));
-        String owner=text(source.get("shop_id"));var base=new LinkedHashMap<>(source);base.put("fingerprint",fingerprint(source));
+        return allocated(source,assignments,shopsById(shops));
+    }
+    private static Map<String,Map<String,Object>> shopsById(List<Map<String,Object>> shops){
+        var known=new HashMap<String,Map<String,Object>>();
+        shops.forEach(shop->known.put(text(shop.get("id")),shop));
+        return known;
+    }
+    private static List<Map<String,Object>> allocated(Map<String,Object> source,List<Map<String,Object>> assignments,
+                                                       Map<String,Map<String,Object>> known){
+        String owner=text(source.get("shop_id")),fingerprint=fingerprint(source);
+        var base=new LinkedHashMap<>(source);base.put("fingerprint",fingerprint);
         if(!owner.isBlank()&&!owner.equals("UNASSIGNED")&&known.containsKey(owner)){base.put("assignment_status","OFFICIAL");return List.of(base);}
         if(assignments.isEmpty()){base.put("shop_id","UNASSIGNED");base.put("assignment_status","PENDING");return List.of(base);}
-        if(assignments.stream().anyMatch(a->!fingerprint(source).equals(a.get("fingerprint"))||!known.containsKey(text(a.get("shop_id"))))){base.put("shop_id","UNASSIGNED");base.put("assignment_status","REVIEW");return List.of(base);}
+        if(assignments.stream().anyMatch(a->!fingerprint.equals(a.get("fingerprint"))||!known.containsKey(text(a.get("shop_id"))))){base.put("shop_id","UNASSIGNED");base.put("assignment_status","REVIEW");return List.of(base);}
         var out=new ArrayList<Map<String,Object>>();var used=new HashMap<String,BigDecimal>();var unique=new HashSet<String>();
         for(var a:assignments){
             String shop=text(a.get("shop_id"));if(!unique.add(shop)||!source.get("platform").equals(known.get(shop).get("platform")))throw bad("分配店铺重复或平台不一致");
@@ -52,7 +61,7 @@ final class FinanceAdSpendReport {
         if(remaining){FinanceAdFunding.allocatedNet(rest);rest.put("shop_id","UNASSIGNED");rest.put("assignment_status","PARTIAL");out.add(rest);}return out;
     }
     static Map<String,Object> build(List<Map<String,Object>> sources,List<Map<String,Object>> assignments,List<Map<String,Object>> shops,Filter f,FinanceFx.Quote quote,String search,String status){
-        var known=new HashMap<String,Map<String,Object>>();shops.forEach(s->known.put(text(s.get("id")),s));
+        var known=shopsById(shops);
         var normalized=new ArrayList<Map<String,Object>>();
         for(var source:sources){Map<String,Object> row=new LinkedHashMap<>(source);var shop=known.getOrDefault(text(row.get("shop_id")),Map.of());if("SHOPEE".equals(row.get("platform"))&&text(row.get("source")).startsWith("API_")&&text(row.get("account_id")).isBlank()&&!text(shop.get("external_shop_id")).isBlank())row.put("account_id",shop.get("external_shop_id"));
             if("SHOPEE".equals(row.get("platform"))&&"API_SHOPEE_CPC".equals(row.get("source")))row=FinanceShopeeGmsApi.reference(row);
@@ -82,7 +91,7 @@ final class FinanceAdSpendReport {
                 var owners=matches.stream().map(r->text(r.get("shop_id"))).distinct().toList();
                 if(owners.size()==1&&known.containsKey(owners.getFirst())&&matches.stream().allMatch(r->r.get("amount")!=null)&&matches.stream().map(r->decimal(r.get("amount"))).reduce(BigDecimal.ZERO,BigDecimal::add).compareTo(decimal(source.get("amount")))==0)attributed.put("shop_id",owners.getFirst());
             }
-            for(var row:allocated(attributed,confirmed,shops)){
+            for(var row:allocated(attributed,confirmed,known)){
                 String shop=text(row.get("shop_id"));var details=known.getOrDefault(shop,Map.of());String group=text(details.get("group_id"));
                 if(!f.shopId().isBlank()&&!f.shopId().equals(shop)||!f.groupId().isBlank()&&!(f.groupId().equals("UNGROUPED")?group.isBlank():f.groupId().equals(group)))continue;
                 row.put("group_id",group);row.put("group_name",text(details.get("group_name")));row.put("shop_name",shop.equals("UNASSIGNED")?"待分配店铺":first(details,"display_name","name"));
@@ -97,7 +106,8 @@ final class FinanceAdSpendReport {
                 var fields=new ArrayList<>(FinanceAdFunding.AMOUNTS);if(FinanceShopeeGmsApi.BASIS.equals(row.get("reference_basis")))fields.addAll(FinanceShopeeGmsApi.AUXILIARY);
                 for(String k:fields){row.put("original_"+k,decimal(row.get(k)));if(quote!=null){row.put(k,quote.convert(row.get(k),currency,day));if(row.get("original_"+k)!=null&&row.get(k)==null)row.put("reason_"+k,"业务日汇率缺失");}}
                 if(quote!=null){row.put("fx_date",day.toString());row.put("cny_rate",quote.rate(currency,day));row.put("fx",quote.metadata(day));}
-                if(prepared.size()>=50000)throw bad("分配后的明细超过 50,000 条，请缩小日期范围");prepared.add(row);
+                if(prepared.size()>=FinanceAdSpendService.MAX_RECORDS)throw new FinanceAdSpendService.RangeTooLarge(FinanceAdSpendService.MAX_RECORDS);
+                prepared.add(row);
             }
         }
         prepared.sort(Comparator.<Map<String,Object>,String>comparing(r->text(r.get("record_date"))).reversed().thenComparing(r->text(r.get("source_key"))));

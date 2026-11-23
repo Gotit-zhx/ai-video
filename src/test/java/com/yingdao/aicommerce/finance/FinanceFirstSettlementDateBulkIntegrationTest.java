@@ -292,7 +292,7 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
                 long millis=remaining();if(existing>0)millis=Math.min(millis,existing);
                 if(millis<1)throw new LocalExit();
                 queryType.getMethod("setTimeoutInMillis",long.class).invoke(query,millis);
-                assertTrue(FinanceFirstSettlementLoadIntegrationTest.mysqlMillis(statement)<=BUDGET.candidateMillis());
+                assertTrue(mysqlMillis(statement)<=BUDGET.candidateMillis());
             }catch(ReflectiveOperationException failure){throw new SQLException("Cannot bound isolated MySQL SELECT",failure);}
         }
     }
@@ -1001,11 +1001,11 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
         }
         var error=new Options(COMPANY.organizationId());error.auditControl="SELECT id FROM finance_date_bulk_deliberately_absent_table";
         var sqlFailure=assertThrows(RuntimeException.class,()->probe("C9_actual_audit_SQL_error",COMPANY,MONTH,64,error,DateRoute.DATE_TEST,"",List.of(),""));
-        var sql=FinanceFirstSettlementLoadIntegrationTest.findSql(sqlFailure);
+        var sql=findSql(sqlFailure);
         assertNotNull(sql);assertEquals(1146,sql.getErrorCode());assertWholeProbeFailed(attempts.getLast());
         var timeout=new Options(COMPANY.organizationId());timeout.auditControl="SELECT SLEEP(2)";
         var timeoutFailure=assertThrows(RuntimeException.class,()->probe("C9_actual_audit_SQL_timeout",COMPANY,MONTH,64,timeout,DateRoute.DATE_TEST,"",List.of(),""));
-        var timedOut=FinanceFirstSettlementLoadIntegrationTest.findSql(timeoutFailure);
+        var timedOut=findSql(timeoutFailure);
         assertNotNull(timedOut);assertInstanceOf(java.sql.SQLTimeoutException.class,timedOut);
         assertWholeProbeFailed(attempts.getLast());
         realCancellationFailsTheEntireProbe();
@@ -1019,15 +1019,15 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
         try {
             while(System.nanoTime()<deadline) {
                 var s=source.sleep;
-                if(s!=null&&FinanceFirstSettlementLoadIntegrationTest.mysqlExecuting(s))break;
+                if(s!=null&&mysqlExecuting(s))break;
                 if(future.isDone())fail("Cancellation control ended before its real SQL was observed executing");
                 java.util.concurrent.locks.LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
             }
-            assertNotNull(source.sleep);assertTrue(FinanceFirstSettlementLoadIntegrationTest.mysqlExecuting(source.sleep));
+            assertNotNull(source.sleep);assertTrue(mysqlExecuting(source.sleep));
             source.cancelAll();source.cancelAll();
             assertEquals(before+1,source.cancelCalls.get(),"Second cleanup pass must not duplicate cancellation");
             var failure=assertThrows(ExecutionException.class,()->future.get(Math.max(1,deadline-System.nanoTime()),TimeUnit.NANOSECONDS));
-            var sql=FinanceFirstSettlementLoadIntegrationTest.findSql(failure);
+            var sql=findSql(failure);
             assertNotNull(sql);assertEquals("MySQLStatementCancelledException",sql.getClass().getSimpleName());
             assertWholeProbeFailed(attempts.getLast());
             evidence.add(Map.of("case","C9_real_cancel","executingObserved",true,"directCancelCalls",source.cancelCalls.get()-before,
@@ -1612,7 +1612,7 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
             Class type=Class.forName("com.mysql.cj.jdbc.JdbcStatement");Object query=type.getMethod("getQuery").invoke(statement.unwrap(type));
             Class queryType=Class.forName("com.mysql.cj.Query");long existing=((Number)queryType.getMethod("getTimeoutInMillis").invoke(query)).longValue();
             if(existing>0)millis=Math.min(millis,existing);queryType.getMethod("setTimeoutInMillis",long.class).invoke(query,millis);
-            assertTrue(FinanceFirstSettlementLoadIntegrationTest.mysqlMillis(statement)<=5000);
+            assertTrue(mysqlMillis(statement)<=5000);
         }catch(ReflectiveOperationException failure){throw new SQLException("Cannot bound isolated plan diagnostic SELECT",failure);}
     }
     Map<String,Object> selectiveTimingSummary() {
@@ -2309,7 +2309,7 @@ class FinanceFirstSettlementDateBulkIntegrationTest extends FinanceFirstSettleme
                             if(sql.equals("SELECT SLEEP(10)"))sleep=actual;
                             executing.add(actual);
                             try{return invoke(actual,m,x);}
-                            catch(Throwable failure){var e=FinanceFirstSettlementLoadIntegrationTest.findSql(failure);
+                            catch(Throwable failure){var e=findSql(failure);
                                 if(a!=null&&e!=null)a.errors.add(Map.of("state",String.valueOf(e.getSQLState()),"vendorCode",e.getErrorCode(),"driverException",e.getClass().getSimpleName()));
                                 if(w!=null&&e!=null)w.errors.add(Map.of("state",String.valueOf(e.getSQLState()),"vendorCode",e.getErrorCode(),"driverException",e.getClass().getSimpleName()));
                                 throw failure;

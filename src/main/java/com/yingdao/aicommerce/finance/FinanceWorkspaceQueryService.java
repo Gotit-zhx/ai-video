@@ -26,6 +26,10 @@ public class FinanceWorkspaceQueryService {
     private record WorkspaceRead(Scope scope,Filter filter,Selection selection){}
     private final FinanceQueryReadBatch<OverviewRead,Map<String,Object>> nativeOverviews=new FinanceQueryReadBatch<>();
     private final FinanceQueryReadBatch<WorkspaceRead,Map<String,Object>> nativeWorkspace=new FinanceQueryReadBatch<>();
+    // Polling requests can leave the readiness check at different times. Group the
+    // expensive all-shop fee reads before opening their shared authoritative snapshot.
+    private final FinanceQueryReadBatch<WorkspaceRead,Map<String,Object>> companyFeeFallback=
+        new FinanceQueryReadBatch<>(()->Thread.sleep(200));
     @org.springframework.beans.factory.annotation.Autowired(required=false) private FinanceShopeeAds shopeeAds;
     @org.springframework.beans.factory.annotation.Autowired
     public FinanceWorkspaceQueryService(FinanceRepository repo,FinanceService finance,FinanceAdSpendService spend,
@@ -103,7 +107,7 @@ public class FinanceWorkspaceQueryService {
             records.put("fieldSettings",new FinanceFields(repo).settings(personal,selected.view().equals("reconciliation")?"RECONCILIATION":selected.kind()));
             copy.put("records",records);
         }
-        return copy;
+        return new FinancePublishedCosts(repo).apply(scope,filter,copy);
     }
     private Map<String,Object> awaitProjection(Scope scope,Filter filter,Map<String,Object> version,long waitBudget){
         if(!"PENDING".equals(version.get("status")))return version;
@@ -142,7 +146,8 @@ public class FinanceWorkspaceQueryService {
             throw new com.yingdao.aicommerce.common.exception.BusinessException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,"财务查询等待已中断");
     }
     public Map<String,Object> status(Scope scope,Filter filter){return status(scope,filter,"");}
-    public Map<String,Object> status(Scope scope,Filter filter,String view){
+    public Map<String,Object> status(Scope scope,Filter filter,String view){return status(scope,filter,view,List.of());}
+    Map<String,Object> status(Scope scope,Filter filter,String view,Collection<String> costScopes){
         var result=new LinkedHashMap<>(projections.version(scope,nativeFilter(filter)));
         var ids=selectedShops(finance.shops(scope),filter);var operations=new LinkedHashMap<String,Object>();
         operations.put("sync",finance.syncStates(scope,filter));
@@ -151,9 +156,17 @@ public class FinanceWorkspaceQueryService {
         if(!ids.isEmpty()){
             String slots=String.join(",",Collections.nCopies(ids.size(),"?"));var args=new ArrayList<Object>();args.add(scope.organizationId());args.addAll(ids);
             rebuilding=!repo.jdbc().queryForList("SELECT shop_id FROM finance_cost_rebuilds WHERE organization_id=? AND shop_id IN ("+slots+") AND status='READY' LIMIT 1",args.toArray()).isEmpty();
+            if(!rebuilding)rebuilding=FinanceCostTargetScans.pending(repo,scope,ids);
             jobs=!repo.jdbc().queryForList("SELECT order_record_id FROM finance_order_cost_jobs FORCE INDEX(idx_cost_job_shop) WHERE organization_id=? AND shop_id IN ("+slots+") AND priority<2 LIMIT 1",args.toArray()).isEmpty();
         }
-        operations.put("costState",Map.of("rebuilding",rebuilding,"hasProductJobs",jobs));
+        boolean priceScanPending=new FinanceCostPriceScans(repo).pending(scope,filter);
+        operations.put("costState",Map.of("rebuilding",rebuilding||priceScanPending,"hasProductJobs",jobs));
+        if(!costScopes.isEmpty()&&repo.costProgressMode(scope).separated()){
+            var published=new FinancePublishedCosts(repo);
+            var work=published.workByScope(scope,filter,ids,costScopes);
+            operations.put("costProgressRevision",published.revision(work));
+            operations.put("costProgress",FinancePublishedCosts.view(work));
+        }
         if(Set.of("ads","ads-support").contains(text(view))){
             try{operations.put("adAccounts",ads.list(scope,filter.start(),filter.end()));operations.put("adAccountError",false);}
             catch(RuntimeException unavailable){operations.put("adAccountError",true);}
@@ -166,7 +179,9 @@ public class FinanceWorkspaceQueryService {
         return shops.stream().filter(shop->FinanceGroups.matches(shop,filter)).map(shop->text(shop.get("id"))).toList();
     }
     private Map<String,Object> fallback(Scope scope,Filter f,Selection selected){
-        return nativeWorkspace.read(new WorkspaceRead(scope,f,selected),()->{
+        var batch=selected.view().equals("fees")&&selected.kind().equals("FEE")&&f.shopId().isBlank()&&f.groupId().isBlank()
+            ?companyFeeFallback:nativeWorkspace;
+        return batch.read(new WorkspaceRead(scope,f,selected),()->{
             // Enqueue outside the read-only snapshot; failures never publish fake empty facts.
             projections.requestMissing(scope,nativeFilter(f));
             return build(scope,f,selected,null);
@@ -234,7 +249,7 @@ public class FinanceWorkspaceQueryService {
                     &&!"SETTLED_ORDER".equals(FinanceCostReport.scopeKind(selected.view().equals("reconciliation")?"RECONCILIATION":selected.kind(),false))){
                 var projected=selected.view().equals("settlements")&&selected.kind().equals("SETTLEMENT")
                     ?projections.settlementCosts(scope,filter):Optional.<Map<String,Object>>empty();
-                records.put("productCosts",projected.orElseGet(()->new FinanceCostReport(repo).summary(scope,filter,selected.kind())));
+                records.put("productCosts",projected.orElseGet(()->new FinanceCostReport(repo).reportSummary(scope,filter,selected.kind())));
             }
             if(selected.cny()&&selected.view().equals("reconciliation"))repo.reconciliationFxDays(scope,rows(records.get("items")));
             return new Prepared(snapshot,facts,Map.of(),filter,records,billCurrencies,pageOnly);

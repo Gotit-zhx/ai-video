@@ -1,6 +1,6 @@
 # 项目文档中心
 
-更新日期：2026-11-11。文档按用途和业务归类，当前说明、历史验收、设计和实验分别阅读。主应用当前采用源码开发运行方式；历史测试、旧镜像、Candidate 或标签不能直接解释为今天的运行状态。
+更新日期为 2026-11-23（北京时间）。主应用采用源码开发运行方式。查当前运行上下文和已应用迁移见[源码运行现场状态](guides/source-runtime-status.md)，查 GitHub、本地与服务器的代码差异见[三处仓库核对记录](releases/infrastructure/source-sync-20261123.md)。
 
 ## 开发接手
 
@@ -33,10 +33,11 @@
 
 ## 当前业务规则与历史验收
 
-以下十一份业务规则/验收文件保留根目录原路径，由本索引统一导航；它们描述各自日期的业务和验收，不固定当前运行状态。历史自动发布、版本和回滚资格见对应回执；当前源码模式及共享服务器状态见[运维指南](guides/operations.md)和[服务器运维交接](guides/server-handoff.md)。主应用与前端切换已实测完成，耗时和未完成项目见[现场状态](guides/source-runtime-status.md)。广告业务接入仍按其独立授权与数据验收处理，不能从应用健康推断账户/数据已完成。共享服务器操作先读 [AGENTS.md](../AGENTS.md)。
+业务规则和验收以各条回执列出的时间、范围及数据覆盖为准。财务概览见[财务 BI](business/finance/overview.md)，广告授权和覆盖口径见[广告费用口径与分析](business/finance/advertising.md)。共享服务器操作先读 [AGENTS.md](../AGENTS.md)。
 
 | 主题 | 固定入口 |
 | --- | --- |
+| 共享服务器财务与商品采集源码、V166–V187 迁移归档 | [2026-11-23 核对记录](releases/infrastructure/source-sync-20261123.md#v166v187-续归档) |
 | TikTok 广告字段、V155/V156 联合验证及源码生效 | [2026-11-13 验收](releases/finance/finance-tiktok-metadata-20261113.md) |
 | 广告展示、公开 BC 权限及业务日历史汇率 | [2026-11-11 验收](releases/finance/finance-ad-history-fx-20261111.md) |
 | 原始十一列刷单费模板 / 当日上午验收 | [finance-brush-original-template-20261105.md](finance-brush-original-template-20261105.md) |

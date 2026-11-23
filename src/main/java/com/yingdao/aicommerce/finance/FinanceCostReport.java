@@ -32,18 +32,30 @@ public final class FinanceCostReport {
         // follow the orders' first settlement, while an explicit bill retains drilldown.
         return !record&&Set.of("","ALL","ORDER","SETTLED_ORDER","BILL","RECONCILIATION","FEE","COST","AD","AD_GMV").contains(value)?"SETTLED_ORDER":value;
     }
+    static final String PRICE_REVIEW="PRICE_REVIEW";
     static String costStatus(String value){
         String selected=text(value).toUpperCase(Locale.ROOT);if(selected.isBlank())return "ALL";
-        if(!Set.of("ALL","PENDING").contains(selected))throw bad("成本状态筛选不正确");
+        if(!Set.of("ALL","PENDING",PRICE_REVIEW).contains(selected))throw bad("成本状态筛选不正确");
         return selected;
     }
-    /** Applied before pagination and export; missing orders/snapshots and queued recalculations remain pending. */
+    /** The saved issue is present in historical snapshots. An order with another issue still needs missing cost data. */
+    static String zeroPriceReview(String cost){
+        return """
+            CASE WHEN %1$s.status='INCOMPLETE' THEN COALESCE(
+              JSON_CONTAINS(JSON_ARRAY('%2$s'), JSON_EXTRACT(%1$s.data_json,'$.lines[*].issue')),0)
+            ELSE 0 END
+            """.formatted(cost,FinanceOrderCosts.ZERO_PRICE_ISSUE).strip();
+    }
+    /** Applied before pagination and in both export paths. Product recalculations supersede stored status. */
     static String costStatusWhere(String value){
-        return costStatus(value).equals("ALL")?"":"""
-             WHERE (EXISTS (SELECT 1 FROM finance_order_cost_jobs filter_job WHERE filter_job.order_record_id=x.order_record_id AND filter_job.priority<2)
-               OR NOT EXISTS (SELECT 1 FROM finance_order_costs filter_cost WHERE filter_cost.order_record_id=x.order_record_id
-                 AND filter_cost.status IN ('READY','ESTIMATED','EXCLUDED')))
-            """;
+        String selected=costStatus(value);
+        if(selected.equals("ALL"))return "";
+        String queued="EXISTS (SELECT 1 FROM finance_order_cost_jobs j WHERE j.order_record_id=x.order_record_id AND j.priority<2)";
+        String cost="SELECT 1 FROM finance_order_costs filter_cost WHERE filter_cost.order_record_id=x.order_record_id AND ";
+        String review=zeroPriceReview("filter_cost")+"=1";
+        return selected.equals(PRICE_REVIEW)
+            ?" WHERE NOT "+queued+" AND EXISTS ("+cost+review+")"
+            :" WHERE ("+queued+" OR NOT EXISTS ("+cost+"(filter_cost.status IN ('READY','ESTIMATED','EXCLUDED') OR "+review+")))";
     }
     static final String AGGREGATE="""
         COUNT(*) order_count,
@@ -66,6 +78,11 @@ public final class FinanceCostReport {
         CASE WHEN SUM(CASE WHEN (j.order_record_id IS NULL OR j.priority=2) AND c.status IN ('READY','ESTIMATED','EXCLUDED') THEN 0 ELSE 1 END)=0
           THEN COALESCE(SUM(c.amount_cny),0) END amount_cny
         """;
+    private static final String REVIEW_AGGREGATE=AGGREGATE+("""
+        , SUM(CASE WHEN (j.order_record_id IS NULL OR j.priority=2) AND %1$s=1 THEN 1 ELSE 0 END) price_review_count
+        , COALESCE(SUM(CASE WHEN (j.order_record_id IS NULL OR j.priority=2) AND %1$s=1
+            THEN c.known_amount_cny END),0) price_review_known_amount_cny
+        """).formatted(zeroPriceReview("c"));
     static String related(String kind){
         return related(kind,"finance_records r FORCE INDEX(idx_finance_company_kind_date)");
     }
@@ -116,13 +133,25 @@ public final class FinanceCostReport {
     }
     public Map<String,Object> summary(Scope scope,Filter filter,String kind){
         String selected=scopeKind(kind,false);
-        var result=summary(scope,filter,selected,repo.query(scope,filter,"r"));
+        var result=summary(scope,filter,selected,repo.query(scope,filter,"r"),false);
+        markPriceScans(scope,filter,result);
         if("SETTLED_ORDER".equals(selected))new FinanceActualCosts(repo).attachReturns(scope,filter,result);
         return result;
     }
+    Map<String,Object> reportSummary(Scope scope,Filter filter,String kind){
+        if(!repo.costProgressMode(scope).separated())return summary(scope,filter,kind);
+        String selected=scopeKind(kind,false);
+        var result=summary(scope,filter,selected,repo.query(scope,filter,"r"),false,true);
+        if("SETTLED_ORDER".equals(selected))new FinanceActualCosts(repo).attachReturns(scope,filter,result);
+        return result;
+    }
+
     /** Read first-settled orders and their cost snapshots once for every dashboard metric. */
     List<Map<String,Object>> dashboardFacts(Scope scope,Filter filter){
-        var facts=repo.aggregateRecords(scope,filter,"r","idx_finance_company_kind_date",1,(source,part)->repo.jdbc().queryForList("""
+        var previous=repo.readDashboardOrderFacts(scope,filter);
+        if(previous.isPresent())return previous.get();
+        boolean separated=repo.costProgressMode(scope).separated();
+        var facts=repo.aggregateSettlementRecords(scope,filter,(source,part)->repo.jdbc().queryForList("""
             SELECT r.shop_id,r.record_date,o.record_date fx_date,r.currency settlement_currency,o.currency,'ORDER' kind,'' category,
               o.status,COUNT(o.id) records,COUNT(o.amount) known_amounts,COUNT(o.revenue) known_revenues,
               SUM(o.amount) amount,SUM(o.revenue) revenue,SUM(o.impressions) impressions,
@@ -133,11 +162,10 @@ public final class FinanceCostReport {
               ON o.organization_id=r.organization_id AND o.shop_id=r.shop_id AND o.order_id=r.order_id
               AND o.kind='ORDER' AND o.source='API'
             LEFT JOIN finance_order_costs c ON c.order_record_id=o.id
-            LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=o.id
-            """.formatted(source)+FinanceLabelCosts.join("r.organization_id","r.shop_id","r.order_id")+" WHERE "+firstSettlement("r",true)+" AND "+part.where()
+            """.formatted(source)+FinancePublishedCosts.jobJoin("o.id",separated)+FinanceLabelCosts.join("r.organization_id","r.shop_id","r.order_id")+" WHERE "+firstSettlement("r",true)+" AND "+part.where()
                 +" GROUP BY r.shop_id,r.record_date,o.record_date,r.currency,o.currency,o.status",part.args().toArray()));
         var sums=new LinkedHashSet<>(FinanceFxDates.LEDGER_SUMS);sums.addAll(COST_SUMS);sums.add("amount_cny");
-        return FinanceFxDates.split(facts,FinanceFxDates.costs(repo,scope,filter,"SETTLED_ORDER"),FinanceFxDates.COST_KEYS,new ArrayList<>(sums),"order_count","cost_fx_date");
+        return FinanceFxDates.split(facts,FinanceFxDates.costs(repo,scope,filter,"SETTLED_ORDER",separated),FinanceFxDates.COST_KEYS,new ArrayList<>(sums),"order_count","cost_fx_date");
     }
     Map<String,Object> dashboardSummary(Scope scope,Filter filter,List<Map<String,Object>> facts){
         var byShop=new LinkedHashMap<String,Map<String,Object>>();
@@ -147,11 +175,15 @@ public final class FinanceCostReport {
             for(String field:COST_SUMS){var value=decimal(row.get(field));if(value!=null)shop.merge(field,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));}
         }
         byShop.values().forEach(row->row.put("amount_cny",number(row.get("pending_count"))==0?row.get("known_amount_cny"):null));
-        var result=summary(scope,"SETTLED_ORDER",new ArrayList<>(byShop.values()));
+        boolean separated=repo.costProgressMode(scope).separated();
+        var result=summary(scope,"SETTLED_ORDER",new ArrayList<>(byShop.values()),separated);
+        if(!separated)markPriceScans(scope,filter,result);
         new FinanceActualCosts(repo).attachReturns(scope,filter,result);
         return result;
     }
     static final List<String> COST_SUMS=List.of("order_count","missing_order_count","excluded_count","ready_count","actual_count","estimated_count","pending_count","queued_count","product_queued_count","label_queued_count","known_amount_cny","pending_known_amount_cny","label_cost_cny","charges_pending","label_matched_count","label_missing_count");
+    private static final List<String> SCOPED_COST_SUMS=java.util.stream.Stream.concat(
+        COST_SUMS.stream(),java.util.stream.Stream.of("price_review_count","price_review_known_amount_cny")).toList();
     /** Costs stay CNY facts; the display projection uses each order's first settlement day. */
     static void displayAmounts(Map<String,Object> summary,List<Map<String,Object>> daily,String currency,FinanceFx.Quote quote){
         String target=currency==null||currency.isBlank()?"CNY":currency;
@@ -219,25 +251,31 @@ public final class FinanceCostReport {
         }
         byShop.values().forEach(row->row.put("amount_cny",number(row.get("pending_count"))==0?row.get("known_amount_cny"):null));
         var result=summary(scope,selected,new ArrayList<>(byShop.values()));
+        markPriceScans(scope,filter,result);
         if("SETTLED_ORDER".equals(selected))new FinanceActualCosts(repo).attachReturns(scope,filter,result);
         displayAmounts(result,daily,currency,quote);return result;
     }
-    private Map<String,Object> summary(Scope scope,String kind,FinanceRepository.Query q){
-        String selected=text(kind).toUpperCase(Locale.ROOT);
-        return summary(scope,selected,summaryRows(selected,q));
+    private void markPriceScans(Scope scope,Filter filter,Map<String,Object> result){
+        if(new FinanceCostPriceScans(repo).pending(scope,filter)){
+            result.put("priceScanPending",true);
+            result.put("productProcessing",true);
+            result.put("processing",true);
+        }
     }
-    private List<Map<String,Object>> summaryRows(String selected,FinanceRepository.Query q){
-        return summarizeRelation(related(selected),q);
+    private List<Map<String,Object>> summarizeRelation(String relation,FinanceRepository.Query q,boolean review){
+        return summarizeRelation(relation,q,review,false);
     }
-    private List<Map<String,Object>> summarizeRelation(String relation,FinanceRepository.Query q){
-        return repo.jdbc().queryForList("SELECT x.shop_id,"+AGGREGATE+" FROM ("+relation+q.where()+") x"
+
+    private List<Map<String,Object>> summarizeRelation(String relation,FinanceRepository.Query q,boolean review,boolean separated){
+        return repo.jdbc().queryForList("SELECT x.shop_id,"+(review?REVIEW_AGGREGATE:AGGREGATE)+" FROM ("+relation+q.where()+") x"
             +" LEFT JOIN finance_order_costs c ON c.order_record_id=x.order_record_id"
-            +" LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=x.order_record_id"
+            +FinancePublishedCosts.jobJoin("x.order_record_id",separated)
             +FinanceLabelCosts.join("x.organization_id","x.shop_id","x.reference")+" GROUP BY x.shop_id",q.args().toArray());
     }
     // Each variant repeats the same DISTINCT as the original settlement scope.
     List<Map<String,Object>> settlementDayFacts(Scope scope,Filter filter){
-        return repo.aggregateRecords(scope,filter,"r","idx_finance_company_kind_date",1,(source,part)->repo.jdbc().queryForList("""
+        boolean separated=repo.costProgressMode(scope).separated();
+        return repo.aggregateSettlementRecords(scope,filter,(source,part)->repo.jdbc().queryForList("""
             SELECT x.shop_id,x.record_date,x.filter_currency,
             """+AGGREGATE+"""
             FROM (
@@ -251,47 +289,59 @@ public final class FinanceCostReport {
                 WHERE (variants.by_currency=0 OR r.currency<>'') AND
                 """.formatted(source)+firstSettlement("r",false)+" AND "+part.where()+"""
             ) x LEFT JOIN finance_order_costs c ON c.order_record_id=x.order_record_id
-            LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=x.order_record_id
-            """+FinanceLabelCosts.join("x.organization_id","x.shop_id","x.reference")
+            """+FinancePublishedCosts.jobJoin("x.order_record_id",separated)+FinanceLabelCosts.join("x.organization_id","x.shop_id","x.reference")
                 +" GROUP BY x.shop_id,x.record_date,x.filter_currency",part.args().toArray()));
     }
 
     List<Map<String,Object>> nativeSettlementRows(Scope scope,Filter filter){
-        return repo.aggregateRecords(scope,filter,"r","idx_finance_company_kind_date",1,
-            (source,part)->summarizeRelation(related("SETTLEMENT",source),part));
+        boolean separated=repo.costProgressMode(scope).separated();
+        return repo.aggregateSettlementRecords(scope,filter,
+            (source,part)->summarizeRelation(related("SETTLEMENT",source),part,false,separated));
     }
 
     Map<String,Object> settlementSummaryFromDays(Scope scope,List<Map<String,Object>> chunks){
-        return summarizeDays(scope,"SETTLEMENT",chunks);
+        return summarizeDays(scope,"SETTLEMENT",chunks,repo.costProgressMode(scope).separated());
     }
 
-    private Map<String,Object> summary(Scope scope,Filter filter,String selected,FinanceRepository.Query q){
-        // These relations assign each deduplicated order to one first-settlement
-        // day. Refund-occurrence and explicit-bill relations can span days and
-        // must retain their original whole-range DISTINCT.
+    private Map<String,Object> summary(Scope scope,Filter filter,String selected,FinanceRepository.Query q,boolean review){
+        return summary(scope,filter,selected,q,review,false);
+    }
+
+    private Map<String,Object> summary(Scope scope,Filter filter,String selected,FinanceRepository.Query q,boolean review,boolean separated){
+        String relation=related(selected);
+        // These relations assign each deduplicated order to one first-settlement day.
+        // Refund occurrences and explicit bills retain their whole-range DISTINCT.
         if(!Set.of("SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED","SETTLEMENT").contains(selected))
-            return summary(scope,selected,q);
+            return summary(scope,selected,summarizeRelation(relation,q,review,separated),separated);
         return repo.readSnapshot(180,()->{
-            // DISTINCT retains order identities, much wider than daily dashboard
-            // buckets; one-day partitions keep its temporary tables bounded.
-            var chunks=repo.aggregateWindows(filter,q,"r.record_date",1,part->summaryRows(selected,part));
-            return summarizeDays(scope,selected,chunks);
+            var chunks=repo.aggregateWindows(filter,q,"r.record_date",1,part->summarizeRelation(relation,part,review,separated));
+            return summarizeDays(scope,selected,chunks,separated);
         });
     }
-    private Map<String,Object> summarizeDays(Scope scope,String selected,List<Map<String,Object>> chunks){
+    private Map<String,Object> summarizeDays(Scope scope,String selected,List<Map<String,Object>> chunks,boolean separated){
         var byShop=new LinkedHashMap<String,Map<String,Object>>();
         for(var row:chunks){
             var shop=byShop.computeIfAbsent(text(row.get("shop_id")),id->new LinkedHashMap<>(Map.of("shop_id",id)));
-            for(String field:COST_SUMS){var value=decimal(row.get(field));if(value!=null)shop.merge(field,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));else shop.putIfAbsent(field,null);}
+            for(String field:SCOPED_COST_SUMS){var value=decimal(row.get(field));if(value!=null)shop.merge(field,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));else shop.putIfAbsent(field,null);}
             var amount=decimal(row.get("amount_cny"));if(amount!=null)shop.merge("amount_cny",amount,(a,b)->((BigDecimal)a).add((BigDecimal)b));
         }
         byShop.values().forEach(row->{if(number(row.get("pending_count"))>0)row.put("amount_cny",null);});
-        return summary(scope,selected,new ArrayList<>(byShop.values()));
+        return summary(scope,selected,new ArrayList<>(byShop.values()),separated);
     }
     private Map<String,Object> summary(Scope scope,String selected,List<Map<String,Object>> perShop){
+        return summary(scope,selected,perShop,false);
+    }
+    private Map<String,Object> summary(Scope scope,String selected,List<Map<String,Object>> perShop,boolean separated){
         var total=new LinkedHashMap<String,Object>();
         for(String key:COST_SUMS){
             BigDecimal n=BigDecimal.ZERO;for(var row:perShop){BigDecimal v=decimal(row.get(key));if(v!=null)n=n.add(v);}total.put(key,n);
+        }
+        long reviews=perShop.stream().mapToLong(row->number(row.get("price_review_count"))).sum();
+        if(reviews>0){
+            var known=perShop.stream().map(row->decimal(row.get("price_review_known_amount_cny")))
+                .filter(Objects::nonNull).reduce(BigDecimal.ZERO,BigDecimal::add);
+            total.put("price_review_count",reviews);
+            total.put("price_review_known_amount_cny",known);
         }
         total.put("amount_cny",number(total.get("pending_count"))==0?total.get("known_amount_cny"):null);
         var result=new LinkedHashMap<String,Object>();result.put("total",total);result.put("shops",perShop);result.put("currency","CNY");
@@ -305,14 +355,15 @@ public final class FinanceCostReport {
             default->"仅核对已完成平台结算的订单商品成本；未结算订单不计入。";
         });
         result.put("formula","有实际出库凭据时使用 ERP 型号、数量及人民币成本；其余先用商品 SKU、再用平台 SKU 匹配型号，按单价 × 购买数量 × 组合数量计算。");
-        result.put("pendingNote","待补齐订单不按零成本计算；历史月份价格标为估算。");
+        result.put("pendingNote","成本待补齐或零单价待核对时，完整成本待确认；历史月份价格标为估算。");
         boolean productRebuilding=false,labelRebuilding=false;
-        if(!perShop.isEmpty()){
+        if(!separated&&!perShop.isEmpty()){
             String slots=String.join(",",Collections.nCopies(perShop.size(),"?"));var args=new ArrayList<Object>();args.add(scope.organizationId());perShop.forEach(row->args.add(row.get("shop_id")));
             for(var rebuild:repo.jdbc().queryForList("SELECT DISTINCT status FROM finance_cost_rebuilds WHERE organization_id=? AND status IN ('READY','LABELS') AND shop_id IN ("+slots+")",args.toArray())){
                 if("READY".equals(rebuild.get("status")))productRebuilding=true;
                 else labelRebuilding=true;
             }
+            if(!productRebuilding)productRebuilding=FinanceCostTargetScans.pending(repo,scope,perShop.stream().map(row->row.get("shop_id")).toList());
         }
         boolean productProcessing=productRebuilding||number(total.get("product_queued_count"))>0;
         boolean labelProcessing=false; // Invoice generations publish atomically, independently of SKU rebuild jobs.
@@ -334,10 +385,13 @@ public final class FinanceCostReport {
         q=FinanceRecordSearch.orders(q,Set.of("BILL","RECONCILIATION").contains(selected)?"o.order_id":"r.order_id",numbers);
         String from=" FROM ("+related(selected)+q.where()+") x";
         // The exact same deduplicated relation supplies the summary and page count.
-        var costs=text(recordId).isBlank()?summary(scope,filter,selected,q):summary(scope,selected,q);
+        var costs=text(recordId).isBlank()?summary(scope,filter,selected,q,true)
+            :summary(scope,selected,summarizeRelation(related(selected),q,true));
+        markPriceScans(scope,filter,costs);
         if(text(recordId).isBlank()&&"SETTLED_ORDER".equals(selected)&&FinanceRecordSearch.numbers(numbers).isEmpty())
             new FinanceActualCosts(repo).attachReturns(scope,filter,costs);
-        long total=number(map(costs.get("total")).get(selectedStatus.equals("PENDING")?"pending_count":"order_count"));
+        var amountSummary=selectedAmountSummary(map(costs.get("total")),selectedStatus);
+        long total=number(amountSummary.get("order_count"));
         int safePage=Math.max(1,page);var args=new ArrayList<>(q.args());args.add(50);args.add((safePage-1L)*50);
         var items=repo.jdbc().queryForList("""
             SELECT o.id,x.shop_id,o.platform,'ORDER' kind,o.external_id,COALESCE(o.order_id,x.reference) order_id,
@@ -355,43 +409,55 @@ public final class FinanceCostReport {
             if(!months.isEmpty()){result.put("reportingMonths",months);result.put("reportingMonthNotice",FinanceReportingMonths.NOTE);}
         }
         result.put("costStatus",selectedStatus);
-        result.put("costAmountSummary",selectedAmountSummary(map(costs.get("total")),selectedStatus));
+        result.put("costAmountSummary",amountSummary);
         result.put("productCosts",costs);return result;
     }
     static Map<String,Object> selectedAmountSummary(Map<String,Object> totals,String selectedStatus){
-        boolean pending=costStatus(selectedStatus).equals("PENDING");
+        String selected=costStatus(selectedStatus);
         var summary=new LinkedHashMap<String,Object>();
-        long count=number(totals.get(pending?"pending_count":"order_count")),missing=number(totals.get("pending_count"));
-        BigDecimal known=decimal(totals.get(pending?"pending_known_amount_cny":"known_amount_cny"));
-        if(known==null)known=BigDecimal.ZERO;
-        summary.put("currency","CNY");summary.put("order_count",count);summary.put("pending_count",missing);
-        summary.put("known_amount_cny",known);summary.put("amount_cny",missing==0?known:null);
+        long review=number(totals.get("price_review_count")),missing=number(totals.get("pending_count"))-review;
+        BigDecimal reviewKnown=Objects.requireNonNullElse(decimal(totals.get("price_review_known_amount_cny")),BigDecimal.ZERO);
+        BigDecimal known=Objects.requireNonNullElse(decimal(totals.get("known_amount_cny")),BigDecimal.ZERO);
+        long count=number(totals.get("order_count"));
+        if(selected.equals("PENDING")){
+            count=missing;review=0;
+            known=Objects.requireNonNullElse(decimal(totals.get("pending_known_amount_cny")),BigDecimal.ZERO).subtract(reviewKnown);
+        }else if(selected.equals(PRICE_REVIEW)){
+            count=review;missing=0;known=reviewKnown;
+        }
+        summary.put("currency","CNY");summary.put("order_count",count);
+        summary.put("pending_count",missing);summary.put("price_review_count",review);
+        summary.put("known_amount_cny",known);summary.put("amount_cny",missing+review==0?known:null);
         return summary;
     }
     /** Shared page/export amounts: use the first settlement day's provider fields, never buyer payment. */
     void attachSettlementAmounts(Scope scope,List<Map<String,Object>> items){
         for(int start=0;start<items.size();start+=100){
             var batch=items.subList(start,Math.min(start+100,items.size()));
-            var byShop=new LinkedHashMap<String,Set<String>>();
+            var keys=new LinkedHashSet<List<String>>();
             for(var row:batch){
                 String order=first(row,"order_id","reference");
-                if(!order.isBlank())byShop.computeIfAbsent(text(row.get("shop_id")),key->new LinkedHashSet<>()).add(order);
+                if(!order.isBlank())keys.add(List.of(text(row.get("shop_id")),order));
             }
-            if(byShop.isEmpty())continue;
-            var predicates=new ArrayList<String>();var args=new ArrayList<Object>();args.add(scope.organizationId());
-            byShop.forEach((shop,orders)->{
-                predicates.add("(s.shop_id=? AND s.order_id IN ("+String.join(",",Collections.nCopies(orders.size(),"?"))+"))");
-                args.add(shop);args.addAll(orders);
-            });
+            if(keys.isEmpty())continue;
+            // Probe each complete indexed identity. SQL DISTINCT matches the ledger collation.
             var values=repo.jdbc().queryForList("""
                 SELECT s.shop_id,s.order_id,s.currency settlement_currency,MIN(s.record_date) first_settlement_date,
                   MAX(JSON_UNQUOTE(JSON_EXTRACT(s.raw_json,'$._finance_reporting_month'))) reporting_month,
                   MAX(JSON_UNQUOTE(JSON_EXTRACT(s.raw_json,'$._finance_original_settlement_date'))) platform_settlement_date,
                   COUNT(*) settlement_records,COUNT(s.revenue) known_goods,COUNT(s.amount) known_net,
                   SUM(s.revenue) settlement_goods_amount,SUM(s.amount) settlement_net_amount
-                FROM finance_records s FORCE INDEX(idx_finance_cost_order)
-                WHERE s.organization_id=? AND
-                """+firstSettlement("s",false)+" AND "+FinanceRepository.visible("s")+" AND ("+String.join(" OR ",predicates)+") GROUP BY s.shop_id,s.order_id,s.currency",args.toArray());
+                FROM (SELECT DISTINCT requested.shop_key,requested.order_key
+                      FROM JSON_TABLE(CAST(? AS JSON),'$[*]' COLUMNS(
+                        shop_key VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci PATH '$[0]',
+                        order_key VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci PATH '$[1]'
+                      )) requested) keys_for_report
+                STRAIGHT_JOIN finance_records s FORCE INDEX(idx_finance_cost_order)
+                  ON s.organization_id=? AND s.shop_id=keys_for_report.shop_key
+                 AND s.order_id=keys_for_report.order_key AND s.kind='SETTLEMENT'
+                WHERE
+                """+firstSettlement("s",false)+" AND "+FinanceRepository.visible("s")
+                +" GROUP BY s.shop_id,s.order_id,s.currency",repo.write(keys),scope.organizationId());
             var grouped=new HashMap<String,List<Map<String,Object>>>();
             for(var row:values)grouped.computeIfAbsent(text(row.get("shop_id"))+"\0"+text(row.get("order_id")),key->new ArrayList<>()).add(row);
             for(var row:batch){
@@ -416,7 +482,7 @@ public final class FinanceCostReport {
     }
     private void pendingIssues(Scope scope,List<Map<String,Object>> items){
         var pending=new LinkedHashMap<String,Map<String,Object>>();
-        for(var row:items)if(number(row.get("product_cost_pending"))>0){
+        for(var row:items)if(number(row.get("product_cost_pending"))+number(row.get("product_cost_price_review"))>0){
             row.put("product_cost_issue",row.get("id")==null?"关联订单尚未同步":"等待后台计算成本");
             if(row.get("id")!=null)pending.put(text(row.get("id")),row);
         }
@@ -462,7 +528,7 @@ public final class FinanceCostReport {
                   LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=x.order_record_id
                 %s
                 GROUP BY x.record_id
-                """.formatted(AGGREGATE,slots,
+                """.formatted(REVIEW_AGGREGATE,slots,
                     "(r.kind IN ('ORDER','REFUND') AND "+hasSettlement("r","r.order_id")+" AND "+FinanceOrderCharges.normalOrder("r")+")"
                     +" OR (r.kind='SETTLEMENT' AND "+firstSettlement("r",true)+")"
                     +" OR (r.kind='BILL' AND "+firstSettlement("t",true)+")",
@@ -480,11 +546,12 @@ public final class FinanceCostReport {
                     continue;
                 }
                 row.put("product_cost_cny",costs.get("amount_cny"));row.put("product_cost_known_cny",costs.get("known_amount_cny"));
-                row.put("product_cost_pending",costs.get("pending_count"));
+                long review=number(costs.get("price_review_count")),missing=number(costs.get("pending_count"))-review;
+                row.put("product_cost_pending",missing);row.put("product_cost_price_review",review);
                 row.put("product_cost_basis",number(costs.get("actual_count"))>0
                     ?number(costs.get("actual_count"))==number(costs.get("ready_count"))?"实际出库成本":"实际出库与标准成本"
                     :"标准成本");
-                row.put("product_cost_state",number(costs.get("pending_count"))>0?"待补齐":number(costs.get("excluded_count"))==number(costs.get("order_count"))?"不计成本":number(costs.get("estimated_count"))>0?"历史价估算":"已计算");
+                row.put("product_cost_state",missing>0?"待补齐":review>0?FinanceOrderCosts.ZERO_PRICE_REVIEW:number(costs.get("excluded_count"))==number(costs.get("order_count"))?"不计成本":number(costs.get("estimated_count"))>0?"历史价估算":"已计算");
                 row.put("product_cost_note","已结算订单商品成本（人民币）；首次结算计入，退款只作关联核对，不再重复扣减。");
                 row.put("label_cost_cny",number(costs.get("label_matched_count"))==0||number(costs.get("label_missing_count"))>0||number(costs.get("charges_pending"))>0?null:costs.get("label_cost_cny"));
                 row.put("label_cost_note",number(costs.get("charges_pending"))>0?"账单费用冲突，待核对":number(costs.get("label_missing_count"))>0?"贴单账单待补齐":"仓库账单实际操作费，人民币；已去重");
@@ -493,6 +560,7 @@ public final class FinanceCostReport {
                     if(!snapshots.isEmpty()){
                         var snapshot=new FinanceOrderCosts(repo).decode(snapshots.getFirst().get("data_json"));
                         snapshot=new LinkedHashMap<>(snapshot);
+                        if(review>0&&missing==0)snapshot.put("note",FinanceOrderCosts.ZERO_PRICE_NOTE);
                         snapshot.remove("labelRuleId");snapshot.remove("labelRuleVersion");
                         snapshot.put("labelCostCny",row.get("label_cost_cny"));snapshot.put("labelNote",row.get("label_cost_note"));
                         snapshot.put("labelBasis","WAREHOUSE_INVOICE");

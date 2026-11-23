@@ -161,13 +161,15 @@ public class FinanceController {
         return ApiResponse.ok(imports.commit(s(p),shopId,kind,repo.read(mapping),file.getBytes(),text(file.getOriginalFilename())));
     }
     @GetMapping("/export") public ResponseEntity<byte[]> export(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
-        Scope s=s(p);Filter f=filter(q);
+        return export(s(p),personal(p),filter(q),q,List.of());
+    }
+    ResponseEntity<byte[]> export(Scope s,Scope fieldsOwner,Filter f,Map<String,String> q,List<List<String>> receipt){
         String view=FinanceFields.view(q.getOrDefault("view",q.get("kind")));
         boolean advertisingOnly=advertisingOnly(q,view);
         boolean rec=view.equals("RECONCILIATION"),cny="CNY".equals(q.get("displayCurrency"));
         FinanceFx.Quote quote=cny?service.exchangeRates().historical(q.get("fxSnapshot"),f.start(),f.end()):null;
         boolean allOrders=allOrders(q,view);
-        var columns=exportColumns(fields.selected(personal(p),view,true,cny));
+        var columns=exportColumns(fields.selected(fieldsOwner,view,true,cny));
         if(cny){
             var evidenceColumns=new ArrayList<>(columns);
             for(var field:FinanceFields.catalog(view))if(Set.of("fx_business_date","fx_rate_date","fx_provider").contains(field.id())
@@ -196,9 +198,16 @@ public class FinanceController {
             }while((page-1L)*100<total);
         }
         boolean csv="csv".equals(q.get("format"));byte[] bytes;
-        if(csv)bytes=FinanceWorkbook.csv(rows).getBytes(StandardCharsets.UTF_8);
+        if(csv){
+            String label="本次报表取数时间（北京时间）";
+            String at=receipt.stream().filter(row->row.size()==2&&label.equals(row.getFirst())).map(row->row.get(1)).findFirst().orElse("");
+            if(!at.isBlank())for(int i=0;i<rows.size();i++){
+                var row=new ArrayList<>(rows.get(i));row.add(i==0?label:at);rows.set(i,row);
+            }
+            bytes=FinanceWorkbook.csv(rows).getBytes(StandardCharsets.UTF_8);
+        }
         else{
-            var sheets=new LinkedHashMap<String,List<List<String>>>();sheets.put(rec?"结算对账":"财务明细",rows);
+            var sheets=new LinkedHashMap<String,List<List<String>>>();if(!receipt.isEmpty())sheets.put("导出数据状态",receipt);sheets.put(rec?"结算对账":"财务明细",rows);
             sheets.put("店铺日期范围",FinanceCalendar.exportWindows(f,service.shops(s)));
             sheets.put("统计口径",List.of(List.of("日期范围",f.start()+" 至 "+f.end()),List.of("店铺分组",f.groupId().isBlank()?"全部分组":"UNGROUPED".equals(f.groupId())?"未分组":service.groups(s).stream().filter(g->f.groupId().equals(g.get("id"))).map(g->text(g.get("name"))).findFirst().orElse("所选分组")),List.of("币种",f.currency().isBlank()?"原币分列，禁止跨币种直接合计":f.currency()),
                     List.of("日期口径版本",FinanceCalendar.VERSION),List.of("日期选择",FinanceCalendar.NOTE),
@@ -215,7 +224,7 @@ public class FinanceController {
                     List.of("扩展字段","仅展示平台实际返回的字段；空白表示未返回或不适用。标记原币的扩展金额不做人民币转换。"),
                     List.of("生成时间（北京时间）",FinanceCalendar.display(java.time.Instant.now()))));
             if(!rec&&!allOrders&&!advertisingOnly&&!Set.of("AD","AD_GMV").contains(view)){
-                var rc=exportColumns(fields.selected(personal(p),"RECONCILIATION",true,cny));var rr=exportRows(rc);
+                var rc=exportColumns(fields.selected(fieldsOwner,"RECONCILIATION",true,cny));var rr=exportRows(rc);
                 appendReconciliation(rr,rc,s,f,quote,q.get("numbers"));sheets.put("结算对账",rr);
             }
             if(cny){

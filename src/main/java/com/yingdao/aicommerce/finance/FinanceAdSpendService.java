@@ -6,27 +6,51 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 
 @Service
 public class FinanceAdSpendService {
-    static final int MAX_RECORDS=50000;
+    static final int MAX_RECORDS=200_000;
+    static final int MAX_PROJECTED_RECORDS=50_000;
+    static final class RangeTooLarge extends com.yingdao.aicommerce.common.exception.BusinessException {
+        RangeTooLarge(int limit) {
+            super(org.springframework.http.HttpStatus.BAD_REQUEST,"广告消耗明细超过 "+limit+" 条，请缩小日期范围");
+        }
+    }
     final FinanceRepository repo;final FinanceService finance;
     @org.springframework.beans.factory.annotation.Autowired(required=false) private FinanceAdMetadataSync metadataSync;
     @org.springframework.beans.factory.annotation.Autowired(required=false) private FinanceShopeeAds shopeeAds;
     public FinanceAdSpendService(FinanceRepository repo,FinanceService finance){this.repo=repo;this.finance=finance;}
     List<Map<String,Object>> sources(Scope s,Filter f){
+        return sources(s,f,MAX_RECORDS);
+    }
+    private List<Map<String,Object>> sources(Scope s,Filter f,int limit){
         var args=new ArrayList<Object>(List.of(s.organizationId(),f.start(),f.end()));
         String where="organization_id=? AND record_date BETWEEN ? AND ?";
         if(!f.platform().isBlank()){where+=" AND platform=?";args.add(f.platform());}
         if(!f.currency().isBlank()){where+=" AND currency=?";args.add(f.currency());}
         var result=new ArrayList<Map<String,Object>>();
         var accounts=new HashMap<String,String>();repo.jdbc().queryForList("SELECT advertiser_id,name FROM finance_ad_accounts WHERE organization_id=?",s.organizationId()).forEach(r->accounts.put(text(r.get("advertiser_id")),text(r.get("name"))));
-        for(var record:repo.jdbc().queryForList("SELECT id,shop_id,platform,kind,record_date,currency,amount,source,raw_json FROM finance_records WHERE "+where+" AND kind IN ('AD','AD_GMV') AND (shop_id='UNASSIGNED' OR shop_id IN (SELECT id FROM finance_connections WHERE organization_id=? AND status<>'REMOVED')) LIMIT 50001",append(args,s.organizationId()))){
-            var row=FinanceAdSpendReport.api(record,repo.read(text(record.get("raw_json"))));if(text(row.get("account_name")).isBlank())row.put("account_name",accounts.getOrDefault(text(row.get("account_id")),"账户信息未提供"));result.add(row);
-        }
-        for(var record:repo.jdbc().queryForList("SELECT * FROM finance_ad_spend_imports WHERE "+where+" LIMIT 50001",args.toArray())){
+        String ledger=" FROM finance_records WHERE "+where+" AND kind IN ('AD','AD_GMV')"
+            +" AND (shop_id='UNASSIGNED' OR shop_id IN (SELECT id FROM finance_connections WHERE organization_id=? AND status<>'REMOVED')) LIMIT ?";
+        var ledgerArgs=new ArrayList<>(args);
+        ledgerArgs.add(s.organizationId());ledgerArgs.add(limit+1);
+        if(limit==MAX_PROJECTED_RECORDS&&repo.jdbc().queryForObject(
+                "SELECT COUNT(*) FROM (SELECT 1"+ledger+") bounded",Integer.class,ledgerArgs.toArray())>limit)
+            throw new RangeTooLarge(limit);
+        repo.jdbc().query("SELECT id,shop_id,platform,kind,record_date,currency,amount,source,raw_json"+ledger,rs->{
+            var record=new LinkedHashMap<String,Object>();
+            for(String field:List.of("id","shop_id","platform","kind","currency","source"))record.put(field,rs.getString(field));
+            record.put("record_date",rs.getDate("record_date"));
+            record.put("amount",rs.getBigDecimal("amount"));
+            var row=FinanceAdSpendReport.api(record,repo.read(rs.getString("raw_json")));
+            if(text(row.get("account_name")).isBlank())row.put("account_name",accounts.getOrDefault(text(row.get("account_id")),"账户信息未提供"));
+            result.add(row);
+        },ledgerArgs.toArray());
+        if(result.size()>limit)throw new RangeTooLarge(limit);
+        for(var record:repo.jdbc().queryForList("SELECT * FROM finance_ad_spend_imports WHERE "+where+" LIMIT ?",append(args,limit+1))){
             var row=new LinkedHashMap<>(record);row.put("record_date",text(record.get("record_date")));row.put("source","IMPORT_FUNDING");row.put("shop_id","UNASSIGNED");result.add(row);
         }
         result.addAll(FinanceAdBcFunding.sources(repo,s,f));
         result.addAll(FinanceShopeeAds.sources(repo,s,f));
-        if(result.size()>MAX_RECORDS)throw bad("广告消耗超过 50,000 条，请缩小日期范围；没有发布截断汇总");return FinanceAdMetadataSync.enrich(repo,s,result);
+        if(result.size()>limit)throw new RangeTooLarge(limit);
+        return FinanceAdMetadataSync.enrich(repo,s,result);
     }
     static Object[] append(List<Object> values,Object extra){var all=new ArrayList<>(values);all.add(extra);return all.toArray();}
     List<Map<String,Object>> assignments(Scope s,Collection<String> sourceKeys){
@@ -42,10 +66,17 @@ public class FinanceAdSpendService {
     }
     /** The authoritative source/assignment snapshot, before display currency conversion. */
     Map<String,Object> buildNativeSpendFacts(Scope s,Filter f){
-        return repo.readSnapshot(30,()->{
-            var shops=finance.shops(s);var sources=sources(s,f);var nativeData=new LinkedHashMap<String,Object>();
-            nativeData.put("shops",shops);nativeData.put("sources",sources);nativeData.put("assignments",assignments(s,sources.stream().filter(r->!"API_BC_COST".equals(r.get("source"))).map(r->text(r.get("source_key"))).toList()));return nativeData;
-        });
+        return repo.readSnapshot(30,()->buildSpendFacts(s,f,MAX_RECORDS));
+    }
+    Map<String,Object> buildProjectedSpendFacts(Scope s,Filter f){
+        // The projection already holds its read snapshot. A cache-size exception
+        // must not mark that transaction rollback-only before the caller handles it.
+        return buildSpendFacts(s,f,MAX_PROJECTED_RECORDS);
+    }
+    private Map<String,Object> buildSpendFacts(Scope s,Filter f,int limit){
+        var shops=finance.shops(s);var sources=sources(s,f,limit);var nativeData=new LinkedHashMap<String,Object>();
+        nativeData.put("shops",shops);nativeData.put("sources",sources);nativeData.put("assignments",assignments(s,sources.stream().filter(r->!"API_BC_COST".equals(r.get("source")))
+            .filter(r->Set.of("","UNASSIGNED").contains(text(r.get("shop_id")))).map(r->text(r.get("source_key"))).toList()));return nativeData;
     }
     Map<String,Object> report(Scope s,Filter f,boolean cny,String fxSnapshot,String search,String status){
         // Financial rows/assignments share a DB snapshot; public rate fetching happens after it closes.

@@ -12,7 +12,7 @@ final class FinanceCostSources {
     }
     List<Map<String,Object>> sources(Scope s,String group){
         return repo.jdbc().queryForList("""
-            SELECT id,source_name,created_at,legacy_merged,JSON_LENGTH(data_json,'$.costs') row_count
+            SELECT id,source_name,created_at,legacy_merged,source_role,revision,JSON_LENGTH(data_json,'$.costs') row_count
             FROM finance_cost_sources WHERE organization_id=? AND group_id=? ORDER BY source_order DESC
             """,s.organizationId(),group);
     }
@@ -25,7 +25,7 @@ final class FinanceCostSources {
             }).toList();
     }
     /** Call only while holding the group row lock and inside the caller's transaction. */
-    void snapshot(Scope s,String actor,String group){
+    String snapshot(Scope s,String actor,String group){
         var merged=new LinkedHashMap<String,Map<String,Object>>();
         var files=repo.jdbc().queryForList("""
             SELECT id,source_name,data_json FROM finance_cost_sources
@@ -49,6 +49,7 @@ final class FinanceCostSources {
             VALUES(?,?,?,?,?,?,?)
             """,id,s.organizationId(),group,name.substring(0,Math.min(name.length(),250)),hash("sources-v2:"+id),
                 repo.write(Map.of("costs",merged.values(),"manualCosts",manual,"currency","CNY","sourceVersion",2)),actor);
+        return id;
     }
     static List<Map<String,Object>> allCosts(Map<String,Object> book){
         var result=new ArrayList<>(rows(book.get("costs")));result.addAll(rows(book.get("manualCosts")));return result;

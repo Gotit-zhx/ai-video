@@ -9,10 +9,18 @@ import java.util.*;
 @RestController
 @RequestMapping("/api/v1/finance/qianyi/returns")
 public class FinanceQianyiReturnsController {
-    final FinanceQianyiReturns returns;final FinanceService finance;
-    public FinanceQianyiReturnsController(FinanceQianyiReturns returns,FinanceService finance){this.returns=returns;this.finance=finance;}
+    final FinanceQianyiReturns returns;final FinanceService finance;final FinanceTableAccess tableAccess;
+    public FinanceQianyiReturnsController(FinanceQianyiReturns returns,FinanceService finance,FinanceTableAccess tableAccess){
+        this.returns=returns;this.finance=finance;this.tableAccess=tableAccess;
+    }
     @GetMapping public ApiResponse<?> list(@RequestParam Map<String,String> query,@AuthenticationPrincipal PlatformPrincipal p){
-        return ApiResponse.ok(returns.list(finance.authorize(p),query));
+        var scope=finance.authorize(p);
+        String accessRevision=tableAccess.revision(p);
+        var result=new LinkedHashMap<>(returns.list(scope,query));
+        result.put("dataVersion",FinanceData.hash(returns.repo.write(result)));
+        result.put("accessRevision",accessRevision);
+        result.put("updatedAt",java.time.Instant.now().toString());
+        return ApiResponse.ok(result);
     }
     @GetMapping("/detail") public ApiResponse<?> detail(@RequestParam String shopId,@RequestParam String returnNumber,@AuthenticationPrincipal PlatformPrincipal p){
         return ApiResponse.ok(returns.detail(finance.authorize(p),shopId,returnNumber));

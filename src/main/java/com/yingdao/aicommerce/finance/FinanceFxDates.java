@@ -47,6 +47,10 @@ final class FinanceFxDates {
             +" GROUP BY r.shop_id,r.record_date,r.kind,r.currency,CASE WHEN r.kind='FEE' THEN r.category ELSE '' END,"+fx+",fx_operating",args(scope,f,q).toArray());
     }
     static List<Map<String,Object>> costs(FinanceRepository repo,Scope scope,Filter f,String kind){
+        return costs(repo,scope,f,kind,false);
+    }
+
+    static List<Map<String,Object>> costs(FinanceRepository repo,Scope scope,Filter f,String kind,boolean separated){
         if(!hasWholeMonth(f))return List.of();
         var q=repo.query(scope,f,"r");String extra="";
         if("SAMPLE_SETTLED".equals(kind))extra=" AND o.platform='TIKTOK_SHOP' AND (JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.order_type'))='SELLER_FUND_FREE_SAMPLE' OR LOWER(JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.is_sample_order')))='true')";
@@ -57,8 +61,8 @@ final class FinanceFxDates {
             +"SUM(o.amount) amount,SUM(o.revenue) revenue,SUM(o.impressions) impressions,SUM(o.clicks) clicks,SUM(o.conversions) conversions,"
             +FinanceCostReport.AGGREGATE.replace("x.order_record_id","o.id")+correctedFrom()
             +" LEFT JOIN finance_records o FORCE INDEX(idx_finance_settled_order) ON o.organization_id=r.organization_id AND o.shop_id=r.shop_id AND o.order_id=r.order_id AND o.kind='ORDER' AND o.source='API'"
-            +" LEFT JOIN finance_order_costs c ON c.order_record_id=o.id LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=o.id"
-            +FinanceLabelCosts.join("r.organization_id","r.shop_id","r.order_id")+" WHERE "+correctionWhere()+q.where()
+            +" LEFT JOIN finance_order_costs c ON c.order_record_id=o.id"
+            +FinancePublishedCosts.jobJoin("o.id",separated)+FinanceLabelCosts.join("r.organization_id","r.shop_id","r.order_id")+" WHERE "+correctionWhere()+q.where()
             +" AND "+FinanceCostReport.firstSettlement("r",true)+extra
             +" GROUP BY r.shop_id,r.record_date,o.record_date,r.currency,o.currency,o.status,"+costDate,args(scope,f,q).toArray());
     }

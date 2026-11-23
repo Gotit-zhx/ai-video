@@ -31,10 +31,14 @@ public class FinanceCostExportJobs implements AutoCloseable {
     private boolean closed;
 
     private record Selection(Filter filter,String source,String recordId,String costStatus,String numbers) {}
+    record Approval(FinanceReportSelection selection,FinanceReportReadiness.Status status,boolean partial,
+                    java.util.function.Supplier<FinanceReportReadiness.Status> assess){
+        String revision(){return status.revision();}
+    }
     private static final class Job {
         final String id=UUID.randomUUID().toString();
         final Scope owner;
-        final Selection selection;
+        final Selection selection;final Approval approval;
         final Set<String> keys=new HashSet<>();
         final long created;
         String state="QUEUED",error="";
@@ -43,7 +47,8 @@ public class FinanceCostExportJobs implements AutoCloseable {
         boolean generating,retired;
         Path directory;
         FinanceCostExport.GeneratedFile file;
-        Job(Scope owner,Selection selection,String key,long created){this.owner=owner;this.selection=selection;keys.add(key);this.created=created;}
+        FinanceReportReadiness.Status dataStatus;
+        Job(Scope owner,Selection selection,String key,long created,Approval approval){this.owner=owner;this.selection=selection;keys.add(key);this.created=created;this.approval=approval;}
     }
     @Autowired
     public FinanceCostExportJobs(FinanceService service,FinanceCostExport exporter){
@@ -60,6 +65,9 @@ public class FinanceCostExportJobs implements AutoCloseable {
         if(cleaner!=null)cleaner.scheduleWithFixedDelay(this::cleanupExpired,1,1,TimeUnit.MINUTES);
     }
     public Map<String,Object> submit(Scope owner,Filter filter,String source,String recordId,String costStatus,String numbers,String key){
+        return submit(owner,filter,source,recordId,costStatus,numbers,key,null);
+    }
+    Map<String,Object> submit(Scope owner,Filter filter,String source,String recordId,String costStatus,String numbers,String key,Approval approval){
         if(owner==null||text(owner.organizationId()).isBlank()||text(owner.userId()).isBlank())throw bad("请先登录");
         if(key==null||!key.matches("[A-Za-z0-9_-]{16,128}"))throw bad("导出请求编号不正确，请重新打开导出面板");
         Selection selected=normalize(filter,source,recordId,costStatus,numbers);
@@ -71,7 +79,7 @@ public class FinanceCostExportJobs implements AutoCloseable {
                 if(!job.selection.equals(selected))throw bad("同一个导出请求不能更换筛选条件");
                 return view(job);
             }
-            for(Job job:jobs.values())if(job.owner.equals(owner)&&job.selection.equals(selected)
+            for(Job job:jobs.values())if(job.owner.equals(owner)&&job.selection.equals(selected)&&sameVersion(job.approval,approval)
                     &&(pending(job)||("READY".equals(job.state)&&clock.getAsLong()-job.completed<REUSE))){
                 if(job.keys.size()>=128)throw bad("这份报表已提交，请在导出面板查看任务");
                 job.keys.add(key);return view(job);
@@ -79,11 +87,14 @@ public class FinanceCostExportJobs implements AutoCloseable {
             if(MaintenanceGate.instance().closed())throw bad("系统正在维护，请稍后重新生成");
             if(jobs.values().stream().filter(j->j.owner.equals(owner)&&pending(j)).count()>=2)throw bad("已有两份报表正在生成，请等待其中一份完成");
             if(jobs.size()+retired.size()>=16)throw bad("导出任务较多，请稍后再试");
-            Job job=new Job(owner,selected,key,clock.getAsLong());jobs.put(job.id,job);
+            Job job=new Job(owner,selected,key,clock.getAsLong(),approval);jobs.put(job.id,job);
             try{MaintenanceGate.execute(executor,()->generate(job));}
             catch(RuntimeException failure){jobs.remove(job.id);throw bad("导出队列已满，请稍后再试");}
             return view(job);
         }
+    }
+    private static boolean sameVersion(Approval first,Approval second){
+        return first==null||second==null?first==second:first.partial()==second.partial()&&first.revision().equals(second.revision());
     }
     private static Selection normalize(Filter f,String source,String recordId,String status,String numbers){
         if(f==null)throw bad("请选择有效导出日期");
@@ -104,10 +115,18 @@ public class FinanceCostExportJobs implements AutoCloseable {
             catch(UnsupportedOperationException unsupported){directory=Files.createTempDirectory(tempRoot,"finance-cost-export-");}
             synchronized(this){job.directory=directory;}
             Selection selected=job.selection;
-            var file=exporter.exportFile(companyScope(job.owner.organizationId()),selected.filter,selected.source,selected.recordId,
-                    selected.costStatus,selected.numbers,directory,(processed,total)->{
-                        synchronized(this){job.processed=Math.max(0,processed);job.total=Math.max(job.processed,total);}
-                    });
+            var company=companyScope(job.owner.organizationId());
+            java.util.function.BiConsumer<Long,Long> progress=(processed,total)->{
+                synchronized(this){job.processed=Math.max(0,processed);job.total=Math.max(job.processed,total);}
+            };
+            var approval=job.approval;
+            FinanceCostExport.GeneratedFile file;
+            if(approval!=null){
+                var approved=exporter.exportApprovedFile(company,approval.selection(),directory,progress,approval.assess());
+                file=approved.file();
+                synchronized(this){job.dataStatus=approved.status();}
+            }else file=exporter.exportFile(company,selected.filter,selected.source,selected.recordId,
+                    selected.costStatus,selected.numbers,directory,progress);
             long bytes=validateFile(directory,file);
             synchronized(this){
                 job.generating=false;
@@ -176,6 +195,7 @@ public class FinanceCostExportJobs implements AutoCloseable {
     }
     private Map<String,Object> view(Job job){
         var result=new LinkedHashMap<String,Object>();var f=job.selection.filter;
+        if(job.approval!=null)result.put("dataStatus",job.dataStatus==null?job.approval.status():job.dataStatus);
         result.put("id",job.id);result.put("status",job.state);result.put("error",job.error);
         result.put("filename",job.file==null?"":job.file.filename());result.put("contentType",job.file==null?"":job.file.contentType());
         result.put("orders",job.file==null?0L:job.file.orders());result.put("lines",job.file==null?0L:job.file.lines());result.put("parts",job.file==null?0:job.file.parts());

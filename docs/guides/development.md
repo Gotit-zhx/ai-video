@@ -42,6 +42,8 @@
 | Shopee 广告 | `APP_SHOPEE_ADS_CREDENTIALS_FILE` | 独立 Ads Service 正式配置；模板 `config/shopee-ads.properties.example`，默认关闭，审核和新店铺授权前不借用 ERP 凭据 |
 | 文档转换 | `APP_KNOWLEDGE_PREVIEW_URL/TOKEN`、`DOCUMENT_PREVIEW_TOKEN` | 通过 `compose.document-preview.yaml` 显式启用，内部令牌一致 |
 
+TikTok 与 Shopee 广告应用的凭据文件、授权状态和历史报表覆盖分别核对。共享服务器使用受限挂载，配置模板随仓库保留。现用入口见[广告费用统计](../business/finance/advertising.md#广告授权与账户显示)。
+
 `.env.example` 保持 `APP_SESSION_COOKIE_SECURE=true`，这不是本地 HTTP 的适用值。若出现登录成功后立即 401，先核对 Cookie 及访问主机，不要先重置账号或清空 Redis。
 
 容量配置 `APP_DISPATCH_WORKER_THREADS=8`、`APP_MAX_ACTIVE_TASKS=80`、`APP_MAX_MODEL_CALLS=20` 属于通用调度；财务同步有独立并发/分页控制，不能通过调大这几个变量改变财务上游限额。
@@ -115,9 +117,9 @@ Windows 使用 WSL2 Linux 环境运行源码启动器：在 WSL2 内安装 JDK 2
 
 ## 数据库迁移
 
-当前协作迁移链至 V165。V153 保留已应用的成本录入历史结构，原功能继续撤回。V160 保留已应用的商品采集迁移，财务记录身份和币种字节变更由已应用的 V161 一并处理。已执行旧版 V154 且缺少 V153 的本地开发库，应先在副本验证缺号补齐或使用新的隔离库。新迁移先确认没有并行冲突，使用下一个未占用版本。迁移编号有历史缺口，保留现状。已应用 SQL 不编辑、不重命名、不用 `repair` 掩盖校验差异。
+仓库迁移链已归档至 V187。11 月 23 日只读核对确认新增的 V166–V187 均与共享环境成功应用的记录一致。分配新编号时同时核对共享环境和并行任务，使用尚未被占用的版本。V153 保留已应用的成本录入历史结构，原功能继续撤回。V160 保留已应用的商品采集迁移，财务记录身份和币种字节变更由已应用的 V161 一并处理。已执行旧版 V154 且缺少 V153 的本地开发库，应先在副本验证缺号补齐或使用新的隔离库。保留历史缺号、已应用 SQL 及其校验值。见[源码运行现场状态](source-runtime-status.md)。
 
-迁移链回归可运行 `FlywayProductionChainMySqlTest`。使用空的 `migration_sync_qa_<十六进制后缀>` 数据库，提供专用 `MIGRATION_SYNC_QA_JDBC`、`MIGRATION_SYNC_QA_USER` 和 `MIGRATION_SYNC_QA_PASSWORD`。测试从空库执行到生产 V160、写入模板样例，再升级到 V165，检查历史、模板数据和重跑幂等性。
+迁移链回归可运行 `FlywayProductionChainMySqlTest`。使用空的 `migration_sync_qa_<十六进制后缀>` 数据库，提供专用 `MIGRATION_SYNC_QA_JDBC`、`MIGRATION_SYNC_QA_USER` 和 `MIGRATION_SYNC_QA_PASSWORD`。测试从空库执行到生产 V160、写入模板样例，再升级到 V187，检查历史、模板数据和重跑幂等性。
 
 先在隔离 MySQL 验证迁移、旧数据保留、索引与幂等行为；涉及财务时核对租户/分组限制、零值与缺失值、首次结算及样品/取消订单。生产回滚应用镜像不会自动回滚 MySQL，需要明确旧应用与新结构的兼容性。
 

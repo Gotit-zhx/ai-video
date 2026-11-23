@@ -7,32 +7,31 @@
   const states={PENDING:'待分配',PARTIAL:'余款待分配',CONFIRMED:'已核实分配',OFFICIAL:'来源已归店',REVIEW:'来源变化待复核',SOURCE_REVIEW:'账户来源待核实 · 未叠加'};
   const numeric=v=>v==null||v===''?'未提供':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:2});
   const moneyText=v=>v==null||v===''?'未提供':Number(v).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
-  function amount(row,key){
+  function amount(row,key,platform=row.platform){
     if(row[key]!=null)return moneyText(row[key]);
-    return Number(row['known_'+key])>0?moneyText(row['partial_'+key])+'（已知部分）':row['reason_'+key]||'未提供';
+    if(Number(row['known_'+key])>0)return moneyText(row['partial_'+key])+'（已知部分）';
+    const reason=row['reason_'+key];
+    if(platform==='SHOPEE'&&key==='net_amount'&&reason==='接口未返回净消耗')return '-';
+    return reason||'未提供';
   }
   function current(ctx,owner){if(!ctx.allowed()||ctx.company()!==owner)throw Error('当前登录公司或权限已变化，请重新打开此页面');}
   function shopAccountDetails(ctx,shop,owner){
     current(ctx,owner);
     const {el,table,filters}=ctx;
     const connected=new Map((ctx.accounts||[]).map(account=>[account.advertiser_id,account]));
-    const accounts=new Map((ctx.report.shopAccounts||[]).filter(r=>r.shop_id===shop.shop_id&&r.currency===shop.currency).map(r=>[r.account_id,r]));
-    const nativeCurrency=filters.currency||(filters.displayCurrency==='CNY'?'':shop.currency);
-    for(const account of connected.values()){
-      if(accounts.has(account.advertiser_id)||!ctx.adStoreIds(account).includes(shop.shop_id)
-          ||(nativeCurrency&&nativeCurrency!=='—'&&account.currency&&account.currency!==nativeCurrency))continue;
-      accounts.set(account.advertiser_id,{account_id:account.advertiser_id,currency:shop.currency==='—'?account.currency:shop.currency,
-        reason_amount:'尚未取得',reason_net_amount:'尚未取得'});
-    }
+    const hasAmount=(row,key)=>row[key]!=null||Number(row['known_'+key])>0;
+    const accounts=(ctx.report.shopAccounts||[]).filter(row=>row.shop_id===shop.shop_id&&row.currency===shop.currency
+      &&displayAmounts.some(key=>hasAmount(row,key)));
     const title=shop.shop_name+' · 广告账户明细';
     const dialog=ctx.dialog(title);
     dialog.d.dataset.adShopAccounts='';
     dialog.d.setAttribute('aria-label',title);
     dialog.foot.firstElementChild.textContent='关闭';
-    el('p',filters.start+' 至 '+filters.end+'。仅汇总已归属到该店及广告账户的投放消耗。',dialog.body,'fi-muted');
+    el('p',filters.start+' 至 '+filters.end+'。仅显示已取得且已归属到该店的广告账户消耗。',dialog.body,'fi-muted');
     table(dialog.body,['广告账户','广告账户 ID','币种',...displayAmounts.map(k=>labels[k])],
-      [...accounts.values()].map(row=>[connected.get(row.account_id)?.name||row.account_name||'账户名称未提供',
-        row.account_id,row.currency||'—',...displayAmounts.map(k=>amount(row,k))]),'当前范围没有该店的广告账户明细。');
+      accounts.map(row=>[connected.get(row.account_id)?.name||row.account_name||'账户名称未提供',
+        row.account_id,row.currency||'—',...displayAmounts.map(key=>hasAmount(row,key)?amount(row,key):'—')]),
+      '当前日期和币种下没有已取得的广告账户消耗。');
   }
   function render(parent,ctx){
     const {el,card,table,button,report}=ctx,main=el('section',null,parent,'fi-ad-spend');main.dataset.adSpendWorkspace='';main.dataset.updateKey='ad-spend-workspace';
@@ -41,10 +40,12 @@
     el('p',report.referenceDescription||'Shopee 账单参考金额 = 全店 CPC 日报消耗 − 已识别 GMS 同日消耗；不是原始扣款流水。缺失 GMS 的日期待补齐，不当作零扣减。',main,'fi-muted');
     const totals=el('div',null,main,'fi-ad-currency-groups');
     for(const total of report.totals||[]){
+      const platforms=new Set((report.groups||[]).filter(r=>r.currency===total.currency&&Number(r.records)>0).map(r=>r.platform));
+      const platform=ctx.filters.platform||(platforms.size===1?[...platforms][0]:undefined);
       const group=el('section',null,totals,'fi-ad-currency');group.dataset.adCurrency=total.currency;group.dataset.updateKey='ad-currency:'+total.currency;
       el('h2',total.currency+' · '+labels.amount,group,'fi-ad-currency-heading');
       const cards=el('div',null,group,'fi-metrics');
-      for(const k of [...displayAmounts,...(Number(total.reference_records)>0?['all_shop_amount','gms_amount']:[])]){const box=el('div',null,cards,'fi-metric');box.dataset.adAmount=k;el('span',labels[k],box,'fi-metric-label');el('strong',amount(total,k),box);el('small',total.currency,box);}
+      for(const k of [...displayAmounts,...(Number(total.reference_records)>0?['all_shop_amount','gms_amount']:[])]){const box=el('div',null,cards,'fi-metric');box.dataset.adAmount=k;el('span',labels[k],box,'fi-metric-label');el('strong',amount(total,k,platform),box);el('small',total.currency,box);}
     }
     if(!(report.totals||[]).length)el('p','当前范围没有已取得的投放消耗，不能解释为实际零消耗。',main,'fi-empty');
     if(report.overlapExcluded)el('p','已排除 '+numeric(report.overlapExcluded)+' 条重叠来源：同身份同日的 Shopee 官方店铺日来源优先；其他平台相同系列资金明细优先，账户汇总与系列明细不叠加。来源覆盖尚需核对，不能视为全量已完成对账。',main,'fi-muted');
@@ -92,28 +93,8 @@
     }));
     const pager=el('div',null,detail.n,'fi-pagebar');el('span','共 '+numeric(report.total)+' 条 · 第 '+numeric(report.page)+' 页 · 每页 50 条',pager);const buttons=el('div',null,pager,'fi-actions');
     button('上一页',buttons,()=>ctx.page(-1)).disabled=report.page<=1;const next=button('下一页',buttons,()=>ctx.page(1));next.dataset.adSpendNext='';next.disabled=report.page*report.pageSize>=report.total;
-    const funding=el('details',null,main,'fi-card fi-ad-spend-support');funding.dataset.adFunding='';el('summary','账户级资金核对（不计入店铺合计）',funding);
-    el('p','普通账户投放与 BC 费用按各自来源核对。预估税额单列，净广告消耗按已取得数据展示。',funding,'fi-muted');
-    const fundingHeaders=displayAmounts.map(k=>k==='amount'?'来源费用合计':labels[k]);
-    if((report.accountFunding||[]).length)table(funding,['来源','平台','账户','账户 ID','展示币种',...fundingHeaders,'预估税额（单列）'],report.accountFunding.map(r=>[sources[r.source]||(!r.source?sources.API_BASIC:r.source),ctx.platformBadge(r.platform),r.account_name||'账户名称未提供',r.account_id,r.currency,...displayAmounts.map(k=>amount(r,k)),amount(r,'tax_amount')]));
-    else el('p','当前范围尚无可核对的账户资金日报；店铺已取得的 GMV Max 净广告消耗仍在上方展示。',funding,'fi-empty');
-    fundingDiagnostics(funding,ctx);
     el('p','资金消耗和投放效果、平台结算扣费是不同口径；本工作台不重复加计广告佣金，也不自动改写利润流水。原币保留；人民币金额按对应业务日期历史汇率换算。',main,'fi-muted');
     for(const t of main.querySelectorAll('table'))[...t.querySelectorAll('thead th')].forEach((th,i)=>{if(/消耗|合计/.test(th.textContent))for(const row of t.rows)if(row.cells[i])row.cells[i].dataset.adMoney='';});
-  }
-  function fundingDiagnostics(parent,ctx){
-    const statuses={NEEDS_PERMISSION:'资金权限待补齐',NEEDS_FINANCE_ROLE:'BC财务角色待配置',NEEDS_BC_ACCESS:'BC访问关系待确认',NEEDS_AUTHORIZATION:'资金授权待更新',PARTIAL_ACCESS:'部分 BC 财务范围可读',NO_DATA:'当前范围未取得资金记录',ERROR:'资金同步异常',PAUSED:'资金同步已暂停',READY:'资金等待同步',SYNCING:'资金同步中',SUCCESS:'已完成本轮资金查询'};
-    for(const account of ctx.fundingAccounts||ctx.accounts||[]){
-      const state=account.funding;if(!state)continue;
-      const status=String(state.status||'');
-      if(!state.permissionRequired&&!state.error_message&&!status.startsWith('NEEDS_')&&!['ERROR','PAUSED','PARTIAL_ACCESS','NO_DATA'].includes(status))continue;
-      const row=ctx.el('p',null,parent,'fi-muted');row.dataset.bcFundingStatus=account.advertiser_id;row.dataset.updateKey='bc-funding-status:'+account.advertiser_id;
-      ctx.el('strong',(account.name||account.advertiser_id)+' · '+(statuses[status]||'资金状态待核对'),row);
-      if(state.error_message)ctx.el('span',' · '+state.error_message,row);
-      ctx.el('span','。未取得的资金金额保持未知，不代表零消耗。',row);
-      const link=ctx.el('a','前往财务店铺管理',row);link.href='#finance-shops';
-      row.title=state.coverage_basis||'仅核对已取得的账户资金记录，不能视为完整对账。';
-    }
   }
   async function allocate(ctx,key){
     const owner=ctx.company(),d=ctx.dialog('核实店铺消耗分配');

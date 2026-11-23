@@ -18,6 +18,8 @@ spend.shops.push({...summary,shop_id:'UNASSIGNED',shop_name:'待分配店铺'});
 spend.shopAccounts=[
  {shop_id:'a',account_id:'100001',currency:'CNY',amount:7,net_amount:0},
  {shop_id:'a',account_id:'100003',account_name:'历史投放账户',currency:'CNY',amount:3,net_amount:null,known_net_amount:1,partial_net_amount:2},
+ {shop_id:'a',account_id:'100004',account_name:'零消耗账户',currency:'CNY',amount:0,net_amount:null,reason_net_amount:'尚未取得'},
+ {shop_id:'a',account_id:'100005',account_name:'无可确认金额账户',currency:'CNY',amount:null,net_amount:null,known_amount:0,partial_amount:0,reason_amount:'尚未取得'},
  {shop_id:'other',account_id:'100001',currency:'CNY',amount:99,net_amount:99},
  {shop_id:'a',account_id:'100001',currency:'USD',amount:80,net_amount:70}
 ];
@@ -52,7 +54,7 @@ try{
  for(const label of ['现金消耗','信用额度消耗','广告费用赠款消耗'])assert(![...main.querySelectorAll('th,.fi-metric-label')].some(n=>n.textContent===label),label);
  assert.deepEqual([...main.querySelectorAll('[data-ad-amount]')].map(n=>n.dataset.adAmount),['amount','net_amount']);
  assert.deepEqual([...[...main.querySelectorAll('table')][2].querySelectorAll('thead th')].slice(0,6).map(n=>n.textContent),['日期','平台','店铺','展示币种','广告消耗（投放 / 账单参考）','净广告消耗'],'the first visible detail columns prioritize ownership and spending');
- assert([...main.querySelectorAll(':scope > .fi-card table')].slice(0,3).every(t=>t.textContent.includes('净广告消耗')));assert(main.querySelector('details[data-ad-funding]'));assert(!main.querySelector('details[data-ad-funding]').open);assert(main.textContent.includes('账户日报核对'));
+ assert([...main.querySelectorAll(':scope > .fi-card table')].slice(0,3).every(t=>t.textContent.includes('净广告消耗')));assert(!main.querySelector('[data-ad-funding]'));
  assert(main.textContent.includes('Shopee'));assert(main.textContent.includes('TikTok'));assert(main.textContent.includes('待分配店铺'));assert(main.textContent.includes('9012345678901234'));
  const shopTable=main.querySelectorAll('table')[1];
  const accountColumn=[...shopTable.tHead.rows[0].cells].findIndex(n=>n.textContent==='广告账户明细');
@@ -66,29 +68,25 @@ try{
  assert.deepEqual([...accountsDialog.querySelectorAll('tbody tr')].map(r=>[...r.cells].map(c=>c.textContent)),[
    ['演示广告账户','100001','CNY','7.00','0.00'],
    ['历史投放账户','100003','CNY','3.00','2.00（已知部分）'],
-   ['已关联待同步账户','100002','CNY','尚未取得','尚未取得']
+   ['零消耗账户','100004','CNY','0.00','—']
  ]);
  accountsDialog.querySelector('.fi-dialog-foot button').click();assert(!accountsDialog.isConnected);
- assert(!main.querySelector('[data-ad-spend-allocate]'),'read-only viewer has no assignment action');
- assert(root.querySelector('details[data-ad-spend-support]'));assert(!root.querySelector('details[data-ad-spend-support]').open);
- const originalFunding=spend.accountFunding;
- spend.accountFunding=[{...originalFunding[0],source:'API_BASIC',account_id:'100001'},
-   {platform:'TIKTOK_SHOP',source:'API_BC_COST',account_name:'账户日报核对',account_id:'100001',currency:'CNY',amount:12,cash_amount:11,credit_amount:null,grant_amount:1,net_amount:null,tax_amount:0.6}];
- fixture.accounts[0].funding={source:'API_BC_COST',status:'NEEDS_PERMISSION',error_message:'BC 费用读取被拒绝（错误码 40001）',permissionRequired:true,records:1,returned_days:1,coverage_basis:'仅统计已返回账户费用记录的日期；空响应不表示零消耗。'};
+ const originalShopAccounts=spend.shopAccounts;
+ spend.shopAccounts=originalShopAccounts.filter(r=>r.account_id==='100005');
  w.FinanceWorkspace.enter('ads');await ready();
- let fundingView=root.querySelector('[data-ad-funding]'),fundingTable=fundingView.querySelector('table');
- const fundingCell=(source,label)=>{const index=[...fundingTable.querySelectorAll('thead th')].findIndex(n=>n.textContent===label);assert(index>=0,'funding column '+label);const row=[...fundingTable.tBodies[0].rows].find(n=>n.textContent.includes(source));assert(row,'funding source '+source);return row.cells[index].textContent;};
- assert.equal(fundingCell('BC资金费用','预估税额（单列）'),'0.60');assert.equal(fundingCell('BC资金费用','来源费用合计'),'12.00','tax stays separate from source cost');assert.equal(fundingCell('普通账户投放','来源费用合计'),'10.00');assert.equal(fundingTable.tBodies[0].rows.length,2,'BC and BASIC remain separate account sources');
- assert.equal(root.querySelector('[data-ad-amount="amount"] strong').textContent,'10.00','account finance and tax never increase operating spend');
- let diagnostic=fundingView.querySelector('[data-bc-funding-status]');assert(diagnostic?.textContent.includes('40001'));assert(diagnostic.textContent.includes('权限'));assert(!diagnostic.textContent.includes('0.00'));assert.equal(diagnostic.querySelector('a').getAttribute('href'),'#finance-shops');
- fixture.accounts[0].funding={...fixture.accounts[0].funding,status:'NEEDS_FINANCE_ROLE',error_message:'需要 BC Finance Analyst 角色'};spend.accountFunding[1].tax_amount=null;spend.accountFunding[1].known_tax_amount=1;spend.accountFunding[1].partial_tax_amount=0.4;
- w.FinanceWorkspace.enter('ads');await ready();fundingView=root.querySelector('[data-ad-funding]');fundingTable=fundingView.querySelector('table');assert.equal(fundingCell('BC资金费用','预估税额（单列）'),'0.40（已知部分）');assert(fundingView.querySelector('[data-bc-funding-status]').textContent.includes('角色'));
- fixture.accounts[0].funding={...fixture.accounts[0].funding,status:'ERROR',permissionRequired:false,error_message:'BC 资金同步未完成，已保留旧费用'};w.FinanceWorkspace.enter('ads');await ready();assert(root.querySelector('[data-bc-funding-status]').textContent.includes('同步异常'));
- fixture.accounts[0].funding={source:'API_BC_COST',status:'PARTIAL_ACCESS',sync_status:'SUCCESS',permissionRequired:true,records:1,readable_bc_count:1,missing_finance_role_bc_count:2};
- w.FinanceWorkspace.enter('ads');await ready();diagnostic=root.querySelector('[data-bc-funding-status]');assert(diagnostic?.textContent.includes('部分 BC 财务范围可读'),'completed requests must still expose partial financial access');assert(!diagnostic.textContent.includes('同步已完成'));assert(!diagnostic.textContent.includes('0.00'));
- fixture.accounts[0].funding={source:'API_BC_COST',status:'NO_DATA',sync_status:'SUCCESS',permissionRequired:false,records:0,coverage_status:'NO_RECORDS'};
- w.FinanceWorkspace.enter('ads');await ready();diagnostic=root.querySelector('[data-bc-funding-status]');assert(diagnostic?.textContent.includes('未取得资金记录'),'a successful empty query needs a visible unknown-data state even without an error message');assert(!diagnostic.textContent.includes('同步已完成'));assert(!diagnostic.textContent.includes('0.00'));
- delete fixture.accounts[0].funding;spend.accountFunding=originalFunding;w.FinanceWorkspace.enter('ads');await ready();main=root.querySelector('[data-ad-spend-workspace]');assert(!root.querySelector('[data-bc-funding-status]'),'older account responses without funding remain supported');assert(!root.querySelector('[data-ad-funding]').open);assert.equal(root.querySelectorAll('[data-ad-spend-workspace]>.fi-card:not(details)').length,3,'only the three main spending tables remain');
+ root.querySelector('[aria-label="演示菲律宾店的广告账户明细"]').click();
+ const emptyAccountsDialog=d.querySelector('dialog[data-ad-shop-accounts]');
+ assert(emptyAccountsDialog.open);assert.equal(emptyAccountsDialog.querySelectorAll('tbody tr').length,0);
+ assert.match(emptyAccountsDialog.querySelector('.fi-empty').textContent,/没有已取得的广告账户消耗/);
+ emptyAccountsDialog.querySelector('.fi-dialog-foot button').click();
+ spend.shopAccounts=originalShopAccounts;
+ assert(!main.querySelector('[data-ad-spend-allocate]'),'read-only viewer has no assignment action');
+ const originalFunding=spend.accountFunding;
+ spend.accountFunding=[...originalFunding,{platform:'TIKTOK_SHOP',source:'API_BC_COST',currency:'CNY',amount:12,tax_amount:0.6}];
+ w.FinanceWorkspace.enter('ads');await ready();
+ main=root.querySelector('[data-ad-spend-workspace]');
+ assert.equal(main.querySelector('[data-ad-amount="amount"] strong').textContent,'10.00','account finance and tax never increase operating spend');
+ spend.accountFunding=originalFunding;
  const search=main.querySelector('[aria-label="消耗系列或账户查询"]');search.value='共享';search.closest('form').dispatchEvent(new w.Event('submit',{cancelable:true}));await ready();assert.equal(reads.filter(r=>r.endpoint==='/workspace/query').at(-1).q.search,'共享');
  main.querySelector('[data-ad-spend-next]').click();await ready();assert.equal(reads.filter(r=>r.endpoint==='/workspace/query').at(-1).q.spendPage,'2');
  const query=root.querySelector('[aria-label="消耗系列或账户查询"]');query.value='slow';query.closest('form').dispatchEvent(new w.Event('submit',{cancelable:true}));await wait(()=>!!resumeHeld);
@@ -111,5 +109,25 @@ try{
  spend.items=[{...spend.items[0],amount:null,original_amount:null,original_gms_amount:null,gms_amount:null,reason_amount:'GMS 日报待补齐',reason_gms_amount:'GMS 日报待补齐'}];
  w.FinanceWorkspace.enter('ads');await ready();assert.equal(root.querySelector('[data-ad-amount="amount"] strong').textContent,'12.50（已知部分）','missing GMS cannot restore the 15.00 CPC total');assert(root.querySelector('[data-ad-spend-workspace]').textContent.includes('GMS 日报待补齐'));
  failSpend=true;w.FinanceWorkspace.enter('ads');await ready();assert(root.textContent.includes('店铺消耗读取失败'));assert(!root.querySelector('[data-ad-spend-workspace]'),'failed reads must not display stale primary amounts');
+ failSpend=false;
+ const missingNet={net_amount:null,known_net_amount:0,reason_net_amount:'接口未返回净消耗'};
+ const shopeeGroup={...spend.groups[0],...missingNet};
+ const shopeeShop={...spend.shops[0],...missingNet};
+ spend.totals=[{currency:'CNY',amount:12.5,...missingNet}];
+ spend.groups=[shopeeGroup];
+ spend.shops=[shopeeShop];
+ const shopeeDetail={...spend.items[0],...shopeeShop,source:'API_SHOPEE_CPC',assignment_status:'OFFICIAL'};
+ spend.items=[shopeeDetail,{...shopeeDetail,net_amount:0},
+   {...shopeeDetail,known_net_amount:1,partial_net_amount:2},
+   {...shopeeDetail,reason_net_amount:'业务日汇率缺失'},
+   {...shopeeDetail,platform:'TIKTOK_SHOP',source:'API_GMV',currency:'USD'}];
+ w.FinanceWorkspace.enter('ads');await ready();
+ main=root.querySelector('[data-ad-spend-workspace]');
+ assert.equal(main.querySelector('[data-ad-amount="net_amount"] strong').textContent,'-');
+ const netCells=[...main.querySelectorAll(':scope > .fi-card:not(details) table')].map(t=>{
+   const index=[...t.tHead.rows[0].cells].findIndex(c=>c.textContent==='净广告消耗');
+   return [...t.tBodies[0].rows].map(row=>row.cells[index].textContent);
+ });
+ assert.deepEqual(netCells,[['-'],['-'],['-','0.00','2.00（已知部分）','业务日汇率缺失','接口未返回净消耗']]);
  console.log('Finance advertising spending workspace UI passed');
 }finally{w.FinanceWorkspace.leave();dom.window.close();}

@@ -80,7 +80,8 @@
     if(canManage){button(controls,'导入月度账单',upload,'fi-primary');button(controls,'重新匹配',async()=>{await request('/label-costs/rematch',{method:'POST'});await refresh();});}
     button(controls,'刷新',()=>refresh());
     const filters=el('div',null,root,'fi-filters');
-    const change=(detailsOnly=false)=>{scope.page=1;options.onFiltersChange?.({...scope});syncStatusFilters();refresh({detailsOnly}).catch(e=>{feedback.textContent=e.message;});};
+    const activity=()=>options.onActivityScope?.('LABELS',{...scope});
+    const change=(detailsOnly=false)=>{scope.page=1;options.onFiltersChange?.({...scope});activity();syncStatusFilters();refresh({detailsOnly}).catch(e=>{feedback.textContent=e.message;});};
     select(filters,'账单所属分组',[['','全部分组'],['UNGROUPED','未分组'],...groups.map(g=>[g.id,g.name])],scope.groupId,v=>{scope.groupId=v;scope.shopId='';shopOptions();change();});
     const shopSelection=select(filters,'账单匹配店铺',[],'',v=>{scope.shopId=v;change();});
     function shopOptions(){
@@ -90,10 +91,17 @@
       for(const s of available)el('option',s.display_name||s.name,shopSelection).value=s.id;
       shopSelection.value=scope.shopId;
     }
-    shopOptions();
+    shopOptions();activity();
     for(const [key,name]of [['start','结算开始日期'],['end','结算结束日期']]){
       const label=el('label',null,filters);el('span',name,label);const n=el('input',null,label);n.type='date';n.value=scope[key];n.setAttribute('aria-label',name);
-      n.onchange=()=>{if(!n.value)return;const next={...scope,[key]:n.value};if(next.start&&next.end&&next.start>next.end){feedback.textContent='开始日期不能晚于结束日期';n.value=scope[key];return;}scope[key]=n.value;change();};
+      n.onchange=()=>{
+        const next={...scope,[key]:n.value};
+        if(!n.value||next.start>next.end){
+          feedback.textContent=n.value?'开始日期不能晚于结束日期':'请选择完整的结算日期';
+          n.value=scope[key];return;
+        }
+        scope[key]=n.value;change();
+      };
     }
     const selection=el('div',null,root,'fi-filters');
     const statusSelect=select(selection,'匹配状态',[['','全部状态'],['UNMATCHED','待匹配'],['REVIEW','绑定待核对'],['CONFLICT','费用待核对'],['MATCHED','已匹配']],scope.matchStatus,v=>{scope.matchStatus=v;change(true);});
@@ -168,13 +176,14 @@
       clearTimeout(timer);controller?.abort();const current=new AbortController();controller=current;
       const run=++sequence,key=JSON.stringify([scope.start,scope.end,scope.groupId,scope.shopId,scope.platform]);
       const partial=Boolean(detailsOnly&&data&&periodKey===key);
+      if(data&&periodKey!==key)content.hidden=true;
       content.setAttribute('aria-busy','true');loading.hidden=quiet;
       const timeout=setTimeout(()=>current.abort(new Error('明细读取超时，请点击刷新重试')),30000);
       try{
         const spec=requestSpec(scope,partial),leased=run===1&&!detailsOnly?options.initialLabelPrefetch?.take(spec.key,current.signal):null;
         const incoming=await (leased||request(spec.path,{signal:current.signal}));
         if(disposed||run!==sequence||!root.isConnected||!active())return;
-        data=partial?{...data,...incoming}:incoming;if(!partial)periodKey=key;feedback.textContent='';draw();
+        data=partial?{...data,...incoming}:incoming;if(!partial)periodKey=key;feedback.textContent='';draw();content.hidden=false;
         if(data.processing||data.files.some(f=>['QUEUED','PARSING','PREPARED','REMOVE_QUEUED'].includes(f.status)))
           timer=setTimeout(()=>{if(root.isConnected&&!disposed&&active())refresh({quiet:true}).catch(e=>{feedback.textContent=e.message;});else if(!root.isConnected)dispose();},3000);
       }catch(error){

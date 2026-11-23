@@ -113,7 +113,7 @@
     returnsPanel(m,options).catch(e=>{if(alive())feedback.textContent=e.message;});
     return ()=>{disposed=true;host.dispatchEvent(new Event('close'));};
   }
-  async function returnsPanel(m,{request,shops=[],groups=[],selection={},onSelection=()=>{}}){
+  async function returnsPanel(m,{request,shops=[],groups=[],selection={},onSelection=()=>{},readPage=null}){
     const filters=el('div',null,m.body,'fq-filters');let sequence=0,page=1,controller,exportController,applied;
     el('p','数据来源：千易 ERP · 按收货月份统计，须同时满足有收货时间、退货已完成、退回已签收。可切换全部单据核对其他类型和状态。',m.body,'fi-muted');
     const choices=map=>[['','全部'],...Object.entries(map),['NOT_RETURNED','千易未返回']];
@@ -145,33 +145,67 @@
         if(Number(cost.estimatedRecords)>0)rows.push(['使用历史成本价',num(cost.estimatedRecords)+' 笔']);
       }
       for(const [label,value]of rows){const item=el('section',null,totals);el('span',label,item);el('strong',value,item);}
-      if(cost){const note=el('p','按当前筛选全部页面 · 收货月标准成本 · 不含贴单费',totals,'fi-muted');note.style.gridColumn='1 / -1';note.title=cost.basis||'';}
+      if(cost||summary.inventoryCostBasis){
+        const messages=[];
+        if(cost)messages.push('退货参考成本按收货月标准单价计算，覆盖筛选范围内所有页面');
+        if(summary.inventoryCostBasis)messages.push(summary.inventoryCostBasis);
+        const note=el('p',messages.join('。')+'。',totals,'fi-muted');
+        note.style.gridColumn='1 / -1';note.title=cost?.basis||'';
+      }
     }
-    async function load(){
-      controller?.abort();controller=new AbortController();
-      const current=++sequence,selected=query();onSelection(selected);status.textContent='正在读取千易售后数据…';status.classList.add('is-loading');m.feedback.textContent='';records.setAttribute('aria-busy','true');download.disabled=true;totals.hidden=true;records.hidden=true;pages.hidden=true;
+    function paint(result,selected,cachedAt){
+      applied=selected;showSummary(result);totals.hidden=false;records.hidden=false;pages.hidden=false;download.disabled=false;
+      globalThis.FinanceReportExports?.decorate(download,'QIANYI',selected);
+      records.replaceChildren();pages.replaceChildren();
+      for(const [node,key,map]of [[returned,'return_state',returnStates],[refunded,'refund_state',refundStates],[type,'aftersale_type',types]])for(const row of result.items){const raw=row[key];if(raw&&![...node.options].some(o=>o.value===raw))el('option',state(map,raw),node).value=raw;}
+      table(records,['店铺 / 平台','千易售后单 / 平台订单','类型','退货状态','退款状态','退回物流状态','收货时间（北京时间）','创建时间（北京时间）','千易订单退款金额','操作'],result.items.map(r=>{
+        const lead=el('div',null,null);el('span',r.platform==='SHOPEE'?'虾皮':'TK',lead,'fi-tag');el('span',' '+r.shop_name,lead);
+        const ids=el('div',null,null);m.button(ids,r.return_number,()=>openDetail({request,shopId:r.shop_id,returnNumber:r.return_number}),'fi-cost-link');el('small',r.order_id||'千易未返回平台订单号',ids);
+        const receipt=tag(receiptLabel(r),r.return_receipt_state);receipt.title=r.receipt_event||'千易暂未返回明确的返程物流依据，未计入收货统计';
+        const refund=el('div',num(r.refund_amount),null);el('small',r.refund_currency==='UNKNOWN'?'千易未返回币种':r.refund_currency||'千易未返回币种',refund);
+        return [lead,ids,state(types,r.aftersale_type),tag(state(returnStates,r.return_state),r.return_state),tag(state(refundStates,r.refund_state),r.refund_state),receipt,stamp(r.source_received_at),stamp(r.source_created_at),refund,m.button(null,'查看千易数据',()=>openDetail({request,shopId:r.shop_id,returnNumber:r.return_number}),'fi-cost-link')];
+      }));
+      if(!result.items.length)el('p',Number(result.summary?.awaitingLogistics)>0?'该收货月份仍有单据在补齐返程物流，尚未计入。可切换全部单据核对。':'当前筛选没有符合条件的单据。可切换全部单据、清除日期核对尚未收货的售后。',records,'fi-muted');
+      const currentPage=Number(result.page);m.button(pages,'上一页',()=>{page=currentPage-1;return load();}).disabled=currentPage<=1;
+      el('span','第 '+currentPage+' 页 · 每页 50 条',pages);m.button(pages,'下一页',()=>{page=currentPage+1;return load();}).disabled=currentPage*50>=result.total;
+      status.textContent='千易售后 · 共 '+num(result.total)+' 条';
+      if(cachedAt)status.textContent+=' · 上次查询 '+stamp(result.updatedAt||cachedAt);
+      basis.textContent=result.basis;
+    }
+    async function load(reuse=true){
+      controller?.abort();
+      const current=++sequence,selected=query();
+      download.disabled=true;totals.hidden=true;records.hidden=true;pages.hidden=true;m.feedback.textContent='';
+      globalThis.FinanceReportExports?.decorate(download,'QIANYI',null);
+      if((!!selected.start!==!!selected.end)||(selected.start&&selected.start>selected.end)){
+        status.textContent='请选择完整日期范围，开始日期不能晚于结束日期。';
+        status.classList.remove('is-loading');records.setAttribute('aria-busy','false');return;
+      }
+      controller=new AbortController();onSelection(selected);status.textContent='正在读取千易售后数据…';status.classList.add('is-loading');records.setAttribute('aria-busy','true');
       try{
-        const result=await request('/qianyi/returns?'+new URLSearchParams(selected),{signal:controller.signal});if(!m.alive()||current!==sequence)return;
-        applied=selected;showSummary(result);totals.hidden=false;records.hidden=false;pages.hidden=false;download.disabled=false;
-        records.replaceChildren();pages.replaceChildren();
-        for(const [node,key,map]of [[returned,'return_state',returnStates],[refunded,'refund_state',refundStates],[type,'aftersale_type',types]])for(const row of result.items){const raw=row[key];if(raw&&![...node.options].some(o=>o.value===raw))el('option',state(map,raw),node).value=raw;}
-        table(records,['店铺 / 平台','千易售后单 / 平台订单','类型','退货状态','退款状态','退回物流状态','收货时间（北京时间）','创建时间（北京时间）','千易订单退款金额','操作'],result.items.map(r=>{
-          const lead=el('div',null,null);el('span',r.platform==='SHOPEE'?'虾皮':'TK',lead,'fi-tag');el('span',' '+r.shop_name,lead);
-          const ids=el('div',null,null);m.button(ids,r.return_number,()=>openDetail({request,shopId:r.shop_id,returnNumber:r.return_number}),'fi-cost-link');el('small',r.order_id||'千易未返回平台订单号',ids);
-          const receipt=tag(receiptLabel(r),r.return_receipt_state);receipt.title=r.receipt_event||'千易暂未返回明确的返程物流依据，未计入收货统计';
-          const refund=el('div',num(r.refund_amount),null);el('small',r.refund_currency==='UNKNOWN'?'千易未返回币种':r.refund_currency||'千易未返回币种',refund);
-          return [lead,ids,state(types,r.aftersale_type),tag(state(returnStates,r.return_state),r.return_state),tag(state(refundStates,r.refund_state),r.refund_state),receipt,stamp(r.source_received_at),stamp(r.source_created_at),refund,m.button(null,'查看千易数据',()=>openDetail({request,shopId:r.shop_id,returnNumber:r.return_number}),'fi-cost-link')];
-        }));
-        if(!result.items.length)el('p',Number(result.summary?.awaitingLogistics)>0?'该收货月份仍有单据在补齐返程物流，尚未计入。可切换全部单据核对。':'当前筛选没有符合条件的单据。可切换全部单据、清除日期核对尚未收货的售后。',records,'fi-muted');
-        const currentPage=Number(result.page);m.button(pages,'上一页',()=>{page=currentPage-1;return load();}).disabled=currentPage<=1;
-        el('span','第 '+currentPage+' 页 · 每页 50 条',pages);m.button(pages,'下一页',()=>{page=currentPage+1;return load();}).disabled=currentPage*50>=result.total;
-        status.textContent='千易售后 · 共 '+num(result.total)+' 条';basis.textContent=result.basis;
+        const signal=controller.signal;
+        const snapshot=readPage?await readPage(selected,{signal},reuse):
+          {result:await request('/qianyi/returns?'+new URLSearchParams(selected),{signal})};
+        if(!m.alive()||current!==sequence)return;
+        const result=snapshot.result;
+        paint(result,selected,snapshot.cachedAt);
+        if(snapshot.cachedAt){
+          readPage(selected,{signal},false).then(fresh=>{
+            if(!m.alive()||current!==sequence||signal.aborted)return;
+            const updated=fresh.result;
+            if(updated.dataVersion!==result.dataVersion||updated.accessRevision!==result.accessRevision)paint(updated,selected);
+          }).catch(error=>{
+            if(m.alive()&&current===sequence&&!signal.aborted)m.feedback.textContent=error.message||'暂未核对最新售后数据';
+          });
+        }
       }catch(e){if(m.alive()&&current===sequence){status.textContent='读取失败，请重试当前筛选。';m.feedback.textContent=e.message;}}
       finally{if(m.alive()&&current===sequence){status.classList.remove('is-loading');records.setAttribute('aria-busy','false');}}
     }
-    m.button(actions,'查询',()=>{page=1;return load();},'fi-primary');m.button(actions,'清除日期',()=>{start.value='';end.value='';page=1;return load();});
+    m.button(actions,'查询',()=>{page=1;return load(false);},'fi-primary');m.button(actions,'清除日期',()=>{start.value='';end.value='';page=1;return load();});
     const download=m.button(actions,'导出千易售后 Excel',async()=>{
-      if(!applied)return;const current=sequence;exportController?.abort();exportController=new AbortController();
+      if(!applied)return;
+      if(globalThis.FinanceReportExports){await FinanceReportExports.submit('QIANYI',applied);return;}
+      const current=sequence;exportController?.abort();exportController=new AbortController();
       const timer=setTimeout(()=>exportController.abort(),120000);
       try{
         const response=await fetch('/api/v1/finance/qianyi/returns/export?'+new URLSearchParams(applied),{credentials:'same-origin',cache:'no-store',signal:exportController.signal});

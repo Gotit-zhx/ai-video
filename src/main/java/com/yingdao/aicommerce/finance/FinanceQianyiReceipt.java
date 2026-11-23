@@ -114,11 +114,19 @@ final class FinanceQianyiReceipt {
         if(upgrade&&number(config.get("source_version"))>=2){
             var replay=new LinkedHashMap<String,Object>();
             replay.put("from",text(config.get("sync_start")));replay.put("until",today.toString());
-            replay.put("page",1);replay.put("sourceVersion",3);replay.put("backfillResume",resume);resume=replay;
+            replay.put("page",1);replay.put("sourceVersion",3);
+            if(resume.containsKey(FinanceSyncRange.RESUME)){
+                replay.put("backfillResume",resume.get(FinanceSyncRange.RESUME));
+                resume.put(FinanceSyncRange.RESUME,replay);
+            }else{
+                replay.put("backfillResume",resume);
+                resume=replay;
+            }
         }
         var scan=new LinkedHashMap<String,Object>();
         scan.put("from",today.withDayOfMonth(1).minusMonths(1).toString());scan.put("until",today.toString());
         scan.put("page",1);scan.put("sourceVersion",3);scan.put("receiptScan",true);scan.put("backfillResume",resume);
+        if(checkpoint.containsKey(FinanceSyncRange.MONTH))scan.put(FinanceSyncRange.MONTH,checkpoint.get(FinanceSyncRange.MONTH));
         return scan;
     }
 }

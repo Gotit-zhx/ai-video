@@ -42,4 +42,4 @@
 
 私有回执目录为 /opt/heyi/dev/operations/finance-tiktok-metadata-20261113-ff1c89758fca909c156774201133bd13。其中 verified.json、schema-verified.json、前后保护摘要、ui-verified.json 和 handoff.json 保存小型证据；原始行、令牌及密钥未进入 Git。验收截图仅保存在本地私有可视化目录。
 
-本次已完成的一次性 systemd 单元已停止，常驻 watcher 正常运行。源码维护窗口已明确释放并优先交给性能会话，新界面继续等待串行交接。后续操作重新核对实际进程、配置、挂载、迁移和源码差异，保留同步游标、租约、限流及本次元信息表。
+本次已完成的一次性 systemd 单元已停止，常驻 watcher 正常运行。源码维护窗口已明确释放并优先交给性能会话。后续操作重新核对实际进程、配置、挂载、迁移和源码差异，保留同步游标、租约、限流及本次元信息表。

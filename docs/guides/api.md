@@ -49,6 +49,8 @@ Content-Type: application/json
 | 脚本 / 手工分析 | `/api/v1/video-scripts` | `video/web/VideoScriptController.java`、`ManualScriptAnalysisJobController.java` |
 | AI / 通用视频 / 监控 | `/api/v1/ai-video-tasks`、`/api/v1/general-video-tasks`、`/api/v1/ai-video-monitor` | `video/web/` |
 | 商品采集 / 图片 / 发布流程 | `/api/v1/product-captures` | `product/web/ProductCaptureController.java` 及同目录专用控制器 |
+| 印花采集插件 | `POST /api/v1/product-captures/print-source` | 需 `product:collect`。提交 `sourceUrl`、`title` 和图片 URL 数组 `images`，返回采集记录 `id` |
+| 印花采集工作台 | `/api/v1/product-print-capture` | 需 `product:edit`。`GET` 返回本企业最近 30 条记录，`GET /{captureId}` 按 ID 读取，`POST /lookup` 按 `url` 查询。提取用 `POST /{captureId}/extract`，提交 `imageId`、`confirmed: true` 与 `Idempotency-Key` 请求头 |
 | 插件身份 | `/api/v1/extension-auth` | `auth/ExtensionAuthController.java` |
 | 采集模板 / 版式图片 | `/api/v1/product-capture-templates`、`/api/v1/product-capture-templates/images` | `product/web/ProductCaptureTemplateController.java`；[用法与权限](capture-template-preview.md) |
 | 商品运营 v2.0 专用插件 | `POST /api/v1/product-captures/print-source` | 接收 `sourceUrl`、`title`、`images`，返回采集记录 `id`。需要 `product:collect` |
@@ -60,6 +62,8 @@ Content-Type: application/json
 | 成本 / 贴单 / 刷单费 | `/api/v1/finance/workspace` | `finance/FinanceCostController.java` |
 | 费用矩阵导出 | `/api/v1/finance/fee-exports` | `finance/FinanceFeeExportController.java` |
 | 成本分片导出任务 | `/api/v1/finance/cost-exports` | `finance/FinanceCostExportController.java` |
+| 筛选范围状态、后台导出及提醒 | `/api/v1/finance/report-exports` | `finance/FinanceReportExportController.java` |
+| 暂存账单及确认导入 | `/api/v1/finance/imports/bills` | `finance/FinanceBillImportController.java`，由公司开关和财务权限共同控制 |
 | 千易公司配置 / 店铺 / 退货 | `/api/v1/finance/qianyi`、`/api/v1/finance/shops/{shop}/qianyi`、`/api/v1/finance/qianyi/returns` | `finance/FinanceQianyi*Controller.java` |
 | 知识库及附件 | `/api/v1/knowledge`、`/api/v1/knowledge/files` | `knowledge/KnowledgeController.java`、`KnowledgeFileController.java` |
 | 自动化助手 | `/api/v1/automation-agent` 等 | `automation/web/` |

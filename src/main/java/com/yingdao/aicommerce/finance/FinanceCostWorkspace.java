@@ -57,10 +57,109 @@ public class FinanceCostWorkspace {
         if(result.isEmpty())return Map.of();
         var row=result.getFirst();var resultData=new LinkedHashMap<>(decode(row.get("data_json")));resultData.put("currency","CNY");resultData.put("bookId",row.get("id"));resultData.put("sourceName",row.get("source_name"));return resultData;
     }
+    @Transactional(readOnly=true)
+    public Map<String,Object> previewCostSlot(Scope s,String group,String role,byte[] bytes,String name){
+        costRole(role);
+        new FinanceGroups(repo).require(s,group,false);
+        var source=costSlot(s,group,role);
+        var incoming=parseCosts(bytes,name);
+        var old=rows(decode(source.getOrDefault("data_json","{}")).get("costs"));
+        var result=new LinkedHashMap<String,Object>(FinanceCostSlotDiff.compare(old,incoming));
+        result.put("confirmation",slotConfirmation(s,group,role,source,bytes));
+        return result;
+    }
+
+    @Transactional
+    public Map<String,Object> updateCostSlot(Scope s,String actor,String group,String role,String confirmation,byte[] bytes,String name){
+        costRole(role);
+        var incoming=parseCosts(bytes,name);
+        new FinanceGroups(repo).require(s,group,true);
+        var source=costSlot(s,group,role);
+        if(!slotConfirmation(s,group,role,source,bytes).equals(confirmation))throw bad("文件或该行的成本表已更新，请重新核对");
+        String sourceId=text(source.get("id")),digest=costFileHash(bytes);
+        var duplicates=repo.jdbc().queryForList("SELECT id FROM finance_cost_sources WHERE organization_id=? AND group_id=? AND content_hash=? AND id<>?",
+            s.organizationId(),group,digest,sourceId);
+        if(!duplicates.isEmpty())throw bad("这份文件已在当前分组的其他位置使用");
+        if(digest.equals(text(source.get("content_hash"))))return Map.of("queued",false,"duplicate",true);
+
+        var before=book(s,group);
+        String filename=text(name).substring(0,Math.min(text(name).length(),250));
+        String data=repo.write(Map.of("costs",incoming,"currency","CNY"));
+        boolean replacement=!sourceId.isBlank();
+        if(replacement){
+            repo.jdbc().update("""
+                UPDATE finance_cost_sources SET source_name=?,content_hash=?,data_json=?,created_by=?,
+                 created_at=UTC_TIMESTAMP(6),revision=revision+1,legacy_merged=FALSE
+                WHERE organization_id=? AND group_id=? AND id=?
+                """,filename,digest,data,actor,s.organizationId(),group,sourceId);
+        }else{
+            sourceId=UUID.randomUUID().toString();
+            repo.jdbc().update("""
+                INSERT INTO finance_cost_sources(id,organization_id,group_id,source_name,content_hash,data_json,source_order,created_by,source_role)
+                VALUES(?,?,?,?,?,?,?,?,?)
+                """,sourceId,s.organizationId(),group,filename,digest,data,nextSourceOrder(s,group),actor,role);
+        }
+        String bookId=new FinanceCostSources(repo).snapshot(s,actor,group);
+        audit(s,actor,replacement?"COST_SLOT_UPDATE":"COST_SLOT_UPLOAD",sourceId,
+            replacement?Map.of("groupId",group,"file",text(source.get("source_name")),"bookId",text(before.get("bookId")),
+                "revision",source.get("revision"),"data",decode(source.get("data_json"))):null,
+            Map.of("groupId",group,"file",filename,"bookId",bookId,"role",role,"rows",incoming.size()),"同一位置更新成本文件");
+        return Map.of("queued",requestPriceChanges(s,group,before,bookId),"duplicate",false);
+    }
+
+    @Transactional
+    public void assignCostSlot(Scope s,String actor,String group,String id,String role){
+        costRole(role);
+        new FinanceGroups(repo).require(s,group,true);
+        var slot=costSlot(s,group,role);
+        if(id.equals(slot.get("id")))return;
+        if(!slot.isEmpty())throw bad("该位置已有成本表");
+        int assigned=repo.jdbc().update("""
+            UPDATE finance_cost_sources SET source_role=?,revision=revision+1
+            WHERE organization_id=? AND group_id=? AND id=? AND source_role IS NULL
+            """,role,s.organizationId(),group,id);
+        if(assigned!=1)throw bad("成本文件已变化，请刷新后重试");
+        audit(s,actor,"COST_SLOT_ASSIGN",id,null,Map.of("groupId",group,"role",role),"标注已有成本表的类型");
+    }
+
+    private boolean requestPriceChanges(Scope s,String group,Map<String,Object> before,String bookId){
+        var source=repo.jdbc().queryForMap("SELECT data_json FROM finance_cost_books WHERE organization_id=? AND group_id=? AND id=?",
+            s.organizationId(),group,bookId);
+        var after=new LinkedHashMap<>(decode(source.get("data_json")));
+        after.put("bookId",bookId);
+        return new FinanceCostPriceScans(repo).request(s,group,before,after);
+    }
+
+    private Map<String,Object> costSlot(Scope s,String group,String role){
+        return repo.jdbc().queryForList("""
+            SELECT id,source_name,content_hash,data_json,revision FROM finance_cost_sources
+             WHERE organization_id=? AND group_id=? AND source_role=?
+            """,s.organizationId(),group,role).stream().findFirst().orElse(Map.of());
+    }
+
+    private static void costRole(String role){
+        if(!Set.of("MERCHANT_SKU","PLATFORM_SKU").contains(text(role)))throw bad("请选择成本表类型");
+    }
+
+    private static String costFileHash(byte[] bytes){return hash(Base64.getEncoder().encodeToString(bytes));}
+    private static String slotConfirmation(Scope s,String group,String role,Map<String,Object> source,byte[] bytes){
+        return hash(String.join(":",s.organizationId(),group,role,text(source.get("id")),text(source.get("revision")),costFileHash(bytes)));
+    }
+    private long nextSourceOrder(Scope s,String group){
+        return repo.jdbc().queryForObject("SELECT COALESCE(MAX(source_order),0)+1 FROM finance_cost_sources WHERE organization_id=? AND group_id=?",
+            Long.class,s.organizationId(),group);
+    }
     /** Lightweight navigation context. Cost books, settings, mappings and order JSON stay lazy. */
     public Map<String,Object> context(Scope s,String shopId,String requestedGroup){
-        var shops=service.shops(s);
+        return context(s,shopId,requestedGroup,false);
+    }
+    public Map<String,Object> context(Scope s,String shopId,String requestedGroup,boolean allShops){
+        if(allShops){
+            new FinanceGroups(repo).require(s,requestedGroup,false);
+            return Map.of("live",true,"catalogLoaded",false,"settingsLoaded",false,"shopId","","groupId",requestedGroup,"allShops",true);
+        }
         if(!text(requestedGroup).isBlank())new FinanceGroups(repo).require(s,requestedGroup,false);
+        var shops=service.shops(s);
         if(text(shopId).isBlank()){
             shopId=shops.stream().filter(item->text(requestedGroup).isBlank()||requestedGroup.equals(text(item.get("group_id"))))
                     .map(item->text(item.get("id"))).findFirst().orElse("");
@@ -80,8 +179,18 @@ public class FinanceCostWorkspace {
     }
     public Map<String,Object> costs(Scope s,String shopId){return costs(s,shopId,"");}
     public Map<String,Object> costs(Scope s,String shopId,String requestedGroup){
+        return costs(s,shopId,requestedGroup,false,true);
+    }
+    public Map<String,Object> costs(Scope s,String shopId,String requestedGroup,boolean allShops){
+        return costs(s,shopId,requestedGroup,allShops,true);
+    }
+    public Map<String,Object> catalogue(Scope s,String shopId,String requestedGroup,boolean allShops){
+        return costs(s,shopId,requestedGroup,allShops,false);
+    }
+    private Map<String,Object> costs(Scope s,String shopId,String requestedGroup,boolean allShops,boolean readSku){
         var shops=service.shops(s);
         if(!text(requestedGroup).isBlank())new FinanceGroups(repo).require(s,requestedGroup,false);
+        if(allShops&&text(requestedGroup).isBlank())throw bad("请选择成本分组");
         var catalogs=new LinkedHashMap<String,Map<String,Object>>();
         for(var row:repo.jdbc().queryForList("""
             SELECT b.group_id,b.source_name,COALESCE(JSON_LENGTH(b.data_json,'$.costs'),0)+COALESCE(JSON_LENGTH(b.data_json,'$.manualCosts'),0) cost_rows
@@ -95,15 +204,17 @@ public class FinanceCostWorkspace {
         }
         var shopCatalogs=new LinkedHashMap<String,Object>();
         for(var item:shops)shopCatalogs.put(text(item.get("id")),catalogs.getOrDefault(text(item.get("group_id")),Map.of("sourceName","","costRows",0)));
-        if(text(shopId).isBlank()){
+        if(allShops||text(shopId).isBlank()){
             var available=shops.stream().filter(item->text(requestedGroup).isBlank()||requestedGroup.equals(text(item.get("group_id")))).toList();
             var selected=available.stream().filter(item->catalogs.containsKey(text(item.get("group_id")))).findFirst();
             if(selected.isEmpty()&&!available.isEmpty())selected=Optional.of(available.getFirst());
-            if(selected.isEmpty()){
+            if(allShops||selected.isEmpty()){
                 String group=text(requestedGroup);
                 var empty=new LinkedHashMap<>(book(s,group));empty.putIfAbsent("costs",List.of());empty.putIfAbsent("manualCosts",List.of());
                 empty.putAll(Map.of("live",true,"catalogLoaded",true,"settingsLoaded",true,"shopId","","groupId",group,"products",List.of(),"shopCatalogs",shopCatalogs,"groupCatalogs",catalogs));
+                empty.put("allShops",allShops);
                 empty.put("imports",new FinanceCostSources(repo).sources(s,group));
+                if(!readSku)empty.put("skuPaged",true);
                 return empty;
             }
             shopId=text(selected.get().get("id"));
@@ -123,6 +234,41 @@ public class FinanceCostWorkspace {
         result.put("settingsVersion",settings.isEmpty()?0:settings.getFirst().get("version"));
         result.put("suggestedWarehouse",FinanceOrderCosts.resolveWarehouse(text(shop.get("region")),
             FinanceCostSources.allCosts(result),map(result.get("settings"))));
+        result.put("imports",new FinanceCostSources(repo).sources(s,group));
+        if(!readSku){
+            result.put("skuPaged",true);
+            return result;
+        }
+        appendSkuSources(s,shop,result);
+        return result;
+    }
+
+    public Map<String,Object> skuPage(Scope scope,String shopId,String snapshot,int page,String search,String status,String warehouse){
+        return repo.readSnapshot(()->{
+            var shops=repo.jdbc().queryForList("""
+                SELECT id,user_id,platform,group_id FROM finance_connections
+                WHERE organization_id=? AND id=? AND status<>'REMOVED'
+                """,scope.organizationId(),shopId);
+            if(shops.isEmpty())throw bad("没有找到本公司的财务店铺");
+            var shop=shops.getFirst();
+            String group=text(shop.get("group_id")),owner=text(shop.get("user_id"));
+            var key=new FinanceCostSkuPages.Shop(scope.organizationId(),owner,shopId,group);
+            return skuPages.page(key,snapshot,page,search,status,warehouse,()->{
+                var data=new LinkedHashMap<String,Object>();
+                appendSkuSources(scope,shop,data);
+                var book=book(scope,group);
+                return new FinanceCostSkuPages.Source(rows(data.get("products")),map(data.get("mappings")),rows(book.get("costs")),
+                        rows(book.get("manualCosts")),data);
+            });
+        });
+    }
+
+    private final FinanceCostSkuPages skuPages=new FinanceCostSkuPages();
+
+    private void appendSkuSources(Scope s,Map<String,Object> shop,Map<String,Object> result){
+        String shopId=text(shop.get("id"));
+        String owner=text(shop.get("user_id"));
+        if(owner.isBlank())owner=service.shopScope(s,shopId).userId();
         var mappings=new LinkedHashMap<String,Object>();
         for(var row:repo.jdbc().queryForList("SELECT product_id,sku_id,data_json,version FROM finance_cost_mappings WHERE organization_id=? AND shop_id=?",s.organizationId(),shopId)){
             var mapping=new LinkedHashMap<>(decode(row.get("data_json")));mapping.put("version",row.get("version"));mappings.put(shopId+":"+row.get("product_id")+":"+row.get("sku_id")+":"+mapping.get("warehouse"),mapping);
@@ -147,7 +293,7 @@ public class FinanceCostWorkspace {
              ORDER BY record_date DESC,id DESC LIMIT 2000
             ) r JOIN JSON_TABLE(r.raw_json,? COLUMNS(%s)) x
             ORDER BY r.record_date DESC,r.id DESC LIMIT 12000
-            """.formatted(fields),s.organizationId(),service.shopScope(s,shopId).userId(),shopId,tk?"$.line_items[*]":"$.item_list[*]");
+            """.formatted(fields),s.organizationId(),owner,shopId,tk?"$.line_items[*]":"$.item_list[*]");
         var products=new LinkedHashMap<String,Map<String,Object>>();Set<String> orders=new HashSet<>();
         for(var row:rows){
             orders.add(text(row.get("record_id")));String product=text(row.get("product_id")),sku=text(row.get("sku_id"));
@@ -156,8 +302,6 @@ public class FinanceCostWorkspace {
         }
         addPendingProducts(s,shopId,tk,fields,products,result);
         result.put("products",new ArrayList<>(products.values()));result.put("sampleOrders",orders.size());result.put("orderLimit",2000);
-        result.put("imports",new FinanceCostSources(repo).sources(s,group));
-        return result;
     }
     static Map<String,Object> productSnapshot(String shopId,Map<String,Object> row){
         var p=new LinkedHashMap<String,Object>();p.put("shop_id",shopId);
@@ -180,12 +324,12 @@ public class FinanceCostWorkspace {
               issue_text VARCHAR(500) PATH '$.issue')) missing
             WHERE c.organization_id=? AND c.shop_id=? AND c.status='INCOMPLETE'
               AND COALESCE(missing.issue_text,'')<>'' AND COALESCE(missing.product_id,'')<>'' AND COALESCE(missing.sku_id,'')<>''
-              AND UPPER(TRIM(COALESCE(missing.seller_sku,'')))<>'GIFT'
+              AND missing.issue_text<>? AND UPPER(TRIM(COALESCE(missing.seller_sku,'')))<>'GIFT'
               AND
             """+FinanceCostReport.hasSettlement("c","c.order_id")+"""
              GROUP BY missing.product_id,missing.sku_id
              ORDER BY pending_orders DESC,missing.product_id,missing.sku_id LIMIT 1001
-            """,s.organizationId(),shopId);
+            """,s.organizationId(),shopId,FinanceOrderCosts.ZERO_PRICE_ISSUE);
         boolean truncated=pending.size()>1000;if(truncated)pending=pending.subList(0,1000);
         var wanted=new LinkedHashMap<String,Map<String,Object>>();
         var ids=new LinkedHashSet<String>();
@@ -263,12 +407,12 @@ public class FinanceCostWorkspace {
     }
     @Transactional public Map<String,Object> importCosts(Scope s,String actor,String group,byte[] bytes,String name){
         new FinanceGroups(repo).require(s,group,true);
-        String digest=hash(Base64.getEncoder().encodeToString(bytes));
+        String digest=costFileHash(bytes);
         var existing=repo.jdbc().queryForList("SELECT id FROM finance_cost_sources WHERE organization_id=? AND group_id=? AND content_hash=?",s.organizationId(),group,digest);
         if(!existing.isEmpty())return Map.of("duplicate",true,"id",existing.getFirst().get("id"));
         var incoming=parseCosts(bytes,name);
         String id=UUID.randomUUID().toString();var body=Map.of("costs",incoming,"currency","CNY");
-        long sequence=repo.jdbc().queryForObject("SELECT COALESCE(MAX(source_order),0)+1 FROM finance_cost_sources WHERE organization_id=? AND group_id=?",Long.class,s.organizationId(),group);
+        long sequence=nextSourceOrder(s,group);
         repo.jdbc().update("INSERT INTO finance_cost_sources(id,organization_id,group_id,source_name,content_hash,data_json,source_order,created_by) VALUES(?,?,?,?,?,?,?,?)",
                 id,s.organizationId(),group,name.substring(0,Math.min(250,name.length())),digest,repo.write(body),sequence,actor);
         new FinanceCostSources(repo).snapshot(s,actor,group);
@@ -278,13 +422,22 @@ public class FinanceCostWorkspace {
         return Map.of("duplicate",false,"id",id,"rows",incoming.size());
     }
     @Transactional public void removeSource(Scope s,String actor,String group,String id){
+        removeCostFile(s,actor,group,id,null);
+    }
+    @Transactional public boolean removeCostFile(Scope s,String actor,String group,String id,Long revision){
         new FinanceGroups(repo).require(s,group,true);
-        var old=repo.jdbc().queryForList("SELECT source_name,data_json FROM finance_cost_sources WHERE organization_id=? AND group_id=? AND id=?",s.organizationId(),group,id);
+        var old=repo.jdbc().queryForList("SELECT source_name,data_json,source_role,revision FROM finance_cost_sources WHERE organization_id=? AND group_id=? AND id=?",s.organizationId(),group,id);
         if(old.isEmpty())throw bad("成本文件已删除或不属于当前分组，请刷新");
+        var file=old.getFirst();
+        boolean typed=!text(file.get("source_role")).isBlank();
+        if(typed&&(revision==null||revision!=number(file.get("revision"))))throw bad("该行成本表已更新，请刷新后核对");
+        var before=typed?book(s,group):Map.<String,Object>of();
         repo.jdbc().update("DELETE FROM finance_cost_sources WHERE organization_id=? AND group_id=? AND id=?",s.organizationId(),group,id);
         audit(s,actor,"COST_SOURCE_DELETE",id,decode(old.getFirst().get("data_json")),Map.of("groupId",group,"file",old.getFirst().get("source_name")),"移除该文件提供的成本；手动成本保留");
-        new FinanceCostSources(repo).snapshot(s,actor,group);
+        String bookId=new FinanceCostSources(repo).snapshot(s,actor,group);
+        if(typed)return requestPriceChanges(s,group,before,bookId);
         new FinanceOrderCosts(repo).requestGroup(s,group);service.invalidateAfterCommit(s);
+        return true;
     }
     static BigDecimal manualPrice(Map<String,Object> body){
         BigDecimal price=decimal(body.get("unitPriceCny"));
@@ -300,6 +453,9 @@ public class FinanceCostWorkspace {
         BigDecimal price=manualPrice(body);
         var duplicate=repo.jdbc().queryForList("SELECT id FROM finance_manual_costs WHERE organization_id=? AND group_id=? AND code=? AND warehouse=?",s.organizationId(),group,code,warehouse);
         if(!duplicate.isEmpty())throw bad("此分组已有同型号、同仓库的手动成本，请选择已有手动成本关联");
+        var targets=new FinanceCostTargetScans(repo);
+        boolean targeted=targets.enabled(s);
+        var before=targeted?FinanceCostSources.allCosts(book(s,group)):List.<Map<String,Object>>of();
         String id=UUID.randomUUID().toString();
         repo.jdbc().update("""
             INSERT INTO finance_manual_costs(id,organization_id,group_id,code,warehouse,unit,unit_price_cny,created_by,updated_by)
@@ -309,13 +465,17 @@ public class FinanceCostWorkspace {
         new FinanceCostSources(repo).snapshot(s,actor,group);
         mapping(s,actor,shopId,saved);
         audit(s,actor,"MANUAL_COST",id,null,Map.of("groupId",group,"code",code,"warehouse",warehouse,"unit",unit,"unitPriceCny",price),"新增独立手动单价并关联 SKU，适用历史和后续订单");
-        new FinanceOrderCosts(repo).requestGroup(s,group);service.invalidateAfterCommit(s);
+        if(targeted)targets.requestPrice(s,group,id,before,FinanceCostSources.allCosts(book(s,group)));
+        else new FinanceOrderCosts(repo).requestGroup(s,group);
         return Map.of("id",id);
     }
     @Transactional public void changeManual(Scope s,String actor,String group,String id,Map<String,Object> body,boolean delete){
         new FinanceGroups(repo).require(s,group,true);
         var old=repo.jdbc().queryForList("SELECT * FROM finance_manual_costs WHERE organization_id=? AND group_id=? AND id=? FOR UPDATE",s.organizationId(),group,id);
         if(old.isEmpty()||number(old.getFirst().get("version"))!=number(body.get("version")))throw bad("手动成本已删除或被修改，请刷新后重试");
+        var targets=new FinanceCostTargetScans(repo);
+        boolean targeted=targets.enabled(s);
+        var before=targeted&&delete?FinanceCostSources.allCosts(book(s,group)):List.<Map<String,Object>>of();
         Map<String,Object> after;
         if(delete){
             repo.jdbc().update("DELETE FROM finance_manual_costs WHERE organization_id=? AND group_id=? AND id=?",s.organizationId(),group,id);
@@ -323,13 +483,20 @@ public class FinanceCostWorkspace {
             after=Map.of("deleted",true,"groupId",group);
         }else{
             BigDecimal price=manualPrice(body);String unit=required(body,"unit",40);
+            if(targeted&&unit.equals(old.getFirst().get("unit"))&&price.compareTo(decimal(old.getFirst().get("unit_price_cny")))==0)return;
             repo.jdbc().update("UPDATE finance_manual_costs SET unit=?,unit_price_cny=?,version=version+1,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND group_id=? AND id=?",
                 unit,price,actor,s.organizationId(),group,id);
             after=Map.of("unit",unit,"unitPriceCny",price,"groupId",group);
         }
         audit(s,actor,delete?"MANUAL_COST_DELETE":"MANUAL_COST",id,old.getFirst(),after,delete?"删除独立手动成本，已关联订单回到待补齐":"修改手动成本并重算历史关联订单");
         new FinanceCostSources(repo).snapshot(s,actor,group);
-        new FinanceOrderCosts(repo).requestGroup(s,group);service.invalidateAfterCommit(s);
+        if(targeted){
+            var afterCosts=delete?FinanceCostSources.allCosts(book(s,group)):List.<Map<String,Object>>of();
+            targets.requestPrice(s,group,id,before,afterCosts);
+            service.refreshAfterCommit(s);
+        }else{
+            new FinanceOrderCosts(repo).requestGroup(s,group);service.invalidateAfterCommit(s);
+        }
     }
     @Transactional public void settings(Scope s,String actor,String shopId,Map<String,Object> body){
         var shop=service.ownedShop(s,shopId);String warehouse=text(body.get("warehouse"));var rules=new LinkedHashMap<>(map(body.get("rules")));
@@ -358,10 +525,19 @@ public class FinanceCostWorkspace {
         long version=old.isEmpty()?0:number(old.getFirst().get("version"));if(version!=number(body.get("version")))throw bad("关联已被其他成员修改，请刷新后重试");
         var saved=new LinkedHashMap<String,Object>(Map.of("code",code,"warehouse",warehouse,"factor",factor,"groupId",text(shop.get("group_id"))));
         if(!manualId.isBlank())saved.put("manualCostId",manualId);
+        var targets=new FinanceCostTargetScans(repo);
+        boolean targeted=targets.enabled(s);
+        var previous=old.isEmpty()?null:decode(old.getFirst().get("data_json"));
+        if(targeted&&FinanceCostTargetScans.comparable(saved).equals(FinanceCostTargetScans.comparable(previous)))return;
         repo.jdbc().update("INSERT INTO finance_cost_mappings(id,organization_id,shop_id,product_id,sku_id,warehouse,data_json,updated_by) VALUES(?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE data_json=VALUES(data_json),version=version+1,updated_by=VALUES(updated_by),updated_at=UTC_TIMESTAMP(6)",
                 id,s.organizationId(),shopId,product,sku,warehouse,repo.write(saved),actor);
-        audit(s,actor,"COST_MAPPING",id,old.isEmpty()?null:decode(old.getFirst().get("data_json")),saved,"人工确认 SKU 成本关系");
-        new FinanceOrderCosts(repo).requestShop(s.organizationId(),shopId);service.invalidateAfterCommit(s);
+        audit(s,actor,"COST_MAPPING",id,previous,saved,"人工确认 SKU 成本关系");
+        if(targeted){
+            targets.request(s,shopId,List.of(new FinanceCostTargetScans.Sku(product,sku)));
+            service.refreshAfterCommit(s);
+        }else{
+            new FinanceOrderCosts(repo).requestShop(s.organizationId(),shopId);service.invalidateAfterCommit(s);
+        }
     }
     // Only presentation wrappers are ignored; size letters, hyphens and bundle quantities remain significant.
     static String normalizedSku(String code){
@@ -442,7 +618,12 @@ public class FinanceCostWorkspace {
         }
         if(candidates>0){
             audit(s,actor,"COST_AUTO_MATCH",shopId,null,Map.of("candidateCount",candidates),"按商品 SKU 优先、平台 SKU 兜底自动关联各成本仓；保留已有人工确认关系");
-            new FinanceOrderCosts(repo).requestShop(s.organizationId(),shopId);service.invalidateAfterCommit(s);
+            // Automatic display mappings mirror the calculator's catalogue rules.
+            // Only an explicit human mapping can change the selected price.
+            if(new FinanceCostTargetScans(repo).enabled(s))service.refreshAfterCommit(s);
+            else{
+                new FinanceOrderCosts(repo).requestShop(s.organizationId(),shopId);service.invalidateAfterCommit(s);
+            }
         }
         return costs(s,shopId);
     }

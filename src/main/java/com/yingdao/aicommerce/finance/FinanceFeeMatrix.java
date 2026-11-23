@@ -8,6 +8,9 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 final class FinanceFeeMatrix {
     private FinanceFeeMatrix(){}
     static byte[] workbook(Filter filter,Map<String,Object> facts){
+        return workbook(filter,facts,List.of());
+    }
+    static byte[] workbook(Filter filter,Map<String,Object> facts,List<List<String>> receipt){
         var shops=new ArrayList<>(rows(facts.get("shops")));
         shops.removeIf(shop->!FinanceGroups.matches(shop,filter));
         shops.sort(Comparator.comparing((Map<String,Object> shop)->text(shop.get("platform")))
@@ -32,6 +35,7 @@ final class FinanceFeeMatrix {
         }
         if(currencies.isEmpty())throw bad("当前店铺没有可用币种");
         var sheets=new LinkedHashMap<String,List<List<String>>>();
+        if(!receipt.isEmpty())sheets.put("导出数据状态",receipt);
         var numeric=new LinkedHashMap<String,Set<Integer>>();
         var names=new HashMap<String,Long>();
         shops.forEach(shop->names.merge(first(shop,"display_name","name"),1L,Long::sum));
