@@ -58,7 +58,7 @@ class ProductPrintImagePlanTest {
                 gallery.stream().map(ProductCaptureImage::getRoleName).toList());
         var upload = assets.assignPrintColorImages(detail.skus(), gallery);
         assertEquals(List.of("black-m", "red-l"), upload.stream().map(ProductCaptureSku::getSkuKey).toList());
-        assertEquals(List.of("A01-BK-M-AB12CD34", "A01-RED-LARGE-AB12CD34"),
+        assertEquals(List.of("A01-BK-M-AB12CD34", "A01-RED-L-AB12CD34"),
                 upload.stream().map(ProductCaptureSku::getSellerSku).toList());
         assertEquals(List.of(0, 8), upload.stream().map(ProductCaptureSku::getStock).toList());
         assertEquals(black.getPrice(), upload.getFirst().getPrice());
@@ -80,6 +80,29 @@ class ProductPrintImagePlanTest {
                 .getMessage().contains("库存不同"));
     }
 
+    @Test void onlyTheTemplateSizeIsUploadedWithItsShortCode() {
+        var base = style();
+        var xl = new ProductCaptureTemplateService.Size("xl", "xl", "XL", null, null, null, null);
+        var style = new ProductCaptureTemplateService.VariantView(base.id(), base.name(), null, null, null,
+                base.colors(), "A01", List.of(xl));
+        var detail = detail(List.of(
+                sku("black-s", "BLACK/1", "S(35-40KG)", "319", 3),
+                sku("black-xl", "BLACK/1", "XL(65-75KG)", "389", 0),
+                sku("black-xl-other-print", "BLACK/2", "XL (65-75KG)", "389", 0),
+                sku("red-xl", "RED", "XL(65-75KG)", "269", 8),
+                sku("red-xxl", "RED", "XXL(75-85KG)", "419", 4)
+        ));
+        var plan = ProductPrintImagePlan.create(detail, Map.of(), style, "", json);
+        var selected = plan.slots().stream().flatMap(slot -> slot.variants().stream()).toList();
+        assertEquals(List.of("black-xl", "red-xl"), selected.stream().map(ProductPrintImagePlan.Variant::key).toList());
+        assertEquals(List.of("A01-BK-XL-AB12CD34", "A01-RED-XL-AB12CD34"),
+                selected.stream().map(ProductPrintImagePlan.Variant::sku).toList());
+        assertTrue(selected.stream().allMatch(sku -> "XL".equals(sku.attributes().get("Size"))));
+        assertEquals("S", ProductPrintImagePlan.sizeToken("S(35-40KG)"));
+        assertEquals("XXL", ProductPrintImagePlan.sizeToken("XXL(75-85KG)"));
+        assertEquals("XXXL", ProductPrintImagePlan.sizeToken("XXXL(85-100KG)"));
+    }
+
     private ProductCaptureService.CaptureDetail detail(List<ProductCaptureSku> skus) {
         when(capture.getId()).thenReturn("capture");
         when(capture.getOrganizationId()).thenReturn("org");
@@ -94,7 +117,7 @@ class ProductPrintImagePlanTest {
         return new ProductCaptureTemplateService.VariantView("style", "Tee", null, null, null, List.of(
                 new ProductCaptureTemplateService.Color("black", "黑", "#0A0A0A", "BK"),
                 new ProductCaptureTemplateService.Color("red", "红", "#81151B", "RED")), "A01",
-                List.of(new ProductCaptureTemplateService.Size("medium", "Medium", "M", null, null, null, null)));
+                List.of());
     }
 
     private ProductCaptureSku sku(String key, String color, String size, String price, int stock) {

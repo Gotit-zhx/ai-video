@@ -18,12 +18,16 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.text.Normalizer;
+import java.util.regex.Pattern;
 
 /** Immutable image inputs shared by the print workflow, its progress and the marketplace upload. */
 record ProductPrintImagePlan(String name, List<Slot> slots) {
     static final String SNAPSHOT = "printImagePlan";
     static final String MOCKUP = "PRINT_COMPOSITION_1";
     static final String POSTER_PREFIX = "PRINT_";
+    private static final Pattern STANDARD_SIZE = Pattern.compile(
+            "^(?:(?:SIZE)\\s*[:：]?\\s+)?((?:[2-9]X|X{1,8})?[SL]|M)(?=$|[\\s(\\[【:：/]|[-–—](?=\\s|\\d))");
 
     record Variant(String key, String sku, String color, String size, Map<String, Object> attributes) {}
 
@@ -98,6 +102,13 @@ record ProductPrintImagePlan(String name, List<Slot> slots) {
         String configuredCode = Objects.toString(color.colorCode(), "");
         String codeAlias = ProductSkuNaming.color(configuredCode);
         var matched = new LinkedHashMap<Map<String, Object>, ProductCaptureSku>();
+        var configuredSizes = new LinkedHashMap<String, ProductCaptureTemplateService.Size>();
+        for (var size : style.sizes()) {
+            configuredSizes.put(sizeToken(size.name()), size);
+            if (size.sizeCode() != null && !size.sizeCode().isBlank())
+                configuredSizes.putIfAbsent(sizeToken(size.sizeCode()), size);
+        }
+        var foundSizes = new HashSet<ProductCaptureTemplateService.Size>();
         for (var source : detail.skus()) {
             Map<String, Object> attributes = attributes(source, json);
             String label = ProductSkuNaming.dimension(attributes, true);
@@ -105,14 +116,25 @@ record ProductPrintImagePlan(String name, List<Slot> slots) {
             String sourceCode = ProductSkuNaming.color(base);
             if (!color.name().equalsIgnoreCase(base) && (configuredCode.isBlank() || !configuredCode.equalsIgnoreCase(base))
                     && ("UNK".equals(sourceCode) || (!sourceCode.equals(templateColorCode) && !sourceCode.equals(codeAlias)))) continue;
+            var configured = configuredSizes.get(sizeToken(ProductSkuNaming.dimension(attributes, false)));
+            if (!configuredSizes.isEmpty() && configured == null) continue;
             // Source pattern suffixes identify old prints. This listing uses the selected print on the template color.
             attributes.replaceAll((key, value) -> CommerceSourceColorResolver.isColorDimension(key) ? color.name() : value);
+            if (configured != null) {
+                foundSizes.add(configured);
+                String display = standardSize(configured.name());
+                attributes.replaceAll((key, value) -> ProductSkuNaming.isSizeDimension(key)
+                        ? (display.isEmpty() ? configured.name() : display) : value);
+            }
             var previous = matched.putIfAbsent(attributes, source);
             if (previous != null && (source.getPrice().compareTo(previous.getPrice()) != 0
                     || !samePrice(source.getOriginalPrice(), previous.getOriginalPrice())
                     || !Objects.equals(source.getStock(), previous.getStock()))) {
                 throw bad("模板颜色“" + color.name() + "”对应多个同尺码规格，采集售价或库存不同");
             }
+        }
+        for (var size : style.sizes()) {
+            if (!foundSizes.contains(size)) throw bad("采集链接缺少模板规格“" + color.name() + " · " + size.name() + "”");
         }
         if (matched.isEmpty()) throw bad("采集链接缺少模板颜色“" + color.name() + "”的规格");
         String colorCode = configuredCode.isBlank() ? templateColorCode : configuredCode;
@@ -128,9 +150,10 @@ record ProductPrintImagePlan(String name, List<Slot> slots) {
         for (var entry : matched.entrySet()) {
             var source = entry.getValue();
             String label = ProductSkuNaming.dimension(entry.getKey(), false);
-            String sizeCode = style.sizes().stream().filter(size -> label.equalsIgnoreCase(size.name()))
-                    .map(ProductCaptureTemplateService.Size::sizeCode).filter(code -> code != null && !code.isBlank())
-                    .findFirst().orElseGet(() -> ProductSkuNaming.size(label));
+            String sizeCode = sizeToken(label);
+            var size = configuredSizes.get(sizeCode);
+            if (standardSize(label).isEmpty() && size != null && size.sizeCode() != null && !size.sizeCode().isBlank())
+                sizeCode = size.sizeCode();
             String merchantSku = String.join("-", styleCode, colorCode, sizeCode, suffix);
             if (!assigned.add(merchantSku)) {
                 String variantSuffix = CommerceImageArchive.sha((suffix + ":" + source.getSkuKey()).getBytes(StandardCharsets.UTF_8))
@@ -141,6 +164,23 @@ record ProductPrintImagePlan(String name, List<Slot> slots) {
             result.add(new Variant(source.getSkuKey(), merchantSku, color.name(), label, entry.getKey()));
         }
         return List.copyOf(result);
+    }
+
+    static String sizeToken(String label) {
+        String standard = standardSize(label);
+        return standard.isEmpty() ? ProductSkuNaming.size(label) : standard;
+    }
+
+    private static String standardSize(String label) {
+        String normalized = Normalizer.normalize(label, Normalizer.Form.NFKC).strip().toUpperCase(Locale.ROOT);
+        var match = STANDARD_SIZE.matcher(normalized);
+        if (match.find()) return match.group(1);
+        return switch (normalized) {
+            case "SMALL" -> "S";
+            case "MEDIUM" -> "M";
+            case "LARGE" -> "L";
+            default -> "";
+        };
     }
 
     static Variant variant(ProductCaptureSku sku, ObjectMapper json) {

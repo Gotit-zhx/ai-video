@@ -106,9 +106,13 @@ final class ProductSkuNaming {
         return result;
     }
 
+    static boolean isSizeDimension(String name) {
+        return SIZE_NAMES.contains(normalize(name));
+    }
+
     static String dimension(Map<String,Object> attributes, boolean color) {
         for (var entry : attributes.entrySet())
-            if (color ? CommerceSourceColorResolver.isColorDimension(entry.getKey()) : SIZE_NAMES.contains(normalize(entry.getKey())))
+            if (color ? CommerceSourceColorResolver.isColorDimension(entry.getKey()) : isSizeDimension(entry.getKey()))
                 return text(entry.getValue()).strip();
         return "";
     }

@@ -158,7 +158,7 @@ public class ProductPrintProductionService {
                     .filter(code -> code != null && code.matches("[A-Z0-9]{1,16}"))
                     .findFirst().orElseGet(() -> ProductSkuNaming.color(colorName));
             String sizeCode = sizes.stream().filter(size -> sizeName.equalsIgnoreCase(size.name()))
-                    .map(ProductCaptureTemplateService.Size::sizeCode).findFirst().orElseGet(() -> ProductSkuNaming.size(sizeName));
+                    .map(ProductCaptureTemplateService.Size::sizeCode).findFirst().orElseGet(() -> ProductPrintImagePlan.sizeToken(sizeName));
             String sku = String.join("-", skuStyle, colorCode, sizeCode, pattern.suffix());
             if (!used.add(sku)) {
                 // Other source dimensions can distinguish combinations with the same color and size.
