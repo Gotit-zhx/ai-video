@@ -140,15 +140,35 @@
     get('arrange').setAttribute('aria-expanded', String(open));
   }
 
-  function clearPreview(message) {
-    canvas.hidden = true;
-    canvas.width = 1;
-    canvas.height = 1;
+  function resetComposition() {
     setArrange(false);
     get('arrange').disabled = true;
     get('monitor-layout').textContent = '待套版';
     get('download').disabled = true;
+  }
+
+  function clearPreview(message) {
+    canvas.hidden = true;
+    canvas.width = 1;
+    canvas.height = 1;
+    delete canvas.dataset.preview;
+    get('composition-heading').textContent = '套版预览';
+    resetComposition();
     status('preview-state', message);
+  }
+
+  function showArtworkPreview() {
+    if (!print) return;
+    canvas.width = print.width;
+    canvas.height = print.height;
+    canvas.getContext('2d').drawImage(print.bitmap, print.left, print.top, print.width, print.height,
+      0, 0, canvas.width, canvas.height);
+    canvas.dataset.preview = 'artwork';
+    canvas.setAttribute('aria-label', '已提取的透明印花');
+    canvas.hidden = false;
+    get('composition-heading').textContent = '印花预览';
+    resetComposition();
+    status('preview-state');
   }
 
   function clearSource() {
@@ -289,8 +309,8 @@
       if (run !== printRevision) return;
       print = cropArtwork(image);
       if (base) showComposition();
-      else if (!templates.length) void loadTemplates();
-      else status('preview-state', '选择款式后预览。');
+      else showArtworkPreview();
+      if (!templates.length) void loadTemplates();
     } catch (error) {
       if (run !== printRevision) return;
       print = null;
@@ -467,6 +487,19 @@
     }
   });
 
+  async function readTemplatePages(source, readyOnly) {
+    const items = [];
+    let offset = 0;
+    for (;;) {
+      const page = await request(`/api/v1/product-capture-templates?readyOnly=${readyOnly}&offset=${offset}&limit=100`);
+      if (source !== capture || !page.items?.length) break;
+      items.push(...page.items);
+      offset += page.items.length;
+      if (offset >= page.total) break;
+    }
+    return items;
+  }
+
   async function loadTemplates() {
     if (templatesLoading) return;
     templatesLoading = true;
@@ -474,37 +507,44 @@
     const select = get('style');
     get('style-controls').hidden = false;
     select.disabled = true;
-    clearPreview('正在读取款式…');
-    status('template-state');
+    status('template-state', '正在读取款式…');
     get('template-link').hidden = true;
     try {
-      const items = [];
-      let offset = 0;
-      for (;;) {
-        const page = await request(`/api/v1/product-capture-templates?readyOnly=true&offset=${offset}&limit=100`);
-        if (source !== capture) return;
-        if (!page.items?.length) break;
-        items.push(...page.items);
-        offset += page.items.length;
-        if (offset >= page.total) break;
+      const [ready, editable] = await Promise.all([
+        readTemplatePages(source, true),
+        readTemplatePages(source, false)
+      ]);
+      if (source !== capture) return;
+      const previewable = new Map();
+      for (const item of [...ready, ...editable]) {
+        if (!previewable.has(item.id) && imageUrl(item.variants?.[0]?.image, true)) {
+          previewable.set(item.id, item);
+        }
       }
-      templates = items.filter(item => imageUrl(item.variants?.[0]?.image, true));
+      templates = [...previewable.values()];
+      const previous = select.value;
       select.replaceChildren(new Option('选择款式', ''));
       for (const item of templates) {
         const variant = item.variants[0];
         const code = variant.styleCode ? ` · ${variant.styleCode}` : '';
-        select.add(new Option(`${item.name || variant.name}${code}`, item.id));
+        const label = item.name || variant.name || '未命名款式';
+        select.add(new Option(`${label}${code}${item.draft ? ' · 草稿' : ''}`, item.id));
       }
-      select.disabled = !templates.length;
-      get('template-link').hidden = !!templates.length;
-      clearPreview(templates.length ? '选择款式后预览。' : '还没有可用款式，请先保存一张款式底图。');
-    } catch (error) {
-      if (source === capture) {
-        clearPreview('款式读取失败。返回此页可重新读取。');
-        status('template-state', error.message, true);
+      if (previewable.has(previous)) select.value = previous;
+      else if (previous) {
+        imageRevision++;
+        base = null;
+        showArtworkPreview();
       }
+      get('template-link').hidden = Boolean(templates.length);
+      status('template-state', templates.length ? '' : '上传款式底图后即可套版。');
+    } catch {
+      if (source === capture) status('template-state', '款式读取失败，重新打开此页后再试。', true);
     } finally {
-      if (source === capture) templatesLoading = false;
+      if (source === capture) {
+        select.disabled = !templates.length;
+        templatesLoading = false;
+      }
     }
   }
 
@@ -557,6 +597,9 @@
     canvas.width = Math.max(1, Math.round(base.naturalWidth * scale));
     canvas.height = Math.max(1, Math.round(base.naturalHeight * scale));
     updatePosition();
+    canvas.dataset.preview = 'composition';
+    canvas.setAttribute('aria-label', '印花套版预览');
+    get('composition-heading').textContent = '套版预览';
     status('preview-state');
     canvas.hidden = false;
     get('arrange').disabled = false;
@@ -568,16 +611,18 @@
     const run = ++imageRevision;
     const style = templates.find(item => item.id === event.target.value)?.variants[0];
     base = null;
-    clearPreview(style ? '正在加载款式底图…' : '选择款式后预览。');
+    showArtworkPreview();
+    status('template-state', style ? '正在加载款式底图…' : '');
     if (!style) return;
     try {
       const image = await loadImage(style.image);
       if (run !== imageRevision) return;
       base = image;
+      status('template-state');
       updatePosition(true);
       showComposition();
     } catch {
-      if (run === imageRevision) status('preview-state', '款式底图读取失败，请重新选择款式。', true);
+      if (run === imageRevision) status('template-state', '款式底图读取失败，请重新选择款式。', true);
     }
   });
 
@@ -604,7 +649,7 @@
   for (const name of Object.keys(positionDefaults)) get(name).addEventListener('input', () => updatePosition());
   get('reset-position').addEventListener('click', () => updatePosition(true));
   get('download').addEventListener('click', () => {
-    if (canvas.hidden) return;
+    if (canvas.hidden || canvas.dataset.preview !== 'composition') return;
     const selectedStyle = templates.find(item => item.id === get('style').value);
     const code = selectedStyle?.variants[0]?.styleCode;
     const fileName = code && /^[a-z0-9_-]+$/i.test(code) ? `套版-${code}.png` : '套版预览.png';
@@ -636,7 +681,7 @@
     if (id && /^[a-f0-9-]{36}$/i.test(id) && id !== handoffId && !busy) {
       handoffId = id;
       void readSource(id);
-    } else if (print && !templates.length && !busy) {
+    } else if (print && !busy) {
       void loadTemplates();
     }
   }

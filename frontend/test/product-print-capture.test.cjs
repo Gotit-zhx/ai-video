@@ -12,7 +12,9 @@ const flush = () => new Promise(setImmediate);
 const photos = ['a', 'b', 'c'].map(id => ({id, url: `/${id}.png`}));
 const result = imageId => ({id: `print-${imageId}`, imageId, status: 'READY', imageUrl: `/print-${imageId}.png`});
 
-async function workspace(t, submit, history = []) {
+const shortSleeve = {id: 'style', name: '短袖', variants: [{image: '/base.png', styleCode: 'A01'}]};
+
+async function workspace(t, submit, history = [], styles = {ready: [shortSleeve], editable: [shortSleeve]}) {
   const dom = new JSDOM(html, {
     url: `https://example.test/#product-print-capture?capture=${captureId}`,
     runScripts: 'outside-only'
@@ -36,9 +38,11 @@ async function workspace(t, submit, history = []) {
     if (path === endpoint) return success([]);
     if (path === `${endpoint}/${captureId}`) return success({captureId, title: '示例', images: photos});
     if (path === `${endpoint}/${captureId}/results`) return success(history);
-    if (path.startsWith('/api/v1/product-capture-templates?readyOnly=true&')) return success({
-      total: 1, items: [{id: 'style', name: '短袖', variants: [{image: '/base.png', styleCode: 'A01'}]}]
-    });
+    if (path.startsWith('/api/v1/product-capture-templates?')) {
+      const items = path.includes('readyOnly=true') ? styles.ready : styles.editable;
+      if (!items) throw new Error('款式暂不可用');
+      return success({total: items.length, items});
+    }
     assert.equal(path, `${endpoint}/${captureId}/extract`);
     const imageId = JSON.parse(options.body).imageId;
     assert.equal(JSON.parse(options.body).confirmed, true);
@@ -59,8 +63,8 @@ async function workspace(t, submit, history = []) {
       get('extract').click();
       await flush();
     },
-    chooseStyle: async () => {
-      get('style').value = 'style';
+    chooseStyle: async (id = 'style') => {
+      get('style').value = id;
       get('style').dispatchEvent(new window.Event('change'));
       await flush();
     }
@@ -111,6 +115,43 @@ test('opening a saved capture restores ready and uncertain results without calli
   await flush();
   assert.equal(app.resultButtons().length, 1);
   assert.equal(app.submissions.length, 0);
+});
+
+test('a saved print is previewed before a style is selected, even without a usable style', async t => {
+  const app = await workspace(t, () => assert.fail('history is read only'), [result('a')], {ready: [], editable: []});
+  assert.equal(app.get('canvas').hidden, false);
+  assert.equal(app.get('canvas').dataset.preview, 'artwork');
+  assert.equal(app.get('composition-heading').textContent, '印花预览');
+  assert.equal(app.get('arrange').disabled, true);
+  assert.equal(app.get('download').disabled, true);
+  assert.match(app.get('template-state').textContent, /上传款式底图/);
+});
+
+test('a draft with a base image can be selected before its style name is filled in', async t => {
+  const draft = {id: 'draft', draft: true, name: 'txu', variants: [{name: '', image: '/draft.png', styleCode: 'B02'}]};
+  const app = await workspace(t, () => assert.fail('style selection is read only'), [result('a')], {
+    ready: [shortSleeve],
+    editable: [
+      {...shortSleeve, draft: true, name: '未完成修改', variants: []},
+      draft,
+      {id: 'empty-draft', draft: true, name: '没有底图', variants: [{}]}
+    ]
+  });
+  const labels = [...app.get('style').options].map(option => option.textContent);
+  assert.deepEqual(labels, ['选择款式', '短袖 · A01', 'txu · B02 · 草稿']);
+  await app.chooseStyle('draft');
+  assert.equal(app.get('canvas').dataset.preview, 'composition');
+  assert.equal(app.get('download').disabled, false);
+  await app.chooseStyle('');
+  assert.equal(app.get('canvas').dataset.preview, 'artwork');
+  assert.equal(app.get('download').disabled, true);
+});
+
+test('a template read failure does not hide a loaded print', async t => {
+  const app = await workspace(t, () => assert.fail('history is read only'), [result('a')], {ready: [], editable: null});
+  assert.equal(app.get('canvas').hidden, false);
+  assert.equal(app.get('canvas').dataset.preview, 'artwork');
+  assert.match(app.get('template-state').textContent, /款式读取失败/);
 });
 
 test('a network failure without a saved attempt can be retried with the same key', async t => {
