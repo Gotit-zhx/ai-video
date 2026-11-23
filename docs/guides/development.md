@@ -42,6 +42,8 @@
 | Shopee 广告 | `APP_SHOPEE_ADS_CREDENTIALS_FILE` | 独立 Ads Service 正式配置；模板 `config/shopee-ads.properties.example`，默认关闭，审核和新店铺授权前不借用 ERP 凭据 |
 | 文档转换 | `APP_KNOWLEDGE_PREVIEW_URL/TOKEN`、`DOCUMENT_PREVIEW_TOKEN` | 通过 `compose.document-preview.yaml` 显式启用，内部令牌一致 |
 
+TikTok 与 Shopee 广告应用的凭据文件、授权状态和历史报表覆盖分别核对。共享服务器使用受限挂载，配置模板随仓库保留。现用入口见[广告费用统计](../business/finance/advertising.md#广告授权与账户显示)。
+
 `.env.example` 保持 `APP_SESSION_COOKIE_SECURE=true`，这不是本地 HTTP 的适用值。若出现登录成功后立即 401，先核对 Cookie 及访问主机，不要先重置账号或清空 Redis。
 
 容量配置 `APP_DISPATCH_WORKER_THREADS=8`、`APP_MAX_ACTIVE_TASKS=80`、`APP_MAX_MODEL_CALLS=20` 属于通用调度；财务同步有独立并发/分页控制，不能通过调大这几个变量改变财务上游限额。

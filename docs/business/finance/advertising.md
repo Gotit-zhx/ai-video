@@ -1,6 +1,6 @@
 # 广告费用统计与广告分析
 
-更新日期：2026-11-13。本页记录当前源码的广告业务口径与采集边界，接口权限、历史回补及实际运行状态另查对应现场回执。历史数据质量核对见[修复记录](../../releases/finance/finance-ad-data-quality-20261110.md)，既有统计与广告通道记录分别见[统计记录](../../releases/finance/finance-advertising-20261106.md)、[连接记录](../../releases/finance/finance-ad-connection-acceptance-20261107.md)；历史结论不能替代本轮权限及运行核对。
+核对日期为 2026-11-23（北京时间）。本页说明广告业务口径与采集边界。广告月度范围与投影恢复以 11 月 23 日现场回执为准，账户权限和历史回补按对应来源逐项核对。此前的数据质量、统计及广告通道验收保留各自的核对范围。[源码归档与现场回执](../../releases/infrastructure/source-sync-20261123.md#近期生效与归档)、[数据质量修复](../../releases/finance/finance-ad-data-quality-20261110.md)、[统计记录](../../releases/finance/finance-advertising-20261106.md)、[连接记录](../../releases/finance/finance-ad-connection-acceptance-20261107.md)
 
 ## 费用口径
 

@@ -49,7 +49,8 @@ Content-Type: application/json
 | 脚本 / 手工分析 | `/api/v1/video-scripts` | `video/web/VideoScriptController.java`、`ManualScriptAnalysisJobController.java` |
 | AI / 通用视频 / 监控 | `/api/v1/ai-video-tasks`、`/api/v1/general-video-tasks`、`/api/v1/ai-video-monitor` | `video/web/` |
 | 商品采集 / 图片 / 发布流程 | `/api/v1/product-captures` | `product/web/ProductCaptureController.java` 及同目录专用控制器 |
-| 印花采集 | `/api/v1/product-captures/print-source`、`/api/v1/product-print-capture` | 插件写入需 `product:collect`，列表、详情和确认提取需 `product:edit` |
+| 印花采集插件 | `POST /api/v1/product-captures/print-source` | 需 `product:collect`。提交 `sourceUrl`、`title` 和图片 URL 数组 `images`，返回采集记录 `id` |
+| 印花采集工作台 | `/api/v1/product-print-capture` | 需 `product:edit`。`GET` 返回本企业最近 30 条记录，`GET /{captureId}` 按 ID 读取，`POST /lookup` 按 `url` 查询。提取用 `POST /{captureId}/extract`，提交 `imageId`、`confirmed: true` 与 `Idempotency-Key` 请求头 |
 | 插件身份 | `/api/v1/extension-auth` | `auth/ExtensionAuthController.java` |
 | 主图模板 / 结果 | `/api/v1/product-main-image-templates`、`/api/v1/product-main-image-results` | `product/web/ProductMainImage*Controller.java` |
 | 模板 / 裂变批次 / 设计稿 | `/api/v1/commerce-templates`、`/api/v1/commerce-batches`、`/api/v1/commerce-designs` | `product/web/Commerce*Controller.java` |
