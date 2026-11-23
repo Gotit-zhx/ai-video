@@ -31,7 +31,9 @@ function response(q){
   const amount=selected.reduce((n,s)=>n+s.amount,0),displayCurrency=cny?'CNY':currency;
   const quote={id:'fx-'+(++scopeResponse),time:'2026-10-29T00:00:00Z',provider:'test'};
   const items=selected.map(s=>({id:s.id,order_id:'ORDER-'+s.id,shop_id:s.id,platform:s.platform,kind:q.kind||'BILL',currency:s.currency,amount:s.amount}));
+  const adRows=selected.map(s=>({shop_id:s.id,shop_name:s.name,platform:s.platform,currency:displayCurrency,amount:s.amount,records:1}));
   return {
+    adSpend:{totals:[{currency:displayCurrency,amount}],shops:adRows,items:[],groups:[]},
     filters:{...q,currency,displayCurrency},fx:cny?quote:null,currencies:[...new Set(available.map(s=>s.currency))],
     groups,shops,sync:[],fees:[],statuses:[],trend:[],hourly:[],recent:[],updatedAt:'2026-10-29T00:00:00Z',
     totals:['ORDER','SETTLEMENT','BILL','PENDING','AD','FEE'].map(kind=>({kind,records:selected.length,known_amounts:selected.length,known_revenues:selected.length,amount,revenue:amount})),
@@ -74,7 +76,7 @@ w.api=async (path,options={})=>{
   }
   throw Error('Unexpected API '+path);
 };
-for(const file of ['incremental-dom.js','incremental-charts.js','finance-costs.js','finance-charges.js','finance-workspace.js']){
+for(const file of ['incremental-dom.js','incremental-charts.js','finance-costs.js','finance-charges.js','finance-ad-spend.js','finance-workspace.js']){
   const path=file==='finance-workspace.js'&&process.env.FINANCE_WORKSPACE_SOURCE||new URL('../../frontend/'+file,import.meta.url);
   w.eval(await fs.readFile(path,'utf8'));
 }
@@ -101,7 +103,7 @@ function assertVisible(route,shop){
   assert.equal(d.querySelector('[aria-label="店铺"]').value,shop.id);
   if(route==='overview')assert.equal(d.querySelector('[data-metric="SETTLEMENT"] strong').textContent,String(shop.amount));
   else if(route==='live')assert.equal(d.querySelector('.fi-live-amount strong').textContent,String(shop.amount));
-  else if(route==='ads')assert(root.textContent.includes(String(shop.amount)));
+  else if(route==='ads')assert.equal(root.querySelector('[data-ad-amount="amount"] strong').textContent,shop.amount.toFixed(2));
   else assert([...root.querySelectorAll('tbody tr')].some(r=>r.textContent.includes('ORDER-'+shop.id)&&r.textContent.includes(String(shop.amount))),route+' renders new shop rows immediately');
 }
 try{
@@ -118,8 +120,7 @@ try{
       const tabs={settlements:[['SETTLEMENT','结算明细合计'],['BILL','结算账单合计'],['PENDING','待结算合计']],
         // Qianyi refunds retain upstream currencies; their native filters are
         // covered by test-finance-qianyi-refunds-ui.mjs.
-        orders:[['ORDER','订单']], 'fee-records':[['FEE','平台费用'],['COST','物流贴单成本']],
-        ads:[['AD','普通独立广告消耗明细'],['AD_GMV','GMV Max 分析明细']]}[route]||[];
+        orders:[['ORDER','订单']], 'fee-records':[['FEE','平台费用'],['COST','物流贴单成本']]}[route]||[];
       for(const [kind,label]of tabs){
         const tab=[...d.querySelectorAll('.fi-settlement-totals button,.fi-tabs button')].find(b=>b.textContent.startsWith(label));
         assert(tab,label);tab.click();await ready();

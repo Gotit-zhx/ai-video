@@ -276,7 +276,9 @@
         byId('product-listing-template-dialog').close();
       }
     });
-    byId('open-product-listing-templates').addEventListener('click', open);
+    for (const button of document.querySelectorAll('#open-product-listing-templates, [data-listing-template-opener]')) {
+      button.addEventListener('click', open);
+    }
     for (const id of ['close-product-listing-templates','cancel-product-listing-templates'])
       byId(id).addEventListener('click', () => byId('product-listing-template-dialog').close());
     byId('product-listing-template-form').addEventListener('submit', save);

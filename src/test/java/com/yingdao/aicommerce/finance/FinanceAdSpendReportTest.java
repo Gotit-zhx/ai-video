@@ -145,10 +145,11 @@ class FinanceAdSpendReportTest {
         row.put("campaign_id","9012345678901235");
         row.put("net_amount",new BigDecimal("8"));
         var data=report(List.of(row),List.of());
-        var controller=new FinanceAdSpendController(null,null){
-            @Override Map<String,Object> report(Map<String,String> q,com.yingdao.aicommerce.auth.PlatformPrincipal user){return data;}
-        };
-        try(var zip=new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(controller.export(Map.of(),null).getBody()))){
+        var spend=org.mockito.Mockito.mock(FinanceAdSpendService.class);
+        var scope=new Scope("org","reader");
+        org.mockito.Mockito.when(spend.report(scope,filter,false,null,null,null)).thenReturn(data);
+        var controller=new FinanceAdSpendController(spend,null);
+        try(var zip=new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(controller.export(scope,filter,Map.of(),List.of()).getBody()))){
             String detail="";
             for(var entry=zip.getNextEntry();entry!=null;entry=zip.getNextEntry()){
                 if(!entry.getName().startsWith("xl/worksheets/"))continue;

@@ -16,21 +16,27 @@ public class FinanceMarketplace {
         this.authorization=authorization;this.shopee=shopee;this.tiktok=tiktok;this.repo=repo;
     }
     public record Step(Map<String,Object> checkpoint,boolean done){}
+    record PageLease(String channel,String token){}
     public Step step(Scope scope,Map<String,Object> state,Map<String,Object> checkpoint){
         String shopId=text(state.get("shop_id")),channel=text(state.get("channel")),zone=text(state.get("timezone"));
+        String token=text(state.get("lease_token"));
+        var lease=token.isBlank()?null:new PageLease(channel,token);
         if("ORDER_LIVE".equals(channel)){
             channel="ORDER";checkpoint=new LinkedHashMap<>(checkpoint);checkpoint.put("liveOrder",true);
         }
         MarketplaceAccess.Connection c=authorization.connection(scope,shopId);
         if(channel.equals("ORDER_REPAIR"))return repairSettledOrders(scope,c,zone,checkpoint);
-        if("TIKTOK_SHOP".equals(c.shop().getPlatform()))return tik(scope,c,channel,zone,checkpoint);
-        if("SHOPEE".equals(c.shop().getPlatform()))return sho(scope,c,channel,zone,checkpoint);
+        if("TIKTOK_SHOP".equals(c.shop().getPlatform()))return tik(scope,c,channel,zone,checkpoint,lease);
+        if("SHOPEE".equals(c.shop().getPlatform()))return sho(scope,c,channel,zone,checkpoint,lease);
         throw bad("不支持的财务平台");
     }
     Map<String,Object> tikGet(MarketplaceAccess.Connection c,String path,Map<String,?> query){
         return map(tiktok.apiGet(path,c.tokens().accessToken(),c.shop().getShopCipher(),query).get("data"));
     }
     Step tik(Scope s,MarketplaceAccess.Connection c,String channel,String zone,Map<String,Object> cp){
+        return tik(s,c,channel,zone,cp,null);
+    }
+    private Step tik(Scope s,MarketplaceAccess.Connection c,String channel,String zone,Map<String,Object> cp,PageLease lease){
         Map<String,Object> next=new LinkedHashMap<>(cp);String cursor=text(cp.get("cursor"));
         long from=number(cp.get("from")),to=number(cp.get("to"));String shop=c.shop().getId();
         Map<String,Object> q=new LinkedHashMap<>(Map.of("page_size",20,"sort_order",Boolean.TRUE.equals(cp.get("liveOrder"))?"DESC":"ASC"));
@@ -81,20 +87,24 @@ public class FinanceMarketplace {
                 var dateMetadata=FinanceSettlementDates.metadata(bill,zone,c.shop().getSellerType());
                 data=new LinkedHashMap<>(data);data.putAll(dateMetadata);
                 var transactions=requiredRows(data,"transactions");
-                save(s,c,"BILL",billId,"",billId,"结算账单",completed?"PARTIAL":FinanceSettlementDates.PENDING,day,currency,amount(data,"total_settlement_amount"),data);
+                String token=first(data,"next_page_token");
+                long received=number(cp.get("transactionCount"))+transactions.size();
+                if(token.isEmpty()&&data.containsKey("total_count")&&received!=number(data.get("total_count")))
+                    throw bad("账单交易数量不完整，已保留进度等待重试");
+                if(!token.isEmpty()&&token.equals(text(cp.get("transactionCursor"))))throw bad("平台分页游标重复");
+                var entries=new ArrayList<Entry>();
                 for(var tx:transactions){
                     if("RESERVE".equals(tx.get("type")))continue;
                     String id=first(tx,"id");String order=first(tx,"order_id","adjustment_order_id");
                     var raw=new LinkedHashMap<>(tx);raw.putAll(dateMetadata);
-                    save(s,c,"SETTLEMENT",id,order,billId,first(tx,"type"),finalStatus,day,currency,amount(tx,"settlement_amount"),raw);
+                    entries.add(entry(c,"SETTLEMENT",id,order,billId,first(tx,"type"),finalStatus,day,currency,amount(tx,"settlement_amount"),raw));
                 }
-                String token=first(data,"next_page_token");
-                long received=number(cp.get("transactionCount"))+transactions.size();
+                String billStatus=completed&&!token.isEmpty()?"PARTIAL":finalStatus;
+                var statement=entry(c,"BILL",billId,"",billId,"结算账单",billStatus,day,currency,amount(data,"total_settlement_amount"),data);
+                repo.saveSyncPage(s,c.shop().getId(),entries,statement,lease);
                 if(token.isEmpty()){
-                    if(data.containsKey("total_count")&&received!=number(data.get("total_count")))throw bad("账单交易数量不完整，已保留进度等待重试");
-                    save(s,c,"BILL",billId,"",billId,"结算账单",finalStatus,day,currency,amount(data,"total_settlement_amount"),data);
                     bills.removeFirst();next.remove("transactionCursor");next.remove("transactionCount");next.put("bills",bills);
-                }else {if(token.equals(text(cp.get("transactionCursor"))))throw bad("平台分页游标重复");next.put("transactionCursor",token);next.put("transactionCount",received);}
+                }else {next.put("transactionCursor",token);next.put("transactionCount",received);}
                 if(bills.isEmpty()&&Boolean.TRUE.equals(cp.get("lastBillPage")))return new Step(next,true);
                 return new Step(next,false);
             }
@@ -131,23 +141,38 @@ public class FinanceMarketplace {
         return advance(next,data,cursor,"next_page_token");
     }
     Step sho(Scope s,MarketplaceAccess.Connection c,String channel,String zone,Map<String,Object> cp){
+        return sho(s,c,channel,zone,cp,null);
+    }
+    private Step sho(Scope s,MarketplaceAccess.Connection c,String channel,String zone,Map<String,Object> cp,PageLease lease){
         long from=number(cp.get("from")),to=number(cp.get("to"));String cursor=text(cp.get("cursor"));
         Map<String,Object> q=new LinkedHashMap<>();Map<String,Object> data;Map<String,Object> next=new LinkedHashMap<>(cp);
         if(channel.equals("ORDER")){
             q.putAll(Map.of("time_range_field","update_time","time_from",from,"time_to",to-1,"page_size",20,"cursor",cursor));
             data=map(shopee.shopGet("/api/v2/order/get_order_list",c,q).get("response"));
+            if(Boolean.TRUE.equals(data.get("more"))&&first(data,"next_cursor").isEmpty())throw bad("订单分页缺少游标");
+            var advanced=advance(next,data,cursor,"next_cursor");
             List<Map<String,Object>> list=requiredRows(data,"order_list");
             if(!list.isEmpty()){
-                String ids=String.join(",",list.stream().map(r->first(r,"order_sn")).toList());
+                var expected=new LinkedHashSet<String>();
+                for(var row:list){
+                    String id=first(row,"order_sn");
+                    if(id.isBlank())throw bad("订单列表缺少编号，已保留同步进度");
+                    expected.add(id);
+                }
+                String ids=String.join(",",expected);
                 var detail=map(shopee.shopGet("/api/v2/order/get_order_detail",c,Map.of("order_sn_list",ids,
                         "response_optional_fields","total_amount,item_list,actual_shipping_fee,estimated_shipping_fee,payment_method")).get("response"));
+                var entries=new ArrayList<Entry>();
                 for(var row:requiredRows(detail,"order_list")){
+                    String id=first(row,"order_sn");
+                    if(!expected.remove(id))throw bad("订单详情编号重复或超出本页，已保留同步进度");
                     String status=first(row,"order_status");BigDecimal value=Set.of("UNPAID","CANCELLED").contains(status)?null:amount(row,"total_amount");
-                    save(s,c,"ORDER",first(row,"order_sn"),first(row,"order_sn"),"","订单",status,date(row.get("create_time"),zone),first(row,"currency"),value,row);
+                    entries.add(entry(c,"ORDER",id,id,"","订单",status,date(row.get("create_time"),zone),first(row,"currency"),value,row));
                 }
+                if(!expected.isEmpty())throw bad("订单详情数量不完整，已保留同步进度");
+                repo.saveSyncPage(s,c.shop().getId(),entries,null,lease);
             }
-            if(Boolean.TRUE.equals(data.get("more"))&&first(data,"next_cursor").isEmpty())throw bad("订单分页缺少游标");
-            return advance(next,data,cursor,"next_cursor");
+            return advanced;
         }
         if(channel.equals("REFUND")){
             int page=(int)Math.max(1,number(cp.get("page")));
@@ -280,7 +305,11 @@ public class FinanceMarketplace {
     }
     void save(Scope s,MarketplaceAccess.Connection c,String kind,String id,String order,String statement,String category,String status,
               LocalDate day,String currency,BigDecimal amount,Map<String,Object> raw){
-        repo.save(s,new Entry(c.shop().getId(),c.shop().getPlatform(),kind,id,order,statement,category,status,day,currency,
-                amount,null,null,null,null,"API",raw));
+        repo.save(s,entry(c,kind,id,order,statement,category,status,day,currency,amount,raw));
+    }
+    private static Entry entry(MarketplaceAccess.Connection c,String kind,String id,String order,String statement,String category,
+                               String status,LocalDate day,String currency,BigDecimal amount,Map<String,Object> raw){
+        return new Entry(c.shop().getId(),c.shop().getPlatform(),kind,id,order,statement,category,status,day,currency,
+                amount,null,null,null,null,"API",raw);
     }
 }

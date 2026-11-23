@@ -25,14 +25,21 @@ final class FinanceAdBcFunding {
 
     /** One provider request per lease, with a credential shared by many accounts queried only once. */
     void tick(){
-        var groups=groups();Group selected=null;Map<String,Object> job=null;
-        for(var group:groups.values()){
-            repo.jdbc().update("INSERT IGNORE INTO finance_ad_bc_sync(organization_id,credential_key) VALUES(?,?)",group.organization,group.key);
-            for(var account:group.accounts.values())if(!group.key.equals(account.get("funding_credential_key")))
-                repo.jdbc().update("UPDATE finance_ad_accounts SET funding_credential_key=? WHERE organization_id=? AND advertiser_id=? AND enabled=TRUE AND access_token_encrypted=?",
-                        group.key,group.organization,account.get("advertiser_id"),account.get("access_token_encrypted"));
-            var due=repo.jdbc().queryForList("SELECT * FROM finance_ad_bc_sync WHERE organization_id=? AND credential_key=? AND next_at<=UTC_TIMESTAMP(6) AND (lease_until IS NULL OR lease_until<UTC_TIMESTAMP(6))",group.organization,group.key);
-            if(!due.isEmpty()&&(job==null||instant(due.getFirst().get("next_at")).isBefore(instant(job.get("next_at"))))){selected=group;job=due.getFirst();}
+        var groups=groups();
+        if(groups.isEmpty())return;
+        Group selected=null;Map<String,Object> job=null;
+        Instant now=Instant.now();
+        int bestRank=Integer.MAX_VALUE;
+        for(var candidate:dueGroups(groups.values())){
+            var group=groups.get(text(candidate.get("organization_id"))+":"+text(candidate.get("credential_key")));
+            var cp=read(candidate.get("checkpoint_json"));
+            LocalDate today=latestDay(now,zones(group));
+            int rank=FinanceSyncRange.month(today).equals(cp.get(FinanceSyncRange.MONTH))
+                    &&!text(cp.get("from")).isBlank()
+                    &&LocalDate.parse(text(cp.get("from"))).isBefore(FinanceSyncRange.start(today))?1:0;
+            if(job==null||rank<bestRank||rank==bestRank&&instant(candidate.get("next_at")).isBefore(instant(job.get("next_at")))){
+                selected=group;job=candidate;bestRank=rank;
+            }
         }
         if(selected==null)return;
         String lease=UUID.randomUUID().toString();var group=selected;
@@ -42,11 +49,44 @@ final class FinanceAdBcFunding {
         if(claimed.isEmpty())return;var state=claimed.getFirst();
         // Refresh BC access between complete days; a large day must not restart every six hours.
         var known=read(state.get("bc_json"));
-        boolean discovery=state.get("bc_json")==null||!read(state.get("checkpoint_json")).containsKey("run")&&
+        var checkpoint=read(state.get("checkpoint_json"));
+        boolean discovery=state.get("bc_json")==null||!checkpoint.containsKey("run")
+                &&(!checkpoint.containsKey(FinanceSyncRange.RESUME)||Boolean.TRUE.equals(checkpoint.get("history_required")))&&
                 (!instant(state.get("discovery_next_at")).isAfter(Instant.now())||number(known.get("history_version"))<HISTORY_VERSION);
         try{if(discovery)discover(group,state,lease);else cost(group,state,lease);}
         catch(RuntimeException failure){failed(group,state,lease,discovery,failure);}
     }
+
+    private List<Map<String,Object>> dueGroups(Collection<Group> groups){
+        var due=new ArrayList<Map<String,Object>>();
+        var all=new ArrayList<>(groups);
+        // Select by credential in batches. Account reassignment still checks the
+        // current encrypted grant so a concurrent reauthorization wins.
+        for(int offset=0;offset<all.size();offset+=250){
+            var batch=all.subList(offset,Math.min(all.size(),offset+250));
+            var keys=new ArrayList<Object>();
+            var assignments=new ArrayList<Object[]>();
+            for(var group:batch){
+                Collections.addAll(keys,group.organization,group.key);
+                for(var account:group.accounts.values())if(!group.key.equals(account.get("funding_credential_key")))
+                    assignments.add(new Object[]{group.key,group.organization,account.get("advertiser_id"),account.get("access_token_encrypted")});
+            }
+            String pairs=String.join(",",Collections.nCopies(batch.size(),"(?,?)"));
+            repo.jdbc().update("INSERT IGNORE INTO finance_ad_bc_sync(organization_id,credential_key) VALUES "+pairs,keys.toArray());
+            if(!assignments.isEmpty())repo.jdbc().batchUpdate("""
+                UPDATE finance_ad_accounts SET funding_credential_key=?
+                  WHERE organization_id=? AND advertiser_id=? AND enabled=TRUE AND access_token_encrypted=?
+                """,assignments);
+            due.addAll(repo.jdbc().queryForList("""
+                SELECT organization_id,credential_key,checkpoint_json,next_at
+                FROM finance_ad_bc_sync WHERE next_at<=UTC_TIMESTAMP(6)
+                  AND (lease_until IS NULL OR lease_until<UTC_TIMESTAMP(6))
+                  AND (organization_id,credential_key) IN (
+                """+pairs+") ORDER BY organization_id,credential_key",keys.toArray()));
+        }
+        return due;
+    }
+
     private Map<String,Group> groups(){
         var result=new LinkedHashMap<String,Group>();
         var accounts=repo.jdbc().queryForList("SELECT * FROM finance_ad_accounts a WHERE enabled=TRUE AND "+FinanceAds.visibleAccount()+" ORDER BY organization_id,advertiser_id LIMIT 5001");
@@ -106,9 +146,12 @@ final class FinanceAdBcFunding {
             boolean financial=bcs.stream().anyMatch(b->FINANCE_ROLES.contains(text(b.get("finance_role"))));
             String status=financial?"SYNCING":bcs.isEmpty()?"NEEDS_BC_ACCESS":"NEEDS_FINANCE_ROLE";
             String message=financial?roleWarning(bcs):bcs.isEmpty()?"当前授权未返回可访问的 Business Center；请核对 BC 访问关系及 Read Business Center 授权。":"当前可访问 BC 未返回 Finance Manager 或 Finance Analyst 角色；请由 BC 管理员配置财务角色。";
-            var cp=restart(read(state.get("checkpoint_json")));
+            var cp=restartAll(read(state.get("checkpoint_json")));
             var previous=read(state.get("bc_json"));
-            if(financial&&(number(previous.get("history_version"))<HISTORY_VERSION||!readableBcs(rows(previous.get("list"))).containsAll(readableBcs(bcs))))cp.put("history_required",true);
+            if(financial&&(number(previous.get("history_version"))<HISTORY_VERSION||!readableBcs(rows(previous.get("list"))).containsAll(readableBcs(bcs)))){
+                cp.put("history_required",true);
+                cp.remove(FinanceSyncRange.MONTH);
+            }
             long discoveryDelay=financial&&roleWarning(bcs)==null?21600:3600;
             repo.jdbc().update("UPDATE finance_ad_bc_sync SET bc_json=?,discovery_page=1,discovery_stage_json=NULL,discovery_next_at=?,checkpoint_json=? WHERE organization_id=? AND credential_key=?",
                     repo.write(Map.of("list",bcs,"history_version",HISTORY_VERSION)),Timestamp.from(Instant.now().plusSeconds(discoveryDelay)),cp.isEmpty()?null:repo.write(cp),g.organization,g.key);
@@ -120,18 +163,19 @@ final class FinanceAdBcFunding {
         var allBcs=rows(read(state.get("bc_json")).get("list"));
         var bcs=allBcs.stream().filter(b->FINANCE_ROLES.contains(text(b.get("finance_role")))).toList();
         if(bcs.isEmpty())throw bad("BC 财务角色尚未确认");
-        var cp=read(state.get("checkpoint_json"));
-        Instant now=Instant.now();var zones=g.accounts.values().stream().map(a->ZoneId.of(text(a.get("timezone")))).distinct().toList();
+        var saved=read(state.get("checkpoint_json"));
+        Instant now=Instant.now();var zones=zones(g);
         LocalDate today=latestDay(now,zones);
-        if(Boolean.TRUE.equals(cp.remove("history_required"))){
+        if(Boolean.TRUE.equals(saved.remove("history_required"))){
             LocalDate from=today.minusDays(89),until=today;
-            if(cp.containsKey("from")){var unfinished=LocalDate.parse(text(cp.get("from")));if(unfinished.isBefore(from))from=unfinished;}
-            if(cp.containsKey("until")){var unfinished=LocalDate.parse(text(cp.get("until")));if(unfinished.isAfter(until))until=unfinished;}
-            cp.put("from",from.toString());cp.put("until",until.toString());
-        }else if(cp.isEmpty()){
+            if(saved.containsKey("from")){var unfinished=LocalDate.parse(text(saved.get("from")));if(unfinished.isBefore(from))from=unfinished;}
+            if(saved.containsKey("until")){var unfinished=LocalDate.parse(text(saved.get("until")));if(unfinished.isAfter(until))until=unfinished;}
+            saved.put("from",from.toString());saved.put("until",until.toString());
+        }else if(!saved.containsKey("from")){
             boolean nightly=nightly(state.get("last_success_at")==null?null:instant(state.get("last_success_at")),now,zones);
-            cp.put("from",today.minusDays(state.get("last_success_at")==null?89:nightly?30:6).toString());cp.put("until",today.toString());
+            saved.put("from",today.minusDays(state.get("last_success_at")==null?89:nightly?30:6).toString());saved.put("until",today.toString());
         }
+        var cp=FinanceSyncRange.prioritize(saved,today,today.minusDays(89));
         cp.putIfAbsent("bc_index",0);cp.putIfAbsent("page",1);cp.putIfAbsent("run",UUID.randomUUID().toString());
         LocalDate day=LocalDate.parse(text(cp.get("from"))),until=LocalDate.parse(text(cp.get("until")));
         if(day.isAfter(until)||day.plusYears(1).isBefore(until))throw bad("BC 资金回补日期无效");
@@ -163,11 +207,17 @@ final class FinanceAdBcFunding {
             else{
                 publish(g,current,cp,day);
                 repo.jdbc().update("DELETE FROM finance_ad_bc_stage WHERE organization_id=? AND credential_key=? AND run_id=?",g.organization,g.key,cp.get("run"));
-                if(day.isBefore(until)){cp.clear();cp.put("from",day.plusDays(1).toString());cp.put("until",until.toString());}
-                else cp.clear();
+                LocalDate next=FinanceSyncRange.nextDay(cp,day);
+                if(!next.isAfter(until)){
+                    for(String field:List.of("run","bc_index","page","seen","expected_total","expected_pages"))cp.remove(field);
+                    cp.put("from",next.toString());
+                }else if(!FinanceSyncRange.resume(cp)){
+                    var marker=FinanceSyncRange.marker(cp);
+                    cp.clear();cp.putAll(marker);
+                }
             }
-            boolean done=cp.isEmpty();
-            repo.jdbc().update("UPDATE finance_ad_bc_sync SET checkpoint_json=? WHERE organization_id=? AND credential_key=?",done?null:repo.write(cp),g.organization,g.key);
+            boolean done=!cp.containsKey("from");
+            repo.jdbc().update("UPDATE finance_ad_bc_sync SET checkpoint_json=? WHERE organization_id=? AND credential_key=?",cp.isEmpty()?null:repo.write(cp),g.organization,g.key);
             release(g,lease,done?"SUCCESS":"SYNCING",roleWarning(allBcs),done?3600:30,done);return null;
         });
     }
@@ -197,6 +247,9 @@ final class FinanceAdBcFunding {
     static boolean nightly(Instant lastSuccess,Instant now,Collection<ZoneId> zones){
         return lastSuccess!=null&&latestDay(lastSuccess,zones).isBefore(latestDay(now,zones));
     }
+    private static List<ZoneId> zones(Group group){
+        return group.accounts.values().stream().map(account->ZoneId.of(text(account.get("timezone")))).distinct().toList();
+    }
     private static LocalDate latestDay(Instant at,Collection<ZoneId> zones){
         return zones.stream().map(z->at.atZone(z).toLocalDate()).max(Comparator.naturalOrder()).orElseThrow();
     }
@@ -212,7 +265,19 @@ final class FinanceAdBcFunding {
     }
     private static void rememberPagination(Map<String,Object> cp,Page p){cp.put("expected_total",p.total);cp.put("expected_pages",p.pages);}
     private static void clearPage(Map<String,Object> cp){cp.put("page",1);cp.remove("seen");cp.remove("expected_total");cp.remove("expected_pages");}
-    private static Map<String,Object> restart(Map<String,Object> cp){var result=new LinkedHashMap<String,Object>();for(String key:List.of("from","until","history_required"))if(cp.containsKey(key))result.put(key,cp.get(key));return result;}
+    private static Map<String,Object> restart(Map<String,Object> cp){
+        var result=new LinkedHashMap<String,Object>();
+        for(String key:List.of("from","until","history_required",FinanceSyncRange.MONTH,FinanceSyncRange.RESUME,
+                FinanceSyncRange.VERIFIED_FROM,FinanceSyncRange.VERIFIED_UNTIL))
+            if(cp.containsKey(key))result.put(key,cp.get(key));
+        return result;
+    }
+    private static Map<String,Object> restartAll(Map<String,Object> cp){
+        var marker=restart(cp);
+        if(cp.get(FinanceSyncRange.RESUME) instanceof Map<?,?>)
+            marker.put(FinanceSyncRange.RESUME,restartAll(map(cp.get(FinanceSyncRange.RESUME))));
+        return marker;
+    }
     private Map<String,Object> read(Object json){return json==null?new LinkedHashMap<>():new LinkedHashMap<>(repo.read(text(json)));}
     private static Set<String> readableBcs(List<Map<String,Object>> bcs){var ids=new HashSet<String>();for(var bc:bcs)if(FINANCE_ROLES.contains(text(bc.get("finance_role"))))ids.add(text(bc.get("bc_id")));return ids;}
     private static String roleWarning(List<Map<String,Object>> bcs){return bcs.stream().anyMatch(b->!FINANCE_ROLES.contains(text(b.get("finance_role"))))?"部分可见 BC 未返回财务角色；仅查询已确认财务角色的 BC。请核对实际付款 BC 及其 Finance Analyst 或 Finance Manager 角色，尚未确认这些 BC 与本广告账户的付款关系。":null;}
@@ -235,9 +300,11 @@ final class FinanceAdBcFunding {
             }
             if(failure instanceof ChangedReport){
                 var saved=repo.jdbc().queryForList("SELECT checkpoint_json FROM finance_ad_bc_sync WHERE organization_id=? AND credential_key=?",g.organization,g.key).getFirst();
-                var cp=restart(read(saved.get("checkpoint_json")));
+                var running=read(saved.get("checkpoint_json"));
+                var cp=restart(running);
                 repo.jdbc().update("UPDATE finance_ad_bc_sync SET checkpoint_json=? WHERE organization_id=? AND credential_key=?",cp.isEmpty()?null:repo.write(cp),g.organization,g.key);
-                repo.jdbc().update("DELETE FROM finance_ad_bc_stage WHERE organization_id=? AND credential_key=?",g.organization,g.key);
+                if(running.containsKey("run"))repo.jdbc().update("DELETE FROM finance_ad_bc_stage WHERE organization_id=? AND credential_key=? AND run_id=?",
+                        g.organization,g.key,running.get("run"));
                 message="BC 资金分页或不同 BC 的同账户金额发生变化；已保留上次费用，当前日期将完整重查。";
             }
             if(failure instanceof EmptyRefresh)message="BC 资金刷新未返回已有日期的账户费用；已保留上次费用和进度，待核对并自动重试。";
@@ -254,8 +321,9 @@ final class FinanceAdBcFunding {
         if(!old.isBlank())repo.jdbc().update("UPDATE finance_ad_bc_sync SET lease_token=NULL,lease_until=NULL WHERE organization_id=? AND credential_key=?",s.organizationId(),old);
         repo.jdbc().update("INSERT IGNORE INTO finance_ad_bc_sync(organization_id,credential_key) VALUES(?,?)",s.organizationId(),key);
         var state=repo.jdbc().queryForList("SELECT checkpoint_json FROM finance_ad_bc_sync WHERE organization_id=? AND credential_key=?",s.organizationId(),key).getFirst();
-        var cp=restart(read(state.get("checkpoint_json")));
+        var cp=restartAll(read(state.get("checkpoint_json")));
         cp.put("history_required",true);
+        cp.remove(FinanceSyncRange.MONTH);
         repo.jdbc().update("UPDATE finance_ad_bc_sync SET status='READY',error_message=NULL,failures=0,next_at=UTC_TIMESTAMP(6),discovery_next_at=UTC_TIMESTAMP(6),discovery_page=1,discovery_stage_json=NULL,checkpoint_json=?,lease_token=NULL,lease_until=NULL WHERE organization_id=? AND credential_key=?",cp.isEmpty()?null:repo.write(cp),s.organizationId(),key);
         repo.jdbc().update("DELETE FROM finance_ad_bc_stage WHERE organization_id=? AND credential_key=?",s.organizationId(),key);
         repo.jdbc().update("UPDATE finance_ad_accounts SET funding_credential_key=? WHERE organization_id=? AND advertiser_id=?",key,s.organizationId(),advertiser);

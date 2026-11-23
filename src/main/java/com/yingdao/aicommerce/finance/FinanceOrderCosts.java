@@ -8,6 +8,9 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 /** Merchant-SKU-first, platform-SKU-fallback standard costs, separate from actual warehouse accounting. */
 public final class FinanceOrderCosts {
     static final String POLICY_VERSION="sku-platform-sku-standard-v1";
+    static final String ZERO_PRICE_ISSUE="成本表为零值，需核对单价";
+    static final String ZERO_PRICE_REVIEW="零价待核对";
+    static final String ZERO_PRICE_NOTE="成本表的零单价待核对，完整成本暂未确认。";
     final FinanceRepository repo;
     public FinanceOrderCosts(FinanceRepository repo){this.repo=repo;}
     public record Context(String shopId,String groupId,String region,String timezone,String bookId,
@@ -42,6 +45,9 @@ public final class FinanceOrderCosts {
         var matched=warehouses.stream().filter(w->names.stream().anyMatch(w::contains)).toList();
         if(matched.size()==1)return matched.getFirst();
         return warehouses.size()==1?warehouses.iterator().next():"";
+    }
+    static boolean onlyZeroPriceIssues(Set<String> issues){
+        return issues.equals(Set.of(ZERO_PRICE_ISSUE));
     }
     static Object shippingTime(Map<String,Object> raw){
         for(String key:List.of("collection_time","shipped_time","ship_time"))if(number(raw.get(key))>0)return raw.get(key);
@@ -158,7 +164,7 @@ public final class FinanceOrderCosts {
             else if(map(selected.get("priceSources")).containsKey(priceMonth))line.put("priceSource",map(selected.get("priceSources")).get(priceMonth));
             if(price==null||price.signum()<0){line.put("issue","缺少 "+month+" 可用成本价");continue;}
             // Imported zeroes require explicit confirmation; do not silently treat blank/formula placeholders as free goods.
-            if(manualId.isBlank()&&price.signum()==0&&!Boolean.TRUE.equals(rules.get("allowZero"))){line.put("issue","成本表为零值，需核对单价");continue;}
+            if(manualId.isBlank()&&price.signum()==0&&!Boolean.TRUE.equals(rules.get("allowZero"))){line.put("issue",ZERO_PRICE_ISSUE);continue;}
             BigDecimal value=price.multiply(quantity).multiply(factor).setScale(6,RoundingMode.HALF_UP);
             if(value.precision()-value.scale()>18){line.put("issue","成本金额超出支持范围");continue;}
             BigDecimal next=known.add(value);
@@ -228,6 +234,30 @@ public final class FinanceOrderCosts {
             INSERT INTO finance_order_cost_jobs(order_record_id,organization_id,shop_id) VALUES(?,?,?)
             ON DUPLICATE KEY UPDATE priority=0
             """,id(s,entry),s.organizationId(),entry.shopId());
+    }
+    static void enqueuePage(FinanceRepository repo,Scope scope,String shop,List<Entry> entries){
+        var policy=repo.jdbc().queryForList("""
+            SELECT (EXISTS(SELECT 1 FROM finance_cost_books b WHERE b.organization_id=c.organization_id AND b.group_id=c.group_id)
+              OR EXISTS(SELECT 1 FROM finance_label_order_totals l JOIN finance_label_state ls
+                ON ls.organization_id=l.organization_id AND ls.active_generation=l.generation
+                WHERE l.organization_id=c.organization_id AND l.shop_id=c.id))+0 configured
+            FROM finance_connections c WHERE c.organization_id=? AND c.id=? AND c.status<>'REMOVED'
+            """,scope.organizationId(),shop);
+        if(policy.isEmpty())return;
+        boolean configured=number(policy.getFirst().get("configured"))>0;
+        var candidates=new LinkedHashMap<String,String>();
+        for(var entry:entries)if(configured||hasGift(entry.raw()))
+            candidates.put(id(scope,entry),sourceHash(repo,entry.raw(),entry.status()));
+        if(candidates.isEmpty())return;
+        var saved=repo.jdbc().queryForList("SELECT order_record_id,source_hash FROM finance_order_costs WHERE order_record_id IN ("+
+            String.join(",",Collections.nCopies(candidates.size(),"?"))+")",candidates.keySet().toArray());
+        for(var row:saved){
+            String key=text(row.get("order_record_id"));
+            if(text(row.get("source_hash")).equalsIgnoreCase(candidates.get(key)))candidates.remove(key);
+        }
+        repo.insertRows("INSERT INTO finance_order_cost_jobs(order_record_id,organization_id,shop_id) VALUES ",
+            "(?,?,?)"," ON DUPLICATE KEY UPDATE priority=0",
+            candidates.keySet().stream().map(id->new Object[]{id,scope.organizationId(),shop}).toList());
     }
     void requestShop(String organization,String shopId){
         if(!repo.writableShop(organization,shopId))return;
@@ -320,9 +350,7 @@ public final class FinanceOrderCosts {
     }
     /** A bounded multi-row statement avoids one network round trip per row without driver-specific flags. */
     void insertRows(String prefix,String tuple,String suffix,List<Object[]> rows){
-        if(rows.isEmpty())return;
-        repo.jdbc().update(prefix+String.join(",",Collections.nCopies(rows.size(),tuple))+suffix,
-            rows.stream().flatMap(Arrays::stream).toArray());
+        repo.insertRows(prefix,tuple,suffix,rows);
     }
     List<String> candidateJobs(int limit,int page){
         if(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
@@ -343,10 +371,12 @@ public final class FinanceOrderCosts {
         // Existing explicit repair callers already own their transaction. Retain
         // their locking read so candidate enumeration cannot establish an older
         // repeatable-read snapshot before the jobs are actually locked.
-        return processJobs(repo.jdbc().queryForList("SELECT * FROM finance_order_cost_jobs ORDER BY priority,requested_at,order_record_id LIMIT ? FOR UPDATE SKIP LOCKED",Math.min(100,Math.max(1,limit))));
+        return processJobs(repo.jdbc().queryForList("SELECT * FROM finance_order_cost_jobs ORDER BY priority,requested_at,order_record_id LIMIT ? FOR UPDATE SKIP LOCKED",Math.min(100,Math.max(1,limit))),new HashSet<>());
     }
-    Set<String> processBatch(List<String> candidates){return processJobs(claimJobs(candidates));}
-    private Set<String> processJobs(List<Map<String,Object>> jobs){
+    Set<String> processBatch(List<String> candidates,Set<String> financialChanges){
+        return processJobs(claimJobs(candidates),financialChanges);
+    }
+    private Set<String> processJobs(List<Map<String,Object>> jobs,Set<String> financialChanges){
         if(jobs.isEmpty())return Set.of();
         var contexts=new HashMap<String,Context>();var labelContexts=new HashMap<String,Context>();
         var catalogs=new HashMap<CatalogKey,Catalog>();var lookups=new HashMap<String,Lookup>();
@@ -385,9 +415,9 @@ public final class FinanceOrderCosts {
                 // explicit cost imports and manual edits keep their own audit trail.
                 writes.add(new Object[]{recordId,organization,shop,order.get("order_id"),order.get("record_date"),result.get("status"),result.get("amountCny"),result.get("knownAmountCny"),
                     result.get("lineCount"),result.get("matchedLines"),result.get("fallbackLines"),sourceHash,serialized,result.get("labelKnownCny"),result.get("chargesPending"),result.get("basis")});
-                changed.add(organization);
+                financialChanges.add(organization);
             }else if(!sourceHash.equals(text(order.get("cost_source_hash"))))hashes.add(new Object[]{sourceHash,recordId});
-            // Completing any queued job changes the report's processing state even if its amount is unchanged.
+            // Progress is separate from the committed calculation result.
             changed.add(organization);
         }
         insertRows("""

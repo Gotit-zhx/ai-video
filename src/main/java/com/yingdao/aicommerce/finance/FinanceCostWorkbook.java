@@ -11,6 +11,8 @@ import java.util.zip.*;
 
 /** Bounded-memory XLSX writer for cost reports. IDs remain text; source text is never a formula. */
 final class FinanceCostWorkbook implements AutoCloseable {
+    private static final java.util.regex.Pattern NUMBER=java.util.regex.Pattern.compile("-?\\d+(\\.\\d+)?");
+    private static final Set<String> COST_WARNINGS=Set.of("待补齐",FinanceOrderCosts.ZERO_PRICE_REVIEW,"后台计算中","订单待同步","历史价估算");
     private final Path directory;
     private final List<Sheet> sheets = new ArrayList<>();
     private long spoolBytes;
@@ -41,6 +43,7 @@ final class FinanceCostWorkbook implements AutoCloseable {
     static final class Sheet implements RowSink {
         final String name;final List<String> headers;final Path path;final Writer writer;
         final List<Integer> widths=new ArrayList<>();
+        final List<String> columns=new ArrayList<>();
         int count;boolean finished;
         Sheet(String name,List<String> headers,Path path,FinanceCostWorkbook owner)throws IOException{
             this.name=name;this.headers=headers;this.path=path;writer=new BufferedWriter(new OutputStreamWriter(owner.spool(path),StandardCharsets.UTF_8));
@@ -51,6 +54,7 @@ final class FinanceCostWorkbook implements AutoCloseable {
                 String h=headers.get(i);int width=h.contains("说明")||h.contains("原因")||h.contains("名称")||h.contains("文件")?42:h.contains("时间")?24:h.contains("编号")||h.contains("SKU")?28:h.contains("金额")||h.contains("成本")?23:20;
                 if(headers.size()==2)width=i==0?36:110;
                 widths.add(width);
+                columns.add(column(i));
                 writer.write("<col min=\""+(i+1)+"\" max=\""+(i+1)+"\" width=\""+width+"\" customWidth=\"1\"/>");
             }
             writer.write("</cols><sheetData>");row(new ArrayList<>(headers));
@@ -61,16 +65,16 @@ final class FinanceCostWorkbook implements AutoCloseable {
             if(values.size()!=headers.size())throw new IllegalArgumentException("Wrong export column count: "+name);
             count++;int height=count==1?38:32;
             for(int i=0;i<values.size();i++)if(values.get(i) instanceof String s){
-                int wraps=0;for(String part:s.split("\n",-1)){int length=part.codePoints().map(c->c>255?2:1).sum();wraps+=Math.max(1,(length+widths.get(i)-3)/(widths.get(i)-2));}
+                int wraps=wrappedLines(s,widths.get(i)-2);
                 height=Math.max(height,Math.min(409,wraps*15+8));
             }
             writer.write("<row r=\""+count+"\" ht=\""+height+"\" customHeight=\"1\">");
             for(int i=0;i<values.size();i++){
-                Object value=values.get(i);String ref=column(i)+count;int style=count==1?1:0;
+                Object value=values.get(i);String ref=columns.get(i)+count;int style=count==1?1:0;
                 if(value==null){writer.write("<c r=\""+ref+"\" s=\"0\"/>");continue;}
                 if(count>1&&value instanceof Number n){
                     String numeric=n instanceof BigDecimal d?d.toPlainString():new BigDecimal(n.toString()).toPlainString();
-                    if(!numeric.matches("-?\\d+(\\.\\d+)?"))throw new IllegalArgumentException("Invalid export number");
+                    if(!NUMBER.matcher(numeric).matches())throw new IllegalArgumentException("Invalid export number");
                     boolean integer=n instanceof Integer||n instanceof Long
                         ||(headers.get(i).contains("数量")&&new BigDecimal(numeric).stripTrailingZeros().scale()<=0);
                     writer.write("<c r=\""+ref+"\" s=\""+(integer?6:2)+"\"><v>"+numeric+"</v></c>");continue;
@@ -81,11 +85,23 @@ final class FinanceCostWorkbook implements AutoCloseable {
                     writer.write("<c r=\""+ref+"\" s=\""+(value instanceof LocalDate?3:4)+"\"><v>"+serial+"</v></c>");continue;
                 }
                 String text=String.valueOf(value);
-                if(count>1&&Set.of("待补齐","后台计算中","订单待同步","历史价估算").contains(text))style=5;
+                if(count>1&&COST_WARNINGS.contains(text))style=5;
                 if(text.length()>32767)throw FinanceData.bad("导出字段过长，请缩小范围或核对商品资料");
                 writer.write("<c r=\""+ref+"\" s=\""+style+"\" t=\"inlineStr\"><is><t xml:space=\"preserve\">"+FinanceWorkbook.xml(text)+"</t></is></c>");
             }
             writer.write("</row>");
+        }
+        private static int wrappedLines(String text,int width){
+            int wraps=0,length=0;
+            for(int offset=0;offset<text.length();){
+                int codePoint=text.codePointAt(offset);
+                offset+=Character.charCount(codePoint);
+                if(codePoint=='\n'){
+                    wraps+=Math.max(1,(length+width-1)/width);
+                    length=0;
+                }else length+=codePoint>255?2:1;
+            }
+            return wraps+Math.max(1,(length+width-1)/width);
         }
         void finish()throws IOException{
             if(finished)return;

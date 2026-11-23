@@ -3,7 +3,6 @@ package com.yingdao.aicommerce.finance;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.*;
 import static com.yingdao.aicommerce.finance.FinanceData.*;
@@ -34,25 +33,40 @@ public class FinanceImport {
         var data=FinanceWorkbook.read(bytes,filename);if(data.size()<2)throw bad("文件没有数据");
         List<Entry> entries=new ArrayList<>();Set<String> unique=new HashSet<>();
         for(int i=1;i<data.size();i++){
-            var row=data.get(i);String id=value(row,mapping,"external_id"),currency=value(row,mapping,"currency").toUpperCase(Locale.ROOT);
-            String day=value(row,mapping,"date"),amount=value(row,mapping,"amount");
-            BigDecimal number=decimal(amount.replace(",",""));if(number==null)throw bad("第 "+(i+1)+" 行金额无法识别");
-            LocalDate date;try{date=LocalDate.parse(day);}catch(Exception e){throw bad("第 "+(i+1)+" 行日期请使用 YYYY-MM-DD 文本格式");}
-            String order=value(row,mapping,"order_id"),statement=value(row,mapping,"statement_id");
-            if(kind.equals("AD")&&AD_NON_SPEND_CATEGORIES.contains(value(row,mapping,"category").toUpperCase(Locale.ROOT)))
-                throw bad("第 "+(i+1)+" 行属于充值、资金划转或未拆分费用，请导入实际广告消耗报表");
-            if(kind.equals("BILL")&&!statement.isBlank())id=statement;
-            if(!unique.add(id))throw bad("第 "+(i+1)+" 行编号重复，请先合并同一账单或补充唯一记录编号");
-            Entry entry=new Entry(shopId,text(shop.get("platform")),kind,id,order,kind.equals("BILL")?id:statement,
-                    value(row,mapping,"category"),"IMPORTED",date,currency,number,null,null,null,null,"IMPORT",
-                    Map.of("file",filename,"row",i+1,"reference",id));
-            validate(entry);entries.add(entry);
+            var entry=mappedEntry(shopId,text(shop.get("platform")),kind,mapping,data.get(i),i+1,filename);
+            if(!unique.add(entry.externalId()))throw duplicateRow(i+1);
+            entries.add(entry);
         }
         for(var entry:entries)repo.save(s,entry);
         repo.jdbc().update("INSERT INTO finance_imports(id,organization_id,user_id,shop_id,file_name,content_hash,row_count,kind) VALUES(?,?,?,?,?,?,?,?)",
                 UUID.randomUUID().toString(),s.organizationId(),s.userId(),shopId,filename.substring(0,Math.min(250,filename.length())),digest,entries.size(),kind);
         return Map.of("duplicate",false,"rows",entries.size());
     }
+    static Entry mappedEntry(String shopId,String platform,String kind,Map<String,Object> mapping,List<String> row,
+            int line,String filename){
+        String id=value(row,mapping,"external_id"),currency=value(row,mapping,"currency").toUpperCase(Locale.ROOT);
+        String day=value(row,mapping,"date"),amount=value(row,mapping,"amount");
+        BigDecimal number=decimal(amount.replace(",",""));
+        if(number==null)throw bad("第 "+line+" 行金额无法识别");
+        LocalDate date;
+        try{date=LocalDate.parse(day);}catch(java.time.format.DateTimeParseException e){throw bad("第 "+line+" 行日期请使用 YYYY-MM-DD 文本格式");}
+        String order=value(row,mapping,"order_id"),statement=value(row,mapping,"statement_id");
+        String category=value(row,mapping,"category");
+        if(kind.equals("AD")&&AD_NON_SPEND_CATEGORIES.contains(category.toUpperCase(Locale.ROOT)))
+            throw bad("第 "+line+" 行属于充值、资金划转或未拆分费用，请导入实际广告消耗报表");
+        if(kind.equals("BILL")&&!statement.isBlank())id=statement;
+        var entry=new Entry(shopId,platform,kind,id,order,kind.equals("BILL")?id:statement,category,"IMPORTED",date,
+                currency,number,null,null,null,null,"IMPORT",Map.of("file",filename,"row",line,"reference",id));
+        try{validate(entry);}catch(com.yingdao.aicommerce.common.exception.BusinessException invalid){
+            throw bad("第 "+line+" 行："+invalid.getMessage());
+        }
+        return entry;
+    }
+
+    static RuntimeException duplicateRow(int line){
+        return bad("第 "+line+" 行编号重复，请先合并同一账单或补充唯一记录编号");
+    }
+
     static String value(List<String> row,Map<String,Object> mapping,String key){
         Object raw=mapping.get(key);if(raw==null||text(raw).isBlank())return "";
         int n;try{n=Integer.parseInt(text(raw));}catch(Exception e){throw bad("列映射不正确");}

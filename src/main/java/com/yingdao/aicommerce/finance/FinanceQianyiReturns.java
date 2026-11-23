@@ -9,7 +9,7 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 @Service
 public class FinanceQianyiReturns {
     final FinanceRepository repo;final FinanceService finance;
-    private final java.util.concurrent.Semaphore exports=new java.util.concurrent.Semaphore(1);
+    private final java.util.concurrent.Semaphore exports=new java.util.concurrent.Semaphore(2);
     public FinanceQianyiReturns(FinanceRepository repo,FinanceService finance){this.repo=repo;this.finance=finance;}
     static final String FROM="""
          FROM finance_qianyi_returns r JOIN finance_connections c
@@ -104,6 +104,7 @@ public class FinanceQianyiReturns {
         return repo.readSnapshot(()->{
             var costs=new FinanceQianyiReturnCostSummary(repo,scope.organizationId());
             var summary=summary(query);summary.put("returnCost",costs.totals(query));long total=number(summary.get("matchedRecords"));
+            summary.put("inventoryCostBasis",inventoryCostBasis(scope,all));
             summary.put("awaitingLogistics",repo.jdbc().queryForObject("SELECT COUNT(*)"+FROM+pending.where()+
                 " AND r.source_received_at IS NOT NULL AND r.aftersale_type='SALES_RETURN' AND r.return_state='FINISH' AND r.return_receipt_state='UNKNOWN'"+
                 " AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.data_json,'$.isDeleted')),'0') NOT IN ('1','true')",Long.class,pending.args().toArray()));
@@ -120,7 +121,25 @@ public class FinanceQianyiReturns {
             FROM+query.where()+" AND "+QUALIFIED+" GROUP BY "+CURRENCY+" ORDER BY currency",query.args().toArray()));
         return totals;
     }
+    private String inventoryCostBasis(Scope scope,Map<String,String> selection){
+        String shop=text(selection.get("shopId")),group=text(selection.get("groupId"));
+        String platform=text(selection.get("platform")),currency=text(selection.get("currency"));
+        var counts=repo.jdbc().queryForMap("""
+            SELECT COUNT(*) bound,COUNT(CASE WHEN q.cost_basis_verified THEN 1 END) verified
+            FROM finance_qianyi_connections q JOIN finance_connections c
+              ON c.organization_id=q.organization_id AND c.id=q.shop_id
+            WHERE q.organization_id=? AND c.status<>'REMOVED' AND (?='' OR c.id=?)
+              AND (?='' OR (?='UNGROUPED' AND COALESCE(c.group_id,'')='') OR (?<>'UNGROUPED' AND c.group_id=?))
+              AND (?='' OR c.platform=?) AND (?='' OR c.currency=?)
+            """,scope.organizationId(),shop,shop,group,group,group,group,platform,platform,currency,currency);
+        long bound=number(counts.get("bound"));
+        if(bound==0)return "当前范围暂无关联千易的店铺";
+        return number(counts.get("verified"))==bound?"库存成本口径已确认":"库存成本口径待确认";
+    }
     public byte[] export(Scope scope,Map<String,String> input){
+        return export(scope,input,List.of());
+    }
+    byte[] export(Scope scope,Map<String,String> input,List<List<String>> receipt){
         var selected=selection(input);var query=query(scope,selected);
         if(!exports.tryAcquire())throw bad("千易报表正在生成，请稍后重试");
         try{
@@ -129,8 +148,10 @@ public class FinanceQianyiReturns {
                 if(count>50000)throw bad("千易售后导出最多 50,000 条，请缩小日期或店铺范围");
                 var costs=new FinanceQianyiReturnCostSummary(repo,scope.organizationId());var costTotal=costs.totals(query);
                 try(var book=new FinanceCostWorkbook()){
+                    FinanceReportFile.addReceipt(book,receipt);
                     var notes=book.sheet("统计口径",List.of("项目","内容"));
                     notes.row(List.of("来源与口径",BASIS));
+                    notes.row(List.of("千易实际库存成本",inventoryCostBasis(scope,selected)));
                     for(var field:List.of("start","end","dateField","receiptScope","receiptStatus","shopId","groupId","platform","type","returnStatus","refundStatus","costStatus","numbers"))
                         notes.row(List.of(field,selected.getOrDefault(field,"")));
                     notes.row(List.of("筛选单据数",count));

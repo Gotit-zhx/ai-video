@@ -16,20 +16,48 @@ final class FinanceReportingMonths {
     Entry apply(Scope s,Entry e){
         if(!e.platform().equals("TIKTOK_SHOP")||!e.source().equals("API")
                 ||!Set.of("SETTLEMENT","FEE").contains(e.kind())||text(e.orderId()).isBlank())return e;
-        if(FinanceSettlementDates.exportBasis(e.raw())){
-            var raw=new LinkedHashMap<>(e.raw());
-            for(String key:RAW_FIELDS)if(raw.containsKey(key)){
-                raw.put("_finance_legacy"+key.substring("_finance".length()),raw.remove(key));
-            }
-            return new Entry(e.shopId(),e.platform(),e.kind(),e.externalId(),e.orderId(),e.statementId(),e.category(),
-                    e.status(),e.date(),e.currency(),e.amount(),e.revenue(),e.impressions(),e.clicks(),e.conversions(),e.source(),raw);
-        }
+        if(FinanceSettlementDates.exportBasis(e.raw()))return retainLegacy(e);
         var matches=repo.jdbc().queryForList("""
             SELECT reporting_month FROM finance_reporting_months
             WHERE organization_id=? AND shop_id=? AND order_id=? AND statement_id=?
             """,s.organizationId(),e.shopId(),e.orderId(),e.statementId());
-        if(matches.isEmpty())return e;
-        var month=YearMonth.from(LocalDate.parse(text(matches.getFirst().get("reporting_month"))));
+        return matches.isEmpty()?e:atMonth(e,text(matches.getFirst().get("reporting_month")));
+    }
+
+    List<Entry> applyPage(Scope scope,String shop,List<Entry> entries,String statement){
+        var keys=entries.stream().filter(entry->!FinanceSettlementDates.exportBasis(entry.raw()))
+            .map(Entry::orderId).filter(key->!key.isBlank()).distinct().toList();
+        var months=new HashMap<String,String>();
+        if(!keys.isEmpty()){
+            // Return the requested identifier, including its byte representation. The
+            // database applies the same collation as the original point lookup.
+            var matches=repo.jdbc().queryForList("""
+                SELECT requested.order_key,m.reporting_month
+                FROM JSON_TABLE(CAST(? AS JSON),'$[*]' COLUMNS(
+                  order_key VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci PATH '$')) requested
+                STRAIGHT_JOIN finance_reporting_months m ON m.organization_id=? AND m.shop_id=?
+                  AND m.statement_id=? AND m.order_id=requested.order_key
+                """,repo.write(keys),scope.organizationId(),shop,statement);
+            matches.forEach(row->months.put(text(row.get("order_key")),text(row.get("reporting_month"))));
+        }
+        return entries.stream().map(entry->{
+            if(entry.orderId().isBlank())return entry;
+            if(FinanceSettlementDates.exportBasis(entry.raw()))return retainLegacy(entry);
+            String month=months.get(entry.orderId());
+            return month==null?entry:atMonth(entry,month);
+        }).toList();
+    }
+
+    private static Entry retainLegacy(Entry e){
+        var raw=new LinkedHashMap<>(e.raw());
+        for(String key:RAW_FIELDS)if(raw.containsKey(key)){
+            raw.put("_finance_legacy"+key.substring("_finance".length()),raw.remove(key));
+        }
+        return new Entry(e.shopId(),e.platform(),e.kind(),e.externalId(),e.orderId(),e.statementId(),e.category(),
+                e.status(),e.date(),e.currency(),e.amount(),e.revenue(),e.impressions(),e.clicks(),e.conversions(),e.source(),raw);
+    }
+    private static Entry atMonth(Entry e,String day){
+        var month=YearMonth.from(LocalDate.parse(day));
         var raw=new LinkedHashMap<>(e.raw());
         // Never use a prior reporting anchor as the original provider date on a rebuild.
         String original=first(raw,"_finance_original_settlement_date");
@@ -42,18 +70,25 @@ final class FinanceReportingMonths {
 
     /** Partial-day queries must not silently pretend the first day is the completion date. */
     static FinanceRepository.Query constrain(Scope s,FinanceRepository.Query q,Filter f,String alias){
-        if(f.start().getDayOfMonth()==1&&f.end().equals(YearMonth.from(f.end()).atEndOfMonth()))return q;
+        var excluded=excludedRecords(s,f);
+        if(excluded.isEmpty())return q;
         String a=alias.isEmpty()?"finance_records":alias;
-        var args=new ArrayList<>(q.args());args.add(s.organizationId());args.add(Date.valueOf(f.start()));args.add(Date.valueOf(f.end()));
+        var args=new ArrayList<>(q.args());args.addAll(excluded.get().args());
+        return new FinanceRepository.Query(q.where()+" AND "+a+".id NOT IN ("+excluded.get().where()+")",args);
+    }
+
+    static Optional<FinanceRepository.Query> excludedRecords(Scope s,Filter f){
+        if(f.start().getDayOfMonth()==1&&f.end().equals(YearMonth.from(f.end()).atEndOfMonth()))return Optional.empty();
         // Materialize only corrected record IDs. The large dashboard scan keeps its
         // covering index instead of fetching order/statement/raw JSON for every row.
-        return new FinanceRepository.Query(q.where()+" AND "+a+".id NOT IN (SELECT corrected.id"
+        return Optional.of(new FinanceRepository.Query("SELECT corrected.id"
                 +" FROM finance_reporting_months rm STRAIGHT_JOIN finance_records corrected FORCE INDEX(idx_finance_marketing_order)"
                 +" ON corrected.organization_id=rm.organization_id AND corrected.shop_id=rm.shop_id"
                 +" AND corrected.order_id=rm.order_id AND corrected.statement_id=rm.statement_id"
                 +" AND corrected.kind IN ('SETTLEMENT','FEE') AND corrected.source='API' AND corrected.platform='TIKTOK_SHOP'"
                 +" AND JSON_EXTRACT(corrected.raw_json,'$._finance_reporting_month') IS NOT NULL"
-                +" WHERE rm.organization_id=? AND (rm.reporting_month<? OR LAST_DAY(rm.reporting_month)>?))",args);
+                +" WHERE rm.organization_id=? AND (rm.reporting_month<? OR LAST_DAY(rm.reporting_month)>?)",
+                List.of(s.organizationId(),Date.valueOf(f.start()),Date.valueOf(f.end()))));
     }
 
     List<Map<String,Object>> coverage(Scope s,Filter f){

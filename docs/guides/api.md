@@ -49,6 +49,7 @@ Content-Type: application/json
 | 脚本 / 手工分析 | `/api/v1/video-scripts` | `video/web/VideoScriptController.java`、`ManualScriptAnalysisJobController.java` |
 | AI / 通用视频 / 监控 | `/api/v1/ai-video-tasks`、`/api/v1/general-video-tasks`、`/api/v1/ai-video-monitor` | `video/web/` |
 | 商品采集 / 图片 / 发布流程 | `/api/v1/product-captures` | `product/web/ProductCaptureController.java` 及同目录专用控制器 |
+| 印花采集 | `/api/v1/product-captures/print-source`、`/api/v1/product-print-capture` | 插件写入需 `product:collect`，列表、详情和确认提取需 `product:edit` |
 | 插件身份 | `/api/v1/extension-auth` | `auth/ExtensionAuthController.java` |
 | 主图模板 / 结果 | `/api/v1/product-main-image-templates`、`/api/v1/product-main-image-results` | `product/web/ProductMainImage*Controller.java` |
 | 模板 / 裂变批次 / 设计稿 | `/api/v1/commerce-templates`、`/api/v1/commerce-batches`、`/api/v1/commerce-designs` | `product/web/Commerce*Controller.java` |
@@ -57,6 +58,8 @@ Content-Type: application/json
 | 成本 / 贴单 / 刷单费 | `/api/v1/finance/workspace` | `finance/FinanceCostController.java` |
 | 费用矩阵导出 | `/api/v1/finance/fee-exports` | `finance/FinanceFeeExportController.java` |
 | 成本分片导出任务 | `/api/v1/finance/cost-exports` | `finance/FinanceCostExportController.java` |
+| 筛选范围状态、后台导出及提醒 | `/api/v1/finance/report-exports` | `finance/FinanceReportExportController.java` |
+| 暂存账单及确认导入 | `/api/v1/finance/imports/bills` | `finance/FinanceBillImportController.java`，由公司开关和财务权限共同控制 |
 | 千易公司配置 / 店铺 / 退货 | `/api/v1/finance/qianyi`、`/api/v1/finance/shops/{shop}/qianyi`、`/api/v1/finance/qianyi/returns` | `finance/FinanceQianyi*Controller.java` |
 | 知识库及附件 | `/api/v1/knowledge`、`/api/v1/knowledge/files` | `knowledge/KnowledgeController.java`、`KnowledgeFileController.java` |
 | 自动化助手 | `/api/v1/automation-agent` 等 | `automation/web/` |

@@ -13,7 +13,7 @@
 | 本地前端 | dev profile 的 Spring 直接读取本地 `frontend/`，API/UI 同源 |
 | Compose | 保留 base → production → `.2images` → `source-development.frontend.json` → `source-development.app.json` 完整叠加链；精确路径以受限 runtime 配置及现场回执为准，不只运行最后一份覆盖文件 |
 | watcher | `heyi-source-watch.service` 已 enabled、active，最终状态 ready、健康且无遗留 gate；配置 `/etc/heyi-dev/runtime.json` |
-| 数据库 | 11 月 23 日两次生效回执均记录最高已应用版本 V187。V177–V187 于 11 月 21 日显式追加，迁移前历史校验通过。GitHub 协作分支本轮核对时归档至 V165，详见[三处仓库核对记录](../releases/infrastructure/source-sync-20261123.md) |
+| 数据库 | 11 月 23 日两次生效回执均记录最高已应用版本 V187。V177–V187 于 11 月 21 日显式追加，迁移前历史校验通过。本轮归档了 V166–V187，逐条与生产 Flyway 成功记录核对。详见[三处仓库核对记录](../releases/infrastructure/source-sync-20261123.md) |
 | 自动迁移 | 共享环境 Flyway 自动执行已禁用；migration 源码/hash/history 守卫阻止普通保存执行 DDL |
 
 共享源码状态与中断恢复由 root 在源码根执行：

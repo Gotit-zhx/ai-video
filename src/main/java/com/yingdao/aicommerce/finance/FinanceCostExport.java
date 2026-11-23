@@ -7,6 +7,8 @@ import java.io.*;
 import java.nio.file.*;
 import java.nio.charset.StandardCharsets;
 import java.util.function.BiConsumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.zip.*;
 import java.math.BigDecimal;
 import java.time.*;
@@ -28,6 +30,8 @@ public class FinanceCostExport {
     public FinanceCostExport(FinanceRepository repo){this(repo,new Limits(MAX_ORDERS,MAX_LINES,1_000_000,128L*1024*1024));}
     FinanceCostExport(FinanceRepository repo,Limits limits){this.repo=repo;this.limits=limits;}
     public record GeneratedFile(Path path,String filename,String contentType,long orders,long lines,int parts) {}
+    record ApprovedFile(GeneratedFile file,FinanceReportReadiness.Status status) {}
+    private record Verification(FinanceReportSelection selection,Function<Map<String,Object>,FinanceReportReadiness.Status> assess) {}
     static String kind(String value){
         String kind=text(value).toUpperCase(Locale.ROOT);
         if(!Set.of("SETTLED_ORDER","SAMPLE_SETTLED","ORDER","REFUND","REFUND_SETTLED","SETTLEMENT","PENDING","BILL","RECONCILIATION").contains(kind))throw bad("成本来源类型不正确");
@@ -103,7 +107,11 @@ public class FinanceCostExport {
             summary.row(List.of("生成时间（北京时间）",LocalDateTime.now(ZoneId.of("Asia/Shanghai"))));
             summary.row(List.of("筛选日期",filter.start()+" 至 "+filter.end()));
             summary.row(List.of("订单编号查询",String.join("、",FinanceRecordSearch.numbers(numbers))));
-            summary.row(List.of("成本状态筛选",selectedStatus.equals("PENDING")?"仅待补齐订单（含订单待同步及后台计算中）":"全部成本状态"));
+            summary.row(List.of("成本状态筛选",switch(selectedStatus){
+                case "PENDING"->"仅待补齐订单（含订单待同步及后台计算中）";
+                case FinanceCostReport.PRICE_REVIEW->"仅零价待核对订单";
+                default->"全部成本状态";
+            }));
             summary.row(List.of("日期依据",basis(kind)));
             summary.row(List.of("导出范围",text(recordId).isBlank()?"当前店铺、分组、平台、币种与日期筛选内的全部已结算订单，不受页面分页影响":"所选记录关联的全部已结算订单，不再限制下单日期"));
             summary.row(List.of("店铺",String.join("、",totals.shops)));
@@ -113,10 +121,11 @@ public class FinanceCostExport {
             summary.row(List.of("已计算订单（含估算）",totals.ready));
             summary.row(List.of("历史价估算订单",totals.estimated));
             summary.row(List.of("待补齐订单（含计算中）",totals.pending));
+            summary.row(List.of("零价待核对订单",totals.priceReview));
             summary.row(List.of("不计成本订单",totals.excluded));
             summary.row(List.of("实际出库成本订单",totals.actual));
             summary.row(List.of("SKU 明细行数",totals.lines));
-            summary.row(Arrays.asList("已结算商品成本合计（人民币）",totals.pending==0?totals.known:null));
+            summary.row(Arrays.asList("已结算商品成本合计（人民币）",totals.pending+totals.priceReview==0?totals.known:null));
             summary.row(List.of("已计算部分成本（人民币）",totals.known));
             summary.row(List.of("已匹配贴单金额（人民币）",totals.labels));
             summary.row(List.of("贴单账单待补齐订单",totals.labelMissing));
@@ -124,7 +133,7 @@ public class FinanceCostExport {
             summary.row(List.of("贴单金额口径","仓库账单操作费，人民币原值。按参考号匹配订单，同一 WMS 出库单去重；按订单首次结算日期归属，不再使用分组或国家单价。"));
             summary.row(List.of("订单范围说明",kind.equals("SETTLED_ORDER")?"仅平台已结算订单，按首次结算日期归属；待结算不计入，后续重复结算或调整不重复计整单成本。":kind.equals("ORDER")?"仅核对所选已结算订单，不限制下单日期；不代表当前结算期间的成本合计。":"仅统计所选来源记录关联的已结算去重订单，日期依据为"+basis(kind)+"。"));
             summary.row(List.of("计算口径","实际出库凭据优先：使用 ERP 出库型号、数量及人民币成本。无实际凭据时，使用商家 SKU 标准成本单价 × 购买数量 × 组合数量。"));
-            summary.row(List.of("缺失与估算","待补齐的完整成本留空，不按零成本计算。历史价格保留实际取价月份。计算中订单不使用旧成本快照。"));
+            summary.row(List.of("缺失与估算","成本待补齐或零价待核对时，完整成本留空。历史价格保留实际取价月份。计算中订单不使用旧成本快照。"));
             summary.row(List.of("刷单口径","刷单订单不计入本报表的结算商品成本；原始财务明细保留黄色标签对应的订单标记。"));
             summary.row(List.of("排除口径","有实际出库凭据的订单保留成本，包括出库后取消；无实际凭据的取消单仍不计标准成本。确认退回入库的商品单独冲回，退款金额不等于入库成本。"));
             summary.row(List.of("核对方式","按订单编号连接订单与 SKU 明细；组合单价、数量、月份均取自同一次已保存计算。订单成本合计按去重订单统计。"));
@@ -133,10 +142,46 @@ public class FinanceCostExport {
             summary.row(List.of("商品金额口径","销售收入与平台净结算取首次结算账单日期的平台结算字段；缺失时留空，不以原订单金额代替。后续跨日调整请查结算明细。"));
             summary.row(List.of("成本分类","营业成本 = 商品成本 + 贴单成本 − 已确认退货入库成本。样品和退款关联商品成本属于子项，不重复扣减。"));
     }
+    /** The status in the workbook describes the same snapshot as the cost rows. */
+    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ,timeout=600)
+    public ApprovedFile exportApprovedFile(Scope company,FinanceReportSelection selected,Path directory,
+            BiConsumer<Long,Long> progress,Supplier<FinanceReportReadiness.Status> assess){
+        var status=assess.get();
+        var file=exportFile(company,selected.filter(),selected.get("kind"),selected.get("recordId"),selected.get("costStatus"),
+                selected.get("numbers"),directory,progress,status.notes(selected));
+        if(!status.ready())file=new GeneratedFile(file.path(),"部分数据-"+file.filename(),file.contentType(),
+                file.orders(),file.lines(),file.parts());
+        return new ApprovedFile(file,status);
+    }
+
     /** One transaction covers both key selection and every persisted calculation read. */
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ,timeout=600)
     public GeneratedFile exportFile(Scope company,Filter filter,String source,String recordId,String costStatus,String numbers,
                                     Path directory,BiConsumer<Long,Long> progress){
+        return exportFile(company,filter,source,recordId,costStatus,numbers,directory,progress,List.of());
+    }
+    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ,timeout=600)
+    public GeneratedFile exportFile(Scope company,Filter filter,String source,String recordId,String costStatus,String numbers,
+                                    Path directory,BiConsumer<Long,Long> progress,List<List<String>> receipt){
+        return writeFile(company,filter,source,recordId,costStatus,numbers,directory,progress,receipt,null).file();
+    }
+
+    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ,timeout=600)
+    public ApprovedFile exportWithOrderEvidence(Scope company,FinanceReportSelection selected,Path directory,
+            BiConsumer<Long,Long> progress,Runnable authorize,Function<Map<String,Object>,FinanceReportReadiness.Status> assess){
+        Instant started=Instant.now();
+        authorize.run();
+        var result=writeFile(company,selected.filter(),selected.get("kind"),selected.get("recordId"),selected.get("costStatus"),
+            selected.get("numbers"),directory,progress,List.of(),new Verification(selected,facts->assess.apply(facts).takenAt(started)));
+        var file=result.file();
+        if(!result.status().ready())file=new GeneratedFile(file.path(),"部分数据-"+file.filename(),file.contentType(),
+            file.orders(),file.lines(),file.parts());
+        return new ApprovedFile(file,result.status());
+    }
+
+    private ApprovedFile writeFile(Scope company,Filter filter,String source,String recordId,String costStatus,String numbers,
+            Path directory,BiConsumer<Long,Long> progress,List<List<String>> receipt,
+            Verification verification){
         String selectedStatus=FinanceCostReport.costStatus(costStatus);
         String selectedKind=kind(FinanceCostReport.scopeKind(source,!text(recordId).isBlank()));
         if(!slots.tryAcquire())throw bad("当前有其他成本报表正在生成，请稍后重试");
@@ -146,17 +191,15 @@ public class FinanceCostExport {
         long deadline=System.nanoTime()+Duration.ofMinutes(10).toNanos();
         try{
             Files.createDirectories(directory);
-            FinanceRepository.Query q=text(recordId).isBlank()?repo.query(company,filter,"r"):
-                new FinanceRepository.Query("r.organization_id=? AND r.id=? AND "+FinanceRepository.visible("r"),List.of(company.organizationId(),recordId));
-            q=FinanceRecordSearch.orders(q,Set.of("BILL","RECONCILIATION").contains(selectedKind)?"o.order_id":"r.order_id",numbers);
-            String from=" FROM ("+FinanceCostReport.related(selectedKind)+q.where()+") x";
-            long total=Objects.requireNonNullElse(repo.jdbc().queryForObject("SELECT COUNT(*)"+from+FinanceCostReport.costStatusWhere(selectedStatus),Long.class,q.args().toArray()),0L);
-            if(total>limits.totalOrders())throw bad("成本导出超过 1,000,000 笔订单，请联系管理员安排批量导出");
-            progress.accept(0L,total);
+            var selection=orderSelection(company,filter,selectedKind,recordId,numbers,verification!=null);
             long processed=0,lines=0,outputBytes=0;
             Path keyFile=Files.createTempFile(directory,"cost-keys-",".bin");created.add(keyFile);
-            spoolKeys(q,from,selectedKind,selectedStatus,keyFile,total,deadline);
-            current=new Part(directory);
+            var evidence=verification==null?null:new OrderEvidence();
+            long total=spoolKeys(selection,selectedKind,selectedStatus,keyFile,deadline,evidence);
+            var approval=evidence==null?null:verification.assess().apply(evidence.result(total));
+            if(approval!=null)receipt=approval.notes(verification.selection());
+            progress.accept(0L,total);
+            current=new Part(directory,receipt);
             try(var keyInput=new DataInputStream(new BufferedInputStream(Files.newInputStream(keyFile)))){
             while(processed<total){
                 checkTime(deadline);
@@ -173,7 +216,7 @@ public class FinanceCostExport {
                     },stats);
                     if(current.totals.orders>0&&(current.totals.orders>=limits.orders()||current.totals.lines+stats.lines>limits.lines())){
                         FilePart part=finishPart(current,company,filter,selectedKind,recordId,selectedStatus,numbers,directory,parts.size()+1,true,limits.bytes()-outputBytes,created,deadline);
-                        parts.add(part);outputBytes+=part.bytes();current.close();current=new Part(directory);
+                        parts.add(part);outputBytes+=part.bytes();current.close();current=new Part(directory,receipt);
                     }
                     for(var values:orderRows)current.orders.row(values);
                     for(var values:detailRows)current.details.row(values);
@@ -189,7 +232,8 @@ public class FinanceCostExport {
             parts.add(part);current.close();current=null;
             checkTime(deadline);
             String basename="订单成本_"+filter.start()+"_"+filter.end();
-            if(parts.size()==1)return new GeneratedFile(part.path(),basename+".xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",processed,lines,1);
+            if(parts.size()==1)return new ApprovedFile(new GeneratedFile(part.path(),basename+".xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",processed,lines,1),approval);
             Path archive=Files.createTempFile(directory,"cost-export-",".zip");created.add(archive);
             try(var zip=new ZipOutputStream(bounded(Files.newOutputStream(archive),limits.bytes(),deadline))){
                 StringBuilder manifest=new StringBuilder("订单成本分片导出\n公司：").append(company.organizationId()).append("\n日期：").append(filter.start()).append(" 至 ").append(filter.end())
@@ -206,7 +250,7 @@ public class FinanceCostExport {
                 }
                 zip.putNextEntry(new ZipEntry("导出清单.txt"));zip.write(manifest.toString().getBytes(StandardCharsets.UTF_8));zip.closeEntry();
             }
-            return new GeneratedFile(archive,basename+".zip","application/zip",processed,lines,parts.size());
+            return new ApprovedFile(new GeneratedFile(archive,basename+".zip","application/zip",processed,lines,parts.size()),approval);
         }catch(IOException e){
             cleanup(created);throw new IllegalStateException("成本报表文件生成失败，请重试",e);
         }catch(RuntimeException|Error e){cleanup(created);throw e;}
@@ -215,27 +259,44 @@ public class FinanceCostExport {
             slots.release();
         }
     }
-    /** Read the expensive selection once. Close its streaming result before reading JSON pages on the same snapshot connection. */
-    private void spoolKeys(FinanceRepository.Query q,String from,String kind,String status,Path file,long total,long deadline)throws IOException{
+
+    private FinanceRepository.Query orderSelection(Scope company,Filter filter,String kind,String recordId,String numbers,boolean verify){
+        if(verify&&"SETTLED_ORDER".equals(kind)&&text(recordId).isBlank()&&text(numbers).isBlank()){
+            var covered=repo.dashboardSettledMembers(company,filter);
+            if(covered.isPresent())return covered.get();
+        }
+        var scope=text(recordId).isBlank()?repo.query(company,filter,"r"):
+            new FinanceRepository.Query("r.organization_id=? AND r.id=? AND "+FinanceRepository.visible("r"),List.of(company.organizationId(),recordId));
+        var selected=FinanceRecordSearch.orders(scope,Set.of("BILL","RECONCILIATION").contains(kind)?"o.order_id":"r.order_id",numbers);
+        return new FinanceRepository.Query(FinanceCostReport.related(kind)+selected.where(),selected.args());
+    }
+
+    /** Count the selected keys as they stream. Close the result before reading detail pages on the same snapshot connection. */
+    private long spoolKeys(FinanceRepository.Query q,String kind,String status,Path file,long deadline,
+                           OrderEvidence evidence)throws IOException{
         boolean settled=Set.of("SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED").contains(kind);
         String date=settled?"x.settlement_date":"sort_order.record_date";
         String dateKey="COALESCE("+date+",'1000-01-01')",idKey="COALESCE(x.order_record_id,'')";
-        String sql="SELECT x.order_record_id,x.shop_id,x.reference,"+dateKey+" export_sort_date,"+(settled?"x.settlement_date":"NULL")+" first_settlement_date"+from
-            +(settled?"":" LEFT JOIN finance_records sort_order ON sort_order.id=x.order_record_id AND sort_order.organization_id=x.organization_id")+FinanceCostReport.costStatusWhere(status)
-            +" ORDER BY "+dateKey+" DESC,"+idKey+",x.shop_id,x.reference";
+        String sql="SELECT x.order_record_id,x.shop_id,x.reference,"+dateKey+" export_sort_date,"+(settled?"x.settlement_date":"NULL")+" first_settlement_date"
+            +(evidence==null?"":OrderEvidence.COLUMNS)+" FROM ("+q.where()+") x"
+            +(settled?"":" LEFT JOIN finance_records sort_order ON sort_order.id=x.order_record_id AND sort_order.organization_id=x.organization_id")
+            +(evidence==null?"":OrderEvidence.JOINS)+FinanceCostReport.costStatusWhere(status)
+            +" ORDER BY "+dateKey+" DESC,"+idKey+",x.shop_id,x.reference LIMIT ?";
         long[] selected={0};
         try(var output=new DataOutputStream(new BufferedOutputStream(bounded(Files.newOutputStream(file),256L*1024*1024,deadline,
                 "成本报表索引超过临时空间上限，未生成部分报表，请联系管理员安排导出")))){
-            if(total>0)repo.jdbc().query(connection->{
+            repo.jdbc().query(connection->{
                 var statement=connection.prepareStatement(sql,java.sql.ResultSet.TYPE_FORWARD_ONLY,java.sql.ResultSet.CONCUR_READ_ONLY);
                 try{
                     statement.setFetchSize(Integer.MIN_VALUE); // MySQL Connector/J streams instead of buffering every key in heap.
                     for(int i=0;i<q.args().size();i++)statement.setObject(i+1,q.args().get(i));
+                    statement.setLong(q.args().size()+1,Math.min(Long.MAX_VALUE-1,limits.totalOrders())+1);
                     return statement;
                 }catch(java.sql.SQLException|RuntimeException failure){statement.close();throw failure;}
             },(org.springframework.jdbc.core.RowCallbackHandler)row->{
                 checkTime(deadline);
-                if(selected[0]>=total)throw bad("导出订单索引数量不一致，请重试");
+                if(selected[0]>=limits.totalOrders())throw bad("成本导出超过 1,000,000 笔订单，请联系管理员安排批量导出");
+                if(evidence!=null)evidence.add(row);
                 try{
                     for(String column:List.of("order_record_id","shop_id","reference","first_settlement_date")){
                         String value=row.getString(column);output.writeBoolean(value!=null);if(value!=null)output.writeUTF(value);
@@ -244,7 +305,39 @@ public class FinanceCostExport {
                 }catch(IOException failure){throw new UncheckedIOException(failure);}
             });
         }
-        if(selected[0]!=total)throw bad("导出数据读取不完整，请重试");
+        return selected[0];
+    }
+
+    private static final class OrderEvidence {
+        static final String COLUMNS="""
+            ,COALESCE(j.priority<2,0) cost_queued,
+             COALESCE(j.priority>=2,1) AND (c.status IS NULL OR c.status NOT IN ('READY','ESTIMATED','EXCLUDED')) cost_missing,
+             CASE WHEN COALESCE(j.priority>=2,1) THEN %s ELSE 0 END price_review,
+             COALESCE(j.priority=2,0) label_queued,COALESCE(lc.pending_count,0) label_pending,c.updated_at last_cost
+            """.formatted(FinanceCostReport.zeroPriceReview("c"));
+        static final String JOINS="""
+              LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=x.order_record_id AND j.organization_id=x.organization_id
+              LEFT JOIN finance_order_costs c ON c.order_record_id=x.order_record_id AND c.organization_id=x.organization_id
+            """+FinanceLabelCosts.join("x.organization_id","x.shop_id","x.reference");
+        private long queued,missing,review,labelQueued,labelPending;
+        private LocalDateTime lastCost;
+
+        void add(java.sql.ResultSet row)throws java.sql.SQLException{
+            queued+=row.getLong("cost_queued");
+            missing+=row.getLong("cost_missing");
+            review+=row.getLong("price_review");
+            labelQueued+=row.getLong("label_queued");
+            labelPending+=row.getLong("label_pending");
+            var updated=row.getObject("last_cost",LocalDateTime.class);
+            if(updated!=null&&(lastCost==null||updated.isAfter(lastCost)))lastCost=updated;
+        }
+
+        Map<String,Object> result(long total){
+            var facts=new LinkedHashMap<String,Object>(Map.of("total",total,"queued",queued,"missing",missing,
+                "price_review",review,"label_queued",labelQueued,"label_pending",labelPending));
+            facts.put("last_cost",lastCost);
+            return facts;
+        }
     }
     private List<Map<String,Object>> readKeys(DataInputStream input,int count)throws IOException{
         var result=new ArrayList<Map<String,Object>>(count);
@@ -259,10 +352,10 @@ public class FinanceCostExport {
         return result;
     }
     private List<Map<String,Object>> details(Scope company,List<Map<String,Object>> keys){
-        var selects=new ArrayList<String>();var args=new ArrayList<Object>();int position=0;
+        var entries=new ArrayList<List<?>>(keys.size());
         for(var key:keys){
-            selects.add("SELECT ? order_record_id,? organization_id,? shop_id,? reference,? first_settlement_date,? page_position");
-            args.addAll(Arrays.asList(key.get("order_record_id"),company.organizationId(),key.get("shop_id"),key.get("reference"),key.get("first_settlement_date"),position++));
+            entries.add(Arrays.asList(key.get("order_record_id"),key.get("shop_id"),key.get("reference"),
+              Objects.toString(key.get("first_settlement_date"),null)));
         }
         var rows=new ArrayList<>(repo.jdbc().queryForList("""
             SELECT x.page_position,x.order_record_id,x.shop_id,x.reference,o.platform,o.order_id,o.status order_status,
@@ -274,7 +367,14 @@ public class FinanceCostExport {
               lc.amount_cny invoice_label_amount,lc.pending_count invoice_label_pending,lc.shipment_count invoice_label_shipments,
               x.first_settlement_date
             FROM (
-            """+String.join(" UNION ALL ",selects)+"""
+              SELECT ? organization_id,k.*
+              FROM JSON_TABLE(CAST(? AS JSON),'$[*]' COLUMNS(
+                page_position FOR ORDINALITY,
+                order_record_id VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci PATH '$[0]',
+                shop_id VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci PATH '$[1]',
+                reference VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci PATH '$[2]',
+                first_settlement_date DATE PATH '$[3]'
+              )) k
             ) x
             LEFT JOIN finance_records o ON o.id=x.order_record_id AND o.organization_id=x.organization_id
             LEFT JOIN finance_connections s ON s.id=x.shop_id AND s.organization_id=x.organization_id
@@ -282,7 +382,7 @@ public class FinanceCostExport {
             LEFT JOIN finance_order_costs c ON c.order_record_id=x.order_record_id AND c.organization_id=x.organization_id
             LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=x.order_record_id AND j.organization_id=x.organization_id
             LEFT JOIN finance_cost_books b ON b.id=JSON_UNQUOTE(JSON_EXTRACT(c.data_json,'$.bookId')) AND b.organization_id=x.organization_id
-            """+FinanceLabelCosts.join("x.organization_id","x.shop_id","x.reference") ,args.toArray()));
+            """+FinanceLabelCosts.join("x.organization_id","x.shop_id","x.reference"),company.organizationId(),repo.write(entries)));
         rows.sort(Comparator.comparingLong(row->number(row.get("page_position"))));
         return rows;
     }
@@ -335,15 +435,15 @@ public class FinanceCostExport {
     private static void cleanup(List<Path> paths){for(var path:paths)try{Files.deleteIfExists(path);}catch(IOException ignored){}}
     private static void merge(Totals into,Totals value){
         into.orders+=value.orders;into.lines+=value.lines;into.ready+=value.ready;into.actual+=value.actual;into.estimated+=value.estimated;
-        into.pending+=value.pending;into.excluded+=value.excluded;into.labelMissing+=value.labelMissing;into.labelConflicts+=value.labelConflicts;
+        into.pending+=value.pending;into.priceReview+=value.priceReview;into.excluded+=value.excluded;into.labelMissing+=value.labelMissing;into.labelConflicts+=value.labelConflicts;
         into.known=into.known.add(value.known);into.labels=into.labels.add(value.labels);into.shops.addAll(value.shops);
     }
     private record FilePart(Path path,int index,long orders,long lines,long bytes){}
     private static final class Part implements AutoCloseable{
         final FinanceCostWorkbook book;final FinanceCostWorkbook.Sheet summary,orders,details;final Totals totals=new Totals();
-        Part(Path directory)throws IOException{
+        Part(Path directory,List<List<String>> receipt)throws IOException{
             book=new FinanceCostWorkbook(directory);
-            try{summary=book.sheet("汇总说明",List.of("项目","内容"));orders=book.sheet("订单成本",ORDER_HEADERS);details=book.sheet("SKU成本明细",LINE_HEADERS);}
+            try{FinanceReportFile.addReceipt(book,receipt);summary=book.sheet("汇总说明",List.of("项目","内容"));orders=book.sheet("订单成本",ORDER_HEADERS);details=book.sheet("SKU成本明细",LINE_HEADERS);}
             catch(IOException|RuntimeException e){book.close();throw e;}
         }
         @Override public void close()throws IOException{book.close();}
@@ -351,7 +451,7 @@ public class FinanceCostExport {
     static final List<String> ORDER_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","商品 SKU","结算归属日期","下单时间（店铺时区）","店铺时区","订单状态","订单状态代码","结算原币","销售收入（结算原币）","商品成本（人民币）","已计算部分成本（人民币）","成本状态","成本仓","成本月份依据","目标成本月份","实际取价月份","SKU 明细行数","匹配成功行数","历史价行数","成本来源文件","成本版本","成本更新时间（UTC）","说明","下单日期（核对用）","订单类型","贴单成本（人民币）","贴单口径","平台净结算（结算原币）","原订单币种（核对用）","原订单金额（核对用）","商品金额口径","校正归属月份","平台原始结算日期","归属校正来源","成本计价依据");
     static final List<String> LINE_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","结算归属日期","订单状态","订单成本状态","商品名称","规格名称","商品 SPU 编号","平台 SKU 编号","商家 SKU","商品行编号","成本型号","成本仓","购买或实际出库数量","组合数量","成本单价（人民币）","商品行成本（人民币）","目标成本月份","实际取价月份","历史价格估算","商品行状态","缺失原因或说明","成本来源文件","成本版本","成本更新时间（UTC）","下单日期（核对用）","订单类型","校正归属月份","平台原始结算日期","归属校正来源","成本计价依据","出库单号","来源行");
     static final class Totals{
-        long orders,ready,actual,estimated,pending,excluded,lines,labelMissing,labelConflicts;BigDecimal known=BigDecimal.ZERO,labels=BigDecimal.ZERO;
+        long orders,ready,actual,estimated,pending,priceReview,excluded,lines,labelMissing,labelConflicts;BigDecimal known=BigDecimal.ZERO,labels=BigDecimal.ZERO;
         final Set<String> shops=new LinkedHashSet<>();
     }
     void append(Map<String,Object> row,FinanceCostWorkbook.RowSink orders,FinanceCostWorkbook.RowSink detail,Totals totals)throws IOException{
@@ -368,7 +468,6 @@ public class FinanceCostExport {
         String priceBasis=actual?"ERP 实际出库成本":"商家 SKU 标准成本";
         Object costSource=actual?cost.get("sourceName"):row.get("cost_source");
         String code=queued?"QUEUED":missing?"MISSING":text(row.get("cost_status"));
-        String status=costStatus(code);
         BigDecimal amount=Set.of("READY","ESTIMATED","EXCLUDED").contains(code)?decimal(row.get("amount_cny")):null;
         BigDecimal known=queued||missing?null:decimal(row.get("known_amount_cny"));
         var costLines=rows(cost.get("lines"));
@@ -380,17 +479,20 @@ public class FinanceCostExport {
         Object date=day(row.get("record_date")),updated=timestamp(row.get("cost_updated_at"));
         var skus=new LinkedHashSet<String>();var months=new TreeSet<String>();var issues=new LinkedHashSet<String>();
         for(var line:costLines){if(!text(line.get("sellerSku")).isBlank())skus.add(text(line.get("sellerSku")));if(!text(line.get("priceMonth")).isBlank())months.add(text(line.get("priceMonth")));if(!text(line.get("issue")).isBlank())issues.add(text(line.get("issue")));}
+        boolean priceReview=code.equals("INCOMPLETE")&&FinanceOrderCosts.onlyZeroPriceIssues(issues);
+        String status=priceReview?FinanceOrderCosts.ZERO_PRICE_REVIEW:costStatus(code);
         var sourceLines=rows(raw.get("TIKTOK_SHOP".equals(row.get("platform"))?"line_items":"item_list"));
         if(skus.isEmpty())for(var line:sourceLines){String sku=first(line,"seller_sku","model_sku","item_sku");if(!sku.isBlank())skus.add(sku);}
         for(var identity:FinanceProductSkus.identities(text(row.get("platform")),raw))
             if(text(identity.get("sellerSku")).isBlank())skus.add(FinanceProductSkus.missingIdentity(identity));
-        String note=queued?"后台正在重新计算，旧成本未计入本次导出":missing?"关联订单尚未同步":text(cost.get("note"));
+        String note=queued?"后台正在重新计算，旧成本未计入本次导出":missing?"关联订单尚未同步":priceReview?FinanceOrderCosts.ZERO_PRICE_NOTE:text(cost.get("note"));
         if(!issues.isEmpty())note+=(note.isBlank()?"":"；")+String.join("；",issues);
         if(note.isBlank()&&!Set.of("READY","ESTIMATED","EXCLUDED").contains(code))note="成本尚未计算或资料待补齐";
         totals.orders++;totals.shops.add(shop);
         if(actual)totals.actual++;
         if(code.equals("EXCLUDED"))totals.excluded++;
         else if(Set.of("READY","ESTIMATED").contains(code)){totals.ready++;if(code.equals("ESTIMATED"))totals.estimated++;}
+        else if(priceReview)totals.priceReview++;
         else totals.pending++;
         if(known!=null)totals.known=totals.known.add(known);
         orders.row(Arrays.asList(market,shop,orderId,row.get("region"),row.get("group_name"),String.join("\n",skus),settlementDay(row),
@@ -414,7 +516,9 @@ public class FinanceCostExport {
                     &&text(line.get("productId")).equals(first(s,"product_id","item_id"))&&text(line.get("skuId")).equals(first(s,"sku_id","model_id"))).findFirst().orElse(Map.of()));
             boolean excluded=Boolean.TRUE.equals(line.get("excluded"));
             boolean gift=Boolean.TRUE.equals(line.get("fixedGift"));
-            String issue=text(line.get("issue")),lineState=!issue.isBlank()?"待补齐":excluded?"不计成本":gift?"赠品 · 固定 0 成本":Boolean.TRUE.equals(line.get("previousPrice"))?"历史价估算":"已计算";
+            String issue=text(line.get("issue"));
+            String lineState=FinanceOrderCosts.ZERO_PRICE_ISSUE.equals(issue)?FinanceOrderCosts.ZERO_PRICE_REVIEW:
+                !issue.isBlank()?"待补齐":excluded?"不计成本":gift?"赠品 · 固定 0 成本":Boolean.TRUE.equals(line.get("previousPrice"))?"历史价估算":"已计算";
             detail.row(Arrays.asList(market,shop,orderId,row.get("region"),row.get("group_name"),settlementDay(row),orderStatus(text(row.get("order_status"))),status,
                 actual?line.get("name"):first(source,"product_name","item_name"),first(source,"sku_name","model_name"),line.get("productId"),line.get("skuId"),line.get("sellerSku"),line.get("lineId"),
                 line.get("costCode"),line.get("warehouse"),line.get("quantity"),line.get("factor"),line.get("unitPriceCny"),line.get("amountCny"),

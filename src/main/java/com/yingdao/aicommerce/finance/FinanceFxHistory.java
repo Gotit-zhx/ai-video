@@ -61,6 +61,12 @@ final class FinanceFxHistory implements AutoCloseable {
         if(payload.get("requestedDates") instanceof List<?> previous)previous.forEach(value->allDates.add(LocalDate.parse(text(value))));
         result.preload(allDates);return result;
     }
+    FinanceFx.Quote storedQuote(String id){
+        var found=repo.jdbc().queryForList("SELECT created_at,payload_json FROM finance_fx_historical_snapshots WHERE id=? AND provider='ECB'",id);
+        if(found.isEmpty())throw bad("历史汇率快照无可用记录");
+        var row=found.getFirst();
+        return new FinanceFx.Quote(id,instant(row.get("created_at")),Map.of(),decodeDays(map(repo.read(text(row.get("payload_json"))).get("days"))));
+    }
     private void extend(String id,Collection<LocalDate> wanted,FinanceFx.Quote quote,boolean remote){
         var found=repo.jdbc().queryForList("SELECT * FROM finance_fx_historical_snapshots WHERE id=? AND provider='ECB'",id);
         if(found.isEmpty())throw bad("历史汇率快照不存在");

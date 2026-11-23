@@ -78,7 +78,7 @@ npm --prefix services/pi-runtime run dev
 ## 开发时必须保留的约束
 
 - Web API 使用 `HEYI_SESSION` Cookie；先调用 `POST /api/v1/auth/login`。旧版 `Authorization: Basic` 工作流示例不适用。插件 Bearer、内部令牌和签名素材链接有各自边界，见[接口导航](docs/guides/api.md)。
-- 数据库结构通过 `src/main/resources/db/migration/` 的 Flyway 迁移演进，保留已应用的 SQL 和历史缺号。11 月 23 日核对时，GitHub 协作分支已归档至 V165，共享环境已显式应用至 V187。追加迁移前同时核对共享服务器和并行任务已占用的编号。共享环境已禁用 Flyway 自动执行。见[迁移规则](docs/guides/development.md#数据库迁移)和[现场状态](docs/guides/source-runtime-status.md)。
+- 数据库结构通过 `src/main/resources/db/migration/` 的 Flyway 迁移演进，保留已应用的 SQL 和历史缺号。仓库已归档至 V187。V166–V187 与共享环境已应用记录的校验值一致。追加迁移前同时核对共享服务器和并行任务已占用的编号。共享环境已禁用 Flyway 自动执行。见[迁移规则](docs/guides/development.md#数据库迁移)和[现场状态](docs/guides/source-runtime-status.md)。
 - 企业隔离、财务公司共享范围、店铺/分组权限、加密凭据归属和人工审核不能只靠前端保证。
 - 保持同步游标、租约、限流和结果未知时的处理规则；不要用删除队列或重发请求代替恢复。
 - 共享 watcher 使用有界 `heyi-source` journal（64 MiB/3 天）；其他日志策略及源码热重启、历史恢复、临时文件清理和备份边界以 [AGENTS.md](AGENTS.md) 为准。

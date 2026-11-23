@@ -31,7 +31,7 @@ public final class FinanceProfitReport {
         boolean labelProcessing=Boolean.TRUE.equals(costs.get("labelProcessing"));
         if(number(cost.get("pending_count"))>0||product==null||productProcessing){
             converted=null;if(state.equals("READY"))state="INCOMPLETE_COST";
-            notes.add("已结算订单成本待补齐或计算中，暂不计算完整利润");
+            notes.add("已结算订单成本待确认或计算中，暂不计算完整利润");
         }else if(!"CNY".equals(currency)&&product.signum()!=0){
             BigDecimal rate=quote==null||quote.historical()?null:quote.rates().get(currency);
             if(daily){

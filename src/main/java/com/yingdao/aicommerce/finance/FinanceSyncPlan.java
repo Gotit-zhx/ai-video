@@ -7,9 +7,11 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 /** Calendar-month priority without discarding an existing page, bill or history cursor. */
 final class FinanceSyncPlan {
     private static final long WEEK=7*86400L;
+    static final String RECENT_MONTHS=FinanceSyncRange.MONTH;
+    private static final Set<String> MONTH_CHANNELS=Set.of("ORDER","SETTLEMENT","REFUND","PENDING");
     private static final List<String> META=List.of("recentFirst","recentWindowDays","priorityMonth",
             "completedMonthFrom","completedMonthUntil","previousMonthScan","missingSettlementPass",
-            "missingSettlementMonth","missingPassStartedAt","missingRowsChecked","missingRowsFetched");
+            "missingSettlementMonth","missingPassStartedAt","missingRowsChecked","missingRowsFetched",RECENT_MONTHS);
     private FinanceSyncPlan(){}
 
     static LocalDate start(LocalDate today,boolean initial,boolean nightly,boolean manual,String channel){
@@ -19,6 +21,49 @@ final class FinanceSyncPlan {
             if(month.isBefore(usual))usual=month;
         }
         return usual;
+    }
+
+    /** Fetch the two local calendar months before returning to any saved historical page. */
+    static Map<String,Object> twoMonthsFirst(Map<String,Object> checkpoint,String channel,ZoneId zone,Instant now){
+        if(!MONTH_CHANNELS.contains(channel))return checkpoint;
+        LocalDate current=now.atZone(zone).toLocalDate().withDayOfMonth(1),previous=current.minusMonths(1);
+        String month=YearMonth.from(current).toString();
+        if(month.equals(checkpoint.get(RECENT_MONTHS)))return checkpoint;
+        long start=previous.atStartOfDay(zone).toEpochSecond(),boundary=current.atStartOfDay(zone).toEpochSecond();
+        long cutoff=now.getEpochSecond();
+        var chain=new ArrayList<Map<String,Object>>();
+        var link=checkpoint;
+        while(true){
+            long from=number(link.get("from")),to=number(link.get("to")),until=number(link.get("until"));
+            if(from<946684800L||from>=to||to>until||until>=4102444800L||chain.size()>=16)return checkpoint;
+            chain.add(link);
+            if(!(link.get("backfillResume") instanceof Map<?,?>))break;
+            link=map(link.get("backfillResume"));
+        }
+        Map<String,Object> resume=null;
+        for(var entry:chain.reversed()){
+            var saved=new LinkedHashMap<>(entry);
+            saved.remove("backfillResume");
+            saved.put(RECENT_MONTHS,month);
+            saved.put("completedMonthFrom",start);
+            saved.put("completedMonthUntil",cutoff);
+            if(resume!=null)saved.put("backfillResume",resume);
+            resume=saved;
+        }
+        var previousMonth=priorityRange(checkpoint,start,boundary,month,resume);
+        previousMonth.put("priorityMonth",YearMonth.from(previous).toString());
+        previousMonth.put("previousMonthScan",true);
+        if(cutoff>boundary)return priorityRange(checkpoint,boundary,cutoff,month,previousMonth);
+        return previousMonth;
+    }
+
+    private static Map<String,Object> priorityRange(Map<String,Object> original,long from,long until,String month,Map<String,Object> resume){
+        var range=new LinkedHashMap<String,Object>();
+        range.put("from",from);range.put("to",Math.min(from+WEEK,until));range.put("until",until);
+        if(original.containsKey("coverage"))range.put("coverage",original.get("coverage"));
+        range.put("run",UUID.randomUUID().toString());range.put(RECENT_MONTHS,month);
+        range.put("backfillResume",resume);
+        return range;
     }
 
     static Map<String,Object> previousMonthFirst(Map<String,Object> checkpoint,String channel,ZoneId zone,Instant now){
@@ -80,6 +125,7 @@ final class FinanceSyncPlan {
         pass.put("run",UUID.randomUUID().toString());pass.put("priorityMonth",month);
         pass.put("missingSettlementPass",true);pass.put("missingSettlementMonth",month);
         pass.put("missingPassStartedAt",now.getEpochSecond());pass.put("backfillResume",saved);
+        if(cp.containsKey(RECENT_MONTHS))pass.put(RECENT_MONTHS,cp.get(RECENT_MONTHS));
         return pass;
     }
 

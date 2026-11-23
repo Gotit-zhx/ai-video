@@ -137,7 +137,20 @@ public class FinanceFx {
         var dates=new ArrayList<LocalDate>();for(var day=start;!day.isAfter(end);day=day.plusDays(1))dates.add(day);
         return historical(snapshotId,dates);
     }
-    public Quote historical(String snapshotId,Collection<LocalDate> dates){return history.quote(snapshotId,dates);}
+    private final ThreadLocal<Quote> exportHistory=new ThreadLocal<>();
+    public Quote historical(String snapshotId,Collection<LocalDate> dates){
+        var frozen=exportHistory.get();
+        if(frozen==null)return history.quote(snapshotId,dates);
+        if(!frozen.id().equals(snapshotId))throw new IllegalStateException("Historical export quote changed");
+        frozen.preload(dates);
+        return frozen;
+    }
+    <T>T withStoredExportHistory(String id,java.util.function.Supplier<T> work){
+        var previous=exportHistory.get();
+        exportHistory.set(history.storedQuote(id));
+        try{return work.get();}
+        finally{if(previous==null)exportHistory.remove();else exportHistory.set(previous);}
+    }
     public Map<String,Object> market(){return history.market();}
     @PreDestroy void close(){history.close();}
     /** Legacy reads never insert new formats into finance_fx_snapshots. */

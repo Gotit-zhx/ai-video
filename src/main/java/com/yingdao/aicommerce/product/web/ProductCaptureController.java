@@ -63,6 +63,17 @@ public class ProductCaptureController {
                 service.create(request, idempotencyKey, principal), objectMapper));
     }
 
+    public record PrintSourceRequest(String sourceUrl, String title, java.util.List<String> images) {}
+    public record PrintSourceReceipt(String id) {}
+
+    @PostMapping("/print-source")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<PrintSourceReceipt> importPrintSource(@RequestBody PrintSourceRequest request,
+            @AuthenticationPrincipal PlatformPrincipal principal) {
+        return ApiResponse.created(new PrintSourceReceipt(
+                service.importPrintSource(request.sourceUrl(), request.title(), request.images(), principal)));
+    }
+
     @GetMapping("/{id}")
     public ApiResponse<ProductCaptureResponse> get(
             @PathVariable String id,

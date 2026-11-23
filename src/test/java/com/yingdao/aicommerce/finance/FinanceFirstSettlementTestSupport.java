@@ -3,6 +3,7 @@ package com.yingdao.aicommerce.finance;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
@@ -175,5 +176,25 @@ abstract class FinanceFirstSettlementTestSupport extends FinanceConfigurationInt
                 Files.deleteIfExists(path);
             }
         }
+    }
+
+    static SQLException findSql(Throwable failure) {
+        for (Throwable cause=failure;cause!=null;cause=cause.getCause()) {
+            if (cause instanceof SQLException sql) return sql;
+        }
+        return null;
+    }
+
+    @SuppressWarnings({"rawtypes","unchecked"})
+    static long mysqlMillis(PreparedStatement statement)throws SQLException {
+        try {Class type=Class.forName("com.mysql.cj.jdbc.JdbcStatement");Object query=type.getMethod("getQuery").invoke(statement.unwrap(type));
+            return ((Number)Class.forName("com.mysql.cj.Query").getMethod("getTimeoutInMillis").invoke(query)).longValue();}
+        catch(ReflectiveOperationException failure){throw new SQLException("Cannot inspect the isolated query timeout",failure);}
+    }
+    @SuppressWarnings({"rawtypes","unchecked"})
+    static boolean mysqlExecuting(PreparedStatement statement){
+        try {Class type=Class.forName("com.mysql.cj.jdbc.JdbcStatement");Object query=type.getMethod("getQuery").invoke(statement.unwrap(type));
+            return ((java.util.concurrent.atomic.AtomicBoolean)Class.forName("com.mysql.cj.Query").getMethod("getStatementExecuting").invoke(query)).get();}
+        catch(ReflectiveOperationException|SQLException failure){throw new IllegalStateException(failure);}
     }
 }

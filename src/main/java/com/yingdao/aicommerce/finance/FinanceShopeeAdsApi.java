@@ -53,12 +53,32 @@ final class FinanceShopeeAdsApi {
         if(lastSuccess==null){
             LocalDate month=today.withDayOfMonth(1),previous=month.minusMonths(1);
             plan.put("from",previous.toString());plan.put("until",month.minusDays(1).toString());
+            plan.put(FinanceSyncRange.MONTH,FinanceSyncRange.month(today));
             var remaining=new ArrayList<Map<String,Object>>();remaining.add(Map.of("from",month.toString(),"until",today.toString()));
             if(oldest.isBefore(previous))remaining.add(Map.of("from",oldest.toString(),"until",previous.minusDays(1).toString()));
             plan.put("remaining",remaining);
         }else{plan.put("from",oldest.toString());plan.put("until",today.toString());}
         return plan;
     }
+    /** The CPC and GMS workers spend the same shop Ads API allowance. */
+    static String noReadyPeer(boolean gms){
+        String source=gms?"peer_sync":"peer";
+        String sync=gms?"JOIN finance_shopee_gms_sync peer_sync USING(organization_id,external_shop_id)":"";
+        return """
+                NOT EXISTS (SELECT 1 FROM finance_shopee_ad_grants peer
+                   %s
+                   JOIN finance_shopee_ad_groups peer_group
+                     ON peer_group.organization_id=peer.organization_id AND peer_group.token_group_id=peer.token_group_id
+                   WHERE peer.enabled=TRUE AND peer.status<>'REMOVED' AND peer.partner_id=g.partner_id
+                     AND (peer.lease_until IS NULL OR peer.lease_until<=UTC_TIMESTAMP(6))
+                     AND (peer_group.lease_until IS NULL OR peer_group.lease_until<=UTC_TIMESTAMP(6))
+                     AND %s.next_at<=UTC_TIMESTAMP(6) AND %s=0
+                     AND EXISTS(SELECT 1 FROM finance_connections c
+                       WHERE c.organization_id=peer.organization_id AND c.external_shop_id=peer.external_shop_id
+                         AND c.platform='SHOPEE' AND c.enabled=TRUE AND c.status='ACTIVE'))
+                """.formatted(sync,source,FinanceSyncRange.historicalRank(source+".checkpoint_json","peer.timezone",false));
+    }
+
     static LocalDate windowEnd(LocalDate from,LocalDate until){
         // Shopee's one-month limit is 30 inclusive days, including in 31-day months.
         LocalDate end=from.withDayOfMonth(from.lengthOfMonth());

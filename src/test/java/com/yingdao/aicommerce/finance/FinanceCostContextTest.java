@@ -38,7 +38,7 @@ class FinanceCostContextTest {
     }
 
     @Test void controllerExposesTheLightweightContextContract() throws Exception {
-        Method endpoint=assertDoesNotThrow(()->FinanceCostController.class.getMethod("costContext",String.class,String.class,
+        Method endpoint=assertDoesNotThrow(()->FinanceCostController.class.getMethod("costContext",String.class,String.class,boolean.class,
                         com.yingdao.aicommerce.auth.PlatformPrincipal.class),
                 "controller must expose the lightweight context endpoint");
         var mapping=endpoint.getAnnotation(org.springframework.web.bind.annotation.GetMapping.class);

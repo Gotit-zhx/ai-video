@@ -13,11 +13,16 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 @RequestMapping("/api/v1/finance/workspace")
 public class FinanceCostController {
     final FinanceCostWorkspace workspace;final FinanceService service;
+    private record LabelRead(Scope scope,Filter filter,Map<String,String> selection){}
+    private final FinanceQueryReadBatch<LabelRead,Map<String,Object>> labelReads=new FinanceQueryReadBatch<>();
     @org.springframework.beans.factory.annotation.Autowired private FinanceOrderCharges charges;
     @org.springframework.beans.factory.annotation.Autowired private FinanceLabelCosts labelCosts;
     @GetMapping("/label-costs") public ApiResponse<?> labelCosts(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var scope=service.authorize(p);String shop=q.getOrDefault("shopId","");if(!shop.isBlank())service.ownedShop(scope,shop);
-        return ApiResponse.ok(labelCosts.workspace(scope,costFilter(q),q));
+        var selection=Map.copyOf(q);
+        var filter=costFilter(selection);
+        return ApiResponse.ok(labelReads.read(new LabelRead(scope,filter,selection),
+            ()->labelCosts.workspace(scope,filter,selection)));
     }
     @PostMapping("/label-costs/import") @ResponseStatus(org.springframework.http.HttpStatus.ACCEPTED)
     public ApiResponse<?> importLabelCosts(@RequestParam MultipartFile file,@AuthenticationPrincipal PlatformPrincipal p)throws Exception{
@@ -63,8 +68,19 @@ public class FinanceCostController {
             if(origin!=null){try{if(!request.getServerName().equalsIgnoreCase(java.net.URI.create(origin).getHost()))throw bad("操作来源不正确");}catch(IllegalArgumentException e){throw bad("操作来源不正确");}}
         }
     }
-    @GetMapping("/costs") public ApiResponse<?> costs(@RequestParam(required=false) String shopId,@RequestParam(defaultValue="") String groupId,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.costs(service.authorize(p),shopId,groupId));}
-    @GetMapping("/costs/context") public ApiResponse<?> costContext(@RequestParam(required=false) String shopId,@RequestParam(defaultValue="") String groupId,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.context(service.authorize(p),shopId,groupId));}
+    @GetMapping("/costs") public ApiResponse<?> costs(@RequestParam(required=false) String shopId,@RequestParam(defaultValue="") String groupId,
+            @RequestParam(defaultValue="false") boolean allShops,
+            @RequestParam(defaultValue="false") boolean pricesOnly,@AuthenticationPrincipal PlatformPrincipal p){
+        var scope=service.authorize(p);
+        return ApiResponse.ok(pricesOnly?workspace.catalogue(scope,shopId,groupId,allShops):workspace.costs(scope,shopId,groupId,allShops));
+    }
+    @GetMapping("/costs/skus") public ApiResponse<?> skuPage(@RequestParam String shopId,@RequestParam(defaultValue="") String snapshot,
+            @RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="") String search,@RequestParam(defaultValue="") String status,
+            @RequestParam(defaultValue="") String warehouse,@AuthenticationPrincipal PlatformPrincipal p){
+        return ApiResponse.ok(workspace.skuPage(service.authorize(p),shopId,snapshot,page,search,status,warehouse));
+    }
+    @GetMapping("/costs/context") public ApiResponse<?> costContext(@RequestParam(required=false) String shopId,@RequestParam(defaultValue="") String groupId,
+            @RequestParam(defaultValue="false") boolean allShops,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.context(service.authorize(p),shopId,groupId,allShops));}
     @GetMapping("/costs/summary") public ApiResponse<?> costSummary(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var scope=service.authorize(p);String shopId=q.getOrDefault("shopId","");if(!shopId.isBlank())service.ownedShop(scope,shopId);
         return ApiResponse.ok(workspace.costSummary(scope,costFilter(q),q.getOrDefault("kind","SETTLED_ORDER"),q.get("displayCurrency"),q.get("fxSnapshot")));
@@ -93,10 +109,27 @@ public class FinanceCostController {
     @PostMapping("/costs/import") public ApiResponse<?> upload(@RequestParam String groupId,@RequestParam MultipartFile file,@AuthenticationPrincipal PlatformPrincipal p)throws Exception{
         return ApiResponse.ok(workspace.importCosts(service.authorize(p),p.userId(),groupId,file.getBytes(),text(file.getOriginalFilename())));
     }
+    @PostMapping("/costs/groups/{groupId}/slots/{role}/preview")
+    public ApiResponse<?> previewSlot(@PathVariable String groupId,@PathVariable String role,@RequestParam MultipartFile file,
+            @AuthenticationPrincipal PlatformPrincipal p)throws Exception{
+        return ApiResponse.ok(workspace.previewCostSlot(service.authorize(p),groupId,role,file.getBytes(),text(file.getOriginalFilename())));
+    }
+    @PostMapping("/costs/groups/{groupId}/slots/{role}")
+    public ApiResponse<?> updateSlot(@PathVariable String groupId,@PathVariable String role,@RequestParam String confirmation,
+            @RequestParam MultipartFile file,@AuthenticationPrincipal PlatformPrincipal p)throws Exception{
+        return ApiResponse.ok(workspace.updateCostSlot(service.authorize(p),p.userId(),groupId,role,confirmation,file.getBytes(),text(file.getOriginalFilename())));
+    }
+    @PutMapping("/costs/groups/{groupId}/files/{id}/role")
+    public ApiResponse<?> assignSlot(@PathVariable String groupId,@PathVariable String id,@RequestBody Map<String,String> body,
+            @AuthenticationPrincipal PlatformPrincipal p){
+        workspace.assignCostSlot(service.authorize(p),p.userId(),groupId,id,body.get("role"));return ApiResponse.ok("成本表类型已保存");
+    }
     @PutMapping("/costs/{shopId}/settings") public ApiResponse<?> settings(@PathVariable String shopId,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){workspace.settings(service.authorize(p),p.userId(),shopId,body);return ApiResponse.ok("成本口径已保存");}
     @PutMapping("/costs/{shopId}/mapping") public ApiResponse<?> mapping(@PathVariable String shopId,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){workspace.mapping(service.authorize(p),p.userId(),shopId,body);return ApiResponse.ok("SKU 关联已保存");}
-    @DeleteMapping("/costs/groups/{groupId}/files/{id}") public ApiResponse<?> removeSource(@PathVariable String groupId,@PathVariable String id,@AuthenticationPrincipal PlatformPrincipal p){
-        workspace.removeSource(service.authorize(p),p.userId(),groupId,id);return ApiResponse.ok("已移除该文件的成本，手动成本保留");
+    @DeleteMapping("/costs/groups/{groupId}/files/{id}") public ApiResponse<?> removeSource(@PathVariable String groupId,@PathVariable String id,
+            @RequestParam(required=false) Long revision,@AuthenticationPrincipal PlatformPrincipal p){
+        boolean queued=workspace.removeCostFile(service.authorize(p),p.userId(),groupId,id,revision);
+        return ApiResponse.ok(queued?"已移除文件，相关订单将重算":"已移除文件，无需重算订单");
     }
     @PostMapping("/costs/{shopId}/manual-mapping") public ApiResponse<?> manualMapping(@PathVariable String shopId,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){
         return ApiResponse.ok(workspace.manualMapping(service.authorize(p),p.userId(),shopId,body));
