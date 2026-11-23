@@ -264,7 +264,7 @@ components:
     padding: 64px 32px
 ---
 
-> 设计参考；方案目标与当前实现分别核对。 当前入口见[业务说明](../business/README.md)与[运维指南](../guides/operations.md)。
+> 历史视觉参考。现行规范见 [Ant Design 前端设计标准](../../design/frontend-design-standard.md)。
 
 
 ## Overview
@@ -575,7 +575,7 @@ The system has **no traditional drop shadow language**. Every surface either get
 
 1. Focus on ONE component at a time. Most surfaces share `{colors.surface-card}` or `{colors.surface-elevated}` with `{rounded.lg}` — only the role-specific tokens (`{colors.primary}`, `{component.code-window}`) shift between variants.
 2. Reference component names and tokens directly (`{colors.primary}`, `{component.button-primary-pressed}`, `{rounded.lg}`) — do not paraphrase.
-3. Run `npx @google/design.md lint docs/design/apple.md` after edits; orphaned-tokens warnings will catch unused entries.
+3. Run `npx @google/design.md lint docs/history/frontend-design/apple.md` after edits; orphaned-tokens warnings will catch unused entries.
 4. Add new variants as separate entries (`-pressed`, `-featured`, `-disabled`) — do not bury them in prose.
 5. Default body type to `{typography.body-md}`; reach for `{typography.subtitle}` only on hero subtitles.
 6. Keep `{colors.primary}` (white) scarce — if more than one solid white surface appears per viewport, ask whether one should drop to `{component.button-ghost}` instead.
