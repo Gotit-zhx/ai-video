@@ -238,6 +238,49 @@ class ShopAuthorizationServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void revokedShopeeRefreshCredentialCommitsSharedExpiryAndSkipsLaterProviderCalls() throws Exception {
+        Fixture fixture = fixture();
+        Shop target = new Shop("org-1", MarketplacePlatform.SHOPEE, "123", null, null,
+                "SELLER", "Example shop", "PH", "[]", "owner", "SHOP", "123");
+        var stored = new ShopCredential(target.getId(), target.getOrganizationId(), "grant",
+                fixture.cipher.encrypt("old-access", "org-1", target.getId()),
+                fixture.cipher.encrypt("old-refresh", "org-1", target.getId()), Instant.now().minusSeconds(60), null);
+        when(fixture.shopMapper.selectOne(any(Wrapper.class))).thenReturn(target);
+        when(fixture.shopMapper.selectList(any(Wrapper.class))).thenReturn(List.of(target));
+        when(fixture.credentialMapper.selectTokenGroupForUpdate("org-1", target.getId())).thenReturn(List.of(stored));
+        when(fixture.credentialMapper.selectForShops(eq("org-1"), any())).thenReturn(List.of(stored));
+        when(fixture.credentialMapper.updateById(stored)).thenReturn(1);
+        MarketplaceAccess.Client client = mock(MarketplaceAccess.Client.class);
+        when(fixture.clients.require(MarketplacePlatform.SHOPEE)).thenReturn(client);
+        when(client.refresh(any(), eq(target))).thenThrow(
+                new com.yingdao.aicommerce.shop.infrastructure.MarketplaceApiException("""
+                    店铺官方接口 HTTP 403：{"error":"refresh_token_expired","message":"Your refresh_token expired."}
+                    """));
+        JdbcTransactions transactions = transactions();
+        ShopAuthorizationService proxy = transactional(fixture.service, transactions.manager);
+        new org.springframework.transaction.support.TransactionTemplate(transactions.manager).executeWithoutResult(outer -> {
+            assertThatThrownBy(() -> proxy.connectionForPublishing("org-1", target.getId()))
+                    .isInstanceOfSatisfying(BusinessException.class, error -> {
+                        assertThat(error.getStatus().value()).isEqualTo(409);
+                        assertThat(error.getMessage()).isEqualTo("店铺授权已过期，请重新授权");
+                    });
+            assertThat(outer.isRollbackOnly()).isFalse();
+        });
+        verify(transactions.inner).commit();
+        assertThat(fixture.service.list(principal("owner", "org-1"), null)).singleElement()
+                .satisfies(view -> {
+                    assertThat(view.status()).isEqualTo("TOKEN_EXPIRED");
+                    assertThat(view.lastAuthError()).contains("重新授权").doesNotContain("refresh_token");
+                });
+        assertThatThrownBy(() -> fixture.service.connectionForPublishing("org-1", target.getId()))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("重新授权");
+        verify(client, times(1)).refresh(any(), eq(target));
+        verify(fixture.credentialMapper).updateById(stored);
+        verify(fixture.shopMapper, never()).updateById(target);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void failedCredentialLookupDoesNotMarkThePublishAuditTransactionRollbackOnly() throws Exception {
         for (boolean platformExplicit : List.of(false, true)) {
             Fixture fixture = fixture();

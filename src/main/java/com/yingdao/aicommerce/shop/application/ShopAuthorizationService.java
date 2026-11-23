@@ -8,6 +8,7 @@ import com.yingdao.aicommerce.shop.domain.Shop;
 import com.yingdao.aicommerce.shop.domain.ShopAuthorizationSession;
 import com.yingdao.aicommerce.shop.domain.ShopCredential;
 import com.yingdao.aicommerce.shop.infrastructure.MarketplaceApiException;
+import com.yingdao.aicommerce.shop.infrastructure.ShopeeOfficialClient;
 import com.yingdao.aicommerce.shop.mapper.ShopAuthorizationSessionMapper;
 import com.yingdao.aicommerce.shop.mapper.ShopCredentialMapper;
 import com.yingdao.aicommerce.shop.mapper.ShopMapper;
@@ -27,10 +28,16 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
 public class ShopAuthorizationService {
+    private static final String REAUTHORIZATION_MESSAGE = "店铺授权已过期，请重新授权";
+    private static final String SHOPEE_REFRESH_EXPIRED = "refresh_token_expired";
+    private static final Pattern REFRESH_EXPIRED_RESPONSE =
+            Pattern.compile("\"error\"\\s*:\\s*\"" + SHOPEE_REFRESH_EXPIRED + "\"");
+
     private final ShopMapper shopMapper;
     private final ShopCredentialMapper credentialMapper;
     private final ShopAuthorizationSessionMapper sessionMapper;
@@ -166,7 +173,7 @@ public class ShopAuthorizationService {
     // Token-group row locks and refresh rotation must finish before a provider starts
     // slow media/API requests. Joining the publication transaction holds these locks
     // for the entire upload and makes one connection failure poison its audit commit.
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional(propagation = Propagation.REQUIRES_NEW, noRollbackFor = ReauthorizationRequired.class)
     public MarketplaceAccess.Connection connectionForPublishing(String organizationId, String shopId) {
         Shop shop = requireOwned(shopId, organizationId);
         return connectionForPublishing(organizationId, shopId, MarketplacePlatform.parse(shop.getPlatform()));
@@ -174,7 +181,7 @@ public class ShopAuthorizationService {
 
     // Both public overloads can be invoked through the proxy. The two-argument
     // overload's internal call intentionally remains in its already-new transaction.
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional(propagation = Propagation.REQUIRES_NEW, noRollbackFor = ReauthorizationRequired.class)
     public MarketplaceAccess.Connection connectionForPublishing(String organizationId,
                                                                  String shopId,
                                                                  MarketplacePlatform platform) {
@@ -184,6 +191,7 @@ public class ShopAuthorizationService {
                 .eq(Shop::getPlatform, platform.name())
                 .last("LIMIT 1"));
         if (shop == null || "DELETED".equals(shop.getStatus())) throw new BusinessException(HttpStatus.NOT_FOUND, "目标授权店铺不存在");
+        if ("TOKEN_EXPIRED".equals(shop.getStatus())) throw new ReauthorizationRequired();
         if (!"ACTIVE".equals(shop.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "目标店铺授权已失效，请重新授权");
         }
@@ -191,25 +199,20 @@ public class ShopAuthorizationService {
         ShopCredential stored = credentialForShop(tokenGroup, shop.getId());
         MarketplaceAccess.TokenSet current = decrypt(stored, shop);
         if (mustRefresh(current.accessTokenExpiresAt())) {
-            try {
-                MarketplaceAccess.TokenSet refreshed = clients.require(platform).refresh(current, shop);
-                rotateTokenGroup(tokenGroup, organizationId, refreshed);
-                current = refreshed;
-            } catch (RuntimeException exception) {
-                throw new BusinessException(HttpStatus.BAD_GATEWAY,
-                        "店铺 Token 刷新失败，请重新授权：" + readable(exception));
-            }
+            current = refreshTokens(platform, shop, stored, current);
+            rotateTokenGroup(tokenGroup, organizationId, current);
         }
         return new MarketplaceAccess.Connection(shop, current);
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = ReauthorizationRequired.class)
     public ShopView refresh(String id, PlatformPrincipal principal) {
         Shop shop = requireOwned(id, principal.organizationId());
+        if ("TOKEN_EXPIRED".equals(shop.getStatus())) throw new ReauthorizationRequired();
         List<ShopCredential> tokenGroup = requireTokenGroup(shop, principal.organizationId());
         ShopCredential stored = credentialForShop(tokenGroup, shop.getId());
         MarketplacePlatform platform = MarketplacePlatform.parse(shop.getPlatform());
-        MarketplaceAccess.TokenSet refreshed = clients.require(platform).refresh(decrypt(stored, shop), shop);
+        MarketplaceAccess.TokenSet refreshed = refreshTokens(platform, shop, stored, decrypt(stored, shop));
         rotateTokenGroup(tokenGroup, principal.organizationId(), refreshed);
         shop.refreshed(writeJson(refreshed.scopes()));
         if (shopMapper.updateById(shop) != 1) {
@@ -349,6 +352,39 @@ public class ShopAuthorizationService {
         return expiresAt != null && !expiresAt.isAfter(Instant.now().plus(settings.tokenRefreshSkew()));
     }
 
+    private MarketplaceAccess.TokenSet refreshTokens(MarketplacePlatform platform, Shop shop,
+                                                      ShopCredential stored, MarketplaceAccess.TokenSet current) {
+        if (expired(current.refreshTokenExpiresAt())) throw new ReauthorizationRequired();
+        try {
+            return clients.require(platform).refresh(current, shop);
+        } catch (MarketplaceApiException exception) {
+            boolean expiredShopeeGrant = platform == MarketplacePlatform.SHOPEE
+                    && ((exception instanceof ShopeeOfficialClient.ApiFailure failure
+                        && SHOPEE_REFRESH_EXPIRED.equals(failure.errorCode()))
+                    || REFRESH_EXPIRED_RESPONSE.matcher(java.util.Objects.toString(exception.getMessage(), "")).find());
+            if (expiredShopeeGrant) {
+                // The token group is already locked. Record the observed expiry without
+                // taking a shop-row lock in the reverse order of a new authorization.
+                stored.rotate(stored.getAccessTokenCiphertext(), null, stored.getAccessTokenExpiresAt(), Instant.now());
+                if (credentialMapper.updateById(stored) != 1) {
+                    throw new BusinessException(HttpStatus.CONFLICT, "店铺授权已更新，请刷新店铺后重试");
+                }
+                throw new ReauthorizationRequired();
+            }
+            throw new BusinessException(HttpStatus.BAD_GATEWAY, "店铺授权刷新暂时失败，请稍后重试");
+        }
+    }
+
+    private static boolean expired(Instant expiresAt) {
+        return expiresAt != null && !expiresAt.isAfter(Instant.now());
+    }
+
+    private static final class ReauthorizationRequired extends BusinessException {
+        private ReauthorizationRequired() {
+            super(HttpStatus.CONFLICT, REAUTHORIZATION_MESSAGE);
+        }
+    }
+
     private List<String> readScopes(String value) {
         if (value == null || value.isBlank()) return List.of();
         try {
@@ -369,14 +405,17 @@ public class ShopAuthorizationService {
         boolean ownedCredential = credential != null
                 && shop.getId().equals(credential.getShopId())
                 && shop.getOrganizationId().equals(credential.getOrganizationId());
+        boolean expiredGrant = "ACTIVE".equals(shop.getStatus()) && ownedCredential
+                && mustRefresh(credential.getAccessTokenExpiresAt()) && expired(credential.getRefreshTokenExpiresAt());
+        String status = expiredGrant ? "TOKEN_EXPIRED" : shop.getStatus();
         return new ShopView(shop.getId(), shop.getPlatform(), shop.getExternalShopId(),
-                shop.getDisplayName() == null || shop.getDisplayName().isBlank() ? shop.getName() : shop.getDisplayName(), shop.getRegion(), shop.getSellerType(), shop.getStatus(),
+                shop.getDisplayName() == null || shop.getDisplayName().isBlank() ? shop.getName() : shop.getDisplayName(), shop.getRegion(), shop.getSellerType(), status,
                 shop.getAuthorizationSubjectType(), shop.getAuthorizationSubjectId(),
                 readScopes(shop.getAuthorizedScopes()), shop.getAuthorizedBy(), shop.getAuthorizedAt(),
                 shop.getDisconnectedBy(), shop.getDisconnectedAt(),
                 ownedCredential ? credential.getAccessTokenExpiresAt() : null,
                 ownedCredential ? credential.getRefreshTokenExpiresAt() : null,
-                shop.getLastSyncedAt(), shop.getLastAuthError(), shop.getName());
+                shop.getLastSyncedAt(), expiredGrant ? REAUTHORIZATION_MESSAGE : shop.getLastAuthError(), shop.getName());
     }
 
     private String state() {

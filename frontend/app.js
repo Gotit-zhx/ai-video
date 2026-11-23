@@ -864,6 +864,10 @@ function hasRememberedProductCaptureRoute() {
   }
 }
 
+function marketplaceShopRoute(value = window.location.hash?.slice(1)) {
+  return value === "shops" || value === "shops-v2" ? value : null;
+}
+
 function rememberWorkspaceForLogin() {
   if (!currentUser) return;
   pendingWorkspaceAfterLogin = activeWorkspace;
@@ -1020,9 +1024,9 @@ async function showDashboard(user) {
   if (window.location.hash.startsWith('#hr-') && globalThis.HrWorkspace?.allowed()) {
     switchWorkspace('hr'); globalThis.HrWorkspace.enter(window.location.hash.slice(4)); return;
   }
-  if ((window.location.hash === "#shops" || new URLSearchParams(window.location.search).get("view") === "shops")
-      && hasAnyPermission("product:view", "product:publish")) {
-    switchWorkspace("shops");
+  const shopPage = marketplaceShopRoute();
+  if (shopPage && hasAnyPermission("product:view", "product:publish")) {
+    switchWorkspace(shopPage);
     await loadMarketplaceShops({ silent: true });
     consumeMarketplaceAuthorizationReturn();
     return;
@@ -1143,7 +1147,9 @@ function applyFeatureAccess() {
   document.querySelector("#nav-ai-video-monitor").hidden = !canViewVideoMonitor;
   document.querySelector("#nav-publish").hidden = !canAccessProductCenter();
   document.querySelectorAll('[data-finance-route]').forEach(link => { link.hidden = !canAccessFinance(); });
-  document.querySelector("#nav-shops").hidden = !hasAnyPermission("product:view", "product:publish");
+  document.querySelectorAll("#nav-shops, #nav-shops-v2").forEach(link => {
+    link.hidden = !hasAnyPermission("product:view", "product:publish");
+  });
   document.querySelector("#nav-automations").hidden = !canUseAutomation;
   document.querySelector("#nav-automation-admin").hidden = !canViewAutomationAdmin;
   document.querySelector("#nav-models").hidden = !hasAnyPermission("system:model:view", "system:model:manage");
@@ -1415,11 +1421,14 @@ document.querySelector("#nav-assistant-test").addEventListener("click", async (e
   startAssistantCommandPolling();
 });
 
-document.querySelector("#nav-shops").addEventListener("click", async event => {
-  event.preventDefault();
-  if (!hasAnyPermission("product:view", "product:publish")) return;
-  switchWorkspace("shops");
-  await loadMarketplaceShops();
+document.querySelectorAll("#nav-shops, #nav-shops-v2").forEach(link => {
+  link.addEventListener("click", async event => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    if (!hasAnyPermission("product:view", "product:publish")) return;
+    switchWorkspace(marketplaceShopRoute(link.hash.slice(1)));
+    await loadMarketplaceShops();
+  });
 });
 
 function switchWorkspace(page) {
@@ -1434,7 +1443,7 @@ function switchWorkspace(page) {
   const isGeneralVideo = page === "generalVideo";
   const isAiVideoMonitor = page === "aiVideoMonitor";
   const isProductPublish = page === "productPublish";
-  const isShops = page === "shops";
+  const isShops = Boolean(marketplaceShopRoute(page));
   const isFinance = page === 'finance';
   document.querySelector('#finance-page').hidden = !isFinance;
   if (!isFinance) globalThis.FinanceWorkspace?.leave();
@@ -1446,7 +1455,9 @@ function switchWorkspace(page) {
   document.querySelectorAll('[data-hr-route]').forEach(a => a.classList.toggle('active', isHr && a.hash === window.location.hash));
   document.querySelectorAll('[data-knowledge-route]').forEach(link => { link.classList.toggle('active',isKnowledge && link.hash===window.location.hash);if(!isKnowledge)link.removeAttribute('aria-current'); });
   document.querySelector("#shop-management-page").hidden = !isShops;
-  document.querySelector("#nav-shops").classList.toggle("active", isShops);
+  document.querySelectorAll("#nav-shops, #nav-shops-v2").forEach(link => {
+    link.classList.toggle("active", isShops && link.hash.slice(1) === page);
+  });
   document.querySelector("#dashboard-page").hidden = true;
   document.querySelector("#system-page").hidden = !isSystem;
   document.querySelector("#models-page").hidden = !isModels;
@@ -1470,17 +1481,17 @@ function switchWorkspace(page) {
   document.querySelector("#nav-publish").classList.toggle("active", isProductPublish);
   document.querySelectorAll("[data-commerce-route]").forEach(link => { link.classList.remove("active"); link.removeAttribute("aria-current"); });
   document.querySelector(".topbar h2").textContent =
-    isFinance ? "财务 BI" : isKnowledge ? "知识库" : isHr ? "人力资源" : isShops ? "店铺管理" :
+    isFinance ? "财务 BI" : isKnowledge ? "知识库" : isHr ? "人力资源" : isShops ? (page === "shops-v2" ? "商品运营 v2.0 / 店铺管理" : "店铺管理") :
     isVideoScripts ? "视频脚本管理" : isGeneralVideo ? "通用生成" : isAiVideoTasks ? "AI 视频任务" : isAiVideoMonitor ? "AI 任务监控" : isProductPublish ? "商品采集与发布" : isAutomationAdmin ? "自动化管理" : isAutomations ? "自动化中心" : isAssistant ? "助手联调" : isModels ? "模型接入" : isSystem ? "企业系统配置" : "内容运营工作台";
   if (isKnowledge || isHr || isFinance) {
     rememberProductCaptureRoute(false);
   } else if (isShops) {
     rememberProductCaptureRoute(false);
-    window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#shops`);
+    window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#${page}`);
   } else if (isProductPublish) {
     rememberProductCaptureRoute(true);
     selectCommerceSection();
-  } else if (commerceRouteFromHash() || window.location.hash === "#shops" || window.location.hash.startsWith("#knowledge-") || window.location.hash.startsWith("#hr-") || window.location.hash.startsWith("#finance-")) {
+  } else if (commerceRouteFromHash() || marketplaceShopRoute() || window.location.hash.startsWith("#knowledge-") || window.location.hash.startsWith("#hr-") || window.location.hash.startsWith("#finance-")) {
     rememberProductCaptureRoute(false);
     window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}`);
   }
@@ -1541,8 +1552,9 @@ window.addEventListener("hashchange", () => {
   if (window.location.hash.startsWith('#hr-') && globalThis.HrWorkspace?.allowed()) {
     switchWorkspace('hr'); globalThis.HrWorkspace.enter(window.location.hash.slice(4)); return;
   }
-  if (window.location.hash === "#shops" && currentUser && hasAnyPermission("product:view", "product:publish")) {
-    switchWorkspace("shops");
+  const shopPage = marketplaceShopRoute();
+  if (shopPage && currentUser && hasAnyPermission("product:view", "product:publish")) {
+    switchWorkspace(shopPage);
     loadMarketplaceShops();
     return;
   }
@@ -3525,7 +3537,7 @@ function renderMarketplaceShopCard(shop) {
   const platform = normalizedMarketplacePlatform(shop.platform);
   const status = marketplaceShopStatusMeta(shop.status);
   const expiry = marketplaceShopExpiry(shop);
-  const isDisconnected = status.bucket === "DISABLED";
+  const needsAuthorization = status.bucket === "DISABLED" || shop.status === "TOKEN_EXPIRED";
   const busy = marketplaceShopActionsInFlight.has(shopId);
   const canManage = hasAnyPermission("product:publish");
   const name = shop.name || shop.externalShopId || "未命名店铺";
@@ -3537,7 +3549,7 @@ function renderMarketplaceShopCard(shop) {
     <dl><div><dt>实际名称</dt><dd title="${escapeHtml(shop.actualName || shop.name || '')}">${escapeHtml(shop.actualName || shop.name || '未返回')}</dd></div>
     <div><dt>到期时间</dt><dd title="${escapeHtml(expiry.label)}">${escapeHtml(expiry.text)}</dd></div></dl>
     <footer><button type="button" data-rename-shop="${escapeHtml(shopId)}" ${disabled}>重命名</button>
-    ${isDisconnected ? `<button type="button" data-authorize-shop="${escapeHtml(platform)}" ${disabled}>重新授权</button>` : `<button type="button" data-refresh-shop="${escapeHtml(shopId)}" ${disabled}>${busy ? '处理中…' : '刷新授权'}</button>`}
+    ${needsAuthorization ? `<button type="button" data-authorize-shop="${escapeHtml(platform)}" ${disabled}>重新授权</button>` : `<button type="button" data-refresh-shop="${escapeHtml(shopId)}" ${disabled}>${busy ? '处理中…' : '刷新授权'}</button>`}
     <button type="button" data-delete-shop="${escapeHtml(shopId)}" ${disabled}>删除</button></footer></article>`;
 }
 
@@ -3665,6 +3677,9 @@ async function refreshMarketplaceShop(shopId) {
     feedback = `${shop.name || shop.externalShopId || "店铺"} 的授权已刷新，状态和同步时间已更新。`;
   } catch (error) {
     if (error?.status === 401) return;
+    if (shopReauthorizationNeeded(error.message) && currentUser?.organizationId === organizationId) {
+      await loadMarketplaceShops({silent:true});
+    }
     feedback = `刷新失败：${error.message}`;
   } finally {
     marketplaceShopActionsInFlight.delete(shopId);
@@ -3757,7 +3772,7 @@ async function startMarketplaceAuthorization(platform, button) {
     const result = await api(`/api/v1/shop-authorizations/${encodeURIComponent(platform)}/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ returnPath: "/?view=shops",
+      body: JSON.stringify({ returnPath: marketplaceShopRoute() === "shops-v2" ? "/?view=shops-v2" : "/?view=shops",
         ...(platform === "TIKTOK_SHOP" ? {market: button.dataset.authorizationMarket
           || document.querySelector("#tiktok-authorization-market")?.value || "ROW"} : {}) })
     });
@@ -3789,19 +3804,13 @@ async function startMarketplaceAuthorization(platform, button) {
 }
 
 function consumeMarketplaceAuthorizationReturn() {
-  const params = new URLSearchParams(window.location.search);
-  const state = params.get("shopAuth");
-  if (!state) return;
-  const platform = marketplacePlatformName(params.get("platform"));
-  const note = document.querySelector("#marketplace-shop-note");
-  note.textContent = state === "success"
-    ? `${platform} 官方授权成功，已同步 ${params.get("connected") || "1"} 家店铺。`
-    : `${platform} 授权失败：${params.get("message") || "请重新发起授权"}`;
-  ["shopAuth", "platform", "connected", "message", "view"].forEach(key => params.delete(key));
-  const query = params.toString();
-  window.history.replaceState(null, document.title,
-    `${window.location.pathname}${query ? `?${query}` : ""}#shops`);
-  switchWorkspace("shops");
+  const notice = window.HoyeeShopAuthNotice;
+  if (!notice) return;
+  delete window.HoyeeShopAuthNotice;
+  const platform = notice.platform ? marketplacePlatformName(notice.platform) + " " : "";
+  document.querySelector("#marketplace-shop-note").textContent = notice.status === "success"
+    ? platform + (notice.connected === null ? "官方授权成功。" : "官方授权成功，已同步 " + notice.connected + " 家店铺。")
+    : platform + "授权未完成，请重新发起授权。";
 }
 
 function productCapturePayload(value) {
@@ -7117,9 +7126,15 @@ function renderPrintListingSteps(item) {
   return `<ol class="product-bulk-listing-steps" aria-label="上架进度">${labels.map((label, index) =>
     `<li${index < phase ? ' data-done' : index === phase ? ' aria-current="step"' : ''}>${label}</li>`).join('')}</ol>`;
 }
+function shopReauthorizationNeeded(message) {
+  return /refresh_token_expired|店铺授权已(?:过期|失效)|目标店铺没有可用凭证/i.test(message || '');
+}
+
 function renderProductBulkCard(item, shops = [], preview = false) {
   const workflow = item.workflow;
   const state = workflow?.status || item.status || 'WAITING';
+  const reason = workflow?.errorMessage || item.error;
+  const needsAuthorization = shopReauthorizationNeeded(reason);
   const failed = ['PREPARE_FAILED','CREATE_FAILED','FAILED','REVIEW_REQUIRED'].includes(state);
   const success = state === 'SUCCEEDED';
   const active = ['PREPARING','SUBMITTING','RUNNING'].includes(state);
@@ -7129,7 +7144,7 @@ function renderProductBulkCard(item, shops = [], preview = false) {
   const result = workflow?.executionMode === 'DRY_RUN' ? '演练完成'
     : directListing && ['NORMAL', 'ACTIVATE'].includes(remote) ? '已上架'
     : directListing && ['PENDING', 'REVIEWING'].includes(remote) ? '待平台审核' : '已上传 · 待上架';
-  const status = {WAITING:'等待准备',PREPARING:'自动准备中',PREPARE_FAILED:'准备失败',PREPARED:'准备就绪',SUBMITTING:'正在提交',CREATE_FAILED:'提交失败',PENDING:'排队中',RUNNING:'处理中',SUCCEEDED:result,FAILED:directListing ? '上架失败' : '上传失败',REVIEW_REQUIRED:'需要处理'}[state] || state;
+  const status = needsAuthorization ? '授权已过期' : {WAITING:'等待准备',PREPARING:'自动准备中',PREPARE_FAILED:'准备失败',PREPARED:'准备就绪',SUBMITTING:'正在提交',CREATE_FAILED:'提交失败',PENDING:'排队中',RUNNING:'处理中',SUCCEEDED:result,FAILED:directListing ? '上架失败' : '上传失败',REVIEW_REQUIRED:'需要处理'}[state] || state;
   const stage = {IMAGES:'图片检测与处理',STYLE_IMAGES:directListing ? 'GPT Image 2.6 合成' : '生成风格主图',APPROVE:'商品资料确认',PUBLISH:directListing ? '上传并提交上架' : '上传到待上架'}[workflow?.currentStep] || '';
   const images = workflow?.currentStep === 'STYLE_IMAGES' ? workflow?.mainImageStyle : workflow?.imageProcessing;
   const measured = Number.isInteger(images?.totalImages) && images.totalImages > 0;
@@ -7137,9 +7152,10 @@ function renderProductBulkCard(item, shops = [], preview = false) {
   const percent = success ? (result === '待平台审核' ? null : 100) : measured ? Math.round(done / images.totalImages * 100) : null;
   const progress = success ? (directListing ? result : '上传成功') : item.waitMessage || (measured ? `${workflow?.currentStep === 'STYLE_IMAGES' && !directListing ? '风格主图' : '图片'} ${done} / ${images.totalImages}` : preview ? '选择店铺后自动准备' : stage || status);
   const shopId = workflow?.shopId || item.payload?.shopId || item.shopId;
-  const shop = shops.find(candidate => String(candidate.id) === String(shopId));
+  const shop = shops.find(candidate => String(candidate.id) === String(shopId))
+    || marketplaceShops.find(candidate => String(candidate.id) === String(shopId));
   const shopName = shop?.name || shop?.shopName || shop?.externalShopId || shopId || '';
-  const error = [workflow?.errorMessage || item.error, item.syncError].filter(Boolean).join(' · ');
+  const error = [reason, item.syncError].filter(Boolean).join(' · ');
   const retries = item.retryMessage || (item.retryCount ? `已自动重试 ${item.retryCount} 次` : '');
   const thumb = productBulkThumbnail(item);
   return `<section class="bulk-product-card is-${tone}" ${preview ? `data-bulk-item="${escapeHtml(item.id)}"` : ''}>
@@ -7150,8 +7166,8 @@ function renderProductBulkCard(item, shops = [], preview = false) {
       ${shopName ? `<small title="${escapeHtml(shopName)}">${escapeHtml(shopName)}</small>` : `<small>售价换汇 · 库存 999 · 自动匹配类目</small>`}
       ${directListing && !preview ? renderPrintListingSteps(item) : ''}
       ${renderProductMainImageProgress(workflow, true)}
-      ${error ? `<details class="bulk-product-error"><summary>${success ? '查看状态同步提示' : '查看失败原因'}</summary><p>${escapeHtml(error)}</p></details>` : ''}
-      ${retries ? `<small class="bulk-product-retry">${escapeHtml(retries)}</small>` : ''}</div></section>`;
+      ${needsAuthorization ? `<div class="bulk-product-error"><p>店铺授权已过期，请重新授权。</p><a href="#${directListing ? 'shops-v2' : 'shops'}" target="_blank" rel="noopener">打开店铺管理</a></div>` : error ? `<details class="bulk-product-error"><summary>${success ? '查看状态同步提示' : '查看失败原因'}</summary><p>${escapeHtml(error)}</p></details>` : ''}
+      ${!needsAuthorization && retries ? `<small class="bulk-product-retry">${escapeHtml(retries)}</small>` : ''}</div></section>`;
 }
 
 function productBulkShopIds() {
@@ -7396,7 +7412,11 @@ async function openProductBulkUpload(historyKey, captureId, isSourceCurrent = ()
     for (const shopId of shopIds) if (![...select.options].some(option => option.value === shopId)) select.add(new Option('原任务店铺（保留上传记录）', shopId));
     setProductBulkShopIds(shopIds);
   }
-  document.querySelector('#product-bulk-error').textContent = shops.length || !marketplaceIntegrationStatus.livePublishingEnabled || restored ? '' : '请先在店铺管理中连接可发布的 Shopee 或 TikTok Shop 店铺。';
+  const shopUnavailable = marketplaceIntegrationStatus.livePublishingEnabled && !shops.length && !restored;
+  const managementLink = document.querySelector('#product-bulk-shop-management');
+  managementLink.href = directListing ? '#shops-v2' : '#shops';
+  managementLink.hidden = !shopUnavailable;
+  document.querySelector('#product-bulk-error').textContent = shopUnavailable ? '当前没有可发布的店铺。' : '';
   renderProductBulkProgress();
   if (!document.querySelector('#product-bulk-dialog').open) document.querySelector('#product-bulk-dialog').showModal();
   void pollProductBulkProgress();
@@ -7427,6 +7447,10 @@ async function submitProductBulkUpload(event) {
   renderProductBulkProgress();
   let run;
   try {
+    if (productBulkItems.some(item => !item.workflow?.id && shopReauthorizationNeeded(item.error))) {
+      await loadMarketplaceShops({silent:true});
+      if (currentUser?.organizationId !== org || productBulkStorageKey !== key) return;
+    }
     const chartKey = ProductBulkSizeChart.key();
     const failures = chartKey ? productBulkItems.filter(ProductBulkUpload.canRepairSizeChart) : [];
     if (failures.length) {
@@ -7478,6 +7502,9 @@ async function submitProductBulkUpload(event) {
               timeoutMs: 180000, isCurrent, retry: false
             });
           } catch (error) {
+            if (shopReauthorizationNeeded(error.message)) {
+              throw new ApiRequestError('店铺授权已过期，请重新授权', 409);
+            }
             // This endpoint only reads official options. A backend 500 can wrap
             // Shopee logistics.inner_error; retry reads, never workflow POSTs.
             if (Number(error.status) === 500) throw new ApiRequestError(error.message, 503);
@@ -7521,7 +7548,11 @@ async function submitProductBulkUpload(event) {
         ...(item.sizeChartImageKey ? {sizeChartImageKey:item.sizeChartImageKey} : {})};
       let payload = base;
       if (marketplaceIntegrationStatus.livePublishingEnabled) {
-        if (!targetShop) throw Error('目标店铺当前不可发布，请检查店铺授权');
+        if (!targetShop) {
+          const savedShop = marketplaceShops.find(shop => String(shop.id) === item.shopId);
+          if (savedShop?.status === 'TOKEN_EXPIRED') throw Error('店铺授权已过期，请重新授权');
+          throw Error('目标店铺当前不可发布，请检查店铺授权');
+        }
         let shopOptions;
         try {
           shopOptions = await readShopOptions(item.shopId);

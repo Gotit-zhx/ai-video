@@ -68,7 +68,7 @@ function harness(captures = fixture()) {
     ProductBulkHistory,
     AbortController, Date:class extends Date {static now(){return state.now ?? Date.now();}}, currentUser:{organizationId:'org'}, selectedProductCaptureDetail:plain(poisonDetail),
     selectedProductCaptureId:poisonDetail.id, productEditorDirty:false, productCaptureSaveInFlightId:null,
-    marketplaceIntegrationStatus:{livePublishingEnabled:true}, productBulkOrganization:'org', productBulkStorageKey:'heyi:bulk-upload:org:a,b',
+    marketplaceIntegrationStatus:{livePublishingEnabled:true}, marketplaceShops:[], productBulkOrganization:'org', productBulkStorageKey:'heyi:bulk-upload:org:a,b',
     productBulkBusy:false, productBulkItems:[], productBulkPollTimer:null,
     productBulkSelectedIds:new Set(captures.map(capture=>capture.id)), productBulkSelectedCaptures:new Map(), productCaptures:captures,
     loadMarketplaceShops:async()=>{}, productPriceLabel:capture=>capture.currency,
@@ -839,6 +839,32 @@ test('changing an unsent shop cancels the old poll generation and ignores its la
     assert.equal(h.storage.get(h.c.productBulkStorageKey),saved);
     assert.equal(h.posts.length,0);
   } finally {old.resolve({data:{}});h.c.stopProductBulkPolling();await oldPoll;}
+});
+
+test('expired authorization stops retrying before submission and keeps a link to shared V2 shop management',async()=>{
+  const h=harness([fixture()[0]]);
+  const capture = {...fixture()[0], status:'READY', printProduction:true};
+  await h.c.openProductBulkUpload('', capture);
+  h.c.setProductBulkShopIds(['shop']);
+  h.state.onOptions=async()=> {
+    throw new h.c.ApiRequestError('Shopee HTTP 403 {"error":"refresh_token_expired","request_id":"example"}',502);
+  };
+  await h.submit();
+  assert.equal(h.optionReads.length,1);
+  assert.equal(h.posts.length,0);
+  assert.equal(h.c.productBulkItems[0].status,'PREPARE_FAILED');
+  const progress=h.node('#product-bulk-progress').innerHTML;
+  assert.match(progress,/店铺授权已过期，请重新授权/);
+  assert.match(progress,/href="#shops-v2" target="_blank"/);
+  assert.doesNotMatch(progress,/refresh_token_expired|request_id|自动重试/);
+
+  let reloadCount=0;
+  h.c.loadMarketplaceShops=async()=>{reloadCount++;};
+  h.state.onOptions=null;
+  await h.submit();
+  assert.equal(reloadCount,1);
+  assert.equal(h.posts.length,1);
+  h.c.stopProductBulkPolling();
 });
 
 test('mixed unsent shops fetch their own configuration and never share category or logistics results',async()=>{
