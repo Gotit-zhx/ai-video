@@ -226,7 +226,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
-| [三处仓库核对](infrastructure/source-sync-20261123.md) | GitHub、本地与运行目录的提交基线、V187 现场证据和归档范围 |
+| [三处仓库核对](infrastructure/source-sync-20261123.md) | 服务器已上线的财务与采集源码、V166–V187 校验和以及隔离升级验证 |
 | [devops-phase1-closure-20261107.md](infrastructure/devops-phase1-closure-20261107.md) | 一期收尾、v7 调度恢复、缺陷回滚资格隔离与 v8 交接 |
 | [devops-phase1-closure-20261107.json](infrastructure/devops-phase1-closure-20261107.json) | v7 当前基线、真实受限回滚拒绝与验收边界摘要 |
 | [devops-phase1-20261106.md](infrastructure/devops-phase1-20261106.md) | 原 v4 结构验收及后续调度缺陷说明，非当前业务健康证明 |

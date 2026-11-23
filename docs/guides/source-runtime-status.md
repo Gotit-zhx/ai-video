@@ -31,7 +31,8 @@ Java 保存仍执行维护锁、停止领取新工作、等待安全点、编译
 
 - `heyi-source-watch.service` 为 enabled、active。只读状态确认应用健康、最近一次编译成功、watcher 就绪、维护门控已释放。MySQL 备份 timer 为 enabled、active、`Persistent=false`。
 - 财务广告月度范围和投影恢复的当日回执均记录生效成功。投影恢复的后续抽样观察到财务同步和投影继续推进，同时仍有待处理事件和需要广告授权的账户。样本时间及回执见[三处仓库核对记录](../releases/infrastructure/source-sync-20261123.md)。
-- 服务器运行目录带有已生效和待核对的工作区增量。运行代码应按具体回执及文件摘要识别，`git rev-parse HEAD` 只提供已提交基线。
+- 在 PR #78 的整合点，GitHub `develop`、本地 `develop` 与服务器 `feature/shared-development` 均到达 `061547d2`。Java、运行前端和迁移文件与该提交一致，其余并行工作区差异按对应回执继续核对。
+- 源码切换的历史迁移基线为 V150。V153 保留已应用的成本录入结构，具体业务功能的启停按相应验收核对。V154 启用 Shopee Ads 独立配置，当前迁移版本见上表。[V154 生效回执](../releases/finance/finance-shopee-ads-activation-20261112.md)
 
 ## 2026-11-11 源码切换验收样本
 
