@@ -2,10 +2,10 @@
   'use strict';
   let context, templates = [], organization = '', pending = null, platform = 'SHOPEE', busy = false;
   let shipping = null, shippingRequest = 0, shippingLoading = false;
-  let warehouse = null, warehouseRequest = 0, warehouseLoading = false;
+  let warehouse = null, warehouseRequest = 0, warehouseLoading = false, warehouseShopsLoaded = false;
   let dataModule = '';
   let dialogModule = '', dialogCaptureTemplateId = '', dialogTemplates = [], dialogOrganization = '';
-  let revision = 0, dialogRequest = 0;
+  let revision = 0, dialogRequest = 0, inlineScope = null;
   const currentModule = () => typeof commerceDataModule === 'function' ? commerceDataModule() : 'CAPTURE';
   function scoped(path, options = {}, scope = currentModule(), captureTemplateId = '') {
     if (captureTemplateId) path += `?captureTemplateId=${encodeURIComponent(captureTemplateId)}`;
@@ -18,7 +18,7 @@
       ? templates.find(item => item.platform === normalize(target)) : null;
   }
   const dialogTemplate = target => dialogTemplates.find(item => item.platform === target);
-  const dialogApi = (path, options) => scoped(path, options, dialogModule, dialogCaptureTemplateId);
+  const dialogApi = (path, options) => scoped(path, options, dialogModule, inlineScope && !inlineScope.exists() ? '' : dialogCaptureTemplateId);
   function dialogActive(request) {
     return request === dialogRequest && dialogModule === currentModule()
       && dialogOrganization === context.getUser()?.organizationId;
@@ -127,7 +127,7 @@
       const result = await dialogApi('/api/v1/product-listing-templates/logistics/'+encodeURIComponent(shopId),{signal:AbortSignal.timeout(95000)});
       if (request !== shippingRequest || context.getUser()?.organizationId !== org) return;
       if (result.data?.shopId !== shopId || !Array.isArray(result.data?.channels)) throw Error('物流返回不完整，请重试');
-      shipping = result.data; renderShipping();
+      shipping = {...result.data, version: inlineScope && !inlineScope.exists() ? 0 : result.data.version}; renderShipping();
       byId('listing-logistics-status').textContent = shipping.version ? `已保存 · 物流版本 ${shipping.version}` : '尚未单独配置，默认启用全部已开通渠道。';
     } catch(error) {
       if (request === shippingRequest && context.getUser()?.organizationId === org) byId('listing-logistics-status').textContent = error.message;
@@ -197,7 +197,7 @@
       const response=await dialogApi('/api/v1/product-listing-templates/warehouses/'+encodeURIComponent(shopId),{signal:AbortSignal.timeout(180000)});
       if(request!==warehouseRequest||org!==context.getUser()?.organizationId||dialogModule!==currentModule())return;
       if(response.data?.shopId!==shopId||!Array.isArray(response.data.warehouses))throw Error('发货仓库读取不完整，请重试');
-      warehouse=response.data;renderWarehouse();
+      warehouse={...response.data, version:inlineScope && !inlineScope.exists() ? 0 : response.data.version};renderWarehouse();
     }catch(error){if(request===warehouseRequest)byId('listing-warehouse-status').textContent=error.message;}
     finally{if(request===warehouseRequest){warehouseLoading=false;setBusy(busy);}}
   }
@@ -220,32 +220,58 @@
   function resetDialog() {
     dialogRequest++; shippingRequest++; warehouseRequest++;
     dialogModule = ''; dialogCaptureTemplateId = ''; dialogOrganization = ''; dialogTemplates = [];
-    shipping = null; shippingLoading = false; warehouse = null; warehouseLoading = false;
+    shipping = null; shippingLoading = false; warehouse = null; warehouseLoading = false; warehouseShopsLoaded = false;
     draftValues.clear();
   }
 
-  async function open(captureTemplateId = '', captureName = '') {
+  function unmountInline() {
+    if (!inlineScope) return;
+    byId('product-listing-template-dialog').append(byId('product-listing-template-form'));
+    inlineScope = null;
+    resetDialog();
+  }
+
+  function mountInline(host, scope) {
+    if (!context || inlineScope?.id === scope.id) return;
+    const dialog = byId('product-listing-template-dialog');
+    if (dialog.open) dialog.close();
+    host.append(byId('product-listing-template-form'));
+    inlineScope = scope;
+    void readSettings(scope.id, '定制模板配置');
+  }
+
+  function open(captureTemplateId = '', captureName = '') {
     const dialog = byId('product-listing-template-dialog');
     if (dialog.open) return;
+    unmountInline();
+    const name = {CAPTURE:'采集链接',FISSION:'一键裂变',TEMPLATES:'模板配置',ADS:'广告测款',ASSETS:'素材管理'}[currentModule()];
+    dialog.showModal();
+    return readSettings(captureTemplateId, captureTemplateId ? captureName + ' · 定制模板配置' : name + ' · 上传配置');
+  }
+
+  async function readSettings(captureTemplateId, title) {
     resetDialog();
     const request = dialogRequest;
     dialogModule = currentModule();
     dialogCaptureTemplateId = captureTemplateId;
     dialogOrganization = context.getUser()?.organizationId;
-    const name = {CAPTURE:'采集链接',FISSION:'一键裂变',TEMPLATES:'模板配置',ADS:'广告测款',ASSETS:'素材管理'}[dialogModule];
-    byId('listing-template-title').textContent = captureTemplateId ? captureName + ' · 定制模板配置' : name + ' · 上传配置';
+    byId('listing-template-title').textContent = title;
     platform = 'SHOPEE';
+    const form = byId('product-listing-template-form');
+    form.reset();
     byId('listing-template-error').textContent = '';
     byId('listing-template-status').textContent = '正在读取模板…';
-    dialog.showModal(); setBusy(true);
+    const unsaved = inlineScope && !inlineScope.exists();
+    setBusy(true);
     try {
       const requestTemplates = captureTemplateId
         ? dialogApi('/api/v1/product-listing-templates').then(result => result.data) : ensure(true);
       const [loaded] = await Promise.all([requestTemplates, loadShippingShops()]);
       if (!dialogActive(request)) return;
       if (!Array.isArray(loaded) || loaded.length !== 2) throw Error('模板读取不完整，请重试');
-      dialogTemplates = loaded;
-      render(); void loadWarehouseShops();
+      dialogTemplates = unsaved ? loaded.map(item => ({...item, version: 0})) : loaded;
+      render();
+      if (!inlineScope) void loadWarehouseShops();
     } catch (error) {
       if (dialogActive(request)) {
         byId('listing-template-error').textContent = error.message;
@@ -266,6 +292,8 @@
     } catch(error) {byId('listing-template-error').textContent = error.message;return;}
     setBusy(true); byId('listing-template-error').textContent = '';
     try {
+      if (inlineScope) await inlineScope.ensureSaved();
+      if (!dialogActive(request)) return;
       const result = await dialogApi('/api/v1/product-listing-templates/'+target,
         {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       if (!dialogActive(request)) return;
@@ -306,7 +334,7 @@
   function init(config) {
     context = config;
     const dialog = byId('product-listing-template-dialog');
-    dialog.addEventListener('close', () => { if (!dialog.open) resetDialog(); });
+    dialog.addEventListener('close', () => { if (!dialog.open && !inlineScope) resetDialog(); });
     root.addEventListener?.('hashchange', () => {
       const route = root.location.hash.split('?')[0];
       if (dialog.open && (dialogModule !== currentModule()
@@ -316,7 +344,7 @@
     });
     root.addEventListener?.('heyi:company-reset', () => {
       revision++; pending = null; templates = []; organization = ''; dataModule = '';
-      resetDialog();
+      unmountInline(); resetDialog();
       if (dialog.open) dialog.close();
     });
     for (const button of document.querySelectorAll('#open-product-listing-templates, [data-listing-template-opener]')) {
@@ -346,10 +374,14 @@
       }
       draftValues.set(platform,readDraft()); platform = button.dataset.listingPlatform; render(); renderShipping();
       renderWarehouse();
+      if (inlineScope && platform === 'TIKTOK_SHOP' && !warehouseShopsLoaded) {
+        warehouseShopsLoaded = true;
+        void loadWarehouseShops();
+      }
     }));
     byId('product-template-preview-platform').addEventListener('change', () => preview(context.getCapture()));
   }
-  const api = {init,ensure,get,fields,preview,logisticInfo,open};
+  const api = {init,ensure,get,fields,preview,logisticInfo,open,mountInline,unmountInline};
   if (typeof module !== 'undefined') module.exports = {fields,normalize,logisticInfo};
   else root.ProductListingTemplates = api;
 })(typeof window === 'undefined' ? globalThis : window);

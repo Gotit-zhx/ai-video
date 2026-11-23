@@ -3,7 +3,6 @@
   const root = document.querySelector('#capture-template-workspace');
   if (!root) return;
   const $ = id => root.querySelector('#ct-' + id);
-  const query = selector => root.querySelector(selector);
   const all = selector => root.querySelectorAll(selector);
   const icons = {plus:'M12 5v14M5 12h14',check:'m5 12 4 4L19 6',search:'m21 21-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',info:'M12 11v6M12 7h.01M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',layers:'m12 3 10 6-10 6L2 9l10-6M2 13l10 6 10-6M2 17l10 6 10-6',upload:'M12 16V3m-5 5 5-5 5 5M4 15v5h16v-5',pipette:'m14 5 5 5M3 21l3-1 12-12-4-4L2 16v4h4M14 4l2-2 6 6-2 2',close:'m6 6 12 12M6 18 18 6',lock:'M6 10V7a6 6 0 0 1 12 0v3M4 10h16v12H4zM12 15v3'};
   const icon = (name) => `<svg class="ct-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="${icons[name] || icons.layers}"/></svg>`;
@@ -13,8 +12,8 @@
   const variant = (name='',image='',filename='',sample=false) => ({id:uid(),name,image,filename,sample,styleCode:'',colors:[color('','')]});
   const newTemplate = () => ({id:uid(),name:'',description:'',variants:[variant()]});
   let templates = [newTemplate()];
-  let selected = templates[0].id, dirty = false, toastTimer, picking = null;
-  const dirtyIds=new Set(), controllers=new Set();
+  let selected = templates[0].id, toastTimer, picking = null;
+  const edits = new Map(), controllers = new Set();
   let generation=0, organization=null, entering=false;
   const endpoint='/api/v1/product-capture-templates';
   async function request(path,options={}){
@@ -28,38 +27,55 @@
   }
   const transport={
     list:offset=>request(`${endpoint}?offset=${offset}&limit=50`),
-    get:id=>request(`${endpoint}/${encodeURIComponent(id)}`),
     upload:file=>{const body=new FormData();body.append('file',file);return request(`${endpoint}/images`,{method:'POST',body});},
-    save:template=>request(`${endpoint}/${encodeURIComponent(template.id)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-      version:template.version||0,name:template.name,description:template.description,
+    save:(template,draft)=>request(`${endpoint}/${encodeURIComponent(template.id)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      version:template.version||0,draft,name:template.name,description:template.description,
       variants:template.variants.map(v=>({id:v.id,name:v.name,imageId:v.imageId,styleCode:v.styleCode,colors:v.colors.map(c=>({id:c.id,name:c.name,hex:c.hex,colorCode:c.colorCode}))}))
     })})
   };
   let canEdit=false, ready=false, busy=false, loaded=0, total=0;
   function lockControls(){
     all('.ct-editor input, .ct-editor button').forEach(node => {
-      if (!node.closest('#ct-main-style-host, .ct-style-settings')) node.disabled = busy || !canEdit;
+      if (!node.closest('.ct-settings-section')) node.disabled = busy || !canEdit;
     });
-    const saved = Boolean(current()?.version);
-    $('main-style').disabled = busy || !ready || !saved;
-    $('listing-config').disabled = busy || !ready || !saved;
-    $('settings-hint').hidden = saved;
+    $('save').disabled = busy || !canEdit || Boolean(edits.get(selected)?.pending);
     all('.ct-template-item').forEach(node=>node.disabled=busy||!ready);
     $('load-more-templates').disabled=busy;
   }
   function setBusy(value){busy=value;lockControls();}
   const current = () => templates.find(t => t.id === selected);
   const active = () => current().variants[0];
-  function showStyleSettings(open) {
-    $('main-style-host').hidden = !open;
-    $('main-style').setAttribute('aria-expanded', String(open));
-    window.ProductMainImageStyles?.setCaptureTemplate(open ? current().id : '');
+
+  function mountSettings() {
+    const template = current();
+    const scope = {id: template.id, exists: () => Boolean(template.version), ensureSaved: () => saveTemplate(template)};
+    window.ProductMainImageStyles?.setCaptureTemplate(scope.id, scope);
+    window.ProductListingTemplates?.mountInline($('listing-host'), scope);
   }
-  $('main-style').onclick = () => showStyleSettings($('main-style-host').hidden);
-  $('listing-config').onclick = () => ProductListingTemplates.open(current().id, current().name);
   function el(tag,className,text){const node=document.createElement(tag);if(className)node.className=className.split(' ').map(name=>'ct-'+name).join(' ');if(text!==undefined)node.textContent=text;return node;}
   function toast(message){if(!message||!currentUser?.organizationId)return;$('toast').textContent=message;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,4500);}
-  function changed(){dirtyIds.add(selected);dirty=true;$('save-state').textContent='未保存';}
+  function editState(template) {
+    if (!edits.has(template.id)) edits.set(template.id, {revision: 0, saved: 0});
+    return edits.get(template.id);
+  }
+  function saveStatus(template, message) {
+    if (template.id === selected) $('save-state').textContent = message;
+  }
+  function settledStatus(template) {
+    return !canEdit ? '仅查看' : !template.version ? '自动保存已开启'
+      : template.draft ? '草稿已保存' : '已保存';
+  }
+  function saveSoon(template, state) {
+    clearTimeout(state.timer);
+    state.timer = setTimeout(() => void saveTemplate(template).catch(() => {}), 600);
+  }
+  function changed() {
+    const template = current(), state = editState(template);
+    state.revision++;
+    saveStatus(template, '等待自动保存…');
+    saveSoon(template, state);
+  }
+
   function drawList(){
     $('template-count').textContent=templates.length;
     const list=$('template-list');list.replaceChildren();
@@ -69,7 +85,15 @@
       const image=t.variants.find(v=>v.image)?.image;
       if(image){const img=el('img');img.src=image;img.alt='';button.append(img);}else{const blank=el('span','template-thumb-empty');blank.innerHTML=icon('layers');button.append(blank);}
       const text=el('span');text.append(el('strong','',t.name||'填写模板'),el('small','',`${t.variants[0]?.styleCode || '未填写编码'} · ${t.variants.reduce((n,v)=>n+v.colors.length,0)} 个颜色`));button.append(text);
-      button.onclick=async()=>{if(busy)return;const ticket=generation;setBusy(true);try{if(t.version&&!dirtyIds.has(t.id))Object.assign(t,await transport.get(t.id));if(selected!==t.id)showStyleSettings(false);selected=t.id;drawEditor();drawList();$('save-state').textContent=dirtyIds.has(t.id)||!t.version?'未保存':'已保存';}catch(error){if(ticket===generation&&error.name!=='AbortError')toast(error.message);}finally{if(ticket===generation)setBusy(false);}};list.append(button);
+      button.onclick = () => {
+        if (busy || selected === t.id) return;
+        const previous = current(), state = edits.get(previous.id);
+        if (state?.revision !== state?.saved) void saveTemplate(previous).catch(() => {});
+        selected = t.id;
+        drawEditor(); drawList(); mountSettings();
+        const edit = edits.get(t.id);
+        saveStatus(t, edit?.revision !== edit?.saved ? '等待保存…' : settledStatus(t));
+      };list.append(button);
     });
     if(!list.children.length)list.append(el('p','empty-list','未找到模板'));lockControls();
   }
@@ -91,7 +115,7 @@
       code.oninput=()=>{c.colorCode=code.value;changed();};code.onblur=()=>{c.colorCode=code.value.trim().toUpperCase();code.value=c.colorCode;};
       const hex=el('input','hex');hex.value=c.hex;hex.placeholder='#RRGGBB';hex.maxLength=7;hex.spellcheck=false;hex.setAttribute('aria-label',`第 ${i+1} 个颜色 HEX 色值`);
       const error=el('span','color-error','请输入 3 位或 6 位十六进制色值');error.hidden=true;error.id=`error-${c.id}`;hex.setAttribute('aria-describedby',error.id);
-      const update=(value)=>{const valid=normalize(value);error.hidden=!!valid;hex.setAttribute('aria-invalid',String(!valid));if(valid){c.hex=valid;swatch.value=valid;changed();drawPalette();}return valid;};
+      const update=(value)=>{const valid=normalize(value);error.hidden=!!valid;hex.setAttribute('aria-invalid',String(!valid));c.hex=valid||value;if(valid)swatch.value=valid;changed();drawPalette();return valid;};
       swatch.oninput=()=>{hex.value=swatch.value.toUpperCase();update(hex.value);};name.oninput=()=>{c.name=name.value;changed();drawPalette();};hex.oninput=()=>update(hex.value);hex.onblur=()=>{const valid=normalize(hex.value);if(valid)hex.value=valid;};
       const pick=el('button');pick.type='button';pick.innerHTML=icon('pipette');pick.title='从屏幕取色';pick.setAttribute('aria-label',`为第 ${i+1} 个颜色取色`);pick.onclick=async()=>{
         if(window.EyeDropper){try{const result=await new EyeDropper().open();hex.value=result.sRGBHex.toUpperCase();update(hex.value);}catch(e){if(e.name!=='AbortError')toast('取色失败，请重试或输入 HEX。');}return;}
@@ -121,7 +145,7 @@
       original.image=image.imageUrl;original.imageId=image.id;original.filename=image.filename;original.sample=false;
       changed();toast('已上传');
     }catch(error){if(ticket===generation&&error.name!=='AbortError')toast(error.message);}
-    finally{if(ticket!==generation)return;drawEditor();drawList();$('save-state').textContent=dirtyIds.has(selected)?'未保存':current().version?'已保存':'未保存';setBusy(false);}
+    finally{if(ticket!==generation)return;drawEditor();drawList();if(!edits.get(selected)?.timer&&!edits.get(selected)?.pending)saveStatus(current(),settledStatus(current()));setBusy(false);}
   }
   $('image-input').onchange=async(e)=>{await upload(e.target.files);e.target.value='';};
   ['dragenter','dragover'].forEach(type=>$('dropzone').addEventListener(type,e=>{e.preventDefault();$('dropzone').classList.add('dragging');}));
@@ -131,73 +155,95 @@
     try{const canvas=document.createElement('canvas');canvas.width=img.naturalWidth;canvas.height=img.naturalHeight;const ctx=canvas.getContext('2d');ctx.drawImage(img,0,0);const pixel=ctx.getImageData(Math.floor(x),Math.floor(y),1,1).data;const c=active().colors.find(c=>c.id===picking);if(c)c.hex='#'+Array.from(pixel).slice(0,3).map(n=>n.toString(16).padStart(2,'0')).join('').toUpperCase();changed();drawVariant();}catch{toast('无法读取此图片的颜色，请使用 HEX 输入。');}
   };
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&picking)drawVariant();});
-  function validateTemplate(template){
-    if(!template.name.trim())throw new Error('请填写模板名称');
-    if(template.variants.length!==1)throw new Error('每个模板只能配置一个款式');
-    const v=template.variants[0];
-    if(!v.name.trim())throw new Error('请填写款式名称');
-    if(!/^[A-Z][0-9]{2}$/.test((v.styleCode||'').trim().toUpperCase()))throw new Error('款式编码请输入一个英文字母和两位数字，例如 A01');
-    if(!v.imageId)throw new Error('请上传款式图片');
-    if(!v.colors.length)throw new Error('请添加颜色');
-    const codes=new Set();
-    for(const c of v.colors){
-      if(!c.name.trim()||!normalize(c.hex))throw new Error('请补全颜色名称和色值');
-      const code=(c.colorCode||'').trim().toUpperCase();
-      if(!/^[A-Z0-9]{1,16}$/.test(code))throw new Error('颜色编码请输入 1 至 16 位英文字母或数字');
-      if(codes.has(code))throw new Error('同一款式的颜色编码不能重复');
+  function complete(template) {
+    const v = template.variants[0];
+    if (!template.name.trim() || !v.name.trim() || !v.imageId || !v.colors.length
+        || !/^[A-Z][0-9]{2}$/i.test((v.styleCode || '').trim())) return false;
+    const codes = new Set();
+    for (const c of v.colors) {
+      const code = (c.colorCode || '').trim().toUpperCase();
+      if (!c.name.trim() || !normalize(c.hex) || !/^[A-Z0-9]{1,16}$/.test(code) || codes.has(code)) return false;
       codes.add(code);
     }
-    if(query('input[aria-invalid=true]'))throw new Error('请修正 HEX 色值');
+    return true;
   }
-  $('save').onclick=async()=>{
-    if(!canEdit||busy)return;
-    const ticket=generation,template=current();
-    try{validateTemplate(template);}catch(error){toast(error.message);return;}
-    setBusy(true);$('save-state').textContent='保存中…';
-    try{
-      const saved=await transport.save(template);Object.assign(template,saved);
-      dirtyIds.delete(template.id);dirty=dirtyIds.size>0;
+  async function saveTemplate(template) {
+    if (!canEdit || !ready || !templates.includes(template)) throw new Error('当前款式不可保存');
+    const state = editState(template);
+    clearTimeout(state.timer);
+    state.timer = null;
+    if (state.pending) {
+      await state.pending;
+      return saveTemplate(template);
+    }
+    if (template.version && state.revision === state.saved) return;
+    const ticket = generation, revision = state.revision;
+    saveStatus(template, '保存中…');
+    const pending = transport.save(template, !complete(template));
+    state.pending = pending;
+    lockControls();
+    try {
+      const saved = await pending;
+      template.version = saved.version;
+      template.draft = saved.draft;
+      state.saved = revision;
       if (!templates.some(item => !item.version)) templates.unshift(newTemplate());
-      drawEditor();drawList();$('save-state').textContent='已保存';toast('已保存');
-    }catch(error){if(ticket===generation){$('save-state').textContent='未保存';if(error.name!=='AbortError')toast(error.message);}}
-    finally{if(ticket===generation)setBusy(false);}
-  };
+      if (selected === template.id && revision === state.revision) saveStatus(template, settledStatus(template));
+      drawList();
+    } catch (error) {
+      if (ticket === generation) {
+        saveStatus(template, '保存失败，请重试');
+        if (error.name !== 'AbortError') toast(error.message);
+      }
+      throw error;
+    } finally {
+      state.pending = null;
+      if (ticket === generation) lockControls();
+    }
+  }
+  $('save').onclick = () => void saveTemplate(current()).catch(() => {});
   async function loadMore(){
     const page=await transport.list(loaded);total=page.total;loaded+=page.items.length;
     for(const item of page.items){if(!templates.some(t=>t.id===item.id))templates.push(item);}
     $('load-more-templates').hidden=loaded>=total;drawList();
   }
   $('load-more-templates').onclick=async()=>{const ticket=generation;setBusy(true);try{await loadMore();}catch(error){if(ticket===generation&&error.name!=='AbortError')toast(error.message);}finally{if(ticket===generation)setBusy(false);}};
-  window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
+  window.addEventListener('beforeunload', e => {
+    if ([...edits.values()].some(state => state.saved !== state.revision)) {
+      e.preventDefault(); e.returnValue = '';
+    }
+  });
   function reset(){
     generation++;controllers.forEach(controller=>controller.abort());controllers.clear();
-    organization=null;entering=false;dirtyIds.clear();dirty=false;busy=false;ready=false;canEdit=false;loaded=0;total=0;
+    organization=null;entering=false;edits.forEach(state=>clearTimeout(state.timer));edits.clear();busy=false;ready=false;canEdit=false;loaded=0;total=0;
     clearTimeout(toastTimer);$('toast').hidden=true;$('image-input').value='';$('search').value='';
-    showStyleSettings(false);templates=[newTemplate()];selected=templates[0].id;
+    window.ProductListingTemplates?.unmountInline();templates=[newTemplate()];selected=templates[0].id;
     $('load-more-templates').hidden=true;drawEditor();drawList();lockControls();$('save-state').textContent='';
   }
   async function enter(){
     const org=currentUser?.organizationId;
     if(!org)return;
     if(organization&&organization!==org)reset();
-    if(entering||ready&&organization===org)return;
+    if (entering) return;
+    if (ready && organization === org) {
+      mountSettings();
+      return;
+    }
     organization=org;entering=true;const ticket=generation;
     setBusy(true);$('save-state').textContent='读取中…';
     try{
       canEdit=hasAnyPermission('product:edit');await loadMore();
       if(ticket!==generation)return;
-      ready=true;$('save-state').textContent=canEdit?'未保存':'仅查看';
+      ready = true;
+      selected = templates.find(template => template.version)?.id || selected;
+      drawEditor(); drawList(); saveStatus(current(), settledStatus(current()));
+      if (!root.hidden) mountSettings();
     }catch(error){if(ticket===generation&&error.name!=='AbortError'){$('save-state').textContent=error.message;toast(error.message);}}
     finally{if(ticket===generation){entering=false;setBusy(false);}}
   }
   window.addEventListener('heyi:commerce-section-entered', event => {
-    if (event.detail.route === 'product-capture-templates') {
-      if (!$('main-style-host').hidden) showStyleSettings(true);
-      void enter();
-    } else {
-      $('main-style-host').hidden = true;
-      $('main-style').setAttribute('aria-expanded', 'false');
-    }
+    if (event.detail.route === 'product-capture-templates') void enter();
+    else window.ProductListingTemplates?.unmountInline();
   });
   window.addEventListener('heyi:company-reset',reset);
   drawEditor();drawList();lockControls();

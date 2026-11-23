@@ -25,10 +25,15 @@ public class ProductCaptureTemplateService {
     private final ObjectMapper json;
     public record Color(String id, String name, String hex, String colorCode) {}
     public record Variant(String id, String name, String imageId, List<Color> colors, String styleCode) {}
-    public record Save(long version, String name, String description, List<Variant> variants) {}
+    public record Save(long version, String name, String description, List<Variant> variants, boolean draft) {
+        public Save(long version, String name, String description, List<Variant> variants) {
+            this(version, name, description, variants, false);
+        }
+    }
+    private record Draft(String name, String description, List<Variant> variants) {}
     public record Image(String id, String imageUrl, String filename, String mimeType, int width, int height) {}
     public record VariantView(String id, String name, String imageId, String image, String filename, List<Color> colors, String styleCode) {}
-    public record View(String id, long version, String name, String description, List<VariantView> variants) {}
+    public record View(String id, long version, String name, String description, List<VariantView> variants, boolean draft) {}
     public record Page(List<View> items, long total, int offset, int limit) {}
 
     public ProductCaptureTemplateService(JdbcTemplate db, CommerceImageArchive archive, ObjectMapper json) {
@@ -42,16 +47,22 @@ public class ProductCaptureTemplateService {
             throw fail(HttpStatus.FORBIDDEN, "没有采集模板权限");
     }
     public Page list(int offset, int limit, PlatformPrincipal user) {
+        return list(offset, limit, false, user);
+    }
+    public Page list(int offset, int limit, boolean readyOnly, PlatformPrincipal user) {
         access(user, false);
         if (offset < 0 || limit < 1 || limit > 100) throw bad("分页参数无效");
-        Long total = db.queryForObject("SELECT COUNT(*) FROM product_capture_templates WHERE organization_id=?", Long.class, user.organizationId());
-        var rows = db.queryForList("SELECT * FROM product_capture_templates WHERE organization_id=? ORDER BY updated_at DESC,id LIMIT ? OFFSET ?",
+        String scope = " FROM product_capture_templates WHERE organization_id=?"
+                + (readyOnly ? " AND JSON_LENGTH(content_json)>0" : "");
+        Long total = db.queryForObject("SELECT COUNT(*)" + scope, Long.class, user.organizationId());
+        var rows = db.queryForList("SELECT *" + scope + " ORDER BY updated_at DESC,id LIMIT ? OFFSET ?",
                 user.organizationId(), limit, offset);
-        return new Page(rows.stream().map(r -> view(r, user.organizationId())).toList(), total == null ? 0 : total, offset, limit);
+        return new Page(rows.stream().map(r -> view(r, user.organizationId(), readyOnly)).toList(),
+                total == null ? 0 : total, offset, limit);
     }
     public View get(String id, PlatformPrincipal user) {
         access(user, false); uuid(id);
-        return view(row(id, user.organizationId()), user.organizationId());
+        return view(row(id, user.organizationId()), user.organizationId(), false);
     }
     /** An absent scope selects the existing enterprise configuration. A style scope must exist in this enterprise. */
     public String settingsScope(String id, PlatformPrincipal user, boolean edit) {
@@ -65,20 +76,32 @@ public class ProductCaptureTemplateService {
         access(user, true); uuid(id);
         Save value = normalize(input);
         // Only ledger-owned image ids are accepted. Never accept URLs, storage keys or organization ids from a client.
-        for (Variant variant : value.variants()) imageRow(variant.imageId(), user.organizationId());
-        String content = json.writeValueAsString(value.variants());
-        String fingerprint = sha(json.writeValueAsBytes(List.of(value.name(), value.description(), value.variants())));
+        for (Variant variant : value.variants()) {
+            if (variant.imageId() != null) imageRow(variant.imageId(), user.organizationId());
+        }
+        String draft = value.draft() ? json.writeValueAsString(new Draft(value.name(), value.description(), value.variants())) : null;
+        String content = draft == null ? json.writeValueAsString(value.variants()) : "[]";
+        String fingerprint = draft == null
+                ? sha(json.writeValueAsBytes(List.of(value.name(), value.description(), value.variants())))
+                : sha(draft.getBytes(StandardCharsets.UTF_8));
         int changed;
         if (value.version() == 0) {
             try {
                 changed = db.update("""
-                        INSERT INTO product_capture_templates(organization_id,id,name,description,content_json,version,fingerprint,created_by,updated_by,created_at,updated_at)
-                        VALUES(?,?,?,?,?,1,?,?,?,NOW(6),NOW(6))
-                        """, user.organizationId(), id, value.name(), value.description(), content, fingerprint, user.userId(), user.userId());
+                        INSERT INTO product_capture_templates(organization_id,id,name,description,content_json,draft_json,version,fingerprint,created_by,updated_by,created_at,updated_at)
+                        VALUES(?,?,?,?,?,?,1,?,?,?,NOW(6),NOW(6))
+                        """, user.organizationId(), id, value.name(), value.description(), content, draft,
+                        fingerprint, user.userId(), user.userId());
             } catch (DuplicateKeyException duplicate) { changed = 0; }
+        } else if (draft != null) {
+            changed = db.update("""
+                    UPDATE product_capture_templates SET draft_json=?,fingerprint=?,version=version+1,updated_by=?,updated_at=NOW(6)
+                    WHERE organization_id=? AND id=? AND version=?
+                    """, draft, fingerprint, user.userId(), user.organizationId(), id, value.version());
         } else {
             changed = db.update("""
-                    UPDATE product_capture_templates SET name=?,description=?,content_json=?,fingerprint=?,version=version+1,updated_by=?,updated_at=NOW(6)
+                    UPDATE product_capture_templates SET name=?,description=?,content_json=?,draft_json=NULL,
+                        fingerprint=?,version=version+1,updated_by=?,updated_at=NOW(6)
                     WHERE organization_id=? AND id=? AND version=?
                     """, value.name(), value.description(), content, fingerprint, user.userId(), user.organizationId(), id, value.version());
         }
@@ -88,7 +111,7 @@ public class ProductCaptureTemplateService {
         // A lost response may be retried; an identical request is safe, a stale different edit is not.
         if (changed == 0 && !fingerprint.equals(saved.get("fingerprint")))
             throw fail(HttpStatus.CONFLICT, "模板已被修改，请重新打开后再保存");
-        return view(saved, user.organizationId());
+        return view(saved, user.organizationId(), false);
     }
     public Image upload(MultipartFile file, PlatformPrincipal user) {
         access(user, true);
@@ -122,44 +145,53 @@ public class ProductCaptureTemplateService {
     }
     static Save normalize(Save input) {
         if (input == null || input.version() < 0) throw bad("模板版本无效");
-        String name = text(input.name(), 50, true, "模板名称");
+        boolean required = !input.draft();
+        String name = text(input.name(), 50, required, "模板名称");
         String description = text(input.description(), 160, false, "模板说明");
         if (input.variants() == null || input.variants().size() != 1) throw bad("每个模板只能配置一个款式");
         Set<String> variantIds = new HashSet<>();
         List<Variant> variants = new ArrayList<>();
         for (Variant v : input.variants()) {
             if (v == null) throw bad("版式无效");
-            uuid(v.id()); uuid(v.imageId());
+            uuid(v.id());
+            String imageId = Objects.toString(v.imageId(), "").trim();
+            if (required || !imageId.isEmpty()) uuid(imageId);
             if (!variantIds.add(v.id())) throw bad("版式编号重复");
-            String variantName = text(v.name(), 40, true, "款式名称");
-            String styleCode = Objects.toString(v.styleCode(), "").trim().toUpperCase(Locale.ROOT);
-            if (!styleCode.matches("[A-Z][0-9]{2}")) throw bad("款式编码请输入一个英文字母和两位数字，例如 A01");
-            if (v.colors() == null || v.colors().isEmpty() || v.colors().size() > 30) throw bad("每个版式支持 1 至 30 个颜色");
+            String variantName = text(v.name(), 40, required, "款式名称");
+            String styleCode = text(v.styleCode(), 3, false, "款式编码").toUpperCase(Locale.ROOT);
+            if (required && !styleCode.matches("[A-Z][0-9]{2}")) throw bad("款式编码请输入一个英文字母和两位数字，例如 A01");
+            if (v.colors() == null || (required && v.colors().isEmpty()) || v.colors().size() > 30) throw bad("每个版式支持 1 至 30 个颜色");
             Set<String> colorIds = new HashSet<>(), colorCodes = new HashSet<>(); List<Color> colors = new ArrayList<>();
             for (Color c : v.colors()) {
                 if (c == null) throw bad("颜色无效");
                 uuid(c.id());
                 if (!colorIds.add(c.id())) throw bad("颜色编号重复");
-                String colorName = text(c.name(), 24, true, "颜色名称");
-                String colorCode = Objects.toString(c.colorCode(), "").trim().toUpperCase(Locale.ROOT);
-                if (!colorCode.matches("[A-Z0-9]{1,16}")) throw bad("颜色编码请输入 1 至 16 位英文字母或数字");
-                if (!colorCodes.add(colorCode)) throw bad("同一款式的颜色编码不能重复");
-                String hex = Objects.toString(c.hex(), "").trim().toUpperCase(Locale.ROOT);
+                String colorName = text(c.name(), 24, required, "颜色名称");
+                String colorCode = text(c.colorCode(), 16, false, "颜色编码").toUpperCase(Locale.ROOT);
+                if (required && !colorCode.matches("[A-Z0-9]{1,16}")) throw bad("颜色编码请输入 1 至 16 位英文字母或数字");
+                if (required && !colorCodes.add(colorCode)) throw bad("同一款式的颜色编码不能重复");
+                String hex = text(c.hex(), 7, false, "颜色色值").toUpperCase(Locale.ROOT);
                 if (hex.matches("#[A-F0-9]{3}")) hex = "#" + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2) + hex.charAt(3) + hex.charAt(3);
-                if (!hex.matches("#[A-F0-9]{6}")) throw bad("颜色须为有效的 HEX 色值");
+                if (required && !hex.matches("#[A-F0-9]{6}")) throw bad("颜色须为有效的 HEX 色值");
                 colors.add(new Color(c.id(), colorName, hex, colorCode));
             }
-            variants.add(new Variant(v.id(), variantName, v.imageId(), List.copyOf(colors), styleCode));
+            variants.add(new Variant(v.id(), variantName, imageId.isEmpty() ? null : imageId, List.copyOf(colors), styleCode));
         }
-        return new Save(input.version(), name, description, List.copyOf(variants));
+        return new Save(input.version(), name, description, List.copyOf(variants), input.draft());
     }
-    private View view(Map<String, Object> row, String org) {
-        List<Variant> variants = json.readValue(row.get("content_json").toString(), new TypeReference<List<Variant>>() {});
+    private View view(Map<String, Object> row, String org, boolean readyOnly) {
+        Draft draft = !readyOnly && row.get("draft_json") != null
+                ? json.readValue(row.get("draft_json").toString(), Draft.class) : null;
+        List<Variant> variants = draft != null ? draft.variants()
+                : json.readValue(row.get("content_json").toString(), new TypeReference<List<Variant>>() {});
         var result = variants.stream().map(v -> {
-            Image i = imageView(imageRow(v.imageId(), org));
-            return new VariantView(v.id(), v.name(), v.imageId(), i.imageUrl(), i.filename(), v.colors(), v.styleCode());
+            Image image = v.imageId() == null ? null : imageView(imageRow(v.imageId(), org));
+            return new VariantView(v.id(), v.name(), v.imageId(), image == null ? null : image.imageUrl(),
+                    image == null ? null : image.filename(), v.colors(), v.styleCode());
         }).toList();
-        return new View((String) row.get("id"), ((Number) row.get("version")).longValue(), (String) row.get("name"), (String) row.get("description"), result);
+        return new View((String) row.get("id"), ((Number) row.get("version")).longValue(),
+                draft == null ? (String) row.get("name") : draft.name(),
+                draft == null ? (String) row.get("description") : draft.description(), result, draft != null);
     }
     private Image imageView(Map<String, Object> row) {
         String id = (String) row.get("id");

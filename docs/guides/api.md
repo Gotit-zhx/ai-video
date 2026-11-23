@@ -50,13 +50,13 @@ Content-Type: application/json
 | AI / 通用视频 / 监控 | `/api/v1/ai-video-tasks`、`/api/v1/general-video-tasks`、`/api/v1/ai-video-monitor` | `video/web/` |
 | 商品采集 / 图片 / 发布流程 | `/api/v1/product-captures` | `product/web/ProductCaptureController.java` 及同目录专用控制器 |
 | 印花采集插件 | `POST /api/v1/product-captures/print-source` | 需 `product:collect`。提交 `sourceUrl`、`title` 和图片 URL 数组 `images`，返回采集记录 `id` |
-| 印花采集工作台 | `/api/v1/product-print-capture` | 需 `product:edit`。`GET` 返回本企业最近 30 条记录，`GET /{captureId}` 按 ID 读取，`POST /lookup` 按 `url` 查询。提取用 `POST /{captureId}/extract`，提交 `imageId`、`confirmed: true` 与 `Idempotency-Key` 请求头 |
+| 印花采集工作台 | `/api/v1/product-print-capture` | 需 `product:edit`。`GET` 返回本企业最近 30 条记录，`GET /{captureId}` 按 ID 读取，`POST /lookup` 按 `url` 查询。提取用 `POST /{captureId}/extract`，提交 `imageId`、`confirmed: true` 与 `Idempotency-Key` 请求头。用 `GET /{captureId}/results` 读取当前用户的历史结果，`POST /results/{id}/archive` 复用已有结果重试归档 |
 | 插件身份 | `/api/v1/extension-auth` | `auth/ExtensionAuthController.java` |
-| 采集模板 / 版式图片 | `/api/v1/product-capture-templates`、`/api/v1/product-capture-templates/images` | `product/web/ProductCaptureTemplateController.java`；[用法与权限](capture-template-preview.md) |
+| 采集模板 / 版式图片 | `/api/v1/product-capture-templates`、`/api/v1/product-capture-templates/images` | 列表传 `readyOnly=true` 只读取可用于套版的完整款式，保存传 `draft: true` 允许写入草稿。[用法与权限](capture-template-preview.md) |
 | 商品运营 v2.0 专用插件 | `POST /api/v1/product-captures/print-source` | 接收 `sourceUrl`、`title`、`images`，返回采集记录 `id`。需要 `product:collect` |
 | 商品运营 v2.0 采集链接 / 提取印花 | `GET /api/v1/product-print-capture`、`GET /api/v1/product-print-capture/{captureId}`、`POST /api/v1/product-print-capture/lookup`、`POST /api/v1/product-print-capture/{captureId}/extract` | 最近 30 条记录、按 ID 查询、按 `url` 查询、按 `imageId` 提取。提取需传 `confirmed` 和 `Idempotency-Key` 请求头。需要 `product:edit` |
 | 主图模板 / 结果 | `/api/v1/product-main-image-templates`、`/api/v1/product-main-image-results` | `product/web/ProductMainImage*Controller.java` |
-| 款式级主图与定制配置 | 在主图模板和刊登模板配置请求传 `captureTemplateId`，同样适用于物流与发货仓明细接口 | 款式须已保存并属于当前企业。未提供款式 ID 时使用现有企业范围。 |
+| 款式级主图与定制配置 | 在主图模板和刊登模板配置请求传 `captureTemplateId`，同样适用于物流与发货仓明细接口 | 款式或草稿须属于当前企业。未提供款式 ID 时使用现有企业范围。 |
 | 模板 / 裂变批次 / 设计稿 | `/api/v1/commerce-templates`、`/api/v1/commerce-batches`、`/api/v1/commerce-designs` | `product/web/Commerce*Controller.java` |
 | 商品店铺 / 官方授权 | `/api/v1/shops`、`/api/v1/shop-authorizations` | `shop/web/` |
 | 财务 | `/api/v1/finance` | `finance/FinanceController.java` |

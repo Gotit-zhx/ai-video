@@ -15,8 +15,9 @@ public class ProductCaptureTemplateController {
     private final ProductCaptureTemplateService service;
     public ProductCaptureTemplateController(ProductCaptureTemplateService service) { this.service = service; }
     @GetMapping public ApiResponse<ProductCaptureTemplateService.Page> list(@RequestParam(defaultValue="0") int offset,
-            @RequestParam(defaultValue="50") int limit, @AuthenticationPrincipal PlatformPrincipal user) {
-        return ApiResponse.ok(service.list(offset, limit, user));
+            @RequestParam(defaultValue="50") int limit, @RequestParam(defaultValue="false") boolean readyOnly,
+            @AuthenticationPrincipal PlatformPrincipal user) {
+        return ApiResponse.ok(service.list(offset, limit, readyOnly, user));
     }
     @GetMapping("/{id}") public ApiResponse<ProductCaptureTemplateService.View> get(@PathVariable String id, @AuthenticationPrincipal PlatformPrincipal user) {
         return ApiResponse.ok(service.get(id, user));

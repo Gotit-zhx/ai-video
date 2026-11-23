@@ -91,11 +91,18 @@
 @media(max-width:760px){#capture-templates-heading{padding:16px 12px 0}#capture-template-workspace{padding:0 12px 16px}#capture-template-workspace .ct-workspace{grid-template-columns:minmax(0,1fr)}#capture-template-workspace .ct-template-rail{border:0;border-bottom:1px solid var(--line)}#capture-template-workspace .ct-template-list{display:flex;overflow-x:auto}#capture-template-workspace .ct-template-item{width:190px;flex:none}#capture-template-workspace .ct-template-info{grid-template-columns:1fr;gap:16px}#capture-template-workspace .ct-editor{padding:18px 14px 0}#capture-template-workspace .ct-image-preview{height:280px}#capture-template-workspace .ct-color-row,#capture-template-workspace .ct-color-labels{grid-template-columns:26px minmax(42px,1fr) minmax(43px,.8fr) minmax(76px,1.15fr) 24px 18px;gap:4px}#capture-template-workspace .ct-color-labels{font-size:11px}}
 #capture-template-workspace .ct-color-row input[type=color]{min-height:26px;max-height:26px}
 
-#capture-template-workspace .ct-style-settings {display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding-top:16px}
-#capture-template-workspace .ct-style-settings button[aria-expanded=true] {border-color:var(--ink);background:var(--surface-soft)}
-#ct-settings-hint {color:var(--muted);font-size:12px}
-#ct-main-style-host {min-width:0;margin-top:16px;border-top:1px solid var(--line)}
-#ct-main-style-host #main-style-workspace {padding:16px 0 0}
+#capture-template-workspace .ct-settings-section {min-width:0;margin-top:20px;padding-top:20px;border-top:1px solid var(--line)}
+#ct-listing-host.listing-template-dialog {width:auto;max-height:none;border-radius:0;border-inline:0;border-bottom:0;overflow:visible;box-shadow:none}
+#ct-listing-host form > header, #ct-listing-host .listing-template-tabs, #ct-listing-host .listing-template-body, #ct-listing-host footer {padding-inline:0}
+#ct-listing-host form > header {padding-top:0}
+#ct-listing-host footer {position:static}
+#ct-listing-host #listing-template-title {font-size:16px;font-weight:650}
+#ct-listing-host input[type=checkbox] {width:18px;height:18px;padding:0;flex:none}
+#ct-listing-host .listing-template-tabs button[aria-selected=true],
+#ct-listing-host #save-product-listing-template {background:var(--solid);color:var(--on-solid);border-color:var(--solid)}
+#ct-listing-host .listing-template-note {margin-top:12px}
+#ct-listing-host form > header small, #ct-listing-host #close-product-listing-templates, #ct-listing-host #cancel-product-listing-templates {display:none}
+#ct-main-style-host #main-style-workspace {padding:0}
 #ct-main-style-host .main-style-heading h1 {font-size:16px}
 #ct-main-style-host .main-style-actions {flex-wrap:wrap}
 #ct-main-style-host .main-style-heading {padding-bottom:12px}

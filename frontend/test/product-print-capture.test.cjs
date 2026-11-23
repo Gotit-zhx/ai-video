@@ -8,8 +8,11 @@ const html = readFileSync(resolve(__dirname, '../index.html'), 'utf8');
 const source = readFileSync(resolve(__dirname, '../product-print-capture.js'), 'utf8');
 const captureId = '11111111-2222-4333-8444-555555555555';
 const endpoint = '/api/v1/product-print-capture';
+const flush = () => new Promise(setImmediate);
+const photos = ['a', 'b', 'c'].map(id => ({id, url: `/${id}.png`}));
+const result = imageId => ({id: `print-${imageId}`, imageId, status: 'READY', imageUrl: `/print-${imageId}.png`});
 
-async function workspace(t, respond) {
+async function workspace(t, submit, history = []) {
   const dom = new JSDOM(html, {
     url: `https://example.test/#product-print-capture?capture=${captureId}`,
     runScripts: 'outside-only'
@@ -18,19 +21,30 @@ async function workspace(t, respond) {
   const { window } = dom;
   const get = name => window.document.querySelector(`#pc-${name}`);
   const submissions = [];
-  const flush = () => new Promise(setImmediate);
   window.currentUser = { organizationId: 'company', userId: 'user' };
   window.hasAnyPermission = () => true;
-  window.api = async (path, options) => {
-    if (path === endpoint) return { success: true, data: [] };
-    if (path === `${endpoint}/${captureId}`) return { success: true, data: {
-      captureId, title: '示例', images: [{ id: 'photo-a', url: '/a.png' }, { id: 'photo-b', url: '/b.png' }]
-    } };
-    assert.equal(path, `${endpoint}/${captureId}/extract`);
-    submissions.push(options);
-    return respond(submissions.length);
+  window.Image = class {
+    naturalWidth = 2;
+    naturalHeight = 2;
+    async decode() {}
   };
-
+  window.HTMLCanvasElement.prototype.getContext = () => ({
+    drawImage() {}, clearRect() {}, getImageData: () => ({data: new Uint8Array(16).fill(255)})
+  });
+  window.api = async (path, options) => {
+    const success = data => ({success: true, data});
+    if (path === endpoint) return success([]);
+    if (path === `${endpoint}/${captureId}`) return success({captureId, title: '示例', images: photos});
+    if (path === `${endpoint}/${captureId}/results`) return success(history);
+    if (path.startsWith('/api/v1/product-capture-templates?readyOnly=true&')) return success({
+      total: 1, items: [{id: 'style', name: '短袖', variants: [{image: '/base.png', styleCode: 'A01'}]}]
+    });
+    assert.equal(path, `${endpoint}/${captureId}/extract`);
+    const imageId = JSON.parse(options.body).imageId;
+    assert.equal(JSON.parse(options.body).confirmed, true);
+    submissions.push({imageId, key: options.headers['Idempotency-Key']});
+    return success(await submit(imageId, history));
+  };
   window.document.querySelector('#print-capture-workspace').hidden = false;
   window.eval(source);
   await flush();
@@ -38,43 +52,79 @@ async function workspace(t, respond) {
   return {
     get,
     submissions,
-    select: index => get('source-images').querySelectorAll('input')[index].click(),
+    resultButtons: () => [...get('results').querySelectorAll('[data-result]')],
+    sourceImages: () => [...get('source-images').querySelectorAll('input')],
     extract: async () => {
-      if (!get('confirm-model').checked) get('confirm-model').click();
+      get('confirm-model').click();
       get('extract').click();
+      await flush();
+    },
+    chooseStyle: async () => {
+      get('style').value = 'style';
+      get('style').dispatchEvent(new window.Event('change'));
       await flush();
     }
   };
 }
 
-test('a provider refusal stops extraction for that image and allows another image to be selected', async t => {
-  const app = await workspace(t, () => {
-    throw Object.assign(new Error('图片内容未通过服务商审核，本次未生成图片；同一请求不会自动重试生图'), { status: 409 });
+test('a batch continues after one refusal and completed prints remain selectable', async t => {
+  const app = await workspace(t, (imageId, history) => {
+    if (imageId === 'b') {
+      history.push({id: 'rejection-b', imageId, status: 'REJECTED', message: '图片内容未通过服务商审核'});
+      throw Object.assign(new Error('图片内容未通过服务商审核；同一请求不会自动重试生图'), {status: 409});
+    }
+    const saved = result(imageId);
+    history.push(saved);
+    return saved;
   });
+  for (const input of app.sourceImages()) input.click();
+  assert.equal(app.get('extract').textContent, '提取 3 张');
+  assert.equal(app.get('extract').disabled, true);
   await app.extract();
-  assert.equal(app.get('monitor-print').textContent, '提取已拒绝');
-  assert.match(app.get('extract-status').textContent, /未通过服务商审核.*有权使用的其他商品图/);
-  assert.equal(app.get('extract-action').hidden, true);
-  await app.extract();
-  assert.equal(app.submissions.length, 1);
-
-  app.select(1);
-  assert.equal(app.get('extract-action').hidden, false);
+  assert.deepEqual(app.submissions.map(entry => entry.imageId), ['a', 'b', 'c']);
+  assert.equal(new Set(app.submissions.map(entry => entry.key)).size, 3);
+  assert.match(app.get('results').textContent, /未通过服务商审核/);
+  assert.equal(app.resultButtons().length, 2);
   assert.equal(app.get('confirm-model').checked, false);
-  assert.equal(app.get('extract-status').hidden, true);
-
-  app.select(0);
-  assert.equal(app.get('extract-action').hidden, true);
-  assert.equal(app.get('monitor-print').textContent, '提取已拒绝');
-  assert.equal(app.submissions.length, 1);
+  await app.chooseStyle();
+  assert.equal(app.get('canvas').hidden, false);
+  app.resultButtons()[1].click();
+  await flush();
+  assert.equal(app.get('canvas').hidden, false);
+  assert.equal(app.get('style').value, 'style');
+  assert.equal(app.resultButtons()[1].getAttribute('aria-pressed'), 'true');
+  app.sourceImages()[0].click();
+  await flush();
+  assert.equal(app.resultButtons()[0].getAttribute('aria-pressed'), 'true');
+  assert.equal(app.get('extract').disabled, true);
+  assert.equal(app.submissions.length, 3);
 });
 
-test('an unconfirmed outcome can still be checked with the same request key', async t => {
-  const app = await workspace(t, () => ({ success: true, data: { status: 'UNKNOWN' } }));
+test('opening a saved capture restores ready and uncertain results without calling the model', async t => {
+  const app = await workspace(t, () => assert.fail('prior extraction must not submit again'), [
+    result('a'), {id: 'pending-b', imageId: 'b', status: 'UNKNOWN'}
+  ]);
+  assert.equal(app.resultButtons()[0].dataset.result, 'print-a');
+  assert.match(app.get('results').textContent, /结果待核查/);
+  assert.equal(app.sourceImages()[1].disabled, true);
+  app.get('refresh-results').click();
+  await flush();
+  assert.equal(app.resultButtons().length, 1);
+  assert.equal(app.submissions.length, 0);
+});
+
+test('a network failure without a saved attempt can be retried with the same key', async t => {
+  let calls = 0;
+  const app = await workspace(t, imageId => {
+    if (++calls === 1) throw new Error('网络异常');
+    return result(imageId);
+  });
+  app.sourceImages()[0].click();
   await app.extract();
-  assert.equal(app.get('extract-action').hidden, false);
-  assert.equal(app.get('extract').textContent, '查看提取结果');
+  assert.match(app.get('results').textContent, /网络异常/);
+  app.sourceImages()[0].click();
   await app.extract();
   assert.equal(app.submissions.length, 2);
-  assert.equal(app.submissions[0].headers['Idempotency-Key'], app.submissions[1].headers['Idempotency-Key']);
+  assert.equal(app.submissions[0].key, app.submissions[1].key);
+  assert.equal(app.resultButtons().length, 1);
 });

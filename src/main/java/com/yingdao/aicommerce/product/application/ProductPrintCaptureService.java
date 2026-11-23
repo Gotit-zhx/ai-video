@@ -78,6 +78,17 @@ public class ProductPrintCaptureService {
         }, user);
     }
 
+    public List<CommerceSampleService.CaptureResult> results(String captureId, PlatformPrincipal user) {
+        requireEdit(user);
+        var source = captures.getPrintSource(captureId, user);
+        return samples.captureResults(source.capture().getId(), user);
+    }
+
+    public CommerceSampleService.View archiveResult(String id, PlatformPrincipal user) {
+        requireEdit(user);
+        return samples.archiveCaptureResult(id, user);
+    }
+
     public CommerceDesignImageGateway.Reference resultImage(String id, PlatformPrincipal user) {
         requireEdit(user);
         return samples.captureResultImage(id, user);

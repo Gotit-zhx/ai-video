@@ -180,11 +180,56 @@ public class CommerceSampleService {
     "/api/v1/product-print-capture/results/" + id + "/image", saved.parentId(), saved.assetKind());
  }
 
- CommerceDesignImageGateway.Reference captureResultImage(String id, PlatformPrincipal user) {
+ public record CaptureResult(String imageId, String id, String status, String imageUrl, String message) {}
+
+ List<CaptureResult> captureResults(String captureId, PlatformPrincipal user) {
+  access(user);
+  String prefix = "来源采集商品 " + captureId + " / ";
+  return db.query("""
+    SELECT source.prompt AS binding, art.id, art.status,
+           art.storage_key IS NOT NULL AS archived,
+           art.status='RESULT_RECEIVED' AND JSON_TYPE(JSON_EXTRACT(art.result_json,'$.artifact.dataBase64'))='STRING' AS inline_image,
+           CASE WHEN art.status='REJECTED' THEN JSON_UNQUOTE(JSON_EXTRACT(art.result_json,'$.message')) END AS reason
+    FROM commerce_sample_previews source
+    JOIN commerce_sample_previews art ON art.parent_id=source.id
+        AND art.organization_id=source.organization_id AND art.created_by=source.created_by
+    WHERE source.organization_id=? AND source.created_by=? AND source.prompt LIKE ?
+        AND source.request_key LIKE 'capture-v2-src-%' AND source.asset_kind='PRODUCT_IMAGE'
+        AND art.request_key LIKE 'capture-v2-art-%' AND art.asset_kind='PRINT_EXTRACT'
+    ORDER BY art.created_at DESC, art.id LIMIT 200
+    """, (row, index) -> {
+   String id = row.getString("id");
+   String status = row.getString("status");
+   String imageUrl = null;
+   if ("READY".equals(status) && row.getBoolean("archived"))
+    imageUrl = "/api/v1/commerce-samples/" + id + "/image";
+   if (row.getBoolean("inline_image"))
+    imageUrl = "/api/v1/product-print-capture/results/" + id + "/image";
+   String message = TRANSPARENCY_REJECTED.equals(status) ? TRANSPARENCY_FAILURE : row.getString("reason");
+   return new CaptureResult(row.getString("binding").substring(prefix.length()), id, status, imageUrl, message);
+  }, user.organizationId(), user.userId(), prefix + "%");
+ }
+
+ View archiveCaptureResult(String id, PlatformPrincipal user) {
+  var saved = captureResultRow(id, user);
+  if (!Set.of("RESULT_RECEIVED", "READY").contains(saved.get("status")))
+   throw error(HttpStatus.CONFLICT, "印花暂不可归档");
+  return collectView(id, user, true);
+ }
+
+ private Map<String,Object> captureResultRow(String id, PlatformPrincipal user) {
   var saved = row(id, user);
   if (!Objects.toString(saved.get("request_key"), "").startsWith("capture-v2-art-")
-      || !"PRINT_EXTRACT".equals(saved.get("asset_kind"))
-      || !Set.of("RESULT_RECEIVED", "READY").contains(Objects.toString(saved.get("status"), ""))) {
+      || !"PRINT_EXTRACT".equals(saved.get("asset_kind"))) {
+   throw error(HttpStatus.NOT_FOUND, "找不到本次采集的印花结果");
+  }
+  return saved;
+ }
+
+ CommerceDesignImageGateway.Reference captureResultImage(String id, PlatformPrincipal user) {
+  var saved = captureResultRow(id, user);
+  if (!Set.of("RESULT_RECEIVED", "READY").contains(Objects.toString(saved.get("status"), ""))
+      || saved.get("result_json") == null) {
    throw error(HttpStatus.NOT_FOUND, "找不到本次采集的印花结果");
   }
   var response = json.readValue((String) saved.get("result_json"), CommerceDesignImageGateway.Response.class);

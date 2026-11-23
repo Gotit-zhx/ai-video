@@ -46,6 +46,18 @@ public class ProductPrintCaptureController {
         return ApiResponse.ok(service.fromCapture(captureId, user));
     }
 
+    @GetMapping("/{captureId}/results")
+    public ApiResponse<java.util.List<CommerceSampleService.CaptureResult>> results(@PathVariable String captureId,
+            @AuthenticationPrincipal PlatformPrincipal user) {
+        return ApiResponse.ok(service.results(captureId, user));
+    }
+
+    @PostMapping("/results/{id}/archive")
+    public ApiResponse<CommerceSampleService.View> archiveResult(@PathVariable String id,
+            @AuthenticationPrincipal PlatformPrincipal user) {
+        return ApiResponse.ok(service.archiveResult(id, user));
+    }
+
     @GetMapping("/results/{id}/image")
     public ResponseEntity<byte[]> resultImage(@PathVariable String id, @AuthenticationPrincipal PlatformPrincipal user) {
         var image = service.resultImage(id, user);

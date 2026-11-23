@@ -78,8 +78,8 @@
   <link rel="stylesheet" href="/commerce-artwork-library.css?v=artwork-library-20260916-1">
   <link rel="stylesheet" href="/commerce-motion.css?v=workbench-layout-20260921">
   <link rel="stylesheet" href="/product-bulk-history.css?v=20260910-bulk-history-2">
-  <link rel="stylesheet" href="/product-print-capture.css?v=4">
-  <link rel="stylesheet" href="/product-capture-templates.css?v=20261122-style-settings-1">
+  <link rel="stylesheet" href="/product-print-capture.css?v=20261123-capture-1">
+  <link rel="stylesheet" href="/product-capture-templates.css?v=20261123-capture-1">
   <link rel="stylesheet" href="/product-main-image-styles.css?v=20261019-detail-1">
   <link rel="stylesheet" href="/knowledge-workspace.css?v=20260923-3">
     <link rel="stylesheet" href="/finance-workspace.css?v=20261123-direct-entry-1">
@@ -967,23 +967,26 @@
                 <div id="pc-source-result" hidden>
                   <p class="pc-title" id="pc-product-title"></p>
                   <fieldset>
-                    <legend>选一张有印花的商品图</legend>
+                    <legend>选择有印花的商品图（可多选）</legend>
                     <div id="pc-source-images" class="pc-source-images"></div>
                   </fieldset>
                 </div>
               </section>
               <section class="pc-section" aria-labelledby="pc-print-heading" id="pc-print-section" hidden>
                 <h2 id="pc-print-heading">提取印花</h2>
-                <div class="pc-print-row">
-                  <div id="pc-print-tile" class="pc-print-tile" hidden><img id="pc-art" alt="提取的透明印花"></div>
-                  <div class="pc-extract-controls">
-                    <div id="pc-extract-action" hidden>
-                      <label class="pc-consent"><input id="pc-confirm-model" type="checkbox"> 确认调用 GPT Image 2.6（按模型计费）</label>
-                      <button class="primary-button" id="pc-extract" type="button" disabled>提取印花</button>
-                    </div>
-                    <p id="pc-extract-status" class="pc-status" role="status" hidden></p>
-                  </div>
+                <div id="pc-extract-action">
+                  <label class="pc-consent"><input id="pc-confirm-model" type="checkbox"> 确认调用 GPT Image 2.6（按张计费）</label>
+                  <button class="primary-button" id="pc-extract" type="button" disabled>提取印花</button>
                 </div>
+                <p id="pc-extract-status" class="pc-status" role="status" hidden></p>
+                <section id="pc-result-section" class="pc-result-section" aria-labelledby="pc-results-heading" hidden>
+                  <header class="pc-preview-heading">
+                    <h3 id="pc-results-heading">提取结果</h3>
+                    <button id="pc-refresh-results" class="quiet-button" type="button">刷新结果</button>
+                  </header>
+                  <div id="pc-results" class="pc-results"></div>
+                  <p id="pc-results-status" class="pc-status" role="status" hidden></p>
+                </section>
               </section>
             </div>
             <section class="pc-composition" aria-labelledby="pc-composition-heading">
@@ -1022,19 +1025,16 @@
           <section id="capture-template-workspace" aria-label="款式模板" hidden>
 <div id="ct-toast" role="status" aria-live="polite" hidden></div>
 <div class="ct-workspace"><aside class="ct-template-rail"><div class="ct-rail-heading"><h2>我的模板 <span id="ct-template-count"></span></h2></div><label class="ct-search"><span data-icon="search"></span><input id="ct-search" type="search" placeholder="搜索模板" aria-label="搜索模板"></label><div id="ct-template-list" class="ct-template-list"></div><button id="ct-load-more-templates" class="ct-rail-more" hidden>加载更多</button></aside>
-<section class="ct-editor" aria-label="模板编辑"><header class="ct-editor-heading"><div><h2 id="ct-editor-title"></h2><span id="ct-save-state">未保存</span></div><button id="ct-save" class="ct-primary"><span data-icon="check"></span>保存</button></header>
-<div class="ct-style-settings" aria-label="款式配置">
-  <button id="ct-main-style" type="button" aria-controls="ct-main-style-host" aria-expanded="false" disabled>主图风格模板</button>
-  <button id="ct-listing-config" type="button" aria-haspopup="dialog" aria-controls="product-listing-template-dialog" disabled>定制模板配置</button>
-  <span id="ct-settings-hint">保存款式后可配置</span>
-</div>
-<section id="ct-main-style-host" aria-label="当前款式主图风格模板" hidden></section>
+<section class="ct-editor" aria-label="模板编辑"><header class="ct-editor-heading"><div><h2 id="ct-editor-title"></h2><span id="ct-save-state" role="status">未保存</span></div><button id="ct-save" class="ct-primary"><span data-icon="check"></span>保存</button></header>
 <div class="ct-template-info"><label>模板名称<input id="ct-template-name" maxlength="50" placeholder="例如：基础圆领 T 恤"></label><label>模板说明 <span class="ct-optional">选填</span><input id="ct-template-description" maxlength="160" placeholder="适用商品或用途"></label></div>
 <div class="ct-section-heading"><h3>商品款式</h3></div>
 
 <div class="ct-variant-editor"><section class="ct-image-section"><div class="ct-field-heading"><h3>款式图片</h3><span>1 张</span></div><div id="ct-dropzone" class="ct-image-preview"><img id="ct-product-image" alt="当前商品款式预览" hidden><div id="ct-image-empty" class="ct-image-empty"><span data-icon="upload"></span><strong>上传款式图片</strong><span>支持拖拽上传</span><button id="ct-choose-image">选择图片</button></div><span id="ct-sample-tag" class="ct-sample-tag" hidden>示例版式</span><button id="ct-replace-image" class="ct-replace-button" hidden><span data-icon="upload"></span>更换图片</button></div><div class="ct-image-caption"><span id="ct-image-filename"></span><span>PNG / JPG / WebP · 最大 8 MiB</span></div><p class="ct-image-hint" id="ct-image-hint" hidden></p></section>
 <section class="ct-color-section"><div class="ct-style-fields"><label>款式名称<input id="ct-variant-name" maxlength="40" placeholder="例如：圆领短袖"></label><label>款式编码<input id="ct-style-code" maxlength="3" placeholder="例如：A01" autocomplete="off" spellcheck="false"></label></div><div class="ct-field-heading ct-color-heading"><h3>对应颜色 <span id="ct-color-count"></span></h3><button id="ct-add-color" class="ct-text-button"><span data-icon="plus"></span>添加颜色</button></div><div class="ct-color-labels"><span>颜色名称</span><span>颜色编码</span><span>HEX 色值</span></div><div id="ct-colors" class="ct-colors"></div><div class="ct-palette-summary"><span>颜色预览</span><div id="ct-palette"></div></div></section></div>
-<footer class="ct-editor-footer"><span id="ct-footer-count"></span></footer></section></div>
+<footer class="ct-editor-footer"><span id="ct-footer-count"></span></footer>
+<section id="ct-main-style-host" class="ct-settings-section" aria-label="主图风格模板"></section>
+<section id="ct-listing-host" class="ct-settings-section listing-template-dialog" aria-labelledby="listing-template-title"></section>
+</section></div>
 <input id="ct-image-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
 </section>
 
@@ -2169,15 +2169,15 @@
   <script src="/product-bulk-size-chart.js?v=20261029-size-chart-repair" defer></script>
   <script src="/product-bulk-history.js?v=languages-20260921-2" defer></script>
   <script src="/video-script-terminal.js?v=languages-20260921-2" defer></script>
-  <link rel="stylesheet" href="/product-listing-templates.css?v=20261014-multi-shop-1">
-  <script src="/product-listing-templates.js?v=20261122-style-settings-1" defer></script>
+  <link rel="stylesheet" href="/product-listing-templates.css?v=20261123-capture-1">
+  <script src="/product-listing-templates.js?v=20261123-capture-1" defer></script>
   <script src="/incremental-dom.js?v=20261021-2" defer></script>
   <script src="/incremental-charts.js?v=20261021-1" defer></script>
   <script src="/video-direct-downloads.js?v=20261102-direct-download-1" defer></script>
-  <script src="/app.js?v=20261122-style-settings-1" defer></script>
-  <script src="/product-print-capture.js?v=20261122-result-1" defer></script>
-  <script src="/product-capture-templates.js?v=20261122-style-settings-1" defer></script>
-  <script src="/product-main-image-styles.js?v=20261122-style-settings-1" defer></script>
+  <script src="/app.js?v=20261123-capture-1" defer></script>
+  <script src="/product-print-capture.js?v=20261123-capture-1" defer></script>
+  <script src="/product-capture-templates.js?v=20261123-capture-1" defer></script>
+  <script src="/product-main-image-styles.js?v=20261123-capture-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261019-94383ea9f5cb" defer></script>
   <script src="/hr-onboarding.js?v=20261021-incremental-1" defer></script>
   <script src="/finance-label-costs.js?v=20261120-report-date-range-page-tasks" defer></script>

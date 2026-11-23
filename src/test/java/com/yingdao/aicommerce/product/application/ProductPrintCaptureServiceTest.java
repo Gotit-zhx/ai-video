@@ -52,6 +52,27 @@ class ProductPrintCaptureServiceTest {
     }
 
     @Test
+    void historyRequiresAccessToTheV2RecordAndReturnsOnlyThatRecordsResults() {
+        var capture = new ProductCapture("org-a", "u", "key", "hash", "SHOPEE",
+                "https://shopee.ph/product/105/209", "105", "209", "印花 T 恤", null, null, null,
+                null, null, null, "{}", "{}");
+        var result = new CommerceSampleService.CaptureResult("image", "print", "READY", "/image", null);
+        assertEquals(HttpStatus.FORBIDDEN, assertThrows(BusinessException.class,
+                () -> service.results(capture.getId(), principal("product:view"))).getStatus());
+        when(captures.getPrintSource("missing", editor))
+                .thenThrow(new BusinessException(HttpStatus.NOT_FOUND, "找不到采集记录"));
+        assertEquals(HttpStatus.NOT_FOUND, assertThrows(BusinessException.class,
+                () -> service.results("missing", editor)).getStatus());
+        verifyNoInteractions(samples);
+
+        when(captures.getPrintSource(capture.getId(), editor))
+                .thenReturn(new ProductCaptureService.PrintSource(capture, List.of()));
+        when(samples.captureResults(capture.getId(), editor)).thenReturn(List.of(result));
+        assertEquals(List.of(result), service.results(capture.getId(), editor));
+        verifyNoInteractions(sourceArchives, archive, downloader);
+    }
+
+    @Test
     void extractionNeedsEditPermissionAndExplicitConfirmationBeforeAnyRead() {
         assertEquals(HttpStatus.FORBIDDEN, assertThrows(BusinessException.class,
                 () -> service.extract("capture", "image", true, "request-id", principal("product:view"))).getStatus());

@@ -24,6 +24,7 @@
   const labels = {READY: '已就绪', ANALYZING: '提取中', PENDING: '排队中', QUEUED: '排队中', FAILED: '提取失败'};
   let rows = [], selectedId = '', files = [], busy = false, requestKey = '', generation = 0, timer, bulkRevision = 0, detailSignature = '';
   let uploadRequest, uploadTimer, uploadState;
+  let captureScope = null;
   let captureTemplateId = '', bulkRows = [], copyKey = '';
   const editorEndpoint = (path = '') => endpoint + path
     + (captureTemplateId ? `?captureTemplateId=${encodeURIComponent(captureTemplateId)}` : '');
@@ -125,6 +126,7 @@
   async function refresh({quiet = false} = {}) {
     const ticket = generation, org = currentUser?.organizationId;
     clearTimeout(timer);
+    if (captureScope && !captureScope.exists()) { render(); return; }
     try {
       if (!quiet) notify('正在读取模板…');
       const response = await api(editorEndpoint());
@@ -260,6 +262,8 @@
     renderUploadProgress(); uploadTimer = setInterval(renderUploadProgress, 1000);
     form.querySelectorAll('input, button').forEach(node => { node.disabled = true; });
     try {
+      if (captureScope) await captureScope.ensureSaved();
+      if (ticket !== generation || currentUser?.organizationId !== org) return;
       const response = await uploadTemplate(data, ticket, org);
       if (ticket !== generation || currentUser?.organizationId !== org) return;
       selectedId = response.data.id; detailSignature = '';
@@ -301,6 +305,8 @@
     copyKey ||= crypto.randomUUID();
     busy = true; copySource.disabled = true; copySave.disabled = true;
     try {
+      if (captureScope) await captureScope.ensureSaved();
+      if (ticket !== generation) return;
       const result = await api(editorEndpoint(`/${encodeURIComponent(copySource.value)}/copy-to-capture`),
         {method: 'POST', headers: {'Idempotency-Key': copyKey}});
       if (ticket !== generation) return;
@@ -422,8 +428,13 @@
     error.textContent = ''; notify(''); renderUploads(); render();
   }
 
-  function setCaptureTemplate(id) {
+  function setCaptureTemplate(id, scope) {
+    if (captureScope?.id === id && scope) {
+      root.hidden = false;
+      return;
+    }
     captureTemplateId = id;
+    captureScope = scope || null;
     root.hidden = !id;
     resetEditor();
     if (id) void refresh();
@@ -435,13 +446,13 @@
   };
   window.addEventListener('heyi:commerce-section-entered', event => {
     if (event.detail.route === 'product-main-image-styles') {
-      captureTemplateId = ''; resetEditor(); void refresh();
+      captureTemplateId = ''; captureScope = null; resetEditor(); void refresh();
     } else if (event.detail.route !== 'product-capture-templates' || root.hidden) {
-      captureTemplateId = ''; resetEditor();
+      captureTemplateId = ''; captureScope = null; resetEditor();
     }
   });
   window.addEventListener('heyi:company-reset', () => {
-    captureTemplateId = ''; resetEditor();
+    captureTemplateId = ''; captureScope = null; resetEditor();
     bulkRevision++; bulkRows = [];
     select.replaceChildren(new Option('不使用风格模板', '')); bulkPreview();
   });

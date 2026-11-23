@@ -76,7 +76,7 @@ function selectCommerceSection() {
     const host = document.querySelector(showMainStyles ? "#main-style-home" : "#ct-main-style-host");
     if (mainStyles.parentElement !== host) host.append(mainStyles);
   }
-  mainStyles.hidden = !showMainStyles;
+  mainStyles.hidden = !templatePage;
   document.querySelectorAll("[data-commerce-route]").forEach(link => {
     const active = link.dataset.commerceRoute === route;
     link.classList.toggle("active", active);

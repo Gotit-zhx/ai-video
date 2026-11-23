@@ -39,7 +39,10 @@ class ProductCaptureTemplateMySqlTest {
         assertTrue(url.matches("jdbc:mysql://[^/]+/capture_template_qa_[a-f0-9]+\\?.*"),"Only a disposable capture_template_qa schema is permitted");
         var ds=new DriverManagerDataSource(url,System.getenv("CAPTURE_TEMPLATE_QA_USER"),System.getenv("CAPTURE_TEMPLATE_QA_PASSWORD"));
         db=new JdbcTemplate(ds);
-        try(var connection=ds.getConnection()){ScriptUtils.executeSqlScript(connection,new ClassPathResource("db/migration/V160__product_capture_templates.sql"));}
+        try(var connection=ds.getConnection()){
+            ScriptUtils.executeSqlScript(connection,new ClassPathResource("db/migration/V160__product_capture_templates.sql"));
+            ScriptUtils.executeSqlScript(connection,new ClassPathResource("db/migration/V189__capture_template_drafts.sql"));
+        }
         var buffer=new ByteArrayOutputStream();ImageIO.write(new BufferedImage(128,128,BufferedImage.TYPE_INT_RGB),"png",buffer);png=buffer.toByteArray();
     }
     @BeforeEach void reset(){
@@ -65,6 +68,25 @@ class ProductCaptureTemplateMySqlTest {
         assertEquals(HttpStatus.NOT_FOUND,assertThrows(BusinessException.class,()->service.get(id,other)).getStatus());
         assertEquals(HttpStatus.NOT_FOUND,assertThrows(BusinessException.class,()->service.image(image,other)).getStatus());
         assertEquals(HttpStatus.NOT_FOUND,assertThrows(BusinessException.class,()->service.save(UUID.randomUUID().toString(),input,other)).getStatus());
+    }
+    @Test void savesPartialDraftsWithoutReplacingTheLastUsableStyle() {
+        String id = UUID.randomUUID().toString();
+        var partial = new ProductCaptureTemplateService.Variant(UUID.randomUUID().toString(), "", null, List.of(), "A");
+        var draft = new ProductCaptureTemplateService.Save(0, "草稿", "", List.of(partial), true);
+        var saved = service.save(id, draft, owner);
+        assertTrue(saved.draft());
+        assertNull(service.get(id, owner).variants().getFirst().image());
+        assertEquals(id, service.settingsScope(id, owner, true));
+        assertEquals(0, service.list(0, 50, true, owner).total());
+        assertEquals(saved, service.save(id, draft, owner));
+
+        var usable = service.save(id, value(saved.version(), "可用款式", upload()), owner);
+        assertFalse(usable.draft());
+        var edited = service.save(id, new ProductCaptureTemplateService.Save(
+                usable.version(), "继续编辑", "", List.of(partial), true), owner);
+        assertEquals("继续编辑", service.get(id, owner).name());
+        assertTrue(edited.draft());
+        assertEquals("可用款式", service.list(0, 50, true, owner).items().getFirst().name());
     }
     @Test void readsLegacyJsonWithoutCodesAndRequiresCodesOnNextSave() {
         String image=upload(),id=UUID.randomUUID().toString();var input=value(0,"legacy",image);service.save(id,input,owner);

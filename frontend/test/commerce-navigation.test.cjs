@@ -22,7 +22,7 @@ test('navigation groups and capture-template sections each expose a single entry
   assert.doesNotMatch(v2, /主图风格模板/);
   assert.equal(groups.filter(group => group.includes('data-commerce-route="product-print-capture"')).length, 1);
   assert.equal(groups.filter(group => group.includes('data-commerce-route="product-main-image-styles"')).length, 1);
-  assert.match(html, /id="capture-template-workspace"[\s\S]*?id="ct-main-style"[\s\S]*?id="ct-listing-config"[\s\S]*?id="ct-main-style-host"/);
+  assert.match(html, /id="capture-template-workspace"[\s\S]*?ct-variant-editor[\s\S]*?id="ct-main-style-host"[\s\S]*?id="ct-listing-host"/);
   assert.doesNotMatch(html, /id="print-capture-listing-template"|id="capture-template-listing-config"|id="capture-main-style-tab"/);
   assert.match(html, /id="open-product-listing-templates"/);
   for (const id of ['nav-ai-video-monitor', 'nav-video-scripts', 'nav-ai-video-tasks', 'nav-general-video', 'nav-shops', 'nav-publish', 'nav-automations', 'nav-automation-admin', 'nav-models', 'nav-system', 'nav-assistant-test']) {
@@ -83,14 +83,14 @@ test('commerce routes show the correct content and preserve plugin capture hando
     assert.equal(location.hash, '#product-capture-templates');
     assert.equal(nodes['capture-templates-heading'].hidden, false);
     assert.equal(nodes['capture-template-workspace'].hidden, false);
-    assert.equal(nodes['main-style-workspace'].hidden, true);
+    assert.equal(nodes['main-style-workspace'].hidden, false);
     assert.equal(nodes['topbar h2'].textContent, '商品运营 v2.0 / 采集模板');
     assert.equal(entered.at(-1).detail.route, 'product-capture-templates');
   }
 
   navigate('#product-capture-templates');
   assert.equal(nodes['capture-template-workspace'].hidden, false);
-  assert.equal(nodes['main-style-workspace'].hidden, true);
+  assert.equal(nodes['main-style-workspace'].hidden, false);
   assert.equal(entered.at(-1).detail.route, 'product-capture-templates');
 
   navigate('#product-capture?id=test-product');

@@ -8,13 +8,18 @@
   const canvas = get('canvas');
   const positionDefaults = {size: 26, x: 50, y: 43};
   const attempts = new Map();
-  const rejectedImages = new Map();
+  const selectedIds = new Set();
+  const results = new Map();
+  const failures = new Map();
   const rejectionSuffix = '；同一请求不会自动重试生图';
   const requests = new Set();
   let revision = 0;
   let imageRevision = 0;
   let capture = null;
-  let selected = null;
+  let activeResult = null;
+  let printRevision = 0;
+  let templatesLoading = false;
+  let historyReady = false;
   let print = null;
   let base = null;
   let templates = [];
@@ -30,11 +35,23 @@
     element.toggleAttribute('data-error', error);
   }
 
+  const blocksExtraction = result => result.status !== 'PREPARED';
+  const completedSource = id => [...results.values()].some(result => result.imageId === id && blocksExtraction(result));
+  const selectable = id => !completedSource(id) && !failures.get(id)?.uncertain && failures.get(id)?.status !== 'REJECTED';
+
   function updateActions() {
-    get('source-images').querySelectorAll('input').forEach(input => { input.disabled = busy; });
+    const count = [...selectedIds].filter(selectable).length;
+    get('source-images').querySelectorAll('input').forEach(input => {
+      const saved = [...results.values()].find(result => result.imageId === input.value && result.imageUrl);
+      input.disabled = !saved && (busy || !historyReady || !selectable(input.value));
+      input.checked = selectedIds.has(input.value) || Boolean(saved && saved.id === activeResult);
+      input.closest('label').toggleAttribute('data-extracted', Boolean(saved));
+    });
     get('recent').querySelectorAll('button').forEach(button => { button.disabled = busy; });
-    get('confirm-model').disabled = busy;
-    get('extract').disabled = busy || !selected || !get('confirm-model').checked;
+    get('refresh-results').disabled = busy || !capture;
+    get('confirm-model').disabled = busy || !count || !historyReady;
+    get('extract').disabled = busy || !count || !historyReady || !get('confirm-model').checked;
+    get('extract').textContent = count ? `提取 ${count} 张` : '提取印花';
   }
 
   async function request(path, options = {}) {
@@ -134,48 +151,27 @@
     status('preview-state', message);
   }
 
-  function clearPrint() {
+  function clearSource() {
     imageRevision++;
-    print = base = null;
+    printRevision++;
+    capture = activeResult = print = base = null;
+    results.clear();
+    failures.clear();
+    selectedIds.clear();
     templates = [];
-    get('art').removeAttribute('src');
-    get('print-tile').hidden = true;
-    get('style-controls').hidden = true;
-    get('style').replaceChildren();
-    get('template-link').hidden = true;
+    templatesLoading = historyReady = false;
+    get('photo-count').textContent = '0';
+    for (const name of ['source-images', 'style', 'results']) get(name).replaceChildren();
+    for (const name of ['source-result', 'source-section', 'print-section', 'style-controls', 'template-link', 'result-section']) {
+      get(name).hidden = true;
+    }
+    get('confirm-model').checked = false;
+    get('monitor-print').textContent = '待选图';
     status('template-state');
     status('extract-status');
-    get('monitor-print').textContent = selected ? '待提取' : '待选图';
+    status('results-status');
     clearPreview('提取印花后，选择款式预览。');
-    get('confirm-model').checked = false;
-    get('extract').textContent = '提取印花';
     updateActions();
-  }
-
-  function showRejection(message) {
-    get('extract-action').hidden = true;
-    get('confirm-model').checked = false;
-    get('monitor-print').textContent = '提取已拒绝';
-    const guidance = message.includes('图片内容未通过服务商审核') ? '。请改选有权使用的其他商品图。' : '';
-    status('extract-status', message + guidance, true);
-  }
-
-  function selectSource(image) {
-    selected = image;
-    clearPrint();
-    const rejection = rejectedImages.get(image.id);
-    get('extract-action').hidden = Boolean(rejection);
-    if (rejection) showRejection(rejection);
-  }
-
-  function clearSource() {
-    capture = selected = null;
-    get('photo-count').textContent = '0';
-    get('source-images').replaceChildren();
-    get('source-result').hidden = true;
-    get('print-section').hidden = true;
-    get('source-section').hidden = true;
-    clearPrint();
   }
 
   function renderSource() {
@@ -186,22 +182,179 @@
     capture.images.forEach((photo, index) => {
       const label = document.createElement('label');
       const input = document.createElement('input');
-      input.type = 'radio';
-      input.name = 'pc-source-image';
-      input.checked = index === 0;
+      input.type = 'checkbox';
+      input.value = photo.id;
       input.setAttribute('aria-label', `商品图 ${index + 1}`);
-      input.addEventListener('change', () => selectSource(photo));
+      input.addEventListener('change', () => {
+        const saved = [...results.values()].find(result => result.imageId === photo.id && result.imageUrl);
+        if (saved) {
+          void showResult(saved);
+          return;
+        }
+        if (input.checked) selectedIds.add(photo.id);
+        else selectedIds.delete(photo.id);
+        get('confirm-model').checked = false;
+        updateActions();
+      });
       const surface = document.createElement('span');
       const image = document.createElement('img');
       image.src = photo.src;
-      image.alt = `商品图 ${index + 1}`;
+      image.alt = '';
       image.referrerPolicy = 'no-referrer';
       surface.append(image);
       label.append(input, surface);
       get('source-images').append(label);
     });
-    selectSource(capture.images[0]);
     get('print-section').hidden = false;
+    updateActions();
+  }
+
+  function resultLabel(result) {
+    const index = capture.images.findIndex(photo => photo.id === result.imageId);
+    return index < 0 ? '已采集商品图' : `商品图 ${index + 1}`;
+  }
+
+  function renderResults() {
+    const gallery = get('results');
+    const focused = gallery.contains(document.activeElement) ? document.activeElement.dataset.result : null;
+    gallery.replaceChildren();
+    const pendingEntries = [...failures].filter(([imageId]) => !completedSource(imageId))
+      .map(([imageId, failure]) => ({imageId, ...failure}));
+    const entries = [...results.values()].filter(blocksExtraction).concat(pendingEntries);
+    for (const result of entries) {
+      const item = document.createElement('div');
+      item.className = 'pc-result';
+      const label = resultLabel(result);
+      const url = imageUrl(result.imageUrl, true);
+      if (url) {
+        const control = document.createElement('button');
+        control.type = 'button';
+        control.className = 'quiet-button';
+        control.dataset.result = result.id;
+        control.setAttribute('aria-pressed', String(result.id === activeResult));
+        const image = document.createElement('img');
+        image.src = url;
+        image.alt = '';
+        control.append(image, document.createTextNode(label));
+        control.onclick = () => void showResult(result);
+        item.append(control);
+        if (focused === result.id) queueMicrotask(() => control.isConnected && control.focus());
+      } else {
+        const title = document.createElement('strong');
+        title.textContent = label;
+        item.append(title);
+      }
+      if (['RESULT_RECEIVED','ARCHIVE_PENDING'].includes(result.status)) {
+        const archive = document.createElement('button');
+        archive.className = 'quiet-button';
+        archive.type = 'button';
+        archive.disabled = busy;
+        archive.textContent = '重试归档';
+        archive.onclick = () => void archiveResult(result);
+        item.append(archive);
+      }
+      const message = result.message || ({
+        UNKNOWN: '结果待核查',
+        SUBMITTING: '提取中',
+        REJECTED: '提取已拒绝',
+        ARCHIVE_PENDING: '待归档',
+        RESULT_RECEIVED: '待归档',
+        TRANSPARENCY_REJECTED: '未通过透明 PNG 检查',
+        READY: url ? '' : '图片暂不可用'
+      }[result.status]);
+      if (message) {
+        const note = document.createElement('small');
+        note.textContent = message;
+        item.append(note);
+      }
+      gallery.append(item);
+    }
+    if (!busy) {
+      const available = entries.filter(result => result.imageUrl).length;
+      get('monitor-print').textContent = available ? `可用 ${available} 张` : entries.length ? '查看结果' : '待提取';
+    }
+  }
+
+  async function showResult(result) {
+    if (!result?.imageUrl) return;
+    const run = ++printRevision;
+    activeResult = result.id;
+    print = null;
+    renderResults(); updateActions();
+    canvas.hidden = true;
+    get('download').disabled = get('arrange').disabled = true;
+    status('preview-state', '正在读取印花…');
+    try {
+      const image = await loadImage(result.imageUrl);
+      if (run !== printRevision) return;
+      print = cropArtwork(image);
+      if (base) showComposition();
+      else if (!templates.length) void loadTemplates();
+      else status('preview-state', '选择款式后预览。');
+    } catch (error) {
+      if (run !== printRevision) return;
+      print = null;
+      status('preview-state', error.message || '印花读取失败，请重试。', true);
+    }
+  }
+
+  async function refreshResults() {
+    const source = capture;
+    if (!source) return;
+    get('result-section').hidden = false;
+    status('results-status', '正在读取结果…');
+    try {
+      const data = await request(`${endpoint}/${encodeURIComponent(source.captureId)}/results`);
+      if (capture !== source) return;
+      if (!Array.isArray(data)) throw new Error('提取结果读取不完整');
+      for (const result of data) {
+        if (result.id && result.imageId) {
+          const previous = results.get(result.id);
+          results.set(result.id, {...result, imageUrl: result.imageUrl || (
+            result.status === 'RESULT_RECEIVED' ? previous?.imageUrl : null)});
+        }
+        if (blocksExtraction(result)) selectedIds.delete(result.imageId);
+      }
+      historyReady = true;
+      for (const [imageId, failure] of failures) {
+        if (completedSource(imageId)) failures.delete(imageId);
+        else if (failure.uncertain) failure.uncertain = false;
+      }
+      status('results-status');
+      renderResults();
+      if (!activeResult) void showResult([...results.values()].find(result => result.imageUrl));
+      get('result-section').hidden = !results.size && !failures.size;
+    } catch (error) {
+      if (capture !== source) return;
+      historyReady = false;
+      status('results-status', error.message || '提取历史读取失败，请刷新结果。', true);
+    } finally {
+      if (capture === source) updateActions();
+    }
+  }
+
+  async function archiveResult(result) {
+    if (busy) return;
+    const source = capture;
+    busy = true;
+    updateActions(); renderResults();
+    try {
+      const data = await request(`${endpoint}/results/${encodeURIComponent(result.id)}/archive`, {method: 'POST'});
+      if (capture !== source) return;
+      results.set(result.id, {...data, imageId: result.imageId});
+      status('results-status', data.status === 'READY' ? '已归档' : '印花待归档，稍后可重试。');
+      if (data.imageUrl && (result.id === activeResult || !activeResult)) void showResult(data);
+    } catch (error) {
+      if (capture === source) {
+        await refreshResults();
+        if (capture === source) status('results-status', error.message, true);
+      }
+    } finally {
+      if (capture === source) {
+        busy = false;
+        updateActions(); renderResults();
+      }
+    }
   }
 
   async function readSource(id) {
@@ -223,6 +376,7 @@
       capture = {...data, images};
       renderSource();
       status('source-status');
+      await refreshResults();
     } catch (error) {
       if (run !== revision) return;
       const message = error.status === 404
@@ -232,20 +386,35 @@
     } finally {
       if (run === revision) {
         busy = false;
+        if (capture) renderResults();
         updateActions();
       }
     }
   }
 
   get('confirm-model').addEventListener('change', updateActions);
-  function extractionKey() {
+  get('refresh-results').addEventListener('click', async () => {
+    if (busy || !capture) return;
+    const source = capture;
+    busy = true;
+    renderResults(); updateActions();
+    try { await refreshResults(); }
+    finally {
+      if (source === capture) {
+        busy = false;
+        renderResults(); updateActions();
+      }
+    }
+  });
+  function extractionKey(imageId) {
     const entry = ['heyi:print-extraction', currentUser?.organizationId, currentUser?.userId,
-      capture.captureId, selected.id].join(':');
+      capture.captureId, imageId].join(':');
     if (attempts.has(entry)) return attempts.get(entry);
     let key;
     try { key = sessionStorage.getItem(entry); } catch { /* Storage may be disabled. */ }
     if (!key) {
-      key = crypto.randomUUID();
+      const stable = `v2-${capture.captureId}-${imageId}`;
+      key = /^[A-Za-z0-9_-]{8,80}$/.test(stable) ? stable : crypto.randomUUID();
       try { sessionStorage.setItem(entry, key); } catch { /* The active page still remembers the key. */ }
     }
     attempts.set(entry, key);
@@ -253,68 +422,55 @@
   }
 
   get('extract').addEventListener('click', async () => {
-    if (busy || !capture || !selected || rejectedImages.has(selected.id) || !get('confirm-model').checked) return;
-    const key = extractionKey();
-    const run = revision;
+    if (busy || !capture || !historyReady || !get('confirm-model').checked) return;
+    const batch = [...selectedIds].filter(selectable);
+    if (!batch.length) return;
+    const source = capture;
     busy = true;
-    updateActions();
-    status('extract-status', '正在提取印花…');
+    get('confirm-model').checked = false;
+    get('result-section').hidden = false;
     get('monitor-print').textContent = '提取中';
+    renderResults(); updateActions();
     try {
-      const data = await request(`${endpoint}/${encodeURIComponent(capture.captureId)}/extract`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json', 'Idempotency-Key': key},
-        body: JSON.stringify({imageId: selected.id, confirmed: true})
-      });
-      if (run !== revision) return;
-      if (data.status === 'REJECTED') {
-        const message = data.message || '服务商已拒绝本次提取，未生成印花。';
-        rejectedImages.set(selected.id, message);
-        showRejection(message);
-        return;
+      for (const [index, imageId] of batch.entries()) {
+        status('extract-status', `正在处理 ${index + 1} / ${batch.length} 张…`);
+        try {
+          const data = await request(`${endpoint}/${encodeURIComponent(source.captureId)}/extract`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'Idempotency-Key': extractionKey(imageId)},
+            body: JSON.stringify({imageId, confirmed: true})
+          });
+          if (capture !== source) return;
+          if (!data.id) throw new Error('提取结果读取不完整');
+          results.set(data.id, {...data, imageId});
+          failures.delete(imageId);
+          if (!activeResult && data.imageUrl) void showResult(data);
+        } catch (error) {
+          if (capture !== source) return;
+          const rejected = error.status === 409 && error.message.endsWith(rejectionSuffix);
+          failures.set(imageId, {
+            uncertain: !rejected,
+            status: rejected ? 'REJECTED' : 'UNKNOWN',
+            message: rejected ? error.message.slice(0, -rejectionSuffix.length) : error.message
+          });
+        }
+        selectedIds.delete(imageId);
+        renderResults(); updateActions();
       }
-      const archivePending = data.status === 'ARCHIVE_PENDING';
-      if ((!archivePending && data.status !== 'READY') || !data.imageUrl) {
-        get('extract').textContent = '查看提取结果';
-        get('monitor-print').textContent = data.status === 'UNKNOWN' ? '待核查' : '等待结果';
-        const message = data.status === 'UNKNOWN' ? '提取结果待核查，请勿重复提交。' : '提取结果尚未就绪，可以稍后查看。';
-        status('extract-status', data.message || message);
-        return;
-      }
-      const loadedPrint = await loadImage(data.imageUrl);
-      if (run !== revision) return;
-      print = cropArtwork(loadedPrint);
-      get('art').src = loadedPrint.src;
-      get('print-tile').hidden = false;
-      get('extract-action').hidden = !archivePending;
-      if (archivePending) get('extract').textContent = '重试归档';
-      status('extract-status', archivePending ? '印花已提取，待归档' : '已提取印花');
-      get('monitor-print').textContent = archivePending ? '待归档' : '已提取';
-      await loadTemplates();
-    } catch (error) {
-      if (run !== revision) return;
-      if (error.status === 409 && error.message.endsWith(rejectionSuffix)) {
-        const message = error.message.slice(0, -rejectionSuffix.length);
-        rejectedImages.set(selected.id, message);
-        showRejection(message);
-      } else {
-        get('extract').textContent = '查看提取结果';
-        const message = error.status >= 500 && error.message === 'Internal server error'
-          ? '暂时无法读取结果，请稍后点击「查看提取结果」。' : error.message;
-        status('extract-status', message, true);
-        get('monitor-print').textContent = '待查看';
-      }
+      await refreshResults();
+      if (capture === source) status('extract-status');
     } finally {
-      if (run === revision) {
+      if (capture === source) {
         busy = false;
-        updateActions();
+        renderResults(); updateActions();
       }
     }
   });
 
   async function loadTemplates() {
-    const run = revision;
-    const imageRun = imageRevision;
+    if (templatesLoading) return;
+    templatesLoading = true;
+    const source = capture;
     const select = get('style');
     get('style-controls').hidden = false;
     select.disabled = true;
@@ -325,8 +481,8 @@
       const items = [];
       let offset = 0;
       for (;;) {
-        const page = await request(`/api/v1/product-capture-templates?offset=${offset}&limit=100`);
-        if (run !== revision || imageRun !== imageRevision) return;
+        const page = await request(`/api/v1/product-capture-templates?readyOnly=true&offset=${offset}&limit=100`);
+        if (source !== capture) return;
         if (!page.items?.length) break;
         items.push(...page.items);
         offset += page.items.length;
@@ -343,10 +499,12 @@
       get('template-link').hidden = !!templates.length;
       clearPreview(templates.length ? '选择款式后预览。' : '还没有可用款式，请先保存一张款式底图。');
     } catch (error) {
-      if (run === revision && imageRun === imageRevision) {
+      if (source === capture) {
         clearPreview('款式读取失败。返回此页可重新读取。');
         status('template-state', error.message, true);
       }
+    } finally {
+      if (source === capture) templatesLoading = false;
     }
   }
 
@@ -393,6 +551,19 @@
     draw();
   }
 
+  function showComposition() {
+    if (!base || !print) return;
+    const scale = Math.min(1, 2048 / Math.max(base.naturalWidth, base.naturalHeight));
+    canvas.width = Math.max(1, Math.round(base.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(base.naturalHeight * scale));
+    updatePosition();
+    status('preview-state');
+    canvas.hidden = false;
+    get('arrange').disabled = false;
+    get('monitor-layout').textContent = '可排版';
+    get('download').disabled = false;
+  }
+
   get('style').addEventListener('change', async event => {
     const run = ++imageRevision;
     const style = templates.find(item => item.id === event.target.value)?.variants[0];
@@ -403,15 +574,8 @@
       const image = await loadImage(style.image);
       if (run !== imageRevision) return;
       base = image;
-      const scale = Math.min(1, 2048 / Math.max(image.naturalWidth, image.naturalHeight));
-      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
       updatePosition(true);
-      status('preview-state');
-      canvas.hidden = false;
-      get('arrange').disabled = false;
-      get('monitor-layout').textContent = '可排版';
-      get('download').disabled = false;
+      showComposition();
     } catch {
       if (run === imageRevision) status('preview-state', '款式底图读取失败，请重新选择款式。', true);
     }
@@ -484,7 +648,6 @@
     revision++;
     for (const request of requests) request.abort();
     attempts.clear();
-    rejectedImages.clear();
     handoffId = null;
     recent = [];
     loadingRecent = false;
