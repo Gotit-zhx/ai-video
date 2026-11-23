@@ -33,6 +33,7 @@ public class ProductPrintProductionService {
     private static final String TEMPLATE_KEY = "printProductionTemplateId";
     private static final String MEASUREMENT_KEY = "printSizeMeasurements";
     private static final String SKU_SUFFIX_KEY = "printSkuSuffix";
+    private static final String SKU_ORDER = "STYLE_COLOR_SIZE";
     private static final String SHARED_IMAGE_KEY = "printSharedColorImage";
 
     public record Settings(String resultId, String templateId, String title, String category,
@@ -107,7 +108,7 @@ public class ProductPrintProductionService {
         String hash = CommerceImageArchive.sha(json.writeValueAsBytes(List.of(
                 user.userId(), sourceId, settings.resultId(), templateId, title, category, description,
                 currency, price.stripTrailingZeros().toPlainString(), stock, CommerceImageArchive.sha(bytes),
-                colors, sizes, style)));
+                colors, sizes, style, SKU_ORDER)));
         String key = KEY_PREFIX + hash;
         ProductCapture existing = captureMapper.selectOne(query(org, key));
         if (existing != null) {
@@ -129,7 +130,7 @@ public class ProductPrintProductionService {
         var pattern = naming.printArtworkCode(org, settings.resultId());
         String skuStyle = style.isEmpty() ? pattern.style() : style;
         String rawData = json.writeValueAsString(Map.of(TEMPLATE_KEY, templateId, MEASUREMENT_KEY, measurements,
-                SKU_SUFFIX_KEY, pattern.suffix(), SHARED_IMAGE_KEY, colors.size() > 1,
+                SKU_SUFFIX_KEY, pattern.suffix(), "printSkuOrder", SKU_ORDER, SHARED_IMAGE_KEY, colors.size() > 1,
                 "printCaptureId", sourceId, "printResultId", settings.resultId()));
         var draft = new ProductCapture(org, user.userId(), key, hash, source.getSourcePlatform(),
                 source.getSourceUrl(), source.getSourceShopId(), source.getSourceProductId(), title, description,
@@ -157,7 +158,7 @@ public class ProductPrintProductionService {
                 if (!color.name().isEmpty()) attributes.put("Color", color.name());
                 if (!size.name().isEmpty()) attributes.put("Size", size.name());
                 String name = attributes.isEmpty() ? "默认规格" : String.join(" / ", attributes.values());
-                String sku = String.join("-", color.code(), skuStyle, size.code(), pattern.suffix());
+                String sku = String.join("-", skuStyle, color.code(), size.code(), pattern.suffix());
                 skuMapper.insert(new ProductCaptureSku(org, draft.getId(), sku, sku, sku, name,
                         price, price, stock, originalUrl, "COMMERCE_GENERATED",
                         json.writeValueAsString(attributes), "{}", sortOrder++));
@@ -200,6 +201,10 @@ public class ProductPrintProductionService {
 
     public static String skuSuffix(ProductCapture capture, ObjectMapper json) {
         return templateId(capture, json).isEmpty() ? "" : json.readTree(capture.getRawData()).path(SKU_SUFFIX_KEY).asText("");
+    }
+
+    static boolean styleFirstSku(ProductCapture capture, ObjectMapper json) {
+        return SKU_ORDER.equals(json.readTree(capture.getRawData()).path("printSkuOrder").asText(""));
     }
 
     public static boolean sharedColorImage(ProductCapture capture, ObjectMapper json) {

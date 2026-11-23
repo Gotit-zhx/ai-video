@@ -148,11 +148,11 @@ class ProductCaptureServiceTest {
         if (sized) {
             assertEquals(Map.of("Color", "黑色", "Size", "Small"), json.readValue(skus.getFirst().getAttributesJson(), Map.class));
             assertEquals(Map.of("Color", "红色", "Size", "Medium"), json.readValue(skus.getLast().getAttributesJson(), Map.class));
-            assertEquals(List.of("BK-A01-S-8F3A6C2D", "BK-A01-M-8F3A6C2D", "RED-A01-S-8F3A6C2D", "RED-A01-M-8F3A6C2D"),
+            assertEquals(List.of("A01-BK-S-8F3A6C2D", "A01-BK-M-8F3A6C2D", "A01-RED-S-8F3A6C2D", "A01-RED-M-8F3A6C2D"),
                     skus.stream().map(ProductCaptureSku::getSellerSku).toList());
             assertTrue(ProductPrintProductionService.sharedColorImage(saved.getValue(), json));
             var overrides = new ProductPublicationSkuNaming(naming, json).apply(saved.getValue(), skus, Map.of("merchantStyleCode", "B02"));
-            assertEquals("RED-B02-M-8F3A6C2D", overrides.getLast().getSellerSku());
+            assertEquals("B02-RED-M-8F3A6C2D", overrides.getLast().getSellerSku());
             assertEquals(List.of("Small  Chest 88 cm / Length 62 cm", "Medium  Chest 94 cm / Length 65 cm"),
                     ProductPrintProductionService.sizeMeasurements(saved.getValue(), json));
         }

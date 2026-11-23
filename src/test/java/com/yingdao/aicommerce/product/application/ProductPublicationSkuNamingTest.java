@@ -40,6 +40,22 @@ class ProductPublicationSkuNamingTest {
         }
     }
 
+    @Test void legacyPrintDraftChangesItsStyleInTheOriginalPosition() {
+        var allocator = mock(ProductSkuNamingService.class);
+        var json = new ObjectMapper();
+        var capture = mock(ProductCapture.class);
+        when(capture.getIdempotencyKey()).thenReturn("print-production-legacy");
+        when(capture.getRawData()).thenReturn(json.writeValueAsString(Map.of(
+                "printProductionTemplateId", "template", "printSkuSuffix", "1234ABCD")));
+        var original = sku("Red", "M").forPublication("RED-A01-M-1234ABCD");
+        var service = new ProductPublicationSkuNaming(allocator, json);
+
+        var updated = service.apply(capture, List.of(original), Map.of("merchantStyleCode", "B02"));
+        assertEquals("RED-B02-M-1234ABCD", updated.getFirst().getSellerSku());
+        assertEquals("RED-A01-M-1234ABCD", original.getSellerSku());
+        verifyNoInteractions(allocator);
+    }
+
     @Test void blankKeepsOriginalCodesAndDoesNotAllocate() {
         var allocator=mock(ProductSkuNamingService.class);
         var source=List.of(sku("Black","M"));

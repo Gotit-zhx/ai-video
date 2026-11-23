@@ -42,13 +42,20 @@ public class ProductPublicationSkuNaming {
         if (skus.isEmpty())
             throw new BusinessException(HttpStatus.BAD_REQUEST, "请先补全商品规格，再指定款式编码上传");
         String printSuffix = ProductPrintProductionService.skuSuffix(capture, json);
-        if (!printSuffix.isEmpty()) return skus.stream().map(sku -> {
-            String[] parts = Objects.toString(sku.getSellerSku(), "").split("-", -1);
-            if (parts.length != 4 || !parts[3].equals(printSuffix)
-                    || !parts[0].matches("[A-Z0-9]{1,16}") || !parts[2].matches("[A-Z0-9]{1,16}"))
-                throw new BusinessException(HttpStatus.BAD_REQUEST, "套版 SKU 编码格式无效，请重新制作");
-            return sku.forPublication(String.join("-", parts[0], code, parts[2], printSuffix));
-        }).toList();
+        if (!printSuffix.isEmpty()) {
+            boolean styleFirst = ProductPrintProductionService.styleFirstSku(capture, json);
+            int colorIndex = styleFirst ? 1 : 0;
+            return skus.stream().map(sku -> {
+                String[] parts = Objects.toString(sku.getSellerSku(), "").split("-", -1);
+                if (parts.length != 4 || !parts[3].equals(printSuffix)
+                        || !parts[colorIndex].matches("[A-Z0-9]{1,16}") || !parts[2].matches("[A-Z0-9]{1,16}"))
+                    throw new BusinessException(HttpStatus.BAD_REQUEST, "套版 SKU 编码格式无效，请重新制作");
+                String color = parts[colorIndex], size = parts[2];
+                return sku.forPublication(styleFirst
+                        ? String.join("-", code, color, size, printSuffix)
+                        : String.join("-", color, code, size, printSuffix));
+            }).toList();
+        }
         var source = skus.stream().map(sku -> {
             var row = new LinkedHashMap<String,Object>(read(sku.getSourceJson()));
             row.put("externalSkuId", sku.getExternalSkuId());
