@@ -55,7 +55,7 @@
       try{
         const incoming=group?await request('/charges?'+new URLSearchParams({...requestedScope,groupId:group,page:state.page,numbers:state.numbers})):null;
         if(run!==sequence||!root.isConnected)return;
-        data=incoming?{...incoming,filters:incoming.filters||requestedScope}:null;feedback.textContent='';drawContent();
+        data=incoming?{...incoming,filters:incoming.filters||requestedScope}:null;feedback.textContent='';drawContent();content.hidden=false;
         if(data?.labelSummary?.processing||Number(data?.totals?.unmatched)>0)pollTimer=setTimeout(()=>{if(run===sequence&&root.isConnected&&!document.querySelector('.fq-dialog'))refresh().catch(e=>{feedback.textContent=e.message;});},15000);
       }finally{if(run===sequence){busy=false;content.setAttribute('aria-busy','false');}}
     }
@@ -153,7 +153,14 @@
     const dates=el('div',null,filters,'fi-date-range');el('span','结算日期',dates);
     for(const [key,name]of [['start','开始日期'],['end','结束日期']]){
       const input=field(dates,name,scope[key],'date');
-      input.onchange=()=>{if(!input.value)return;const proposed={...scope,[key]:input.value};if(proposed.start>proposed.end){feedback.textContent='开始日期不能晚于结束日期';input.value=scope[key];return;}scope[key]=input.value;changeScope();};
+      input.onchange=()=>{
+        const proposed={...scope,[key]:input.value};
+        if(!input.value||proposed.start>proposed.end){
+          feedback.textContent=input.value?'开始日期不能晚于结束日期':'请选择完整的结算日期';
+          input.value=scope[key];return;
+        }
+        scope[key]=input.value;content.hidden=true;changeScope();
+      };
     }
     content=el('section',null,root,'fi-card fq-content');
     drawContent();

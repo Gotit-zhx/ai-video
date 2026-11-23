@@ -12,10 +12,14 @@ for(const timezone of ['Pacific/Honolulu','UTC','Asia/Shanghai']){
   w.matchMedia=()=>({matches:false});w.ResizeObserver=class{observe(){}disconnect(){}};
   w.echarts={init:()=>({setOption(){},resize(){},dispose(){}})};
   const shops=[{id:'th',name:'泰国店',timezone:'Asia/Bangkok',platform:'SHOPEE',currency:'THB',enabled:true,last_success_at:'2026-10-31T17:30:00Z'}];
-  w.api=async path=>{
+  let held;
+  w.api=async (path,options={})=>{
     const u=new URL(path,'https://example.test');reads.push(u);
     if(u.pathname.endsWith('/ads'))return {data:[]};
     if(u.pathname.endsWith('/shops'))return {data:{items:shops,groups:[],sync:['ORDER','SETTLEMENT'].map(channel=>({shop_id:'th',channel,previous_month:'2026-10',previous_month_checked:true,previous_month_complete:true,status:'SUCCESS'}))}};
+    if(u.pathname.endsWith('/overview')&&u.searchParams.get('start')==='2026-10-02'){
+      held={signal:options.signal};await new Promise(resolve=>held.release=resolve);
+    }
     return {data:{filters:Object.fromEntries(u.searchParams),shops,groups:[],sync:[],currencies:['THB'],totals:[],trend:[],ranking:[],fees:[],statuses:[]}};
   };
   scripts.forEach(s=>w.eval(s));
@@ -26,6 +30,40 @@ for(const timezone of ['Pacific/Honolulu','UTC','Asia/Shanghai']){
     assert.equal(reads[0].searchParams.get('end'),'2026-10-31',timezone);
     assert.equal(reads[0].searchParams.get('dateBasis'),'shop-calendar-v1');
     assert(d.querySelector('.fi-calendar-note').textContent.includes('多店铺分别取各自当地日期'));
+    const field=label=>d.querySelector(`[aria-label="${label}"]`);
+    const pick=(label,value)=>{const input=field(label);input.value=value;input.dispatchEvent(new w.Event('change'));};
+    const dateReads=()=>reads.filter(u=>u.pathname.endsWith('/overview'));
+    const dates=()=>['start','end'].map(key=>dateReads().at(-1).searchParams.get(key));
+    const oldReads=dateReads().length;
+    pick('开始日期','2026-11-01');
+    assert(d.querySelector('.fi-content').hidden,'old rows are hidden for a reversed range');
+    assert.equal(field('开始日期').value,'2026-11-01','the first edited boundary remains available');
+    assert.equal(field('统计月份（店铺当地）').value,'');
+    [...d.querySelectorAll('button')].find(b=>b.textContent==='刷新').click();
+    assert.equal(dateReads().length,oldReads,'an invalid range cannot query old dates, even on manual refresh');
+    pick('结束日期','2026-11-15');await settle();
+    assert.deepEqual(dates(),['2026-11-01','2026-11-15'],'start-first edits submit both dates');
+    assert(d.querySelector('.fi-meta').textContent.includes('2026-11-01 至 2026-11-15'));
+    assert(!d.querySelector('.fi-content').hidden);
+    pick('结束日期','2026-10-30');
+    assert(d.querySelector('.fi-content').hidden);
+    pick('开始日期','2026-10-01');await settle();
+    assert.deepEqual(dates(),['2026-10-01','2026-10-30'],'end-first edits submit both dates');
+    pick('开始日期','');assert(d.querySelector('.fi-content').hidden);
+    pick('开始日期','2026-10-05');await settle();
+    assert.deepEqual(dates(),['2026-10-05','2026-10-30']);
+    pick('统计月份（店铺当地）','2026-11');await settle();
+    pick('开始日期','2026-10-02');
+    assert(held?.signal,'the older query is in flight');
+    field('开始日期').focus();
+    pick('统计月份（店铺当地）','2026-10');await settle();
+    assert(held.signal.aborted);
+    assert.equal(field('开始日期').value,'2026-10-01','month selection updates a focused date field');
+    held.release();await settle();
+    assert.deepEqual(dates(),['2026-10-01','2026-10-31']);
+    assert(d.querySelector('.fi-meta').textContent.includes('2026-10-01 至 2026-10-31'));
+    const saved=JSON.parse(w.sessionStorage.getItem('heyi:finance-filters:v1:["org","user"]'));
+    assert.deepEqual([saved.start,saved.end],dates(),'only validated ranges are saved for re-entry');
     let month=d.querySelector('[aria-label="统计月份（店铺当地）"]');month.value='2024-02';month.dispatchEvent(new w.Event('change'));await settle();
     assert.equal(reads.at(-1).searchParams.get('end'),'2024-02-29');
     const start=d.querySelector('[aria-label="开始日期"]');start.value='2024-02-03';start.dispatchEvent(new w.Event('change'));await settle();

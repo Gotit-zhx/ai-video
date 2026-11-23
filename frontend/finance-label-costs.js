@@ -93,7 +93,14 @@
     shopOptions();
     for(const [key,name]of [['start','结算开始日期'],['end','结算结束日期']]){
       const label=el('label',null,filters);el('span',name,label);const n=el('input',null,label);n.type='date';n.value=scope[key];n.setAttribute('aria-label',name);
-      n.onchange=()=>{if(!n.value)return;const next={...scope,[key]:n.value};if(next.start&&next.end&&next.start>next.end){feedback.textContent='开始日期不能晚于结束日期';n.value=scope[key];return;}scope[key]=n.value;change();};
+      n.onchange=()=>{
+        const next={...scope,[key]:n.value};
+        if(!n.value||next.start>next.end){
+          feedback.textContent=n.value?'开始日期不能晚于结束日期':'请选择完整的结算日期';
+          n.value=scope[key];return;
+        }
+        scope[key]=n.value;change();
+      };
     }
     const selection=el('div',null,root,'fi-filters');
     const statusSelect=select(selection,'匹配状态',[['','全部状态'],['UNMATCHED','待匹配'],['REVIEW','绑定待核对'],['CONFLICT','费用待核对'],['MATCHED','已匹配']],scope.matchStatus,v=>{scope.matchStatus=v;change(true);});
@@ -168,13 +175,14 @@
       clearTimeout(timer);controller?.abort();const current=new AbortController();controller=current;
       const run=++sequence,key=JSON.stringify([scope.start,scope.end,scope.groupId,scope.shopId,scope.platform]);
       const partial=Boolean(detailsOnly&&data&&periodKey===key);
+      if(data&&periodKey!==key)content.hidden=true;
       content.setAttribute('aria-busy','true');loading.hidden=quiet;
       const timeout=setTimeout(()=>current.abort(new Error('明细读取超时，请点击刷新重试')),30000);
       try{
         const spec=requestSpec(scope,partial),leased=run===1&&!detailsOnly?options.initialLabelPrefetch?.take(spec.key,current.signal):null;
         const incoming=await (leased||request(spec.path,{signal:current.signal}));
         if(disposed||run!==sequence||!root.isConnected||!active())return;
-        data=partial?{...data,...incoming}:incoming;if(!partial)periodKey=key;feedback.textContent='';draw();
+        data=partial?{...data,...incoming}:incoming;if(!partial)periodKey=key;feedback.textContent='';draw();content.hidden=false;
         if(data.processing||data.files.some(f=>['QUEUED','PARSING','PREPARED','REMOVE_QUEUED'].includes(f.status)))
           timer=setTimeout(()=>{if(root.isConnected&&!disposed&&active())refresh({quiet:true}).catch(e=>{feedback.textContent=e.message;});else if(!root.isConnected)dispose();},3000);
       }catch(error){
