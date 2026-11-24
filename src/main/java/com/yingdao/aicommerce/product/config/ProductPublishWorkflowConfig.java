@@ -10,7 +10,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 
 @Configuration
 public class ProductPublishWorkflowConfig {
-    public static final int PRINT_IMAGE_CONCURRENCY = 4;
+    public static final int PRINT_IMAGE_CONCURRENCY = 20;
 
     @Bean(name = "productPublishWorkflowExecutor")
     public Executor productPublishWorkflowExecutor(

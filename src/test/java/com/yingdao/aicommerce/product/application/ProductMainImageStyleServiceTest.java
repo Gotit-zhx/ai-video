@@ -91,13 +91,16 @@ class ProductMainImageStyleServiceTest {
         verifyNoMoreInteractions(gateway);
     }
 
-    @Test void printListingStartsFourPaidCallsTogetherAndSharesTheBatchAcrossShops() throws Exception {
-        var rows = printPlanRows("PREPARED", "PREPARED", "PREPARED", "PREPARED", "PREPARED");
+    @Test void printListingStartsTwentyPaidCallsTogetherAndSharesTheBatchAcrossShops() throws Exception {
+        int expectedConcurrency = 20;
+        String[] statuses = new String[expectedConcurrency + 1];
+        Arrays.fill(statuses, "PREPARED");
+        var rows = printPlanRows(statuses);
         var model = new ModelConfigService.RuntimeModelConnection("model", "https://model.example",
                 "gpt-image-2.6", "OPENAI_COMPATIBLE", "CUSTOM", "test");
         when(models.capturePrintConnectionById("org", "model")).thenReturn(Optional.of(model));
         when(db.update(contains("SET status='SUBMITTING'"), anyString(), eq(0))).thenReturn(1);
-        var busy = new CountDownLatch(4);
+        var busy = new CountDownLatch(expectedConcurrency);
         var finish = new CountDownLatch(1);
         var response = new CommerceDesignImageGateway.Response(null,
                 new CommerceDesignImageGateway.PendingResult("https://result.example/image.png", "image/png", "model", "edit", null));
@@ -112,28 +115,35 @@ class ProductMainImageStyleServiceTest {
             var parallel = imageService(executor);
             var firstShop = workflowExecutor.submit(() -> parallel.ensureReady(workflow, capture));
             try {
-                assertTrue(busy.await(3, TimeUnit.SECONDS), "All four image calls should start before any returns");
+                assertTrue(busy.await(5, TimeUnit.SECONDS), "All twenty image calls should start before any returns");
                 var otherShop = mock(ProductPublishWorkflow.class);
                 String request = workflow.getRequestJson();
                 when(otherShop.getRequestJson()).thenReturn(request);
                 when(otherShop.getOrganizationId()).thenReturn("org");
                 when(otherShop.getCaptureId()).thenReturn("capture");
-                assertFalse(parallel.ensureReady(otherShop, capture), "A second shop must reuse the four active jobs");
+                assertFalse(parallel.ensureReady(otherShop, capture), "A second shop must reuse the active jobs");
                 verify(gateway, never()).generatePrintListingMockup(anyString(), eq((String) rows.getLast().get("id")), eq(model), any());
                 assertFalse(firstShop.isDone());
             } finally {
                 finish.countDown();
             }
             assertFalse(firstShop.get(3, TimeUnit.SECONDS));
-            verify(gateway, times(4)).generatePrintListingMockup(anyString(), anyString(), eq(model), any());
-            verify(db, times(4)).update(contains("SET status='RESULT_RECEIVED'"), anyString(), anyString(), eq(0));
+            verify(gateway, times(expectedConcurrency)).generatePrintListingMockup(anyString(), anyString(), eq(model), any());
+            verify(db, times(expectedConcurrency)).update(contains("SET status='RESULT_RECEIVED'"), anyString(), anyString(), eq(0));
+
+            rows.subList(0, expectedConcurrency).forEach(row -> row.put("status", "READY"));
+            assertFalse(parallel.ensureReady(workflow, capture));
+            verify(gateway).generatePrintListingMockup(anyString(), eq((String) rows.getLast().get("id")), eq(model), any());
         } finally {
             executor.shutdown();
         }
     }
 
     @Test void printListingRecoversAnExistingFullBatchBeforePreparingMorePaidCalls() {
-        var rows = printPlanRows("PREPARED", "SUBMITTING", "SUBMITTING", "SUBMITTING", "SUBMITTING");
+        String[] statuses = new String[21];
+        Arrays.fill(statuses, "SUBMITTING");
+        statuses[0] = "PREPARED";
+        var rows = printPlanRows(statuses);
         assertFalse(service.ensureReady(workflow, capture));
         for (var row : rows.subList(1, rows.size())) verify(gateway).operation((String) row.get("id"));
         verify(gateway, never()).generatePrintListingMockup(anyString(), anyString(), any(), any());
