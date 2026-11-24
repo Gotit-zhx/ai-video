@@ -88,6 +88,15 @@
     return image;
   }
 
+  function setRecentExpanded(expanded) {
+    const toggle = get('recent-toggle');
+    const panel = get('recent-panel');
+    if (!expanded && panel.contains(document.activeElement)) toggle.focus({preventScroll: true});
+    panel.hidden = !expanded;
+    toggle.setAttribute('aria-expanded', String(expanded));
+    get('recent').querySelector('[aria-current="true"]')?.setAttribute('aria-expanded', String(expanded));
+  }
+
   function renderRecent() {
     const query = get('search').value.trim().toLowerCase();
     const rows = recent.filter(item => (item.title || '').toLowerCase().includes(query));
@@ -97,13 +106,23 @@
       const row = document.createElement('button');
       row.type = 'button';
       row.className = 'quiet-button';
-      row.setAttribute('aria-current', String(capture?.captureId === item.id));
+      const current = capture?.captureId === item.id;
+      row.setAttribute('aria-current', String(current));
+      if (current) {
+        row.setAttribute('aria-controls', 'pc-recent-panel');
+        row.setAttribute('aria-expanded', String(!get('recent-panel').hidden));
+        row.title = '收起采集商品';
+      }
       const title = document.createElement('span');
       title.textContent = item.title;
       const platform = document.createElement('small');
       platform.textContent = item.sourcePlatform === 'SHOPEE' ? 'Shopee' : 'TikTok Shop';
       row.append(title, platform);
       row.addEventListener('click', () => {
+        if (capture?.captureId === item.id) {
+          setRecentExpanded(false);
+          return;
+        }
         handoffId = item.id;
         window.history.replaceState(null, '', `#${route}?capture=${encodeURIComponent(item.id)}`);
         void readSource(item.id);
@@ -692,11 +711,7 @@
     }
   });
 
-  get('recent-toggle').addEventListener('click', event => {
-    const panel = get('recent-panel');
-    panel.hidden = !panel.hidden;
-    event.currentTarget.setAttribute('aria-expanded', String(!panel.hidden));
-  });
+  get('recent-toggle').addEventListener('click', () => setRecentExpanded(get('recent-panel').hidden));
   get('search').addEventListener('input', renderRecent);
   get('refresh-recent').addEventListener('click', loadRecent);
   get('monitor-toggle').addEventListener('click', () => {

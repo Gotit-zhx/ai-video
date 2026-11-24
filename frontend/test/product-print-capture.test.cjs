@@ -25,6 +25,7 @@ async function workspace(t, submit, history = [], styles = {ready: [shortSleeve]
   const submissions = [];
   const drafts = [];
   const bulk = [];
+  const sourceReads = [];
   window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   window.HTMLCanvasElement.prototype.toBlob = function (callback) {
@@ -43,8 +44,11 @@ async function workspace(t, submit, history = [], styles = {ready: [shortSleeve]
   });
   window.api = async (path, options) => {
     const success = data => ({success: true, data});
-    if (path === endpoint) return success([]);
-    if (path === `${endpoint}/${captureId}`) return success({captureId, title: '示例', images: photos});
+    if (path === endpoint) return success([{id: captureId, title: '示例', sourcePlatform: 'SHOPEE'}]);
+    if (path === `${endpoint}/${captureId}`) {
+      sourceReads.push(path);
+      return success({captureId, title: '示例', images: photos});
+    }
     if (path === `${endpoint}/${captureId}/results`) return success(history);
     if (path.startsWith('/api/v1/product-capture-templates?')) {
       const items = path.includes('readyOnly=true') ? styles.ready : styles.editable;
@@ -66,7 +70,7 @@ async function workspace(t, submit, history = [], styles = {ready: [shortSleeve]
   await flush();
 
   return {
-    window, get, drafts, bulk,
+    window, get, drafts, bulk, sourceReads,
     submissions,
     resultButtons: () => [...get('results').querySelectorAll('[data-result]')],
     sourceImages: () => [...get('source-images').querySelectorAll('input')],
@@ -103,6 +107,23 @@ test('the recent capture list collapses without changing the selected product or
   toggle.click();
   assert.equal(list.hidden, false);
   assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  assert.equal(app.get('search').value, '示例');
+
+  const row = app.get('recent').querySelector('[aria-current="true"]');
+  row.focus();
+  row.click();
+  assert.equal(list.hidden, true);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(row.getAttribute('aria-expanded'), 'false');
+  assert.equal(app.window.document.activeElement, toggle);
+  assert.equal(app.get('canvas').hidden, false);
+  assert.equal(app.get('style').value, shortSleeve.id);
+  assert.equal(app.sourceReads.length, 1);
+
+  toggle.click();
+  assert.equal(list.hidden, false);
+  assert.equal(row.getAttribute('aria-expanded'), 'true');
+  assert.equal(row.getAttribute('aria-current'), 'true');
   assert.equal(app.get('search').value, '示例');
 });
 
