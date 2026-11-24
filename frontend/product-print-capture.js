@@ -90,39 +90,41 @@
 
   function setRecentExpanded(expanded) {
     const toggle = get('recent-toggle');
+    const current = get('current-capture');
     const panel = get('recent-panel');
     if (!expanded && panel.contains(document.activeElement)) toggle.focus({preventScroll: true});
     panel.hidden = !expanded;
     toggle.setAttribute('aria-expanded', String(expanded));
-    get('recent').querySelector('[aria-current="true"]')?.setAttribute('aria-expanded', String(expanded));
+    current.setAttribute('aria-expanded', String(expanded));
+    current.title = expanded ? '收起采集列表' : '展开采集列表';
+  }
+
+  function renderCurrentCapture() {
+    const summary = recent.find(item => item.id === capture?.captureId);
+    const platform = get('current-capture-platform');
+    get('current-capture-title').textContent = capture ? capture.title || '已采集商品' : '';
+    platform.textContent = summary ? (summary.sourcePlatform === 'SHOPEE' ? 'Shopee' : 'TikTok Shop') : '';
+    platform.hidden = !summary;
+    get('current-capture').hidden = !capture;
   }
 
   function renderRecent() {
     const query = get('search').value.trim().toLowerCase();
-    const rows = recent.filter(item => (item.title || '').toLowerCase().includes(query));
+    const matches = item => (item.title || '').toLowerCase().includes(query);
+    const rows = recent.filter(item => item.id !== capture?.captureId && matches(item));
+    renderCurrentCapture();
     const list = get('recent');
     list.replaceChildren();
     for (const item of rows) {
       const row = document.createElement('button');
       row.type = 'button';
-      row.className = 'quiet-button';
-      const current = capture?.captureId === item.id;
-      row.setAttribute('aria-current', String(current));
-      if (current) {
-        row.setAttribute('aria-controls', 'pc-recent-panel');
-        row.setAttribute('aria-expanded', String(!get('recent-panel').hidden));
-        row.title = '收起采集商品';
-      }
+      row.className = 'quiet-button pc-recent-row';
       const title = document.createElement('span');
       title.textContent = item.title;
       const platform = document.createElement('small');
       platform.textContent = item.sourcePlatform === 'SHOPEE' ? 'Shopee' : 'TikTok Shop';
       row.append(title, platform);
       row.addEventListener('click', () => {
-        if (capture?.captureId === item.id) {
-          setRecentExpanded(false);
-          return;
-        }
         handoffId = item.id;
         window.history.replaceState(null, '', `#${route}?capture=${encodeURIComponent(item.id)}`);
         void readSource(item.id);
@@ -130,7 +132,8 @@
       list.append(row);
     }
     updateActions();
-    status('recent-status', rows.length ? '' : query ? '没有匹配的商品' : '从商品页点击 v2.0 插件采集');
+    status('recent-status', rows.length || (capture && matches(capture)) ? '' :
+      query ? '没有匹配的商品' : '从商品页点击 v2.0 插件采集');
   }
 
   async function loadRecent() {
@@ -201,6 +204,7 @@
     imageRevision++;
     printRevision++;
     capture = activeResult = print = base = null;
+    renderCurrentCapture();
     results.clear();
     failures.clear();
     selectedIds.clear();
@@ -711,7 +715,9 @@
     }
   });
 
-  get('recent-toggle').addEventListener('click', () => setRecentExpanded(get('recent-panel').hidden));
+  for (const name of ['recent-toggle', 'current-capture']) {
+    get(name).addEventListener('click', () => setRecentExpanded(get('recent-panel').hidden));
+  }
   get('search').addEventListener('input', renderRecent);
   get('refresh-recent').addEventListener('click', loadRecent);
   get('monitor-toggle').addEventListener('click', () => {

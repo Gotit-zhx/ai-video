@@ -7,6 +7,7 @@ const { JSDOM } = require('../../scripts/ci/qa/node_modules/jsdom');
 const html = readFileSync(resolve(__dirname, '../index.html'), 'utf8');
 const source = readFileSync(resolve(__dirname, '../product-print-capture.js'), 'utf8');
 const captureId = '11111111-2222-4333-8444-555555555555';
+const otherCaptureId = '22222222-2222-4333-8444-555555555555';
 const endpoint = '/api/v1/product-print-capture';
 const flush = () => new Promise(setImmediate);
 const photos = ['a', 'b', 'c'].map(id => ({id, url: `/${id}.png`}));
@@ -44,12 +45,16 @@ async function workspace(t, submit, history = [], styles = {ready: [shortSleeve]
   });
   window.api = async (path, options) => {
     const success = data => ({success: true, data});
-    if (path === endpoint) return success([{id: captureId, title: '示例', sourcePlatform: 'SHOPEE'}]);
-    if (path === `${endpoint}/${captureId}`) {
+    const captures = [{id: captureId, title: '示例', sourcePlatform: 'SHOPEE'},
+      {id: otherCaptureId, title: '新款', sourcePlatform: 'TIKTOK_SHOP'}];
+    if (path === endpoint) return success(captures);
+    const selected = captures.find(item => path === `${endpoint}/${item.id}`);
+    if (selected) {
       sourceReads.push(path);
-      return success({captureId, title: '示例', images: photos});
+      return success({captureId: selected.id, title: selected.title, images: photos});
     }
     if (path === `${endpoint}/${captureId}/results`) return success(history);
+    if (path === `${endpoint}/${otherCaptureId}/results`) return success([]);
     if (path.startsWith('/api/v1/product-capture-templates?')) {
       const items = path.includes('readyOnly=true') ? styles.ready : styles.editable;
       if (!items) throw new Error('款式暂不可用');
@@ -87,19 +92,23 @@ async function workspace(t, submit, history = [], styles = {ready: [shortSleeve]
   };
 }
 
-test('the recent capture list collapses without changing the selected product or preview', async t => {
+test('the selected capture stays visible and toggles the list in both directions', async t => {
   const app = await workspace(t, result, [result('a')]);
   await app.chooseStyle();
   const toggle = app.get('recent-toggle');
   const list = app.get('recent-panel');
+  const row = app.get('current-capture');
   app.get('search').value = '示例';
   assert.equal(toggle.getAttribute('aria-controls'), list.id);
+  assert.equal(row.getAttribute('aria-controls'), list.id);
   assert.equal(toggle.getAttribute('aria-expanded'), 'true');
   assert.equal(app.get('canvas').hidden, false);
 
   toggle.click();
   assert.equal(list.hidden, true);
   assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(row.hidden, false);
+  assert.equal(list.contains(row), false);
   assert.equal(app.get('source-section').hidden, false);
   assert.equal(app.get('product-title').textContent, '示例');
   assert.equal(app.get('canvas').hidden, false);
@@ -109,22 +118,35 @@ test('the recent capture list collapses without changing the selected product or
   assert.equal(toggle.getAttribute('aria-expanded'), 'true');
   assert.equal(app.get('search').value, '示例');
 
-  const row = app.get('recent').querySelector('[aria-current="true"]');
   row.focus();
   row.click();
   assert.equal(list.hidden, true);
   assert.equal(toggle.getAttribute('aria-expanded'), 'false');
   assert.equal(row.getAttribute('aria-expanded'), 'false');
-  assert.equal(app.window.document.activeElement, toggle);
+  assert.equal(row.hidden, false);
+  assert.equal(app.window.document.activeElement, row);
   assert.equal(app.get('canvas').hidden, false);
   assert.equal(app.get('style').value, shortSleeve.id);
   assert.equal(app.sourceReads.length, 1);
 
-  toggle.click();
+  row.click();
   assert.equal(list.hidden, false);
   assert.equal(row.getAttribute('aria-expanded'), 'true');
   assert.equal(row.getAttribute('aria-current'), 'true');
   assert.equal(app.get('search').value, '示例');
+  assert.equal(app.sourceReads.length, 1);
+
+  app.get('search').value = '新款';
+  app.get('search').dispatchEvent(new app.window.Event('input'));
+  assert.equal(app.get('current-capture-title').textContent, '示例');
+  assert.equal(row.hidden, false);
+  app.get('recent').querySelector('button').click();
+  await flush();
+  assert.equal(list.hidden, false);
+  assert.equal(app.get('current-capture-title').textContent, '新款');
+  assert.equal(app.get('current-capture-platform').textContent, 'TikTok Shop');
+  assert.equal(app.get('recent').children.length, 0);
+  assert.deepEqual(app.sourceReads, [`${endpoint}/${captureId}`, `${endpoint}/${otherCaptureId}`]);
 });
 
 test('a batch continues after one refusal and completed prints remain selectable', async t => {

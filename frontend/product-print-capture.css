@@ -131,7 +131,7 @@
   cursor: pointer;
 }
 #pc-recent-toggle::after,
-.pc-recent button[aria-current=true] small::after {
+#pc-current-capture::after {
   content: "";
   display: inline-block;
   width: 6px;
@@ -140,18 +140,18 @@
   border-bottom: 1.5px solid currentColor;
   transform: translateY(-2px) rotate(45deg);
 }
-#pc-recent-toggle[aria-expanded="false"]::after { transform: rotate(-45deg); }
-.pc-recent button[aria-current=true] small::after {
-  margin-inline-start: 8px;
-  transform: translateY(1px) rotate(225deg);
-}
+#pc-recent-toggle[aria-expanded="false"]::after,
+#pc-current-capture[aria-expanded="false"]::after { transform: rotate(-45deg); }
 #pc-recent-toggle:hover { text-decoration: underline; text-underline-offset: 3px; }
-.pc-library:has(#pc-recent-panel[hidden]) .pc-preview-heading { margin-bottom: 0; }
+.pc-library:has(#pc-current-capture[hidden] + #pc-recent-panel[hidden]) .pc-preview-heading { margin-bottom: 0; }
 .pc-recent { display: grid; gap: 4px; max-height: 212px; overflow: auto; }
-.pc-recent button { display: flex; justify-content: space-between; align-items: center; gap: 10px; text-align: left; }
-.pc-recent button span { overflow-wrap: anywhere; }
-.pc-recent button small { color: var(--muted); flex: none; }
-.pc-recent button[aria-current=true] { border-color: var(--ink); }
+.pc-recent-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; text-align: left; }
+.pc-recent-row span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.pc-recent-row small { color: var(--muted); flex: none; }
+#pc-current-capture { width: 100%; border-color: var(--ink); user-select: none; }
+#pc-current-capture::after { flex: none; }
+#pc-current-capture[aria-expanded="true"]::after { transform: translateY(1px) rotate(225deg); }
+#pc-current-capture:not([hidden]) + #pc-recent-panel { margin-top: 12px; }
 @media (max-width: 650px) {
   .pc-workspace .pc-monitor { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pc-workspace .pc-monitor article:nth-child(n+3) { border-top: 1px solid var(--line); }
