@@ -692,6 +692,11 @@
     }
   });
 
+  get('recent-toggle').addEventListener('click', event => {
+    const panel = get('recent-panel');
+    panel.hidden = !panel.hidden;
+    event.currentTarget.setAttribute('aria-expanded', String(!panel.hidden));
+  });
   get('search').addEventListener('input', renderRecent);
   get('refresh-recent').addEventListener('click', loadRecent);
   get('monitor-toggle').addEventListener('click', () => {

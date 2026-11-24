@@ -91,7 +91,7 @@
   <link rel="stylesheet" href="/commerce-artwork-library.css?v=artwork-library-20260916-1">
   <link rel="stylesheet" href="/commerce-motion.css?v=workbench-layout-20260921">
   <link rel="stylesheet" href="/product-bulk-history.css?v=20261123-print-task-list-1">
-  <link rel="stylesheet" href="/product-print-capture.css?v=20261123-print-task-list-1">
+  <link rel="stylesheet" href="/product-print-capture.css?v=20261123-recent-disclosure-1">
   <link rel="stylesheet" href="/product-capture-templates.css?v=20261123-size-options-1">
   <link rel="stylesheet" href="/product-main-image-styles.css?v=20261123-print-listing-images-1">
   <link rel="stylesheet" href="/knowledge-workspace.css?v=20260923-3">
@@ -968,12 +968,14 @@
             <div class="pc-inputs">
               <section class="pc-section pc-library" aria-labelledby="pc-library-heading">
                 <header class="pc-preview-heading">
-                  <h2 id="pc-library-heading">采集商品</h2>
+                  <h2 id="pc-library-heading"><button id="pc-recent-toggle" type="button" aria-expanded="true" aria-controls="pc-recent-panel">采集商品</button></h2>
                   <button id="pc-refresh-recent" class="quiet-button" type="button">刷新</button>
                 </header>
-                <label class="product-capture-search" for="pc-search"><span aria-hidden="true">⌕</span><input id="pc-search" type="search" aria-label="搜索商品名称" placeholder="搜索商品名称"></label>
-                <div id="pc-recent" class="pc-recent" aria-label="最近采集商品"></div>
-                <p id="pc-recent-status" class="pc-status" role="status"></p>
+                <div id="pc-recent-panel">
+                  <label class="product-capture-search" for="pc-search"><span aria-hidden="true">⌕</span><input id="pc-search" type="search" aria-label="搜索商品名称" placeholder="搜索商品名称"></label>
+                  <div id="pc-recent" class="pc-recent" aria-label="最近采集商品"></div>
+                  <p id="pc-recent-status" class="pc-status" role="status"></p>
+                </div>
               </section>
               <section class="pc-section" id="pc-source-section" aria-labelledby="pc-source-heading" hidden>
                 <h2 id="pc-source-heading">商品图片</h2>
@@ -2216,7 +2218,7 @@
   <script src="/incremental-charts.js?v=20261021-1" defer></script>
   <script src="/video-direct-downloads.js?v=20261102-direct-download-1" defer></script>
   <script src="/app.js?v=20261123-shopee-activation-readback-1" defer></script>
-  <script src="/product-print-capture.js?v=20261123-print-task-list-1" defer></script>
+  <script src="/product-print-capture.js?v=20261123-recent-disclosure-1" defer></script>
   <script src="/product-capture-templates.js?v=20261123-size-options-1" defer></script>
   <script src="/product-main-image-styles.js?v=20261123-capture-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261019-94383ea9f5cb" defer></script>

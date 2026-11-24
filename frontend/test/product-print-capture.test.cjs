@@ -83,6 +83,29 @@ async function workspace(t, submit, history = [], styles = {ready: [shortSleeve]
   };
 }
 
+test('the recent capture list collapses without changing the selected product or preview', async t => {
+  const app = await workspace(t, result, [result('a')]);
+  await app.chooseStyle();
+  const toggle = app.get('recent-toggle');
+  const list = app.get('recent-panel');
+  app.get('search').value = '示例';
+  assert.equal(toggle.getAttribute('aria-controls'), list.id);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  assert.equal(app.get('canvas').hidden, false);
+
+  toggle.click();
+  assert.equal(list.hidden, true);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(app.get('source-section').hidden, false);
+  assert.equal(app.get('product-title').textContent, '示例');
+  assert.equal(app.get('canvas').hidden, false);
+
+  toggle.click();
+  assert.equal(list.hidden, false);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  assert.equal(app.get('search').value, '示例');
+});
+
 test('a batch continues after one refusal and completed prints remain selectable', async t => {
   const app = await workspace(t, (imageId, history) => {
     if (imageId === 'b') {
