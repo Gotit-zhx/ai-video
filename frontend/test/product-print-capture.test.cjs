@@ -92,45 +92,52 @@ async function workspace(t, submit, history = [], styles = {ready: [shortSleeve]
   };
 }
 
-test('the selected capture stays visible and toggles the list in both directions', async t => {
+test('the selected capture toggles all left-side details while preserving the preview and selections', async t => {
   const app = await workspace(t, result, [result('a')]);
   await app.chooseStyle();
   const toggle = app.get('recent-toggle');
-  const list = app.get('recent-panel');
+  const panel = app.get('capture-panel');
   const row = app.get('current-capture');
+  const details = ['search', 'source-section', 'print-section', 'result-section'].map(app.get);
+  const hiddenInWorkspace = element => element.closest('#print-capture-workspace [hidden]');
+  app.sourceImages()[1].click();
   app.get('search').value = '示例';
-  assert.equal(toggle.getAttribute('aria-controls'), list.id);
-  assert.equal(row.getAttribute('aria-controls'), list.id);
+  assert.equal(toggle.getAttribute('aria-controls'), panel.id);
+  assert.equal(row.getAttribute('aria-controls'), panel.id);
   assert.equal(toggle.getAttribute('aria-expanded'), 'true');
-  assert.equal(app.get('canvas').hidden, false);
+  assert.equal(hiddenInWorkspace(app.get('canvas')), null);
+  assert.ok(details.every(detail => !hiddenInWorkspace(detail)));
 
+  app.sourceImages()[1].focus();
   toggle.click();
-  assert.equal(list.hidden, true);
+  assert.equal(panel.hidden, true);
   assert.equal(toggle.getAttribute('aria-expanded'), 'false');
-  assert.equal(row.hidden, false);
-  assert.equal(list.contains(row), false);
-  assert.equal(app.get('source-section').hidden, false);
+  assert.equal(hiddenInWorkspace(row), null);
+  assert.ok(details.every(detail => hiddenInWorkspace(detail) === panel));
+  assert.equal(app.window.document.activeElement, toggle);
   assert.equal(app.get('product-title').textContent, '示例');
-  assert.equal(app.get('canvas').hidden, false);
+  assert.equal(hiddenInWorkspace(app.get('canvas')), null);
 
   toggle.click();
-  assert.equal(list.hidden, false);
+  assert.equal(panel.hidden, false);
   assert.equal(toggle.getAttribute('aria-expanded'), 'true');
   assert.equal(app.get('search').value, '示例');
 
   row.focus();
   row.click();
-  assert.equal(list.hidden, true);
+  assert.equal(panel.hidden, true);
   assert.equal(toggle.getAttribute('aria-expanded'), 'false');
   assert.equal(row.getAttribute('aria-expanded'), 'false');
   assert.equal(row.hidden, false);
   assert.equal(app.window.document.activeElement, row);
-  assert.equal(app.get('canvas').hidden, false);
+  assert.equal(hiddenInWorkspace(app.get('canvas')), null);
   assert.equal(app.get('style').value, shortSleeve.id);
   assert.equal(app.sourceReads.length, 1);
 
   row.click();
-  assert.equal(list.hidden, false);
+  assert.equal(panel.hidden, false);
+  assert.ok(details.every(detail => !hiddenInWorkspace(detail)));
+  assert.equal(app.sourceImages()[1].checked, true);
   assert.equal(row.getAttribute('aria-expanded'), 'true');
   assert.equal(row.getAttribute('aria-current'), 'true');
   assert.equal(app.get('search').value, '示例');
@@ -142,7 +149,7 @@ test('the selected capture stays visible and toggles the list in both directions
   assert.equal(row.hidden, false);
   app.get('recent').querySelector('button').click();
   await flush();
-  assert.equal(list.hidden, false);
+  assert.equal(panel.hidden, false);
   assert.equal(app.get('current-capture-title').textContent, '新款');
   assert.equal(app.get('current-capture-platform').textContent, 'TikTok Shop');
   assert.equal(app.get('recent').children.length, 0);

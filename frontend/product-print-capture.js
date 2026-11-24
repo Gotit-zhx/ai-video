@@ -88,15 +88,15 @@
     return image;
   }
 
-  function setRecentExpanded(expanded) {
+  function setCaptureExpanded(expanded) {
     const toggle = get('recent-toggle');
     const current = get('current-capture');
-    const panel = get('recent-panel');
+    const panel = get('capture-panel');
     if (!expanded && panel.contains(document.activeElement)) toggle.focus({preventScroll: true});
     panel.hidden = !expanded;
     toggle.setAttribute('aria-expanded', String(expanded));
     current.setAttribute('aria-expanded', String(expanded));
-    current.title = expanded ? '收起采集列表' : '展开采集列表';
+    current.title = expanded ? '收起商品详情' : '展开商品详情';
   }
 
   function renderCurrentCapture() {
@@ -716,7 +716,7 @@
   });
 
   for (const name of ['recent-toggle', 'current-capture']) {
-    get(name).addEventListener('click', () => setRecentExpanded(get('recent-panel').hidden));
+    get(name).addEventListener('click', () => setCaptureExpanded(get('capture-panel').hidden));
   }
   get('search').addEventListener('input', renderRecent);
   get('refresh-recent').addEventListener('click', loadRecent);

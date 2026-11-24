@@ -91,7 +91,7 @@
   <link rel="stylesheet" href="/commerce-artwork-library.css?v=artwork-library-20260916-1">
   <link rel="stylesheet" href="/commerce-motion.css?v=workbench-layout-20260921">
   <link rel="stylesheet" href="/product-bulk-history.css?v=20261123-print-task-list-1">
-  <link rel="stylesheet" href="/product-print-capture.css?v=20261123-recent-disclosure-3">
+  <link rel="stylesheet" href="/product-print-capture.css?v=20261123-capture-disclosure-4">
   <link rel="stylesheet" href="/product-capture-templates.css?v=20261123-size-options-1">
   <link rel="stylesheet" href="/product-main-image-styles.css?v=20261123-print-listing-images-1">
   <link rel="stylesheet" href="/knowledge-workspace.css?v=20260923-3">
@@ -968,46 +968,48 @@
             <div class="pc-inputs">
               <section class="pc-section pc-library" aria-labelledby="pc-library-heading">
                 <header class="pc-preview-heading">
-                  <h2 id="pc-library-heading"><button id="pc-recent-toggle" type="button" aria-expanded="true" aria-controls="pc-recent-panel">采集商品</button></h2>
+                  <h2 id="pc-library-heading"><button id="pc-recent-toggle" type="button" aria-expanded="true" aria-controls="pc-capture-panel">采集商品</button></h2>
                   <button id="pc-refresh-recent" class="quiet-button" type="button">刷新</button>
                 </header>
-                <button id="pc-current-capture" class="quiet-button pc-recent-row" type="button" aria-current="true" aria-expanded="true" aria-controls="pc-recent-panel" title="收起采集列表" hidden>
+                <button id="pc-current-capture" class="quiet-button pc-recent-row" type="button" aria-current="true" aria-expanded="true" aria-controls="pc-capture-panel" title="收起商品详情" hidden>
                   <span id="pc-current-capture-title"></span>
                   <small id="pc-current-capture-platform" hidden></small>
                 </button>
-                <div id="pc-recent-panel">
+              </section>
+              <div id="pc-capture-panel">
+                <div class="pc-section pc-recent-list">
                   <label class="product-capture-search" for="pc-search"><span aria-hidden="true">⌕</span><input id="pc-search" type="search" aria-label="搜索商品名称" placeholder="搜索商品名称"></label>
                   <div id="pc-recent" class="pc-recent" aria-label="最近采集商品"></div>
                   <p id="pc-recent-status" class="pc-status" role="status"></p>
                 </div>
-              </section>
-              <section class="pc-section" id="pc-source-section" aria-labelledby="pc-source-heading" hidden>
-                <h2 id="pc-source-heading">商品图片</h2>
-                <p id="pc-source-status" class="pc-status" role="status" hidden></p>
-                <div id="pc-source-result" hidden>
-                  <p class="pc-title" id="pc-product-title"></p>
-                  <fieldset>
-                    <legend>选择有印花的商品图（可多选）</legend>
-                    <div id="pc-source-images" class="pc-source-images"></div>
-                  </fieldset>
-                </div>
-              </section>
-              <section class="pc-section" aria-labelledby="pc-print-heading" id="pc-print-section" hidden>
-                <h2 id="pc-print-heading">提取印花</h2>
-                <div id="pc-extract-action">
-                  <label class="pc-consent"><input id="pc-confirm-model" type="checkbox"> 确认调用 GPT Image 2.6（按张计费）</label>
-                  <button class="primary-button" id="pc-extract" type="button" disabled>提取印花</button>
-                </div>
-                <p id="pc-extract-status" class="pc-status" role="status" hidden></p>
-                <section id="pc-result-section" class="pc-result-section" aria-labelledby="pc-results-heading" hidden>
-                  <header class="pc-preview-heading">
-                    <h3 id="pc-results-heading">提取结果</h3>
-                    <button id="pc-refresh-results" class="quiet-button" type="button">刷新结果</button>
-                  </header>
-                  <div id="pc-results" class="pc-results"></div>
-                  <p id="pc-results-status" class="pc-status" role="status" hidden></p>
+                <section class="pc-section" id="pc-source-section" aria-labelledby="pc-source-heading" hidden>
+                  <h2 id="pc-source-heading">商品图片</h2>
+                  <p id="pc-source-status" class="pc-status" role="status" hidden></p>
+                  <div id="pc-source-result" hidden>
+                    <p class="pc-title" id="pc-product-title"></p>
+                    <fieldset>
+                      <legend>选择有印花的商品图（可多选）</legend>
+                      <div id="pc-source-images" class="pc-source-images"></div>
+                    </fieldset>
+                  </div>
                 </section>
-              </section>
+                <section class="pc-section" aria-labelledby="pc-print-heading" id="pc-print-section" hidden>
+                  <h2 id="pc-print-heading">提取印花</h2>
+                  <div id="pc-extract-action">
+                    <label class="pc-consent"><input id="pc-confirm-model" type="checkbox"> 确认调用 GPT Image 2.6（按张计费）</label>
+                    <button class="primary-button" id="pc-extract" type="button" disabled>提取印花</button>
+                  </div>
+                  <p id="pc-extract-status" class="pc-status" role="status" hidden></p>
+                  <section id="pc-result-section" class="pc-result-section" aria-labelledby="pc-results-heading" hidden>
+                    <header class="pc-preview-heading">
+                      <h3 id="pc-results-heading">提取结果</h3>
+                      <button id="pc-refresh-results" class="quiet-button" type="button">刷新结果</button>
+                    </header>
+                    <div id="pc-results" class="pc-results"></div>
+                    <p id="pc-results-status" class="pc-status" role="status" hidden></p>
+                  </section>
+                </section>
+              </div>
             </div>
             <section class="pc-composition" aria-labelledby="pc-composition-heading">
               <header class="pc-preview-heading">
@@ -2222,7 +2224,7 @@
   <script src="/incremental-charts.js?v=20261021-1" defer></script>
   <script src="/video-direct-downloads.js?v=20261102-direct-download-1" defer></script>
   <script src="/app.js?v=20261123-shopee-activation-readback-1" defer></script>
-  <script src="/product-print-capture.js?v=20261123-recent-disclosure-3" defer></script>
+  <script src="/product-print-capture.js?v=20261123-capture-disclosure-4" defer></script>
   <script src="/product-capture-templates.js?v=20261123-size-options-1" defer></script>
   <script src="/product-main-image-styles.js?v=20261123-capture-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261019-94383ea9f5cb" defer></script>
