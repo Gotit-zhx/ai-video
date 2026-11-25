@@ -151,19 +151,31 @@ w.FinanceWorkspace.reset();assert.equal(polls.size,0,'reset clears the polling t
 
 w.HTMLElement.prototype.getClientRects=function(){return this.isConnected?[{}]:[];};
 w.eval(await fs.readFile(new URL('../../frontend/finance-report-exports.js',import.meta.url),'utf8'));
+const BrowserDate=w.Date;
+w.Date=class extends BrowserDate{
+  constructor(...args){super(...(args.length?args:['2026-11-24T16:30:00Z']));}
+};
 w.FinanceCosts.openOrders({start:'2026-11-01',end:'2026-11-30',groupId:'group-a',kind:'SETTLED_ORDER'});
 w.FinanceWorkspace.enter('costs');await settle();
-for(const [label,value] of [['成本分组','group-a'],['结算结束日期','2026-11-30'],['结算开始日期','2026-11-01']]){
+for(const [label,value] of [['成本分组','group-a'],['结算结束日期','2026-11-25'],['结算开始日期','2026-11-01']]){
   const field=d.querySelector(`[aria-label="${label}"]`);
   field.value=value;field.dispatchEvent(new w.Event('change'));await settle();
 }
+const queryCount=requests.length;
+for(const label of ['结算开始日期','结算结束日期']){
+  const field=d.querySelector(`[aria-label="${label}"]`),previous=field.value;
+  assert.equal(field.max,'2026-11-25','maximum uses the Beijing date even before UTC midnight');
+  field.value='2026-11-26';field.dispatchEvent(new w.Event('change'));
+  assert.equal(field.value,previous,'future dates are rejected for both fields');
+}
+assert.equal(requests.length,queryCount,'future entries must not issue another query');
 for(let i=0;i<30&&!button('就绪后生成');i++)await settle();
 assert(button('导出当前数据')?.classList.contains('fi-primary'));
 assert(!button('导出核对版'),'the primary current-data action replaces the duplicate');
 button('导出当前数据').click();await settle();
 assert.equal(reportPosts[0]?.partial,true);
 assert.equal(reportPosts[0]?.selection.start,'2026-11-01');
-assert.equal(reportPosts[0]?.selection.end,'2026-11-30');
+assert.equal(reportPosts[0]?.selection.end,'2026-11-25');
 assert.equal(reportPosts[0]?.selection.groupId,'group-a');
 button('就绪后生成').click();await settle();
 assert.equal(reportPosts[1]?.partial,false,'complete exports remain a separate opt-in action');
