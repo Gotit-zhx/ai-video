@@ -49,6 +49,9 @@ class AiWatermarkLocalScreenTest {
  @Test void recoverableOperationReattachesTheOriginalAttempt()throws Exception{run("RECOVERY_REATTACH");}
  @Test void failedOperationLookupNeverStartsAnotherGeneration()throws Exception{run("RECOVERY_LOOKUP_FAILED");}
  @Test void exhaustedGenerationRetriesStopWithTheActualError()throws Exception{run("RECOVERY_EXHAUSTED");}
+ @Test void rejectedLegacyCallAllowsNewImage26Attempt()throws Exception{run("LEGACY_REJECTED");}
+ @Test void unknownLegacyCallCannotStartAnotherPaidAttempt()throws Exception{run("LEGACY_UNKNOWN");}
+ @Test void completedLegacyCallPreservesItsOriginalResult()throws Exception{run("LEGACY_COMPLETED");}
  private void run(String decision)throws Exception{
   var json=new ObjectMapper();var requests=new ArrayList<String>();var requestBodies=new ArrayList<Map>();
   var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
@@ -77,8 +80,10 @@ class AiWatermarkLocalScreenTest {
       .thenReturn(List.of(),List.of(Map.of("storage_key","source")));
    when(archive.read("org","source")).thenReturn(new CommerceDesignImageGateway.Reference("image/png",data));
    when(archive.store(eq("org"),any())).thenReturn(new CommerceImageArchive.Archived("source",hash,"image/png",bytes.length));
-   var model=new ModelConfigService.RuntimeModelConnection("model","http://127.0.0.1:1","test-model","OPENAI_COMPATIBLE","CUSTOM","unit-only");
-   when(models.watermarkDriverConnection("org")).thenReturn(Optional.of(model));when(models.watermarkImageConnection("org")).thenReturn(Optional.of(model));
+   var model=new ModelConfigService.RuntimeModelConnection("image-26","http://127.0.0.1:1","gpt-image-2.6","OPENAI_COMPATIBLE","CUSTOM","unit-only");
+   var detector=new ModelConfigService.RuntimeModelConnection("vision","http://127.0.0.1:1","grok-4.6","OPENAI_COMPATIBLE","CUSTOM","unit-only");
+   when(models.watermarkDriverConnection("org")).thenReturn(Optional.of(detector));
+   when(models.requireCapturePrintConnection("org")).thenReturn(model);
    when(generator.generateArtwork(anyString(),anyString(),any(),anyList())).thenReturn(new CommerceDesignImageGateway.Response(new CommerceDesignImageGateway.Artifact(data,"image/png","test","edit",""),null));
    var row=new HashMap<String,Object>();row.put("status","PREPARED");row.put("source_sha256",hash);
    if(decision.startsWith("RECOVERY_")){
@@ -135,7 +140,36 @@ class AiWatermarkLocalScreenTest {
    doAnswer(c->{row.put("status","EDITED");row.put("candidate_key",c.getArgument(2));return null;}).when(ledger).edited(anyString(),eq("org"),anyString());
    doAnswer(c->{row.put("status","READY");return null;}).when(ledger).ready(anyString(),eq("org"),anyString(),anyString(),anyString());
    doAnswer(c->{row.put("status","REVIEW_REQUIRED");return null;}).when(ledger).hold(anyString(),eq("org"),anyString(),anyString());
+   String checkId=CommerceImageArchive.sha(("org:capture:image:"+hash+":gpt-image-2.6:WATERMARK_V12_DETECT_FALLBACK_EDIT").getBytes(StandardCharsets.UTF_8));
+   String legacyId=CommerceImageArchive.sha(("org:capture:image:"+hash+":grok-imagine-image-2.0:WATERMARK_V12_DETECT_FALLBACK_EDIT").getBytes(StandardCharsets.UTF_8));
+   if(decision.startsWith("LEGACY_")){
+    var legacy=Map.<String,Object>of("id",legacyId,"status","REVIEW_REQUIRED","detection_json","{\"decision\":\"UNCERTAIN\"}");
+    when(ledger.unresolvedGeneration(checkId,"org","capture","image",hash)).thenReturn(Optional.of(legacy));
+    var processed=new CommerceDesignImageGateway.Response(new CommerceDesignImageGateway.Artifact(data,"image/png","grok-imagine-image-2.0","edit",null),null);
+    boolean completed="LEGACY_COMPLETED".equals(decision);
+    when(generator.operation(legacyId)).thenReturn(new CommerceDesignImageGateway.Operation(
+      completed?"COMPLETED":"FAILED",false,0,completed?processed:null,
+      completed?null:Map.of("requestState","LEGACY_REJECTED".equals(decision)?"REJECTED":"ACCEPTED_OR_UNKNOWN")));
+    doAnswer(c->{row.put("status","RESULT_RECEIVED");row.put("detection_json",legacy.get("detection_json"));
+     row.put("generation_json",c.getArgument(3));return null;}).when(ledger).recoverReceived(eq(legacyId),eq("org"),eq("REVIEW_REQUIRED"),anyString());
+   }
    var provider=new AiWatermarkRemovalProvider(ledger,archive,downloader,generator,models,db,json,local,"http://127.0.0.1:"+server.getAddress().getPort(),"unit-only","test-model");
+   if(decision.startsWith("LEGACY_")){
+    if("LEGACY_UNKNOWN".equals(decision)){
+     assertThrows(WatermarkRateLimitException.class,()->provider.process(capture,image));
+    }else{
+     assertTrue(provider.process(capture,image).url().startsWith(ProductWatermarkAssets.PREFIX));
+    }
+    if("LEGACY_REJECTED".equals(decision)){
+     verify(generator).generateArtwork(anyString(),eq(checkId),eq(model),anyList());
+     verify(ledger).prepare(checkId,"org","capture","image",hash,"source");
+    }else{
+     verify(generator,never()).generateArtwork(anyString(),anyString(),any(),anyList());
+     verify(ledger,never()).prepare(anyString(),anyString(),anyString(),anyString(),anyString(),anyString());
+     verifyNoInteractions(models);
+    }
+    return;
+   }
    if("RESULT_GONE".equals(decision)){
     when(downloader.download("https://result.invalid/image.png")).thenThrow(
       new com.yingdao.aicommerce.shop.infrastructure.MarketplaceApiException("读取商品图失败，HTTP 404"));
@@ -154,7 +188,6 @@ class AiWatermarkLocalScreenTest {
      assertTrue(assertThrows(IllegalStateException.class,()->provider.process(capture,image)).getMessage().contains("unit rejected"));
     else assertTrue(provider.process(capture,image).url().startsWith(ProductWatermarkAssets.PREFIX));
     assertTrue(requests.isEmpty());verifyNoInteractions(downloader,local);
-    String checkId=CommerceImageArchive.sha(("org:capture:image:"+hash+":test-model:WATERMARK_V12_DETECT_FALLBACK_EDIT").getBytes(StandardCharsets.UTF_8));
     if(List.of("RECOVERY_FAILED","RECOVERY_REATTACH").contains(decision))
      verify(generator).generateArtwork(anyString(),eq(checkId+("RECOVERY_FAILED".equals(decision)?"_retry_1":"")),eq(model),anyList());
     else verify(generator,never()).generateArtwork(anyString(),anyString(),any(),anyList());
@@ -189,6 +222,7 @@ class AiWatermarkLocalScreenTest {
    // The generation reference must be the exact archived original, never the enhanced pixels.
    verify(generator,times(cached||"ABSENT".equals(decision)||"SIZE_CHART".equals(decision)?0:"LEASE_TIMEOUT".equals(decision)?2:1)).generateArtwork(anyString(),anyString(),eq(model),eq(List.of(new CommerceDesignImageGateway.Reference("image/png",data))));
    if(!requestBodies.isEmpty()){
+    assertEquals(detector.modelId(),((Map<?,?>)requestBodies.getFirst().get("model")).get("modelId"));
     assertFalse(requestBodies.getFirst().containsKey("detectionViews"));
     assertFalse(requestBodies.getFirst().containsKey("candidateImage"));
    }
@@ -223,7 +257,6 @@ class AiWatermarkLocalScreenTest {
    else if("LEASE_TIMEOUT".equals(decision)){
     verify(downloader).download("https://source.invalid/original.png");
     // Both process attempts retain the same source hash/check ID; only the second is sent.
-    String checkId=CommerceImageArchive.sha(("org:capture:image:"+hash+":test-model:WATERMARK_V12_DETECT_FALLBACK_EDIT").getBytes(StandardCharsets.UTF_8));
     verify(ledger,times(2)).prepare(eq(checkId),eq("org"),eq("capture"),eq("image"),eq(hash),eq("source"));
     verify(ledger).generated(eq(checkId),eq("org"),anyString());
     verify(ledger,never()).hold(anyString(),anyString(),anyString(),anyString());

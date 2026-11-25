@@ -74,7 +74,7 @@ class ProductMainImageStyleServiceTest {
         var model = new ModelConfigService.RuntimeModelConnection("model", "https://model.example",
                 "gpt-image-2.6", "OPENAI_COMPATIBLE", "CUSTOM", "test");
         when(models.capturePrintConnectionById("org", "model")).thenReturn(Optional.of(model));
-        when(db.update(contains("SET status='SUBMITTING'"), eq(id), eq(0))).thenReturn(1);
+        when(db.update(contains("SET status='SUBMITTING'"), eq(model.id()), eq(id), eq(0))).thenReturn(1);
 
         assertFalse(service.ensureReady(workflow, capture));
         verify(gateway).generatePrintListingMockup(eq("Prompt"), eq(id), eq(model),
@@ -99,7 +99,7 @@ class ProductMainImageStyleServiceTest {
         var model = new ModelConfigService.RuntimeModelConnection("model", "https://model.example",
                 "gpt-image-2.6", "OPENAI_COMPATIBLE", "CUSTOM", "test");
         when(models.capturePrintConnectionById("org", "model")).thenReturn(Optional.of(model));
-        when(db.update(contains("SET status='SUBMITTING'"), anyString(), eq(0))).thenReturn(1);
+        when(db.update(contains("SET status='SUBMITTING'"), eq(model.id()), anyString(), eq(0))).thenReturn(1);
         var busy = new CountDownLatch(expectedConcurrency);
         var finish = new CountDownLatch(1);
         var response = new CommerceDesignImageGateway.Response(null,
@@ -210,15 +210,16 @@ class ProductMainImageStyleServiceTest {
         originalSlot.put("analysis",ProductMainImageStylePolicyTest.originalAnalysis());
         job.put("model_config_id","");
         job.put("template_fingerprint",ProductMainImageStylePolicy.fingerprint(originalSlot,json));
-        when(models.imageConnection("org")).thenReturn(Optional.empty());
+        when(models.requireCapturePrintConnection("org")).thenThrow(
+                new com.yingdao.aicommerce.common.exception.BusinessException(
+                        org.springframework.http.HttpStatus.CONFLICT, "未配置 GPT Image 2.6"));
         assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,()->service.ensureReady(workflow,capture));
-        verify(models).imageConnection("org");
+        verify(models).requireCapturePrintConnection("org");
         verifyNoInteractions(gateway);
     }
     @Test void editingTheCurrentPromptInvalidatesTheOldCompletedOutput() {
-        var banana = new ModelConfigService.RuntimeModelConnection("banana", "https://unit.invalid",
-                "gemini-nano-banana-2.1", "OPENAI_COMPATIBLE", "AUTO", "test-only");
-        when(models.imageConnection("org")).thenReturn(Optional.of(banana));
+        var image26 = image26();
+        when(models.requireCapturePrintConnection("org")).thenReturn(image26);
         var changed = ProductMainImageStylePolicyTest.analysis();
         changed.put("prompt","New current layout with {{product}}");
         slot.put("analysis",changed);
@@ -227,7 +228,7 @@ class ProductMainImageStyleServiceTest {
         var arguments = org.mockito.ArgumentCaptor.forClass(Object[].class);
         verify(db).update(contains("INSERT IGNORE INTO product_main_image_jobs"), arguments.capture());
         assertEquals("source", arguments.getValue()[5]);
-        assertEquals("banana", arguments.getValue()[9]);
+        assertEquals(image26.id(), arguments.getValue()[9]);
         verifyNoInteractions(gateway, images, downloader);
     }
     @Test void uncertainSubmissionReadsOriginalOperationAndNeverRegenerates() {
@@ -270,15 +271,18 @@ class ProductMainImageStyleServiceTest {
         verify(gateway).operation((String)job.get("id"));
         verifyNoMoreInteractions(gateway);
     }
-    @Test void confirmedUnsentRequestReturnsToQueueInsteadOfWaitingForAnUnknownOperation() {
+    @Test void preparedLegacyPosterUsesImage26AndReturnsToQueueWhenConfirmedUnsent() {
         job.put("status","PREPARED");
-        configuredModel();
-        when(db.update(contains("SET status='SUBMITTING'"),eq(job.get("id")),eq(0))).thenReturn(1);
+        var image26 = image26();
+        when(models.requireCapturePrintConnection("org")).thenReturn(image26);
+        when(db.update(contains("SET status='SUBMITTING'"),eq(image26.id()),eq(job.get("id")),eq(0))).thenReturn(1);
         when(gateway.generateMainImagePoster(anyString(),anyString(),any(),anyList(),anyString()))
                 .thenThrow(new ImageGenerationNotSentException(new IllegalStateException("pool busy")));
         var failure = assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,
                 ()->service.ensureReady(workflow,capture));
         assertEquals(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,failure.getStatus());
+        verify(gateway).generateMainImagePoster(eq("Prompt"),eq((String)job.get("id")),eq(image26),anyList(),eq("1024x1024"));
+        verify(models,never()).commerceMockupConnectionById(anyString(),anyString());
         verify(db).update(contains("SET status='PREPARED'"),eq(job.get("id")),eq(0));
     }
     @Test void savedOutputBecomesReadyWithoutVisualReviewOrAnotherModelCall() {
@@ -419,6 +423,10 @@ class ProductMainImageStyleServiceTest {
         var model = new ModelConfigService.RuntimeModelConnection("model","https://unit.invalid","image-model","OPENAI_COMPATIBLE","CUSTOM","test-only");
         when(models.commerceMockupConnectionById("org","model")).thenReturn(Optional.of(model));
         return model;
+    }
+    private static ModelConfigService.RuntimeModelConnection image26() {
+        return new ModelConfigService.RuntimeModelConnection("image-26","https://unit.invalid",
+                "gpt-image-2.6","OPENAI_COMPATIBLE","CUSTOM","test-only");
     }
     private void stubOriginalInsert(List<Map<String,Object>> persisted) {
         when(db.update(contains("'ORIGINAL'"),any(Object[].class))).thenAnswer(call -> {

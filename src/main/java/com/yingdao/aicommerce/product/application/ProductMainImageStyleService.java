@@ -197,9 +197,13 @@ public class ProductMainImageStyleService {
         String attemptId = id + (attempt == 0 ? "" : "_r" + attempt);
         if ("FAILED".equals(status)) throw conflict(Objects.toString(job.get("error_message"), "风格主图生成失败"));
         if ("PREPARED".equals(status)) {
-            var model = jobModel(org, job);
+            boolean print = Objects.toString(job.get("size"), "").startsWith(ProductPrintImagePlan.POSTER_PREFIX);
+            var model = print ? jobModel(org, job) : models.requireCapturePrintConnection(org);
             var references = jobReferences(org, job);
-            if (db.update("UPDATE product_main_image_jobs SET status='SUBMITTING',updated_at=NOW(6) WHERE id=? AND status='PREPARED' AND attempt_count=?", id, attempt) != 1) return false;
+            if (db.update("""
+                    UPDATE product_main_image_jobs SET status='SUBMITTING',model_config_id=?,updated_at=NOW(6)
+                    WHERE id=? AND status='PREPARED' AND attempt_count=?
+                    """, model.id(), id, attempt) != 1) return false;
             try {
                 var result = generate(job, attemptId, model, references);
                 if (result == null) return false;
@@ -427,7 +431,7 @@ public class ProductMainImageStyleService {
                 continue;
             }
             if (modelId == null) {
-                modelId = models.imageConnection(org).orElseThrow(() -> conflict("请先配置可用的图片生成模型")).id();
+                modelId = models.requireCapturePrintConnection(org).id();
             }
             if (sourceKey == null) {
                 var source = images.selectList(new LambdaQueryWrapper<ProductCaptureImage>()

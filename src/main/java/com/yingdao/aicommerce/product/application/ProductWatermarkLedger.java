@@ -24,8 +24,20 @@ public class ProductWatermarkLedger {
   return db.update("UPDATE product_watermark_checks SET status='RESULT_RECEIVED',detection_json=JSON_SET(?, '$.reusedFromCheckId', ?),generation_json=?,local_detection_json=?,candidate_key=?,updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='PREPARED'",row.get("detection_json"),row.get("id"),row.get("generation_json"),row.get("local_detection_json"),row.get("candidate_key"),id,org)==1;
  }
  public Map<String,Object> get(String id,String org){
+  return find(id,org).orElseThrow(()->new IllegalArgumentException("水印处理记录不存在"));
+ }
+ public Optional<Map<String,Object>> find(String id,String org){
   var rows=db.queryForList("SELECT * FROM product_watermark_checks WHERE id=? AND organization_id=?",id,org);
-  if(rows.isEmpty())throw new IllegalArgumentException("水印处理记录不存在");return rows.getFirst();
+  return rows.stream().findFirst();
+ }
+ public Optional<Map<String,Object>> unresolvedGeneration(String id,String org,String capture,String image,String sha){
+  return db.queryForList("""
+      SELECT * FROM product_watermark_checks
+      WHERE organization_id=? AND capture_id=? AND image_id=? AND source_sha256=? AND id<>?
+        AND status IN ('EDITING','REVIEW_REQUIRED')
+        AND detection_json IS NOT NULL AND generation_json IS NULL
+      ORDER BY updated_at DESC,id DESC LIMIT 1
+      """,org,capture,image,sha,id).stream().findFirst();
  }
  public boolean claim(String id,String org,String expected,String next){
   return db.update("UPDATE product_watermark_checks SET status=?,updated_at=NOW(6) WHERE id=? AND organization_id=? AND status=?",next,id,org,expected)==1;
