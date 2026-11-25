@@ -128,11 +128,10 @@
     });
     if(result?.durableExports&&['PROCESSING','PARTIAL'].includes(result.state))action(node,'就绪后生成',async()=>{
       ensureCurrent(node,request);
-      await submit(request.type,{...request.selection,format:'xlsx'});
+      await submit(request.type,{...request.selection,format:'xlsx'},false);
       if(request.type==='RECORDS')node.closest('dialog')?.close();
     });
-    const availableNow=result?.state==='PROCESSING'&&request.type==='ORDER_COST';
-    if(result?.state==='PARTIAL'||availableNow)action(node,availableNow?'导出当前数据':'导出核对版',async()=>{
+    if(result?.state==='PARTIAL'&&request.type!=='ORDER_COST')action(node,'导出核对版',async()=>{
       ensureCurrent(node,request);
       await submit(request.type,{...request.selection,format:'xlsx'},true);
       if(request.type==='RECORDS')node.closest('dialog')?.close();
@@ -385,7 +384,7 @@
     }
     el(body,'small','生成后可在文件保留期内下载。提醒保留 7 天。','fi-export-retention');
   }
-  async function submit(type,selection,partial=false){
+  async function submit(type,selection,partial=type==='ORDER_COST'){
     const request=scope(type,selection),principal=syncOwner();
     if(!principal)throw Error('请先登录');
     const payload={...request,partial};

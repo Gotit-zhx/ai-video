@@ -4,6 +4,7 @@
   let state,loadSequence=0,scopeLoadSequence=0,skuLoadSequence=0;
   const defaultRules=()=>({currency:'CNY',unit:'',basis:'order',missing:'previous',freight:'',inbound:''});
   const day=offset=>{const d=new Date();d.setDate(d.getDate()-offset);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
+  const orderDateLimit=()=>new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'});
   const fresh=()=>({tab:'labels',shopId:'',groupId:'',allShops:false,pendingShopId:'',pendingGroupId:'',collapsedShopId:'',spus:{},warehouse:'',month:'',search:'',status:'',page:1,orderPage:1,orderCostStatus:'ALL',orderNumbers:'',orderContext:null,start:day(29),end:day(0),datesKey:'',mappings:{},settings:{},rules:defaultRules()});
   const reset=()=>{loadSequence++;scopeLoadSequence++;skuLoadSequence++;globalThis.FinanceLabelCosts?.reset();state=fresh();document.querySelectorAll('.fc-dialog').forEach(n=>n.remove());};
   const needsCatalogue=tab=>['costs','manual','mapping','rules'].includes(tab);
@@ -629,9 +630,17 @@
       el('p',origin?.recordId?'当前仅核对所选记录关联的已结算订单，日期筛选不适用，不代表所选期间成本合计。':'当前范围：'+groupName+' · '+shopName+' · '+(settled?'结算归属日期':'待结算不计成本'),p.n,'fc-inline-note');
       if(origin?.recordId)action(p.h,'查看该店已结算订单',()=>{state.orderContext={...scope,kind:'SETTLED_ORDER'};state.orderPage=1;body();},'fi-record-link');
       const bar=el('div',null,p.n,'fc-table-tools');
+      const latest=orderDateLimit();
       for(const [key,title]of [['start',settled?'结算开始日期':'开始日期'],['end',settled?'结算结束日期':'结束日期']]){
-        const label=el('label',null,bar);el('span',title,label);const input=el('input',null,label);input.type='date';input.value=state[key];input.setAttribute('aria-label',title);
-        input.disabled=!!origin?.recordId;input.onchange=()=>{state[key]=input.value;state.orderPage=1;rememberDates();body();};
+        if(!origin?.recordId&&state[key]>latest)state[key]=latest;
+        const label=el('label',null,bar);el('span',title,label);const input=el('input',null,label);input.type='date';input.max=latest;input.value=state[key];input.setAttribute('aria-label',title);
+        input.disabled=!!origin?.recordId;
+        input.onfocus=()=>{input.max=orderDateLimit();};
+        input.onchange=()=>{
+          input.max=orderDateLimit();
+          if(input.validity.rangeOverflow){input.value=state[key];return;}
+          state[key]=input.value;state.orderPage=1;rememberDates();body();
+        };
       }
       function rememberDates(){
         if(!state.start||!state.end||state.start>state.end)return;
@@ -643,17 +652,18 @@
       context.numberSearch?.(p.n,state.orderNumbers,value=>{state.orderNumbers=value;state.orderPage=1;body();},'订单编号');
       action(bar,'刷新成本',()=>refresh(),'fi-record-link');
       let exporting=false;
-      const exportButton=action(bar,'导出 Excel',async()=>{
+      const exportLabel=globalThis.FinanceReportExports?'导出当前数据':'导出 Excel';
+      const exportButton=action(bar,exportLabel,async()=>{
         exporting=true;exportButton.textContent='正在提交…';
         try{
           if(!context.downloadOrderCosts)throw Error('导出功能未加载，请刷新页面后重试');
           const result=await context.downloadOrderCosts(selection);
           toast(result?.status==='READY'?(globalThis.FinanceReportExports?'订单成本文件已就绪，可在导出任务中下载。':'订单成本导出已完成，已请求浏览器保存；若未开始，请点击下载。'):result?.status==='UNCERTAIN'?'提交结果待确认，请在导出任务中确认上次任务。':'订单成本导出任务已提交，可在导出任务中查看进度。');
-        }finally{exporting=false;exportButton.textContent='导出 Excel';}
+        }finally{exporting=false;exportButton.textContent=exportLabel;}
       },'fi-primary');
       exportButton.disabled=true;
       globalThis.FinanceReportExports?.decorate(exportButton,'ORDER_COST',selection.start&&selection.end&&selection.start<=selection.end?selection:null);
-      exportButton.title='导出当前筛选的全部订单，含 SKU 单价、数量、成本月份与缺失原因';
+      exportButton.title='导出当前筛选范围内已入库的全部订单，含 SKU 单价、数量、成本月份与缺失原因';
       context.mountOrderCostExports?.(bar,selection);
       const amountSummary=el('div',null,bar,'fc-order-amount-summary');amountSummary.setAttribute('role','status');
       const amountLabel=el('span','成本金额合计（人民币）',amountSummary);
@@ -692,11 +702,15 @@
         }
         if(result.reportingMonthNotice){
           const notice=el('p',(result.reportingMonths||[]).map(r=>r.reporting_month+'：'+r.orders+' 笔'+(r.included?'已归入':'需完整月份查询')).join('；')+'。'+result.reportingMonthNotice,next,'fc-inline-note');
-          for(const month of result.reportingMonths||[])if(!month.included&&!origin?.recordId)action(notice,'查看 '+month.reporting_month+' 整月',()=>{
+          for(const month of result.reportingMonths||[]){
+            if(month.included||origin?.recordId)continue;
             const [year,m]=month.reporting_month.split('-').map(Number);
-            state.start=month.reporting_month+'-01';state.end=month.reporting_month+'-'+String(new Date(year,m,0).getDate()).padStart(2,'0');
-            state.orderPage=1;rememberDates();body();
-          },'fi-record-link');
+            const monthEnd=month.reporting_month+'-'+String(new Date(year,m,0).getDate()).padStart(2,'0');
+            if(monthEnd<=orderDateLimit())action(notice,'查看 '+month.reporting_month+' 整月',()=>{
+              state.start=month.reporting_month+'-01';state.end=monthEnd;
+              state.orderPage=1;rememberDates();body();
+            },'fi-record-link');
+          }
         }
         const statusFilters=el('div',null,next,'fi-actions fc-order-status');statusFilters.setAttribute('aria-label','订单成本状态筛选');
         const views=[['ALL','全部订单'],['PENDING','待补齐',pendingCount]];

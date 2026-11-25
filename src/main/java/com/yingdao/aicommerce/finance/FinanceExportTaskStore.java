@@ -53,7 +53,10 @@ final class FinanceExportTaskStore {
                 FROM finance_report_export_jobs WHERE expires_at>UTC_TIMESTAMP(6) AND state IN (
                 """+ACTIVE+")",owner.organizationId(),owner.userId(),lane.name());
             // Keep a queue slot for small requests even when standard requests come from many users.
-            if(number(count.get("total"))>=ACTIVE_LIMIT||number(count.get("owned_lane"))>=USER_LANE_LIMIT
+            long ownedLane=number(count.get("owned_lane"));
+            boolean currentCostSlot=ownedLane==USER_LANE_LIMIT&&request.partial()
+                &&"ORDER_COST".equals(request.type())&&hasCurrentCostSlot(owner,lane);
+            if(number(count.get("total"))>=ACTIVE_LIMIT||ownedLane>=USER_LANE_LIMIT&&!currentCostSlot
                     ||lane==Lane.STANDARD&&number(count.get("standard_count"))>=ACTIVE_LIMIT-1)
                 throw conflict("导出任务较多，请等待已有文件生成");
             String id=UUID.randomUUID().toString();
@@ -63,6 +66,17 @@ final class FinanceExportTaskStore {
                 """,id,owner.organizationId(),owner.userId(),key,request.type(),selection,request.partial(),lane.name());
             return repo.jdbc().queryForMap("SELECT * FROM finance_report_export_jobs WHERE id=?",id);
         });
+    }
+
+    private boolean hasCurrentCostSlot(Scope owner,Lane lane){
+        return Boolean.TRUE.equals(repo.jdbc().queryForObject("""
+            SELECT COUNT(CASE WHEN allow_partial THEN 1 END)=0
+               AND COUNT(CASE WHEN state='WAITING' AND stored_name IS NULL
+                   AND receipt_json->>'$.state' IN ('PARTIAL','PROCESSING') THEN 1 END)>0
+            FROM finance_report_export_jobs
+            WHERE organization_id=? AND user_id=? AND lane=? AND expires_at>UTC_TIMESTAMP(6)
+              AND state IN (
+            """+ACTIVE+")",Boolean.class,owner.organizationId(),owner.userId(),lane.name()));
     }
 
     Map<String,Object> claim(Lane lane){

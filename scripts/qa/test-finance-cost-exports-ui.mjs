@@ -10,7 +10,7 @@ w.ResizeObserver=class{observe(){}disconnect(){}};
 w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
 w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
 w.requestAnimationFrame=fn=>fn();
-w.crypto.randomUUID=()=>`uuid-${posts.length+1}`;
+w.crypto.randomUUID=()=>`uuid-${posts.length+reportPosts.length+1}`;
 
 const nativeSetTimeout=w.setTimeout.bind(w),nativeClearTimeout=w.clearTimeout.bind(w);
 let pollId=1000,polls=new Map(),cleared=[];
@@ -28,7 +28,7 @@ const orderResult={items:[{id:'row-a',shop_id:'shop-a',order_id:'ORDER-A',record
 
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
 let serverJobs=[],postFailure=null,listFailure=null,listGate=null,postGate=null;
-const requests=[],posts=[],automaticDownloads=[];
+const requests=[],posts=[],reportPosts=[],automaticDownloads=[];
 w.HTMLAnchorElement.prototype.click=function(){let prevented=false;this.onclick?.({preventDefault:()=>{prevented=true;},currentTarget:this,target:this});if(!prevented)automaticDownloads.push({href:this.href,download:this.download,text:this.textContent});};
 w.api=async(path,options={})=>{
   const url=new URL(path,'https://example.test'),body=options.body?JSON.parse(options.body):null;
@@ -37,6 +37,14 @@ w.api=async(path,options={})=>{
   if(url.pathname==='/api/v1/finance/workspace/costs/context')return {data:structuredClone(costContext)};
   if(url.pathname==='/api/v1/finance/workspace/costs')return {data:structuredClone(costs)};
   if(url.pathname==='/api/v1/finance/workspace/costs/orders')return {data:structuredClone(orderResult)};
+  if(url.pathname==='/api/v1/finance/report-exports/status')return {data:{state:'PARTIAL',durableExports:true}};
+  if(url.pathname==='/api/v1/finance/report-exports'){
+    if(options.method==='POST'){
+      reportPosts.push(body);
+      return {data:{id:'report-'+reportPosts.length,status:'QUEUED',durable:true}};
+    }
+    return {data:{jobs:[],costJobs:[],reminders:[],durableExports:true}};
+  }
   if(url.pathname==='/api/v1/finance/cost-exports'&&options.method==='POST'){
     posts.push({options,body});
     if(postGate){const gate=postGate;postGate=null;await gate.promise;}
@@ -140,6 +148,37 @@ w.FinanceWorkspace.enter('overview');assert.equal(polls.size,0,'navigating away 
 w.FinanceWorkspace.enter('costs');await settle();
 const resetPanel=d.querySelector('[data-finance-cost-exports]');resetPanel.open=true;resetPanel.dispatchEvent(new w.Event('toggle'));await settle();assert.equal(polls.size,1);
 w.FinanceWorkspace.reset();assert.equal(polls.size,0,'reset clears the polling timer and owner state');
+
+w.HTMLElement.prototype.getClientRects=function(){return this.isConnected?[{}]:[];};
+w.eval(await fs.readFile(new URL('../../frontend/finance-report-exports.js',import.meta.url),'utf8'));
+const BrowserDate=w.Date;
+w.Date=class extends BrowserDate{
+  constructor(...args){super(...(args.length?args:['2026-11-24T16:30:00Z']));}
+};
+w.FinanceCosts.openOrders({start:'2026-11-01',end:'2026-11-30',groupId:'group-a',kind:'SETTLED_ORDER'});
+w.FinanceWorkspace.enter('costs');await settle();
+for(const [label,value] of [['成本分组','group-a'],['结算结束日期','2026-11-25'],['结算开始日期','2026-11-01']]){
+  const field=d.querySelector(`[aria-label="${label}"]`);
+  field.value=value;field.dispatchEvent(new w.Event('change'));await settle();
+}
+const queryCount=requests.length;
+for(const label of ['结算开始日期','结算结束日期']){
+  const field=d.querySelector(`[aria-label="${label}"]`),previous=field.value;
+  assert.equal(field.max,'2026-11-25','maximum uses the Beijing date even before UTC midnight');
+  field.value='2026-11-26';field.dispatchEvent(new w.Event('change'));
+  assert.equal(field.value,previous,'future dates are rejected for both fields');
+}
+assert.equal(requests.length,queryCount,'future entries must not issue another query');
+for(let i=0;i<30&&!button('就绪后生成');i++)await settle();
+assert(button('导出当前数据')?.classList.contains('fi-primary'));
+assert(!button('导出核对版'),'the primary current-data action replaces the duplicate');
+button('导出当前数据').click();await settle();
+assert.equal(reportPosts[0]?.partial,true);
+assert.equal(reportPosts[0]?.selection.start,'2026-11-01');
+assert.equal(reportPosts[0]?.selection.end,'2026-11-25');
+assert.equal(reportPosts[0]?.selection.groupId,'group-a');
+button('就绪后生成').click();await settle();
+assert.equal(reportPosts[1]?.partial,false,'complete exports remain a separate opt-in action');
 
 dom.window.close();
 console.log('Cost export jobs: exact snapshot, idempotency, progress, XLSX/ZIP links, failure, recovery, owner isolation and timer cleanup passed.');
