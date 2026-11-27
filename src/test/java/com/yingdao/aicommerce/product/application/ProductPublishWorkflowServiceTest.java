@@ -3,6 +3,7 @@ package com.yingdao.aicommerce.product.application;
 import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.product.domain.ProductCapture;
+import com.yingdao.aicommerce.product.domain.ProductCaptureSku;
 import com.yingdao.aicommerce.product.domain.ProductPublishWorkflow;
 import com.yingdao.aicommerce.product.mapper.ProductCaptureMapper;
 import com.yingdao.aicommerce.product.mapper.ProductImageProcessingJobMapper;
@@ -194,6 +195,50 @@ class ProductPublishWorkflowServiceTest {
         assertEquals(capture.getVersion(), inserted.getValue().getCaptureVersion());
         assertEquals(64, inserted.getValue().getRequestFingerprint().length());
         assertEquals(64, inserted.getValue().getPublicationTargetKey().length());
+    }
+
+    @Test
+    void printListingSnapshotsTemplateVariantsAndTheirOwnStockKeys() {
+        when(shopSettings.publishingProvider()).thenReturn("OFFICIAL");
+        when(shopSettings.effectiveLivePublishing()).thenReturn(true);
+        var json = new ObjectMapper();
+        var printCapture = new ProductCapture("org-a", "user-1", "print-production-test", "fingerprint", "SHOPEE",
+                "https://shopee.ph/item-i.123.456", "123", "456", "Product", "Description",
+                "Category", "Brand", "PHP", BigDecimal.TEN, BigDecimal.TEN, "{}",
+                """
+                {"printProductionTemplateId":"template","printSkuSuffix":"AB12CD34","printSkuOrder":"STYLE_COLOR_SIZE"}
+                """);
+        printCapture.imagesReady();
+        var offer = new ProductCaptureSku("org-a", printCapture.getId(), "black-xl", null, "A01-BK-XL-AB12CD34",
+                "Black XL", BigDecimal.TEN, null, 0, null, null, "{\"Color\":\"Black\",\"Size\":\"XL\"}", "{}", 0);
+        when(captureService.get(printCapture.getId(), principal)).thenReturn(new ProductCaptureService.CaptureDetail(
+                printCapture, List.of(offer), List.of(), List.of(), Map.of(), Map.of()));
+        var styles = mock(ProductCaptureTemplateService.class);
+        var posters = mock(ProductMainImageTemplateService.class);
+        var settings = mock(ProductListingTemplateService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "captureTemplates", styles);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "mainImageTemplates", posters);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "listingTemplates", settings);
+        when(posters.currentForCapture("template", "org-a")).thenReturn(Map.of());
+        when(settings.snapshot("org-a", "SHOPEE", printCapture)).thenReturn(Map.of("captureTemplateId", "template"));
+        when(styles.printStyle("template", "org-a")).thenReturn(new ProductCaptureTemplateService.VariantView(
+                "style", "Tee", null, null, null, List.of(
+                new ProductCaptureTemplateService.Color("black", "黑", "#000000", "BK"),
+                new ProductCaptureTemplateService.Color("red", "红", "#FF0000", "RED")), "A01",
+                List.of(new ProductCaptureTemplateService.Size("xl", "XL", "XL", null, null, null, null))));
+        var request = Map.<String, Object>of("confirmed", true, "destinationPlatform", "SHOPEE", "shopId", "shop-1",
+                "printDirectListing", true);
+        var created = service.create(printCapture.getId(), request, "print-stock-keys-123", principal);
+        assertEquals("STYLE_IMAGES", created.workflow().currentStep());
+        var inserted = ArgumentCaptor.forClass(ProductPublishWorkflow.class);
+        verify(workflowMapper).insert(inserted.capture());
+        var snapshot = service.request(inserted.getValue());
+        assertEquals(Map.of("template:A01-BK-XL-AB12CD34", 0, "template:A01-RED-XL-AB12CD34", 0), snapshot.get("skuStocks"));
+        var plan = ProductPrintImagePlan.read(snapshot, json);
+        assertEquals("black-xl", plan.slots().getLast().variants().getFirst().offerKey());
+        when(workflowMapper.findByIdempotency("org-a", "print-stock-keys-123")).thenReturn(inserted.getValue());
+        assertFalse(service.create(printCapture.getId(), request, "print-stock-keys-123", principal).created());
+        verify(styles, times(1)).printStyle("template", "org-a");
     }
 
     @Test

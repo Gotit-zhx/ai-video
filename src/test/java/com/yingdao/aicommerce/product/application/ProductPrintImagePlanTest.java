@@ -1,6 +1,5 @@
 package com.yingdao.aicommerce.product.application;
 
-import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.product.domain.ProductCapture;
 import com.yingdao.aicommerce.product.domain.ProductCaptureImage;
 import com.yingdao.aicommerce.product.domain.ProductCaptureSku;
@@ -37,6 +36,19 @@ class ProductPrintImagePlanTest {
         assertEquals(List.of("颜色 · 黑", "颜色 · 红"), plan.slots().subList(3, 5).stream().map(ProductPrintImagePlan.Slot::label).toList());
         assertTrue(plan.slots().get(4).prompt().contains("#81151B"));
 
+        var upload = upload(plan, detail.skus());
+        assertEquals(List.of("template:A01-BK-M-AB12CD34", "template:A01-RED-L-AB12CD34"),
+                upload.stream().map(ProductCaptureSku::getSkuKey).toList());
+        assertEquals(List.of("A01-BK-M-AB12CD34", "A01-RED-L-AB12CD34"),
+                upload.stream().map(ProductCaptureSku::getSellerSku).toList());
+        assertEquals(List.of(0, 8), upload.stream().map(ProductCaptureSku::getStock).toList());
+        assertEquals(black.getPrice(), upload.getFirst().getPrice());
+        assertEquals(red.getPrice(), upload.getLast().getPrice());
+        assertEquals("黑", json.readTree(upload.getFirst().getAttributesJson()).get("Color").asText());
+        assertEquals("Large", json.readTree(upload.getLast().getAttributesJson()).get("Size").asText());
+    }
+
+    private List<ProductCaptureSku> upload(ProductPrintImagePlan plan, List<ProductCaptureSku> sourceSkus) {
         var db = mock(JdbcTemplate.class);
         var archive = mock(CommerceImageArchive.class);
         var assets = new ProductMainImageAssets(db, archive, json, mock(ProductMainImageTemplateService.class));
@@ -54,30 +66,70 @@ class ProductPrintImagePlanTest {
         }
 
         List<ProductCaptureImage> gallery = assets.gallery(capture, request);
-        assertEquals(List.of("MAIN", "MAIN", "MAIN", "VARIANT", "VARIANT"),
+        assertEquals(plan.slots().stream().map(slot -> slot.variants().isEmpty() ? "MAIN" : "VARIANT").toList(),
                 gallery.stream().map(ProductCaptureImage::getRoleName).toList());
-        var upload = assets.assignPrintColorImages(detail.skus(), gallery);
-        assertEquals(List.of("black-m", "red-l"), upload.stream().map(ProductCaptureSku::getSkuKey).toList());
-        assertEquals(List.of("A01-BK-M-AB12CD34", "A01-RED-L-AB12CD34"),
-                upload.stream().map(ProductCaptureSku::getSellerSku).toList());
-        assertEquals(List.of(0, 8), upload.stream().map(ProductCaptureSku::getStock).toList());
-        assertEquals(black.getPrice(), upload.getFirst().getPrice());
-        assertEquals(red.getPrice(), upload.getLast().getPrice());
-        assertEquals(gallery.get(3).getProcessedUrl(), upload.getFirst().getImageUrl());
-        assertEquals(gallery.get(4).getProcessedUrl(), upload.getLast().getImageUrl());
-        assertEquals("黑", json.readTree(upload.getFirst().getAttributesJson()).get("Color").asText());
-        assertEquals("Large", json.readTree(upload.getLast().getAttributesJson()).get("Size").asText());
+        return assets.assignPrintColorImages(sourceSkus, gallery);
     }
 
-    @Test void unmatchableAndAmbiguousSourceOffersFailBeforeGeneratingImages() {
+    @Test void missingTemplateColorInheritsSourceSizesAndOffers() {
+        var detail = detail(List.of(
+                sku("black-m", "BLACK", "M", "249", 0),
+                sku("black-xl", "BLACK", "XL(65-75KG)", "259", 8),
+                sku("white-m", "WHITE", "M", "219", 3)
+        ));
+        var plan = ProductPrintImagePlan.create(detail, Map.of(), style(), "", json);
+        assertEquals(List.of("商品主图", "颜色 · 黑", "颜色 · 红"),
+                plan.slots().stream().map(ProductPrintImagePlan.Slot::label).toList());
+        var upload = upload(plan, detail.skus());
+        assertEquals(List.of("A01-BK-M-AB12CD34", "A01-BK-XL-AB12CD34", "A01-RED-M-AB12CD34", "A01-RED-XL-AB12CD34"),
+                upload.stream().map(ProductCaptureSku::getSellerSku).toList());
+        assertEquals(4, upload.stream().map(ProductCaptureSku::getSkuKey).distinct().count());
+        assertEquals(List.of(0, 8, 0, 8), upload.stream().map(ProductCaptureSku::getStock).toList());
+        assertEquals(List.of(249, 259, 249, 259), upload.stream().map(sku -> sku.getPrice().intValueExact()).toList());
+        assertEquals(upload.get(2).getImageUrl(), upload.get(3).getImageUrl());
+        assertNotEquals(upload.getFirst().getImageUrl(), upload.getLast().getImageUrl());
+    }
+
+    @Test void missingTemplateSizeUsesSameSizeThenSameColorThenFirstSourceOffer() {
+        var base = style();
+        var xl = new ProductCaptureTemplateService.Size("xl", "XL", "XL", null, null, null, null);
+        var xxl = new ProductCaptureTemplateService.Size("xxl", "XXL", "XXL", null, null, null, null);
+        var style = new ProductCaptureTemplateService.VariantView(base.id(), base.name(), null, null, null,
+                base.colors(), "A01", List.of(xl, xxl));
+        var detail = detail(List.of(
+                sku("white-xl", "WHITE", "XL(65-75KG)", "219", 2),
+                sku("black-m", "BLACK", "M", "249", 0)
+        ));
+        var plan = ProductPrintImagePlan.create(detail, Map.of(), style, "", json);
+        var variants = plan.slots().stream().flatMap(slot -> slot.variants().stream()).toList();
+        assertEquals(List.of("white-xl", "black-m", "white-xl", "white-xl"),
+                variants.stream().map(ProductPrintImagePlan.Variant::offerKey).toList());
+        var upload = upload(plan, detail.skus());
+        assertEquals(List.of("A01-BK-XL-AB12CD34", "A01-BK-XXL-AB12CD34", "A01-RED-XL-AB12CD34", "A01-RED-XXL-AB12CD34"),
+                upload.stream().map(ProductCaptureSku::getSellerSku).toList());
+        assertEquals(List.of(2, 0, 2, 2), upload.stream().map(ProductCaptureSku::getStock).toList());
+        assertEquals(List.of(219, 249, 219, 219), upload.stream().map(sku -> sku.getPrice().intValueExact()).toList());
+        assertEquals(Map.of("Color", "红", "Size", "XXL"),
+                json.readValue(upload.getLast().getAttributesJson(), Map.class));
+    }
+
+    @Test void legacySnapshotsUseTheirExistingSourceSkuKey() {
+        var old = json.readValue("""
+                {"key":"black-m","sku":"A01-BK-M-AB12CD34","color":"黑","size":"M","attributes":{"Color":"黑","Size":"M"}}
+                """, ProductPrintImagePlan.Variant.class);
+        assertEquals("black-m", old.offerKey());
+    }
+
+    @Test void matchingSourcePrintsUsePriceAndStockFromTheFirstCollectedOffer() {
         var black = sku("black", "BLACK/1", "M", "319", 0);
-        var sameBlack = sku("second-print", "BLACK/2", "M", "319", 7);
-        assertTrue(assertThrows(BusinessException.class,
-                () -> ProductPrintImagePlan.create(detail(List.of(black)), Map.of(), style(), "", json))
-                .getMessage().contains("采集链接缺少模板颜色"));
-        assertTrue(assertThrows(BusinessException.class,
-                () -> ProductPrintImagePlan.create(detail(List.of(black, sameBlack)), Map.of(), style(), "", json))
-                .getMessage().contains("库存不同"));
+        var sameBlack = sku("second-print", "BLACK/2", "M", "389", 7);
+        var detail = detail(List.of(black, sameBlack));
+        var plan = ProductPrintImagePlan.create(detail, Map.of(), style(), "", json);
+        var upload = upload(plan, detail.skus());
+        assertEquals(List.of("A01-BK-M-AB12CD34", "A01-RED-M-AB12CD34"),
+                upload.stream().map(ProductCaptureSku::getSellerSku).toList());
+        assertEquals(List.of(0, 0), upload.stream().map(ProductCaptureSku::getStock).toList());
+        assertEquals(List.of(319, 319), upload.stream().map(sku -> sku.getPrice().intValueExact()).toList());
     }
 
     @Test void onlyTheTemplateSizeIsUploadedWithItsShortCode() {
@@ -94,7 +146,7 @@ class ProductPrintImagePlanTest {
         ));
         var plan = ProductPrintImagePlan.create(detail, Map.of(), style, "", json);
         var selected = plan.slots().stream().flatMap(slot -> slot.variants().stream()).toList();
-        assertEquals(List.of("black-xl", "red-xl"), selected.stream().map(ProductPrintImagePlan.Variant::key).toList());
+        assertEquals(List.of("black-xl", "red-xl"), selected.stream().map(ProductPrintImagePlan.Variant::offerKey).toList());
         assertEquals(List.of("A01-BK-XL-AB12CD34", "A01-RED-XL-AB12CD34"),
                 selected.stream().map(ProductPrintImagePlan.Variant::sku).toList());
         assertTrue(selected.stream().allMatch(sku -> "XL".equals(sku.attributes().get("Size"))));

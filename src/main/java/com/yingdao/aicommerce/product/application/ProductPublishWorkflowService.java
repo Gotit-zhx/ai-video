@@ -172,12 +172,13 @@ public class ProductPublishWorkflowService {
             }
             body.remove(ProductMainImageStylePolicy.TEMPLATE);
             styleTemplateId = null;
-            var selected = printPlan == null ? java.util.Set.<String>of() : printPlan.slots().stream()
-                    .flatMap(slot -> slot.variants().stream()).map(ProductPrintImagePlan.Variant::key)
-                    .collect(java.util.stream.Collectors.toSet());
+            var variants = printPlan == null ? List.<ProductPrintImagePlan.Variant>of() : printPlan.slots().stream()
+                    .flatMap(slot -> slot.variants().stream()).toList();
+            var sourceStocks = new LinkedHashMap<String, Integer>();
+            captureDetail.skus().forEach(sku -> sourceStocks.put(sku.getSkuKey(), sku.getStock()));
             var skuStocks = new LinkedHashMap<String, Integer>();
-            captureDetail.skus().stream().filter(sku -> selected.isEmpty() || selected.contains(sku.getSkuKey()))
-                    .forEach(sku -> skuStocks.put(sku.getSkuKey(), sku.getStock()));
+            if (variants.isEmpty()) skuStocks.putAll(sourceStocks);
+            else variants.forEach(variant -> skuStocks.put(variant.key(), sourceStocks.get(variant.offerKey())));
             body.put("publishStock", skuStocks.firstEntry().getValue());
             body.put("skuStocks", skuStocks);
         }

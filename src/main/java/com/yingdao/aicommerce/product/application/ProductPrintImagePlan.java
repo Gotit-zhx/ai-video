@@ -7,7 +7,6 @@ import org.springframework.http.HttpStatus;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
-import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -29,7 +28,12 @@ record ProductPrintImagePlan(String name, List<Slot> slots) {
     private static final Pattern STANDARD_SIZE = Pattern.compile(
             "^(?:(?:SIZE)\\s*[:：]?\\s+)?((?:[2-9]X|X{1,8})?[SL]|M)(?=$|[\\s(\\[【:：/]|[-–—](?=\\s|\\d))");
 
-    record Variant(String key, String sku, String color, String size, Map<String, Object> attributes) {}
+    record Variant(String key, String sku, String color, String size, Map<String, Object> attributes,
+                   String sourceKey) {
+        String offerKey() { return sourceKey == null ? key : sourceKey; }
+    }
+
+    private record Offer(ProductCaptureSku sku, Map<String, Object> attributes, String color, String size) {}
 
     record Slot(String label, List<Variant> variants, String prompt, String size, String referenceKey) {
         boolean original() { return "ORIGINAL".equals(size); }
@@ -84,76 +88,79 @@ record ProductPrintImagePlan(String name, List<Slot> slots) {
                 slots.add(colorSlot(color.label(), fabricName(color.label()), "", variants));
             }
         } else {
-            var selected = new HashSet<String>();
+            var offers = detail.skus().stream().map(sku -> {
+                var values = attributes(sku, json);
+                return new Offer(sku, values, fabricName(ProductSkuNaming.dimension(values, true)),
+                        sizeToken(ProductSkuNaming.dimension(values, false)));
+            }).toList();
+            if (offers.isEmpty()) throw bad("采集链接缺少可用于上架的规格");
+            var codes = new HashSet<String>();
             for (var color : style.colors()) {
-                var matches = variantsForColor(detail, style, color, styleOverride, json);
-                if (matches.stream().anyMatch(variant -> !selected.add(variant.key())))
-                    throw bad("多个模板颜色对应同一个采集规格，请检查颜色名称和编码");
+                var matches = variantsForColor(detail.capture(), offers, style, color, styleOverride, json);
+                if (matches.stream().anyMatch(variant -> !codes.add(variant.sku())))
+                    throw bad("模板销售规格编码重复，请检查颜色名称和编码");
                 slots.add(colorSlot(color.name(), color.name(), Objects.toString(color.hex(), ""), matches));
             }
         }
         return new ProductPrintImagePlan(name, List.copyOf(slots));
     }
 
-    private static List<Variant> variantsForColor(ProductCaptureService.CaptureDetail detail,
+    private static List<Variant> variantsForColor(ProductCapture capture, List<Offer> offers,
             ProductCaptureTemplateService.VariantView style, ProductCaptureTemplateService.Color color,
             String styleOverride, ObjectMapper json) {
         String templateColorCode = ProductSkuNaming.color(color.name());
         String configuredCode = Objects.toString(color.colorCode(), "");
         String codeAlias = ProductSkuNaming.color(configuredCode);
-        var matched = new LinkedHashMap<Map<String, Object>, ProductCaptureSku>();
-        var configuredSizes = new LinkedHashMap<String, ProductCaptureTemplateService.Size>();
-        for (var size : style.sizes()) {
-            configuredSizes.put(sizeToken(size.name()), size);
-            if (size.sizeCode() != null && !size.sizeCode().isBlank())
-                configuredSizes.putIfAbsent(sizeToken(size.sizeCode()), size);
-        }
-        var foundSizes = new HashSet<ProductCaptureTemplateService.Size>();
-        for (var source : detail.skus()) {
-            Map<String, Object> attributes = attributes(source, json);
-            String label = ProductSkuNaming.dimension(attributes, true);
-            String base = fabricName(label);
-            String sourceCode = ProductSkuNaming.color(base);
-            if (!color.name().equalsIgnoreCase(base) && (configuredCode.isBlank() || !configuredCode.equalsIgnoreCase(base))
-                    && ("UNK".equals(sourceCode) || (!sourceCode.equals(templateColorCode) && !sourceCode.equals(codeAlias)))) continue;
-            var configured = configuredSizes.get(sizeToken(ProductSkuNaming.dimension(attributes, false)));
-            if (!configuredSizes.isEmpty() && configured == null) continue;
-            // Source pattern suffixes identify old prints. This listing uses the selected print on the template color.
-            attributes.replaceAll((key, value) -> CommerceSourceColorResolver.isColorDimension(key) ? color.name() : value);
-            if (configured != null) {
-                foundSizes.add(configured);
-                String display = standardSize(configured.name());
-                attributes.replaceAll((key, value) -> ProductSkuNaming.isSizeDimension(key)
-                        ? (display.isEmpty() ? configured.name() : display) : value);
+        var colorOffers = offers.stream().filter(offer -> {
+            String sourceCode = ProductSkuNaming.color(offer.color());
+            return color.name().equalsIgnoreCase(offer.color())
+                    || (!configuredCode.isBlank() && configuredCode.equalsIgnoreCase(offer.color()))
+                    || (!sourceCode.equals("UNK") && (sourceCode.equals(templateColorCode) || sourceCode.equals(codeAlias)));
+        }).toList();
+        var matched = new LinkedHashMap<Map<String, Object>, Offer>();
+        var configuredSizeCodes = new LinkedHashMap<String, String>();
+        if (style.sizes().isEmpty()) {
+            if (colorOffers.isEmpty()) {
+                var sizes = new HashSet<String>();
+                for (var offer : offers) {
+                    if (sizes.add(offer.size()))
+                        matched.put(withColor(offer.attributes(), color.name()), offer);
+                }
+            } else {
+                for (var offer : colorOffers)
+                    matched.putIfAbsent(withColor(offer.attributes(), color.name()), offer);
             }
-            var previous = matched.putIfAbsent(attributes, source);
-            if (previous != null && (source.getPrice().compareTo(previous.getPrice()) != 0
-                    || !samePrice(source.getOriginalPrice(), previous.getOriginalPrice())
-                    || !Objects.equals(source.getStock(), previous.getStock()))) {
-                throw bad("模板颜色“" + color.name() + "”对应多个同尺码规格，采集售价或库存不同");
+        } else {
+            for (var size : style.sizes()) {
+                String standard = standardSize(size.name());
+                String label = standard.isEmpty() ? size.name() : standard;
+                String sizeCode = standard.isEmpty() && size.sizeCode() != null && !size.sizeCode().isBlank()
+                        ? size.sizeCode() : sizeToken(label);
+                if (configuredSizeCodes.putIfAbsent(label, sizeCode) != null) throw bad("模板尺码“" + label + "”重复");
+                String nameToken = sizeToken(size.name());
+                String codeToken = size.sizeCode() == null || size.sizeCode().isBlank()
+                        ? nameToken : sizeToken(size.sizeCode());
+                Map<String, Object> target = Map.of("Color", color.name(), "Size", label);
+                var reference = colorOffers.stream().filter(offer -> matchesSize(offer, nameToken, codeToken)).findFirst()
+                        .or(() -> offers.stream().filter(offer -> matchesSize(offer, nameToken, codeToken)).findFirst())
+                        .orElseGet(() -> colorOffers.isEmpty() ? offers.getFirst() : colorOffers.getFirst());
+                matched.put(target, reference);
             }
         }
-        for (var size : style.sizes()) {
-            if (!foundSizes.contains(size)) throw bad("采集链接缺少模板规格“" + color.name() + " · " + size.name() + "”");
-        }
-        if (matched.isEmpty()) throw bad("采集链接缺少模板颜色“" + color.name() + "”的规格");
         String colorCode = configuredCode.isBlank() ? templateColorCode : configuredCode;
         String styleCode = styleOverride.isBlank() ? ProductPublicationSkuNaming.style(style.styleCode()) : styleOverride;
         if (styleCode.isBlank()) {
-            var parts = Objects.toString(matched.values().iterator().next().getSellerSku(), "").split("-", -1);
+            var parts = Objects.toString(matched.firstEntry().getValue().sku().getSellerSku(), "").split("-", -1);
             if (parts.length != 4) throw bad("套版商品缺少款式编码，请重新确认套版");
-            styleCode = ProductPublicationSkuNaming.style(parts[ProductPrintProductionService.styleFirstSku(detail.capture(), json) ? 0 : 1]);
+            styleCode = ProductPublicationSkuNaming.style(parts[ProductPrintProductionService.styleFirstSku(capture, json) ? 0 : 1]);
         }
-        String suffix = ProductPrintProductionService.skuSuffix(detail.capture(), json);
+        String suffix = ProductPrintProductionService.skuSuffix(capture, json);
         var result = new ArrayList<Variant>();
         var assigned = new HashSet<String>();
         for (var entry : matched.entrySet()) {
-            var source = entry.getValue();
+            var source = entry.getValue().sku();
             String label = ProductSkuNaming.dimension(entry.getKey(), false);
-            String sizeCode = sizeToken(label);
-            var size = configuredSizes.get(sizeCode);
-            if (standardSize(label).isEmpty() && size != null && size.sizeCode() != null && !size.sizeCode().isBlank())
-                sizeCode = size.sizeCode();
+            String sizeCode = configuredSizeCodes.getOrDefault(label, sizeToken(label));
             String merchantSku = String.join("-", styleCode, colorCode, sizeCode, suffix);
             if (!assigned.add(merchantSku)) {
                 String variantSuffix = CommerceImageArchive.sha((suffix + ":" + source.getSkuKey()).getBytes(StandardCharsets.UTF_8))
@@ -161,9 +168,21 @@ record ProductPrintImagePlan(String name, List<Slot> slots) {
                 merchantSku = String.join("-", styleCode, colorCode, sizeCode, variantSuffix);
                 if (!assigned.add(merchantSku)) throw bad("模板销售规格编码重复");
             }
-            result.add(new Variant(source.getSkuKey(), merchantSku, color.name(), label, entry.getKey()));
+            result.add(new Variant("template:" + merchantSku, merchantSku, color.name(), label, entry.getKey(),
+                    source.getSkuKey()));
         }
         return List.copyOf(result);
+    }
+
+    private static Map<String, Object> withColor(Map<String, Object> attributes, String color) {
+        var result = new LinkedHashMap<>(attributes);
+        result.replaceAll((key, value) -> CommerceSourceColorResolver.isColorDimension(key) ? color : value);
+        if (result.keySet().stream().noneMatch(CommerceSourceColorResolver::isColorDimension)) result.put("Color", color);
+        return result;
+    }
+
+    private static boolean matchesSize(Offer offer, String nameToken, String codeToken) {
+        return offer.size().equals(nameToken) || offer.size().equals(codeToken);
     }
 
     static String sizeToken(String label) {
@@ -186,16 +205,12 @@ record ProductPrintImagePlan(String name, List<Slot> slots) {
     static Variant variant(ProductCaptureSku sku, ObjectMapper json) {
         var attributes = attributes(sku, json);
         return new Variant(sku.getSkuKey(), sku.getSellerSku(), ProductSkuNaming.dimension(attributes, true),
-                ProductSkuNaming.dimension(attributes, false), null);
+                ProductSkuNaming.dimension(attributes, false), null, null);
     }
 
     private static Map<String, Object> attributes(ProductCaptureSku sku, ObjectMapper json) {
         if (sku.getAttributesJson() == null || sku.getAttributesJson().isBlank()) return new LinkedHashMap<>();
         return json.readValue(sku.getAttributesJson(), new TypeReference<LinkedHashMap<String, Object>>() {});
-    }
-
-    private static boolean samePrice(BigDecimal left, BigDecimal right) {
-        return left == null || right == null ? left == right : left.compareTo(right) == 0;
     }
 
     private static String fabricName(String label) {

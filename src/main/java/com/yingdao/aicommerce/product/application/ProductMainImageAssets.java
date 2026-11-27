@@ -116,10 +116,10 @@ public class ProductMainImageAssets {
             var variants = json.convertValue(json.readTree(image.getSourceJson()).get("printVariants"),
                     new TypeReference<List<ProductPrintImagePlan.Variant>>() {});
             for (var variant : variants) {
-                var sku = byKey.get(variant.key());
+                var sku = byKey.get(variant.offerKey());
                 if (sku == null) throw conflict("销售规格已修改，请重新准备上架任务");
                 boolean configured = variant.attributes() != null;
-                output.add(sku.forPublication(configured ? variant.sku() : sku.getSellerSku(), image.getProcessedUrl(),
+                output.add(sku.forPublication(variant.key(), configured ? variant.sku() : sku.getSellerSku(), image.getProcessedUrl(),
                         configured ? TEMPLATE_COLOR_IMAGE : sku.getImageSource(),
                         configured ? json.writeValueAsString(variant.attributes()) : sku.getAttributesJson()));
             }

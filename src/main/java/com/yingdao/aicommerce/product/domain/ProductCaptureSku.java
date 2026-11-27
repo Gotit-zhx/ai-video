@@ -78,7 +78,12 @@ public class ProductCaptureSku {
 
     public ProductCaptureSku forPublication(String merchantCode, String publicationImageUrl,
                                             String publicationImageSource, String publicationAttributes) {
-        var copy = new ProductCaptureSku(organizationId, captureId, skuKey, externalSkuId,
+        return forPublication(skuKey, merchantCode, publicationImageUrl, publicationImageSource, publicationAttributes);
+    }
+
+    public ProductCaptureSku forPublication(String publicationKey, String merchantCode, String publicationImageUrl,
+                                            String publicationImageSource, String publicationAttributes) {
+        var copy = new ProductCaptureSku(organizationId, captureId, publicationKey, externalSkuId,
                 merchantCode, variationName, price, originalPrice, stock, publicationImageUrl,
                 publicationImageSource, publicationAttributes, sourceJson, sortOrder);
         copy.id = id;
