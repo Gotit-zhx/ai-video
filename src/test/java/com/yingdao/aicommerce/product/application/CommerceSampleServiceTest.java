@@ -232,6 +232,48 @@ class CommerceSampleServiceTest {
   verify(fixture.models).transparentArtworkConnection("org");verifyNoMoreInteractions(fixture.gateway,fixture.models);
  }
 
+ @Test void refreshingCaptureRecoversTheOriginalCompletedRequest() throws Exception {
+  var fixture = pendingCapture();
+  var encoded = java.util.Base64.getEncoder().encodeToString(png(true, false));
+  var result = new CommerceDesignImageGateway.Response(
+    new CommerceDesignImageGateway.Artifact(encoded, "image/png", "gpt-image-2.6", "EDIT", null), null);
+  when(fixture.gateway.operation("capture-request"))
+    .thenReturn(new CommerceDesignImageGateway.Operation("RUNNING", true, 1L, null, null),
+      new CommerceDesignImageGateway.Operation("COMPLETED", false, 2L, result, null));
+
+  assertEquals("UNKNOWN", fixture.service.archiveCaptureResult("capture-request", fixture.user).status());
+  var recovered = fixture.service.archiveCaptureResult("capture-request", fixture.user);
+  assertEquals("capture-request", recovered.id());
+  assertEquals("READY", recovered.status());
+  assertNotNull(recovered.imageUrl());
+  assertEquals(encoded, fixture.service.captureResultImage(recovered.id(), fixture.user).dataBase64());
+  verify(fixture.gateway, times(2)).operation("capture-request");
+  verifyNoMoreInteractions(fixture.gateway);
+  verifyNoInteractions(fixture.models);
+ }
+
+ @Test void refreshingCapturePreservesAConfirmedContentRefusalWithoutResubmitting() throws Exception {
+  var fixture = pendingCapture();
+  when(fixture.gateway.operation("capture-request"))
+    .thenReturn(new CommerceDesignImageGateway.Operation("FAILED", false, 1L, null,
+        java.util.Map.of("requestState", "REJECTED", "failureKind", "COPYRIGHT", "providerStatus", 400)));
+  var status = fixture.service.archiveCaptureResult("capture-request", fixture.user);
+  assertEquals("REJECTED", status.status());
+  assertTrue(fixture.db.row.get("result_json").toString().contains("第三方内容限制"));
+  assertNull(status.imageUrl());
+  verify(fixture.gateway).operation("capture-request");
+  verifyNoMoreInteractions(fixture.gateway);
+  verifyNoInteractions(fixture.models);
+ }
+
+ private SubmittedSample pendingCapture() throws Exception {
+  var fixture = new SubmittedSample("UPLOADED", "PRINT_EXTRACT", archiveDirectory.resolve("pending-capture"));
+  fixture.db.row.putAll(java.util.Map.of("id", "capture-request", "product", "UPLOADED", "variant_index", 0,
+      "status", "UNKNOWN", "asset_kind", "PRINT_EXTRACT", "request_key", "capture-v2-art-test",
+      "model_id", "gpt-image-2.6", "parent_id", "parent"));
+  return fixture;
+ }
+
  private static final class SubmittedSample {
   final SubmissionDb db=new SubmissionDb();
   final com.yingdao.aicommerce.saas.application.ModelConfigService models=mock(com.yingdao.aicommerce.saas.application.ModelConfigService.class);

@@ -39,6 +39,7 @@
   }
 
   const blocksExtraction = result => result.status !== 'PREPARED';
+  const awaitingResult = result => ['SUBMITTING', 'UNKNOWN'].includes(result.status);
   const completedSource = id => [...results.values()].some(result => result.imageId === id && blocksExtraction(result));
   const selectable = id => !completedSource(id) && !failures.get(id)?.uncertain && failures.get(id)?.status !== 'REJECTED';
 
@@ -348,15 +349,35 @@
     }
   }
 
-  async function refreshResults() {
+  async function refreshResults(recoverPending = false) {
     const source = capture;
     if (!source) return;
     get('result-section').hidden = false;
     status('results-status', '正在读取结果…');
     try {
-      const data = await request(`${endpoint}/${encodeURIComponent(source.captureId)}/results`);
+      const url = `${endpoint}/${encodeURIComponent(source.captureId)}/results`;
+      let data = await request(url);
       if (capture !== source) return;
       if (!Array.isArray(data)) throw new Error('提取结果读取不完整');
+      const failedLookups = new Set();
+      if (recoverPending) {
+        const pending = data.filter(result => result.id && awaitingResult(result)).slice(0, 20);
+        for (let offset = 0; offset < pending.length; offset += 4) {
+          await Promise.all(pending.slice(offset, offset + 4).map(async result => {
+            try {
+              await request(`${endpoint}/results/${encodeURIComponent(result.id)}/archive`, {method: 'POST'});
+            } catch {
+              failedLookups.add(result.id);
+            }
+          }));
+          if (capture !== source) return;
+        }
+        if (pending.length) {
+          data = await request(url);
+          if (capture !== source) return;
+          if (!Array.isArray(data)) throw new Error('提取结果读取不完整');
+        }
+      }
       for (const result of data) {
         if (result.id && result.imageId) {
           const previous = results.get(result.id);
@@ -370,7 +391,8 @@
         if (completedSource(imageId)) failures.delete(imageId);
         else if (failure.uncertain) failure.uncertain = false;
       }
-      status('results-status');
+      const recoveryUnavailable = data.some(result => failedLookups.has(result.id) && awaitingResult(result));
+      status('results-status', recoveryUnavailable ? '部分原请求结果暂不可读取，稍后可刷新。' : '', recoveryUnavailable);
       renderResults();
       if (!activeResult) void showResult([...results.values()].find(result => result.imageUrl));
       get('result-section').hidden = !results.size && !failures.size;
@@ -448,7 +470,7 @@
     const source = capture;
     busy = true;
     renderResults(); updateActions();
-    try { await refreshResults(); }
+    try { await refreshResults(true); }
     finally {
       if (source === capture) {
         busy = false;
@@ -507,7 +529,7 @@
         selectedIds.delete(imageId);
         renderResults(); updateActions();
       }
-      await refreshResults();
+      await refreshResults(true);
       if (capture === source) status('extract-status');
     } finally {
       if (capture === source) {

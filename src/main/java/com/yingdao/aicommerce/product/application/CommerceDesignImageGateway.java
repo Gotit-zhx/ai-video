@@ -12,6 +12,7 @@ import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientResponseException;
 import org.apache.hc.core5.http.ConnectionRequestTimeoutException;
 import jakarta.annotation.PreDestroy;
+import tools.jackson.databind.JsonNode;
 import java.io.IOException;
 import java.util.*;
 
@@ -199,36 +200,38 @@ public class CommerceDesignImageGateway implements AutoCloseable {
         try{
             String body=error.getResponseBodyAsString();
             if(body.length()>64_000)return null;
-            var data=new tools.jackson.databind.ObjectMapper().readTree(body);
-            if(!"REJECTED".equals(data.path("requestState").asText())
-                    ||data.path("networkRetryCount").asInt(0)>0)return null;
-            var fallback=data.path("imageModelFallback");
-            // A backup rejection does not resolve a possibly accepted primary call.
-            if(!fallback.isMissingNode()&&!fallback.isNull()&&!"COPYRIGHT".equals(fallback.path("reason").asText()))return null;
-            String kind=data.path("failureKind").asText();
-            String message=switch(kind){
-                case "POLICY" -> "图片内容未通过服务商审核，本次未生成图片";
-                case "COPYRIGHT" -> "参考内容触发服务商的第三方内容限制，本次未生成图片";
-                case "CONCURRENCY" -> "服务商当前并发容量不足，本次请求已拒绝";
-                case "PROVIDER" -> "服务商明确拒绝本次请求，未返回图片";
-                default -> null;
-            };
-            if(message==null)return null;
-            if("COPYRIGHT".equals(fallback.path("reason").asText())){
-                String primary="gpt-image-2".equals(fallback.path("fromModelId").asText())?"GPT Image 2":"主模型";
-                String backup="grok-imagine-image-2.0".equals(fallback.path("toModelId").asText())?"Grok":"备用模型";
-                message=primary+"因第三方内容限制被拒绝；"+backup+"："+message;
-            }
-            if("NATIVE_TRANSPARENT_PNG_UNSUPPORTED".equals(data.path("failureCode").asText()))
-                message="当前图片模型不支持原生透明 PNG，未调用生图；请配置支持透明输出的模型";
-            else if("NATIVE_TRANSPARENT_PNG_REQUIRED".equals(data.path("imageOutputRequirement").path("code").asText())
-                    &&data.path("imageOutputRequirement").path("fallbackSkipped").asBoolean(false))
-                message+="；本次必须返回原生透明 PNG，未调用不支持透明输出的备用模型";
-            int upstream=data.path("providerStatus").asInt(0);
-            // Older runtimes omitted this field. Never substitute the internal HTTP 502.
-            Integer providerStatus=upstream>=400&&upstream<=599?upstream:null;
-            return new CommerceImageRejectedException(message,kind,providerStatus);
+            return confirmedRejection(new tools.jackson.databind.ObjectMapper().readTree(body));
         }catch(RuntimeException malformed){return null;}
+    }
+    static CommerceImageRejectedException confirmedRejection(JsonNode data){
+        if(!"REJECTED".equals(data.path("requestState").asText())
+                ||data.path("networkRetryCount").asInt(0)>0)return null;
+        var fallback=data.path("imageModelFallback");
+        // A backup rejection does not resolve a possibly accepted primary call.
+        if(!fallback.isMissingNode()&&!fallback.isNull()&&!"COPYRIGHT".equals(fallback.path("reason").asText()))return null;
+        String kind=data.path("failureKind").asText();
+        String message=switch(kind){
+            case "POLICY" -> "图片内容未通过服务商审核，本次未生成图片";
+            case "COPYRIGHT" -> "参考内容触发服务商的第三方内容限制，本次未生成图片";
+            case "CONCURRENCY" -> "服务商当前并发容量不足，本次请求已拒绝";
+            case "PROVIDER" -> "服务商明确拒绝本次请求，未返回图片";
+            default -> null;
+        };
+        if(message==null)return null;
+        if("COPYRIGHT".equals(fallback.path("reason").asText())){
+            String primary="gpt-image-2".equals(fallback.path("fromModelId").asText())?"GPT Image 2":"主模型";
+            String backup="grok-imagine-image-2.0".equals(fallback.path("toModelId").asText())?"Grok":"备用模型";
+            message=primary+"因第三方内容限制被拒绝；"+backup+"："+message;
+        }
+        if("NATIVE_TRANSPARENT_PNG_UNSUPPORTED".equals(data.path("failureCode").asText()))
+            message="当前图片模型不支持原生透明 PNG，未调用生图；请配置支持透明输出的模型";
+        else if("NATIVE_TRANSPARENT_PNG_REQUIRED".equals(data.path("imageOutputRequirement").path("code").asText())
+                &&data.path("imageOutputRequirement").path("fallbackSkipped").asBoolean(false))
+            message+="；本次必须返回原生透明 PNG，未调用不支持透明输出的备用模型";
+        int upstream=data.path("providerStatus").asInt(0);
+        // Older runtimes omitted this field. Never substitute the internal HTTP 502.
+        Integer providerStatus=upstream>=400&&upstream<=599?upstream:null;
+        return new CommerceImageRejectedException(message,kind,providerStatus);
     }
     @Override @PreDestroy public void close()throws IOException{try{if(transport!=null)transport.close();}finally{operationTransport.close();}}
 }

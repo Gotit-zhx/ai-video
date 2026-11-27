@@ -15,7 +15,8 @@ const result = imageId => ({id: `print-${imageId}`, imageId, status: 'READY', im
 
 const shortSleeve = {id: 'style', name: '短袖', variants: [{image: '/base.png', styleCode: 'A01'}]};
 
-async function workspace(t, submit, history = [], styles = {ready: [shortSleeve], editable: [shortSleeve]}) {
+async function workspace(t, submit, history = [], styles = {ready: [shortSleeve], editable: [shortSleeve]},
+                         recover = async entry => entry) {
   const dom = new JSDOM(html, {
     url: `https://example.test/#product-print-capture?capture=${captureId}`,
     runScripts: 'outside-only'
@@ -24,6 +25,7 @@ async function workspace(t, submit, history = [], styles = {ready: [shortSleeve]
   const { window } = dom;
   const get = name => window.document.querySelector(`#pc-${name}`);
   const submissions = [];
+  const resultLookups = [];
   const drafts = [];
   const bulk = [];
   const sourceReads = [];
@@ -55,6 +57,12 @@ async function workspace(t, submit, history = [], styles = {ready: [shortSleeve]
     }
     if (path === `${endpoint}/${captureId}/results`) return success(history);
     if (path === `${endpoint}/${otherCaptureId}/results`) return success([]);
+    const lookup = history.find(entry => path === `${endpoint}/results/${entry.id}/archive`);
+    if (lookup) {
+      assert.equal(options.method, 'POST');
+      resultLookups.push(lookup.id);
+      return success(await recover(lookup, history));
+    }
     if (path.startsWith('/api/v1/product-capture-templates?')) {
       const items = path.includes('readyOnly=true') ? styles.ready : styles.editable;
       if (!items) throw new Error('款式暂不可用');
@@ -76,7 +84,7 @@ async function workspace(t, submit, history = [], styles = {ready: [shortSleeve]
 
   return {
     window, get, drafts, bulk, sourceReads,
-    submissions,
+    submissions, resultLookups,
     resultButtons: () => [...get('results').querySelectorAll('[data-result]')],
     sourceImages: () => [...get('source-images').querySelectorAll('input')],
     extract: async () => {
@@ -199,6 +207,25 @@ test('opening a saved capture restores ready and uncertain results without calli
   app.get('refresh-results').click();
   await flush();
   assert.equal(app.resultButtons().length, 1);
+  assert.equal(app.submissions.length, 0);
+  assert.deepEqual(app.resultLookups, ['pending-b']);
+});
+
+test('refresh recovers only the original unsettled request and shows the recovered image', async t => {
+  const rejected = {id: 'rejected-b', imageId: 'b', status: 'REJECTED', message: '第三方内容限制'};
+  const pending = {id: 'pending-c', imageId: 'c', status: 'UNKNOWN'};
+  const app = await workspace(t, () => assert.fail('refresh must not submit generation'),
+    [result('a'), rejected, pending], undefined, (entry, history) => {
+      assert.equal(entry.id, pending.id);
+      const recovered = {...result('c'), id: pending.id};
+      history[2] = recovered;
+      return recovered;
+    });
+  app.get('refresh-results').click();
+  await flush();
+  assert.deepEqual(app.resultLookups, ['pending-c']);
+  assert.deepEqual(app.resultButtons().map(button => button.dataset.result), ['print-a', 'pending-c']);
+  assert.match(app.get('results').textContent, /第三方内容限制/);
   assert.equal(app.submissions.length, 0);
 });
 

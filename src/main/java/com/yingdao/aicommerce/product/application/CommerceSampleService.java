@@ -7,6 +7,7 @@ import com.yingdao.aicommerce.shop.infrastructure.MarketplaceImageDownloader;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.http.HttpStatus;
+import org.springframework.web.client.RestClientException;
 import tools.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -16,6 +17,7 @@ import java.util.function.Supplier;
 @Service
 public class CommerceSampleService {
  private static final String TRANSPARENCY_REJECTED="TRANSPARENCY_REJECTED";
+ private static final Set<String> AWAITING_CAPTURE_RESULT=Set.of("SUBMITTING","UNKNOWN");
  private static final String CAPTURE_PRINT_PROMPT =
          "将参考照片中 T 恤胸前的主印花整理为一张正视、独立的平面图稿。仅呈现清楚可见的图形、线条、原有文字和配色，保留设计中的白色细节。输出单张带 alpha 通道的透明 PNG。";
  private static final String TRANSPARENCY_FAILURE="独立印花未通过原生透明 PNG 检查；原始生成结果已归档保留，同一请求只重新校验已有结果，不会再次调用生图模型";
@@ -162,13 +164,12 @@ public class CommerceSampleService {
    try{var result = capturePrint ? gateway.generateCapturePrintArtwork(prompt,id,model,references)
      : printKind(kind) ? gateway.generateTransparentArtwork(prompt,id,model,references)
      : gateway.generateSample(prompt,id,model,references);
-    db.update("UPDATE commerce_sample_previews SET status='RESULT_RECEIVED',result_json=?,updated_at=NOW(6) WHERE id=?",json.writeValueAsString(result),id);}
+    saveResponse(id,u,result);}
    catch(CommerceImageRejectedException failure){
-    var refusal=new LinkedHashMap<String,Object>();refusal.put("message",failure.getMessage());refusal.put("failureKind",failure.failureKind());refusal.put("providerStatus",failure.providerStatus());
-    db.update("UPDATE commerce_sample_previews SET status='REJECTED',result_json=?,updated_at=NOW(6) WHERE id=? AND status='SUBMITTING'",json.writeValueAsString(refusal),id);
+    saveRefusal(id,u,failure);
     throw error(HttpStatus.CONFLICT,failure.getMessage()+"；同一请求不会自动重试生图");
    }
-   catch(RuntimeException failure){db.update("UPDATE commerce_sample_previews SET status='UNKNOWN',updated_at=NOW(6) WHERE id=?",id);throw error(HttpStatus.CONFLICT,"示例结果待核查，请勿换请求编号重复生成");}
+   catch(RuntimeException failure){db.update("UPDATE commerce_sample_previews SET status='UNKNOWN',updated_at=NOW(6) WHERE id=? AND status='SUBMITTING'",id);throw error(HttpStatus.CONFLICT,"示例结果待核查，请勿换请求编号重复生成");}
   }
   return collectView(id, u, capturePrint);
  }
@@ -212,9 +213,50 @@ public class CommerceSampleService {
 
  View archiveCaptureResult(String id, PlatformPrincipal user) {
   var saved = captureResultRow(id, user);
+  if (AWAITING_CAPTURE_RESULT.contains(saved.get("status"))) {
+   recoverCaptureResponse(id, user, ModelConfigService.CAPTURE_PRINT_MODEL_ID.equals(saved.get("model_id")));
+   saved = captureResultRow(id, user);
+   if (AWAITING_CAPTURE_RESULT.contains(saved.get("status")) || "REJECTED".equals(saved.get("status")))
+    return view(saved);
+  }
   if (!Set.of("RESULT_RECEIVED", "READY").contains(saved.get("status")))
    throw error(HttpStatus.CONFLICT, "印花暂不可归档");
   return collectView(id, user, true);
+ }
+
+ private void recoverCaptureResponse(String id, PlatformPrincipal user, boolean fixedModel) {
+  CommerceDesignImageGateway.Operation operation;
+  try {
+   operation = gateway.operation(id);
+  } catch (RestClientException unavailable) {
+   throw error(HttpStatus.SERVICE_UNAVAILABLE, "原请求结果暂不可读取，请稍后刷新");
+  }
+  if (operation == null || operation.active()) return;
+  if ("COMPLETED".equals(operation.status()) && operation.response() != null) {
+   saveResponse(id,user,operation.response());
+  } else if (fixedModel && "FAILED".equals(operation.status()) && operation.error() != null) {
+   // Lookup omits routing details. Older jobs may have used a fallback with an uncertain primary call.
+   var refusal = CommerceDesignImageGateway.confirmedRejection(json.valueToTree(operation.error()));
+   if (refusal != null) saveRefusal(id,user,refusal);
+  }
+ }
+
+ private void saveResponse(String id, PlatformPrincipal user, CommerceDesignImageGateway.Response response) {
+  db.update("""
+    UPDATE commerce_sample_previews SET status='RESULT_RECEIVED',result_json=?,updated_at=NOW(6)
+    WHERE id=? AND organization_id=? AND created_by=? AND status IN ('SUBMITTING','UNKNOWN')
+    """, json.writeValueAsString(response), id, user.organizationId(), user.userId());
+ }
+
+ private void saveRefusal(String id, PlatformPrincipal user, CommerceImageRejectedException failure) {
+  var refusal = new LinkedHashMap<String,Object>();
+  refusal.put("message", failure.getMessage());
+  refusal.put("failureKind", failure.failureKind());
+  refusal.put("providerStatus", failure.providerStatus());
+  db.update("""
+    UPDATE commerce_sample_previews SET status='REJECTED',result_json=?,updated_at=NOW(6)
+    WHERE id=? AND organization_id=? AND created_by=? AND status IN ('SUBMITTING','UNKNOWN')
+    """, json.writeValueAsString(refusal), id, user.organizationId(), user.userId());
  }
 
  private Map<String,Object> captureResultRow(String id, PlatformPrincipal user) {
