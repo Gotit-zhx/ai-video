@@ -122,6 +122,26 @@ class CommerceDesignImageGatewayHttpTest {
         }
     }
 
+    @Test void bananaFallbackRequestsOneProviderAttemptOnTheSameReferenceWithoutNativeAlphaFlags() throws Exception {
+        var body = new AtomicReference<String>();
+        try (var server = new Loopback(exchange -> {
+            body.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            reply(exchange, 200, RESULT);
+        }); var gateway = new CommerceDesignImageGateway(server.url(), "unit-only")) {
+            var reference = new CommerceDesignImageGateway.Reference("image/png", "aGVsbG8=");
+            var banana = new ModelConfigService.RuntimeModelConnection("banana", MODEL.baseUrl(),
+                    ModelConfigService.BANANA_IMAGE_MODEL_ID, MODEL.apiFormat(), MODEL.provider(), MODEL.apiKey());
+            gateway.generateCapturePrintWithBanana("white canvas", "capture_attempt_banana", banana, List.of(reference));
+            var sent = new tools.jackson.databind.ObjectMapper().readTree(body.get());
+            assertEquals("gemini-nano-banana-2.1", sent.path("model").path("modelId").asText());
+            assertEquals("capture_attempt_banana", sent.path("progressRequestId").asText());
+            assertTrue(sent.path("singleProviderAttempt").asBoolean());
+            assertFalse(sent.has("background"));
+            assertFalse(sent.has("outputFormat"));
+            assertEquals(reference.dataBase64(), sent.path("references").get(0).path("dataBase64").asText());
+        }
+    }
+
     @Test void printListingUsesTheExactModelAndOneCompositionGuide() throws Exception {
         var body = new AtomicReference<String>();
         try (var server = new Loopback(exchange -> {

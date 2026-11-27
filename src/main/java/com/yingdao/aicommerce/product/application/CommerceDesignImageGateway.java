@@ -94,6 +94,13 @@ public class CommerceDesignImageGateway implements AutoCloseable {
         return generateArtwork(prompt, attemptId, model, references, null, true);
     }
 
+    public Response generateCapturePrintWithBanana(String prompt, String attemptId,
+                                                   ModelConfigService.RuntimeModelConnection model,
+                                                   List<Reference> references) {
+        ModelConfigService.requireCapturePrintBananaModel(model);
+        return generateArtwork(prompt, attemptId, model, references, null, false, false, false, true);
+    }
+
     /** Product mockups are economical previews; input artwork and positioning references stay intact. */
     public Response generateProductPreview(String prompt,String attemptId,ModelConfigService.RuntimeModelConnection model,List<Reference> references){
         return generateProductPreview(prompt,attemptId,model,references,false);
@@ -153,18 +160,22 @@ public class CommerceDesignImageGateway implements AutoCloseable {
         return generateArtwork(prompt,attemptId,model,references,quality,transparentArtwork,productMockup,false);
     }
     private Response generateArtwork(String prompt,String attemptId,ModelConfigService.RuntimeModelConnection model,List<Reference> references,String quality,boolean transparentArtwork,boolean productMockup,boolean detailGrid){
+        return generateArtwork(prompt,attemptId,model,references,quality,transparentArtwork,productMockup,detailGrid,false);
+    }
+    private Response generateArtwork(String prompt,String attemptId,ModelConfigService.RuntimeModelConnection model,List<Reference> references,String quality,boolean transparentArtwork,boolean productMockup,boolean detailGrid,boolean singleProviderAttempt){
         if(model==null||attemptId==null||!attemptId.matches("[A-Za-z0-9_-]{8,128}"))throw bad("缺少示例任务或模型");
         var body=new LinkedHashMap<String,Object>();
         body.put("model",model.imageRequestModel());
         if(references==null||references.size()>4)throw bad("图片创作最多使用四张已归档参考图，不允许静默截断");
         for(var reference:references){if(reference==null||!Set.of("image/png","image/jpeg","image/webp").contains(Objects.toString(reference.mimeType(),""))||reference.dataBase64()==null||reference.dataBase64().isBlank()||reference.dataBase64().length()>12_000_000)throw bad("参考图编码或格式无效");try{Base64.getDecoder().decode(reference.dataBase64());}catch(IllegalArgumentException e){throw bad("参考图编码无效");}}
         body.put("prompt",prompt);body.put("size",detailGrid?"2048x2048":"1024x1024");body.put("references",references);body.put("progressRequestId",attemptId);
-        if (!ModelConfigService.CAPTURE_PRINT_MODEL_ID.equals(model.modelId()) || (!transparentArtwork && !productMockup)) {
+        if (!singleProviderAttempt && (!ModelConfigService.CAPTURE_PRINT_MODEL_ID.equals(model.modelId()) || (!transparentArtwork && !productMockup))) {
             body.put("inputFidelity", "high");
         }
         if(quality!=null)body.put("quality",quality);
         if(productMockup)body.put("productMockup",true);
         if(detailGrid)body.put("detailGrid",true);
+        if(singleProviderAttempt)body.put("singleProviderAttempt",true);
         if(transparentArtwork){body.put("background","transparent");body.put("outputFormat","png");}
         var response=submit(body);
         if(response==null)throw new IllegalStateException("示例生成未返回结果");

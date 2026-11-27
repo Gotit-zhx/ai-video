@@ -20,10 +20,13 @@ public class CommerceSampleService {
  private static final Set<String> AWAITING_CAPTURE_RESULT=Set.of("SUBMITTING","UNKNOWN");
  private static final String CAPTURE_PRINT_PROMPT =
          "将参考照片中 T 恤胸前的主印花整理为一张正视、独立的平面图稿。仅呈现清楚可见的图形、线条、原有文字和配色，保留设计中的白色细节。输出单张带 alpha 通道的透明 PNG。";
+ private static final String BANANA_PRINT_PROMPT =
+         "将参考照片中 T 恤胸前的主印花整理为一张正视、独立的平面图稿，保留原图的文字、线条、配色和白色印花细节。只画图案，不画衣服。使用均匀纯白画布并四周留白，完整显示图案，不添加阴影、白色描边或棋盘格。";
  private static final String TRANSPARENCY_FAILURE="独立印花未通过原生透明 PNG 检查；原始生成结果已归档保留，同一请求只重新校验已有结果，不会再次调用生图模型";
+ private static final String BANANA_TRANSPARENCY_FAILURE="Banana 成图无法可靠去底，已保留原图";
  public record Request(String product,int variant,boolean confirmed,String parentId,String assetKind){public Request(String product,int variant,boolean confirmed,String parentId){this(product,variant,confirmed,parentId,"PRODUCT_IMAGE");}}
  public record View(String id,String product,int variant,String status,String model,String imageUrl,String parentId,String assetKind){
-  @com.fasterxml.jackson.annotation.JsonProperty("message") public String message(){return TRANSPARENCY_REJECTED.equals(status)?TRANSPARENCY_FAILURE:"REJECTED".equals(status)?"生图请求已明确停止，同一请求不会再次调用模型；请查看返回的停止原因":null;}
+  @com.fasterxml.jackson.annotation.JsonProperty("message") public String message(){return TRANSPARENCY_REJECTED.equals(status)?transparencyFailure(model):"REJECTED".equals(status)?"生图请求已明确停止，请查看返回的停止原因":null;}
  }
  private final JdbcTemplate db;private final ModelConfigService models;private final CommerceDesignImageGateway gateway;
  private final CommerceImageArchive archive;private final MarketplaceImageDownloader downloader;private final ObjectMapper json;
@@ -31,7 +34,7 @@ public class CommerceSampleService {
  private void access(PlatformPrincipal u){if(u==null||u.organizationId()==null||!u.permissionCodes().contains("product:edit"))throw error(HttpStatus.FORBIDDEN,"无示例创作权限");}
  public List<View> list(PlatformPrincipal u){access(u);return db.query("SELECT * FROM commerce_sample_previews WHERE organization_id=? AND created_by=? AND request_key NOT LIKE 'capture-v2-%' ORDER BY created_at DESC LIMIT 40",(r,n)->new View(r.getString("id"),r.getString("product"),r.getInt("variant_index"),r.getString("status"),r.getString("model_id"),r.getString("storage_key")==null||!"READY".equals(r.getString("status"))?null:"/api/v1/commerce-samples/"+r.getString("id")+"/image",r.getString("parent_id"),r.getString("asset_kind")),u.organizationId(),u.userId());}
  private Map<String,Object> row(String id,PlatformPrincipal u){access(u);var rows=db.queryForList("SELECT * FROM commerce_sample_previews WHERE id=? AND organization_id=? AND created_by=?",id,u.organizationId(),u.userId());if(rows.isEmpty())throw error(HttpStatus.NOT_FOUND,"示例不存在");return rows.getFirst();}
- public CommerceDesignImageGateway.Reference image(String id,PlatformPrincipal u){var r=row(id,u);if(TRANSPARENCY_REJECTED.equals(r.get("status")))throw error(HttpStatus.CONFLICT,TRANSPARENCY_FAILURE);if(!"READY".equals(r.get("status")))throw error(HttpStatus.CONFLICT,"示例尚未归档");var reference=archive.read(u.organizationId(),(String)r.get("storage_key"));requireNativePrint(id,r,Base64.getDecoder().decode(reference.dataBase64()),u);return reference;}
+ public CommerceDesignImageGateway.Reference image(String id,PlatformPrincipal u){var r=row(id,u);if(TRANSPARENCY_REJECTED.equals(r.get("status")))throw error(HttpStatus.CONFLICT,transparencyFailure(r.get("model_id")));if(!"READY".equals(r.get("status")))throw error(HttpStatus.CONFLICT,"示例尚未归档");var reference=archive.read(u.organizationId(),(String)r.get("storage_key"));requireNativePrint(id,r,Base64.getDecoder().decode(reference.dataBase64()),u);return reference;}
  public CommerceDesignImageGateway.Reference printImage(String id,PlatformPrincipal u){var r=row(id,u);if(!Set.of("PRINT_EXTRACT","PRINT_VARIANT").contains(Objects.toString(r.get("asset_kind"),"")))throw error(HttpStatus.CONFLICT,"必须使用独立印花，不能把整件商品当作印花贴上去");return image(id,u);}
  public CommerceDesignImageGateway.Reference blankImage(String id,PlatformPrincipal u){var r=row(id,u);if(!"BLANK_PRODUCT".equals(r.get("asset_kind")))throw error(HttpStatus.CONFLICT,"请选择去除印花后的纯色底图候选");return image(id,u);}
  public CommerceMockupPositionCheck.Report checkMockup(String id,PlatformPrincipal u){
@@ -161,17 +164,74 @@ public class CommerceSampleService {
     ? db.update("UPDATE commerce_sample_previews SET status='SUBMITTING',model_id=?,prompt=?,updated_at=NOW(6) WHERE id=? AND status='PREPARED'", model.modelId(), prompt, id)
     : db.update("UPDATE commerce_sample_previews SET status='SUBMITTING',updated_at=NOW(6) WHERE id=? AND status='PREPARED'", id);
   if (claimed == 1) {
+   String attemptModel = capturePrint ? model.modelId() : (String)stored.get("model_id");
    try{var result = capturePrint ? gateway.generateCapturePrintArtwork(prompt,id,model,references)
      : printKind(kind) ? gateway.generateTransparentArtwork(prompt,id,model,references)
      : gateway.generateSample(prompt,id,model,references);
-    saveResponse(id,u,result);}
+    saveResponse(id,u,attemptModel,result);}
    catch(CommerceImageRejectedException failure){
-    saveRefusal(id,u,failure);
+    saveRefusal(id,u,attemptModel,failure);
+    if (capturePrint && eligibleForBanana(failure.failureKind(), failure.providerStatus())) {
+     var banana = models.capturePrintBananaConnection(u.organizationId());
+     if (banana.isPresent()) return submitCaptureBanana(id,u,banana.get(),references);
+    }
     throw error(HttpStatus.CONFLICT,failure.getMessage()+"；同一请求不会自动重试生图");
    }
-   catch(RuntimeException failure){db.update("UPDATE commerce_sample_previews SET status='UNKNOWN',updated_at=NOW(6) WHERE id=? AND status='SUBMITTING'",id);throw error(HttpStatus.CONFLICT,"示例结果待核查，请勿换请求编号重复生成");}
+   catch(RuntimeException failure){throw unknownResult(id,u,attemptModel);}
   }
   return collectView(id, u, capturePrint);
+ }
+
+ View retryCaptureWithBanana(String id, boolean confirmed, PlatformPrincipal user) {
+  if (!confirmed) throw error(HttpStatus.BAD_REQUEST, "请确认本次 Banana 提取费用");
+  var saved = captureResultRow(id,user);
+  if (isBanana(saved.get("model_id"))) return collectView(id,user,true);
+  var refusal = json.readTree(Objects.toString(saved.get("result_json"),"{}"));
+  if (!"REJECTED".equals(saved.get("status")) || !ModelConfigService.CAPTURE_PRINT_MODEL_ID.equals(saved.get("model_id"))
+      || !eligibleForBanana(refusal.path("failureKind").asText(), refusal.path("providerStatus").asInt(0)))
+   throw error(HttpStatus.CONFLICT, "原请求未收到 GPT Image 2.6 的明确内容拒绝");
+  var banana = models.capturePrintBananaConnection(user.organizationId()).orElseThrow(() ->
+    error(HttpStatus.CONFLICT, "当前企业未启用可用的 Nano Banana 2.1"));
+  return submitCaptureBanana(id,user,banana,List.of(image((String)saved.get("parent_id"),user)));
+ }
+
+ private View submitCaptureBanana(String id, PlatformPrincipal user, ModelConfigService.RuntimeModelConnection model,
+                                 List<CommerceDesignImageGateway.Reference> references) {
+  int claimed = db.update("""
+    UPDATE commerce_sample_previews SET status='SUBMITTING',model_id=?,prompt=?,updated_at=NOW(6)
+    WHERE id=? AND organization_id=? AND created_by=? AND status='REJECTED' AND model_id=?
+    """,model.modelId(),BANANA_PRINT_PROMPT,id,user.organizationId(),user.userId(),ModelConfigService.CAPTURE_PRINT_MODEL_ID);
+  if (claimed == 1) {
+   try {
+    saveResponse(id,user,model.modelId(),gateway.generateCapturePrintWithBanana(BANANA_PRINT_PROMPT,bananaAttempt(id),model,references));
+   } catch (CommerceImageRejectedException failure) {
+    saveRefusal(id,user,model.modelId(),failure);
+    throw error(HttpStatus.CONFLICT,"Banana：" + failure.getMessage() + "；同一请求不会自动重试生图");
+   } catch (RuntimeException failure) {
+    throw unknownResult(id,user,model.modelId());
+   }
+  }
+  return collectView(id,user,true);
+ }
+
+ private BusinessException unknownResult(String id, PlatformPrincipal user, String model) {
+  db.update("""
+    UPDATE commerce_sample_previews SET status='UNKNOWN',updated_at=NOW(6)
+    WHERE id=? AND organization_id=? AND created_by=? AND status='SUBMITTING' AND model_id=?
+    """,id,user.organizationId(),user.userId(),model);
+  return error(HttpStatus.CONFLICT,isBanana(model) || ModelConfigService.CAPTURE_PRINT_MODEL_ID.equals(model)
+      ? "印花结果待核查，请刷新结果" : "示例结果待核查，请勿换请求编号重复生成");
+ }
+
+ private static boolean eligibleForBanana(String kind, Integer status) {
+  return status != null && (status == 400 || status == 403 || status == 422)
+      && ("COPYRIGHT".equals(kind) || "POLICY".equals(kind));
+ }
+
+ private static boolean isBanana(Object model) { return ModelConfigService.BANANA_IMAGE_MODEL_ID.equals(model); }
+ private static String bananaAttempt(String id) { return id + "_banana"; }
+ private static String transparencyFailure(Object model) {
+  return isBanana(model) ? BANANA_TRANSPARENCY_FAILURE : TRANSPARENCY_FAILURE;
  }
  private View collectView(String id, PlatformPrincipal user, boolean capturePrint) {
   boolean archivePending = collect(id, user, capturePrint);
@@ -181,16 +241,19 @@ public class CommerceSampleService {
     "/api/v1/product-print-capture/results/" + id + "/image", saved.parentId(), saved.assetKind());
  }
 
- public record CaptureResult(String imageId, String id, String status, String imageUrl, String message) {}
+ public record CaptureResult(String imageId, String id, String status, String imageUrl, String message, boolean bananaRetry) {}
 
  List<CaptureResult> captureResults(String captureId, PlatformPrincipal user) {
   access(user);
   String prefix = "来源采集商品 " + captureId + " / ";
   return db.query("""
-    SELECT source.prompt AS binding, art.id, art.status,
+    SELECT source.prompt AS binding, art.id, art.status, art.model_id,
            art.storage_key IS NOT NULL AS archived,
            art.status='RESULT_RECEIVED' AND JSON_TYPE(JSON_EXTRACT(art.result_json,'$.artifact.dataBase64'))='STRING' AS inline_image,
-           CASE WHEN art.status='REJECTED' THEN JSON_UNQUOTE(JSON_EXTRACT(art.result_json,'$.message')) END AS reason
+           CASE WHEN art.status='REJECTED' THEN JSON_UNQUOTE(JSON_EXTRACT(art.result_json,'$.message')) END AS reason,
+           CASE WHEN art.status='REJECTED' THEN JSON_UNQUOTE(JSON_EXTRACT(art.result_json,'$.failureKind')) END AS failure_kind,
+           CASE WHEN art.status='REJECTED' AND JSON_TYPE(JSON_EXTRACT(art.result_json,'$.providerStatus'))='INTEGER'
+                THEN CAST(JSON_UNQUOTE(JSON_EXTRACT(art.result_json,'$.providerStatus')) AS UNSIGNED) END AS provider_status
     FROM commerce_sample_previews source
     JOIN commerce_sample_previews art ON art.parent_id=source.id
         AND art.organization_id=source.organization_id AND art.created_by=source.created_by
@@ -201,20 +264,23 @@ public class CommerceSampleService {
     """, (row, index) -> {
    String id = row.getString("id");
    String status = row.getString("status");
+   String model = row.getString("model_id");
    String imageUrl = null;
    if ("READY".equals(status) && row.getBoolean("archived"))
     imageUrl = "/api/v1/commerce-samples/" + id + "/image";
-   if (row.getBoolean("inline_image"))
+   if (!isBanana(model) && row.getBoolean("inline_image"))
     imageUrl = "/api/v1/product-print-capture/results/" + id + "/image";
-   String message = TRANSPARENCY_REJECTED.equals(status) ? TRANSPARENCY_FAILURE : row.getString("reason");
-   return new CaptureResult(row.getString("binding").substring(prefix.length()), id, status, imageUrl, message);
+   String message = TRANSPARENCY_REJECTED.equals(status) ? transparencyFailure(model) : row.getString("reason");
+   boolean retry = "REJECTED".equals(status) && ModelConfigService.CAPTURE_PRINT_MODEL_ID.equals(model)
+       && eligibleForBanana(row.getString("failure_kind"), row.getInt("provider_status"));
+   return new CaptureResult(row.getString("binding").substring(prefix.length()), id, status, imageUrl, message, retry);
   }, user.organizationId(), user.userId(), prefix + "%");
  }
 
  View archiveCaptureResult(String id, PlatformPrincipal user) {
   var saved = captureResultRow(id, user);
   if (AWAITING_CAPTURE_RESULT.contains(saved.get("status"))) {
-   recoverCaptureResponse(id, user, ModelConfigService.CAPTURE_PRINT_MODEL_ID.equals(saved.get("model_id")));
+   recoverCaptureResponse(id, user, (String)saved.get("model_id"));
    saved = captureResultRow(id, user);
    if (AWAITING_CAPTURE_RESULT.contains(saved.get("status")) || "REJECTED".equals(saved.get("status")))
     return view(saved);
@@ -224,39 +290,40 @@ public class CommerceSampleService {
   return collectView(id, user, true);
  }
 
- private void recoverCaptureResponse(String id, PlatformPrincipal user, boolean fixedModel) {
+ private void recoverCaptureResponse(String id, PlatformPrincipal user, String model) {
   CommerceDesignImageGateway.Operation operation;
   try {
-   operation = gateway.operation(id);
+   operation = gateway.operation(isBanana(model) ? bananaAttempt(id) : id);
   } catch (RestClientException unavailable) {
    throw error(HttpStatus.SERVICE_UNAVAILABLE, "原请求结果暂不可读取，请稍后刷新");
   }
   if (operation == null || operation.active()) return;
   if ("COMPLETED".equals(operation.status()) && operation.response() != null) {
-   saveResponse(id,user,operation.response());
-  } else if (fixedModel && "FAILED".equals(operation.status()) && operation.error() != null) {
+   saveResponse(id,user,model,operation.response());
+  } else if ((isBanana(model) || ModelConfigService.CAPTURE_PRINT_MODEL_ID.equals(model))
+      && "FAILED".equals(operation.status()) && operation.error() != null) {
    // Lookup omits routing details. Older jobs may have used a fallback with an uncertain primary call.
    var refusal = CommerceDesignImageGateway.confirmedRejection(json.valueToTree(operation.error()));
-   if (refusal != null) saveRefusal(id,user,refusal);
+   if (refusal != null) saveRefusal(id,user,model,refusal);
   }
  }
 
- private void saveResponse(String id, PlatformPrincipal user, CommerceDesignImageGateway.Response response) {
+ private void saveResponse(String id, PlatformPrincipal user, String model, CommerceDesignImageGateway.Response response) {
   db.update("""
     UPDATE commerce_sample_previews SET status='RESULT_RECEIVED',result_json=?,updated_at=NOW(6)
-    WHERE id=? AND organization_id=? AND created_by=? AND status IN ('SUBMITTING','UNKNOWN')
-    """, json.writeValueAsString(response), id, user.organizationId(), user.userId());
+    WHERE id=? AND organization_id=? AND created_by=? AND model_id=? AND status IN ('SUBMITTING','UNKNOWN')
+    """, json.writeValueAsString(response), id, user.organizationId(), user.userId(), model);
  }
 
- private void saveRefusal(String id, PlatformPrincipal user, CommerceImageRejectedException failure) {
+ private void saveRefusal(String id, PlatformPrincipal user, String model, CommerceImageRejectedException failure) {
   var refusal = new LinkedHashMap<String,Object>();
-  refusal.put("message", failure.getMessage());
+  refusal.put("message", isBanana(model) ? "Banana：" + failure.getMessage() : failure.getMessage());
   refusal.put("failureKind", failure.failureKind());
   refusal.put("providerStatus", failure.providerStatus());
   db.update("""
     UPDATE commerce_sample_previews SET status='REJECTED',result_json=?,updated_at=NOW(6)
-    WHERE id=? AND organization_id=? AND created_by=? AND status IN ('SUBMITTING','UNKNOWN')
-    """, json.writeValueAsString(refusal), id, user.organizationId(), user.userId());
+    WHERE id=? AND organization_id=? AND created_by=? AND model_id=? AND status IN ('SUBMITTING','UNKNOWN')
+    """, json.writeValueAsString(refusal), id, user.organizationId(), user.userId(), model);
  }
 
  private Map<String,Object> captureResultRow(String id, PlatformPrincipal user) {
@@ -270,6 +337,7 @@ public class CommerceSampleService {
 
  CommerceDesignImageGateway.Reference captureResultImage(String id, PlatformPrincipal user) {
   var saved = captureResultRow(id, user);
+  if (isBanana(saved.get("model_id"))) return image(id,user);
   if (!Set.of("RESULT_RECEIVED", "READY").contains(Objects.toString(saved.get("status"), ""))
       || saved.get("result_json") == null) {
    throw error(HttpStatus.NOT_FOUND, "找不到本次采集的印花结果");
@@ -290,13 +358,17 @@ public class CommerceSampleService {
 
  private boolean collect(String id,PlatformPrincipal u,boolean capturePrint){var r=row(id,u);String status=Objects.toString(r.get("status"),"");
   if("REJECTED".equals(status))throw error(HttpStatus.CONFLICT,json.readTree(Objects.toString(r.get("result_json"),"{}")).path("message").asText("模型明确拒绝本次请求")+"；同一请求不会自动重试生图");
+  if (capturePrint && isBanana(r.get("model_id"))) {
+   if ("RESULT_RECEIVED".equals(status)) collectBanana(id,r,u);
+   if (TRANSPARENCY_REJECTED.equals(status)) throw error(HttpStatus.CONFLICT,BANANA_TRANSPARENCY_FAILURE);
+   return false;
+  }
   if(!"RESULT_RECEIVED".equals(status)&&!(printKind(r.get("asset_kind"))&&Set.of(TRANSPARENCY_REJECTED,"READY").contains(status)))return false;
   byte[] bytes;
   if(r.get("storage_key") instanceof String key&&!key.isBlank())bytes=Base64.getDecoder().decode(archive.read(u.organizationId(),key).dataBase64());
   else{
    var response=json.readValue((String)r.get("result_json"),CommerceDesignImageGateway.Response.class);
-   if(response.artifact()!=null&&response.artifact().dataBase64()!=null){if(response.artifact().dataBase64().length()>12_000_000)throw error(HttpStatus.CONFLICT,"示例图片过大");bytes=Base64.getDecoder().decode(response.artifact().dataBase64());}
-   else{if(response.result()==null||response.result().url()==null)throw error(HttpStatus.CONFLICT,"模型没有返回图片");bytes=downloader.download(response.result().url()).bytes();}
+   bytes=resultBytes(response);
    CommerceImageArchive.Archived stored;
    try {
     stored=archive.store(u.organizationId(),bytes);
@@ -320,6 +392,53 @@ public class CommerceSampleService {
   requireNativePrint(id,r,bytes,u);
   if(!"READY".equals(status))db.update("UPDATE commerce_sample_previews SET status='READY',updated_at=NOW(6) WHERE id=? AND organization_id=? AND created_by=? AND status IN ('RESULT_RECEIVED','TRANSPARENCY_REJECTED')",id,u.organizationId(),u.userId());
   return false;
+ }
+
+ private byte[] resultBytes(CommerceDesignImageGateway.Response response) {
+  if (response.artifact()!=null && response.artifact().dataBase64()!=null) {
+   if (response.artifact().dataBase64().length()>12_000_000) throw error(HttpStatus.CONFLICT,"示例图片过大");
+   return Base64.getDecoder().decode(response.artifact().dataBase64());
+  }
+  if (response.result()==null || response.result().url()==null) throw error(HttpStatus.CONFLICT,"模型没有返回图片");
+  return downloader.download(response.result().url()).bytes();
+ }
+
+ private void collectBanana(String id, Map<String,Object> row, PlatformPrincipal user) {
+  String org = user.organizationId();
+  var saved = json.readTree((String)row.get("result_json"));
+  String originalKey = saved.path("originalStorageKey").asText("");
+  byte[] raw;
+  if (originalKey.isEmpty()) {
+   raw = resultBytes(json.treeToValue(saved,CommerceDesignImageGateway.Response.class));
+   originalKey = archive.store(org,raw).storageKey();
+   db.update("""
+       UPDATE commerce_sample_previews SET result_json=JSON_SET(result_json,'$.originalStorageKey',?),updated_at=NOW(6)
+       WHERE id=? AND organization_id=? AND created_by=? AND status='RESULT_RECEIVED'
+       """,originalKey,id,org,user.userId());
+  } else {
+   raw = Base64.getDecoder().decode(archive.read(org,originalKey).dataBase64());
+  }
+
+  byte[] transparent = raw;
+  try {
+   CommerceTransparentArtworkPolicy.requireNative(raw);
+  } catch (IllegalArgumentException opaque) {
+   try {
+    transparent = CommerceArtworkMatte.prepare(raw).png();
+    CommerceTransparentArtworkPolicy.requireNative(transparent);
+   } catch (IllegalArgumentException invalid) {
+    db.update("""
+        UPDATE commerce_sample_previews SET status='TRANSPARENCY_REJECTED',updated_at=NOW(6)
+        WHERE id=? AND organization_id=? AND created_by=? AND status='RESULT_RECEIVED'
+        """,id,org,user.userId());
+    throw error(HttpStatus.CONFLICT,BANANA_TRANSPARENCY_FAILURE + "。原因：" + invalid.getMessage());
+   }
+  }
+  String storageKey = transparent == raw ? originalKey : archive.store(org,transparent).storageKey();
+  db.update("""
+      UPDATE commerce_sample_previews SET storage_key=?,status='READY',updated_at=NOW(6)
+      WHERE id=? AND organization_id=? AND created_by=? AND status='RESULT_RECEIVED'
+      """,storageKey,id,org,user.userId());
  }
  private void requireNativePrint(String id,Map<String,Object> row,byte[] bytes,PlatformPrincipal u){
   if(!printKind(row.get("asset_kind")))return;

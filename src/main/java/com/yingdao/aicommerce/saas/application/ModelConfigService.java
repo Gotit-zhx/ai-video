@@ -18,7 +18,7 @@ import java.util.Optional;
 public class ModelConfigService {
 
     private static final String COPYRIGHT_FALLBACK_MODEL_ID = "grok-imagine-image-2.0";
-    private static final String BANANA_IMAGE_MODEL_ID = "gemini-nano-banana-2.1";
+    public static final String BANANA_IMAGE_MODEL_ID = "gemini-nano-banana-2.1";
     public static final String CAPTURE_PRINT_MODEL_ID = "gpt-image-2.6";
     private static final List<String> CAPTURE_PRINT_MODEL_IDS = List.of(CAPTURE_PRINT_MODEL_ID);
     private static final String CAPTURE_PRINT_MODEL_UNAVAILABLE =
@@ -218,18 +218,27 @@ public class ModelConfigService {
         if (organizationId == null || organizationId.isBlank()) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "印花提取缺少公司信息");
         }
+        return capturePrintConnection(organizationId, CAPTURE_PRINT_MODEL_ID)
+                .orElseThrow(() -> new BusinessException(HttpStatus.CONFLICT, CAPTURE_PRINT_MODEL_UNAVAILABLE));
+    }
+
+    public Optional<RuntimeModelConnection> capturePrintBananaConnection(String organizationId) {
+        if (organizationId == null || organizationId.isBlank()) return Optional.empty();
+        return capturePrintConnection(organizationId, BANANA_IMAGE_MODEL_ID);
+    }
+
+    private Optional<RuntimeModelConnection> capturePrintConnection(String organizationId, String modelId) {
         return mapper.selectList(new LambdaQueryWrapper<ModelConfig>()
                         .eq(ModelConfig::getOrganizationId, organizationId)
                         .eq(ModelConfig::getModelType, "IMAGE")
                         .eq(ModelConfig::getStatus, "ACTIVE")
-                        .eq(ModelConfig::getModelId, CAPTURE_PRINT_MODEL_ID)
+                        .eq(ModelConfig::getModelId, modelId)
                         .orderByDesc(ModelConfig::isDefaultModel)
                         .orderByDesc(ModelConfig::getUpdatedAt)
                         .orderByAsc(ModelConfig::getId))
                 .stream()
-                .map(candidate -> artworkRuntime(organizationId, candidate, CAPTURE_PRINT_MODEL_IDS))
-                .flatMap(Optional::stream).findFirst()
-                .orElseThrow(() -> new BusinessException(HttpStatus.CONFLICT, CAPTURE_PRINT_MODEL_UNAVAILABLE));
+                .map(candidate -> artworkRuntime(organizationId, candidate, List.of(modelId)))
+                .flatMap(Optional::stream).findFirst();
     }
 
     public Optional<RuntimeModelConnection> capturePrintConnectionById(String organizationId, String id) {
@@ -244,6 +253,13 @@ public class ModelConfigService {
         if (!configuredArtworkConnection(connection) || !CAPTURE_PRINT_MODEL_ID.equals(connection.modelId())
                 || !connection.fallbackModels().isEmpty()) {
             throw new BusinessException(HttpStatus.CONFLICT, CAPTURE_PRINT_MODEL_UNAVAILABLE);
+        }
+    }
+
+    public static void requireCapturePrintBananaModel(RuntimeModelConnection connection) {
+        if (!configuredArtworkConnection(connection) || !BANANA_IMAGE_MODEL_ID.equals(connection.modelId())
+                || !connection.fallbackModels().isEmpty()) {
+            throw new BusinessException(HttpStatus.CONFLICT, "当前企业未启用可用的 Nano Banana 2.1");
         }
     }
 

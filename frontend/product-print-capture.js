@@ -304,6 +304,15 @@
         archive.onclick = () => void archiveResult(result);
         item.append(archive);
       }
+      if (result.bananaRetry) {
+        const retry = document.createElement('button');
+        retry.className = 'quiet-button';
+        retry.type = 'button';
+        retry.disabled = busy;
+        retry.textContent = '用 Banana 提取';
+        retry.onclick = () => void retryWithBanana(result);
+        item.append(retry);
+      }
       const message = result.message || ({
         UNKNOWN: '结果待核查',
         SUBMITTING: '提取中',
@@ -425,6 +434,32 @@
       if (capture === source) {
         busy = false;
         updateActions(); renderResults();
+      }
+    }
+  }
+
+  async function retryWithBanana(result) {
+    if (busy || !capture || !result.bananaRetry || !window.confirm('确认调用 Nano Banana 2.1 提取这张图？本次按张计费。')) return;
+    const source = capture;
+    busy = true;
+    renderResults(); updateActions();
+    status('results-status', 'Banana 提取中…');
+    try {
+      const data = await request(`${endpoint}/results/${encodeURIComponent(result.id)}/banana`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({confirmed: true})
+      });
+      if (capture !== source) return;
+      results.set(data.id, {...data, imageId: result.imageId});
+      await refreshResults(true);
+    } catch (error) {
+      if (capture === source) {
+        await refreshResults(true);
+        if (capture === source) status('results-status', error.message, true);
+      }
+    } finally {
+      if (capture === source) {
+        busy = false;
+        renderResults(); updateActions();
       }
     }
   }

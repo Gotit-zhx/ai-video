@@ -266,6 +266,87 @@ class CommerceSampleServiceTest {
   verifyNoInteractions(fixture.models);
  }
 
+ @Test void explicitPrimaryRefusalSwitchesOnceAndPreservesTheOriginalBananaOutput() throws Exception {
+  var fixture = new SubmittedSample("UPLOADED","PRINT_EXTRACT",archiveDirectory.resolve("banana-claim"));
+  fixture.db.parent.put("prompt", "来源采集商品 capture-a / image-a");
+  when(fixture.models.requireCapturePrintConnection("org")).thenReturn(CAPTURE_MODEL);
+  when(fixture.models.capturePrintBananaConnection("org")).thenReturn(java.util.Optional.of(BANANA_MODEL));
+  when(fixture.gateway.generateCapturePrintArtwork(anyString(),anyString(),same(CAPTURE_MODEL),anyList()))
+    .thenThrow(new CommerceImageRejectedException("第三方内容限制","COPYRIGHT",400));
+  var raw = java.util.Base64.getEncoder().encodeToString(png(false,false));
+  when(fixture.gateway.generateCapturePrintWithBanana(anyString(),anyString(),same(BANANA_MODEL),anyList()))
+    .thenReturn(bananaResponse(raw));
+  var result = fixture.service.extractCapturePrint("capture-fallback-key","capture-a","image-a",() -> fail("already archived"),fixture.user);
+  assertEquals("READY",result.status());
+  assertEquals(BANANA_MODEL.modelId(),result.model());
+  var saved = new tools.jackson.databind.ObjectMapper().readTree((String)fixture.db.row.get("result_json"));
+  assertEquals(raw,fixture.archive.read("org",saved.path("originalStorageKey").asText()).dataBase64());
+  var converted = java.util.Base64.getDecoder().decode(fixture.service.image(result.id(),fixture.user).dataBase64());
+  CommerceTransparentArtworkPolicy.requireNative(converted);
+  var prepared = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(converted));
+  assertEquals(0,prepared.getRGB(0,0));
+  assertEquals(0xffffffff,prepared.getRGB(63,63));
+  assertEquals("READY",fixture.service.retryCaptureWithBanana(result.id(),true,fixture.user).status());
+  verify(fixture.gateway).generateCapturePrintArtwork(anyString(),eq(result.id()),same(CAPTURE_MODEL),anyList());
+  verify(fixture.gateway).generateCapturePrintWithBanana(anyString(),eq(result.id()+"_banana"),same(BANANA_MODEL),anyList());
+  verifyNoMoreInteractions(fixture.gateway);
+ }
+
+ @Test void unknownPrimaryDoesNotSwitchModelsAndUnknownBananaLooksUpItsOwnAttempt() throws Exception {
+  var fixture = new SubmittedSample("UPLOADED","PRINT_EXTRACT",archiveDirectory.resolve("banana-unknown"));
+  fixture.db.parent.put("prompt","来源采集商品 capture-a / image-a");
+  when(fixture.models.requireCapturePrintConnection("org")).thenReturn(CAPTURE_MODEL);
+  when(fixture.gateway.generateCapturePrintArtwork(anyString(),anyString(),same(CAPTURE_MODEL),anyList()))
+    .thenThrow(new IllegalStateException("response timed out"));
+  assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,() -> fixture.service.extractCapturePrint(
+    "capture-unknown-key","capture-a","image-a",() -> fail("already archived"),fixture.user));
+  assertEquals("UNKNOWN",fixture.db.row.get("status"));
+  verify(fixture.models,never()).capturePrintBananaConnection(anyString());
+  verify(fixture.gateway,never()).generateCapturePrintWithBanana(anyString(),anyString(),any(),anyList());
+
+  var fallback = pendingCapture();
+  fallback.db.row.put("model_id",BANANA_MODEL.modelId());
+  var raw = java.util.Base64.getEncoder().encodeToString(png(false,false));
+  when(fallback.gateway.operation("capture-request_banana"))
+    .thenReturn(new CommerceDesignImageGateway.Operation("COMPLETED",false,1L,bananaResponse(raw),null));
+  assertEquals("READY",fallback.service.archiveCaptureResult("capture-request",fallback.user).status());
+  verify(fallback.gateway).operation("capture-request_banana");
+  verifyNoMoreInteractions(fallback.gateway);
+ }
+
+ @Test void aHistoricRefusalRequiresConfirmationAndAFailedMatteDoesNotResubmit() throws Exception {
+  var fixture = pendingCapture();
+  fixture.db.row.put("status","REJECTED");
+  fixture.db.row.put("result_json","{\"message\":\"第三方内容限制\",\"failureKind\":\"COPYRIGHT\",\"providerStatus\":400}");
+  assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,
+    () -> fixture.service.retryCaptureWithBanana("capture-request",false,fixture.user));
+  verifyNoInteractions(fixture.gateway,fixture.models);
+  when(fixture.models.capturePrintBananaConnection("org")).thenReturn(java.util.Optional.of(BANANA_MODEL));
+  var blank = java.util.Base64.getEncoder().encodeToString(png(false,true));
+  when(fixture.gateway.generateCapturePrintWithBanana(anyString(),eq("capture-request_banana"),same(BANANA_MODEL),anyList()))
+    .thenReturn(bananaResponse(blank));
+  assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,
+    () -> fixture.service.retryCaptureWithBanana("capture-request",true,fixture.user));
+  assertEquals("TRANSPARENCY_REJECTED",fixture.db.row.get("status"));
+  assertNull(fixture.db.row.get("storage_key"));
+  var saved = new tools.jackson.databind.ObjectMapper().readTree((String)fixture.db.row.get("result_json"));
+  assertEquals(blank,fixture.archive.read("org",saved.path("originalStorageKey").asText()).dataBase64());
+  assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,
+    () -> fixture.service.retryCaptureWithBanana("capture-request",true,fixture.user));
+  verify(fixture.gateway).generateCapturePrintWithBanana(anyString(),eq("capture-request_banana"),same(BANANA_MODEL),anyList());
+  verifyNoMoreInteractions(fixture.gateway);
+ }
+
+ private static final com.yingdao.aicommerce.saas.application.ModelConfigService.RuntimeModelConnection CAPTURE_MODEL =
+   new com.yingdao.aicommerce.saas.application.ModelConfigService.RuntimeModelConnection("capture","https://image.example","gpt-image-2.6","OPENAI_COMPATIBLE","CUSTOM","test");
+ private static final com.yingdao.aicommerce.saas.application.ModelConfigService.RuntimeModelConnection BANANA_MODEL =
+   new com.yingdao.aicommerce.saas.application.ModelConfigService.RuntimeModelConnection("banana","https://image.example","gemini-nano-banana-2.1","OPENAI_COMPATIBLE","CUSTOM","test");
+
+ private static CommerceDesignImageGateway.Response bananaResponse(String encoded) {
+  return new CommerceDesignImageGateway.Response(
+   new CommerceDesignImageGateway.Artifact(encoded,"image/png",BANANA_MODEL.modelId(),"EDIT",null),null);
+ }
+
  private SubmittedSample pendingCapture() throws Exception {
   var fixture = new SubmittedSample("UPLOADED", "PRINT_EXTRACT", archiveDirectory.resolve("pending-capture"));
   fixture.db.row.putAll(java.util.Map.of("id", "capture-request", "product", "UPLOADED", "variant_index", 0,
@@ -312,9 +393,13 @@ class CommerceSampleServiceTest {
     if(!row.isEmpty())return 0;
     row.put("id",arguments[0]);row.put("request_key",arguments[3]);row.put("product",arguments[4]);row.put("variant_index",arguments[5]);row.put("model_id",arguments[6]);
     row.put("prompt",arguments[7]);row.put("parent_id",arguments[8]);row.put("asset_kind",arguments[9]);row.put("status","PREPARED");
-   }else if(sql.contains("SET storage_key="))row.put("storage_key",arguments[0]);
+   }else if(sql.contains("SET storage_key=")){
+    row.put("storage_key",arguments[0]);
+    if(sql.contains("status='READY'"))row.put("status","READY");
+   }
    else if(sql.contains("SET status='SUBMITTING'")){
-    if(!"PREPARED".equals(row.get("status")))return 0;
+    String previous = sql.contains("status='REJECTED'") ? "REJECTED" : "PREPARED";
+    if(!previous.equals(row.get("status")))return 0;
     row.put("status","SUBMITTING");
     if(sql.contains("model_id=?")){
      row.put("model_id",arguments[0]);row.put("prompt",arguments[1]);
@@ -324,6 +409,13 @@ class CommerceSampleServiceTest {
    else if(sql.contains("SET status='REJECTED'")){row.put("status","REJECTED");row.put("result_json",arguments[0]);}
    else if(sql.contains("SET status='UNKNOWN'"))row.put("status","UNKNOWN");
    else if(sql.contains("SET status='READY'"))row.put("status","READY");
+   else if(sql.contains("SET status='TRANSPARENCY_REJECTED'"))row.put("status","TRANSPARENCY_REJECTED");
+   else if(sql.contains("SET result_json=JSON_SET")){
+    var mapper = new tools.jackson.databind.ObjectMapper();
+    var payload = (tools.jackson.databind.node.ObjectNode)mapper.readTree((String)row.get("result_json"));
+    payload.put("originalStorageKey",(String)arguments[0]);
+    row.put("result_json",mapper.writeValueAsString(payload));
+   }
    else throw new AssertionError("Unexpected sample write: "+sql);
    return 1;
   }

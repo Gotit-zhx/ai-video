@@ -16,7 +16,7 @@ const result = imageId => ({id: `print-${imageId}`, imageId, status: 'READY', im
 const shortSleeve = {id: 'style', name: '短袖', variants: [{image: '/base.png', styleCode: 'A01'}]};
 
 async function workspace(t, submit, history = [], styles = {ready: [shortSleeve], editable: [shortSleeve]},
-                         recover = async entry => entry) {
+                         recover = async entry => entry, retryBanana = async entry => entry) {
   const dom = new JSDOM(html, {
     url: `https://example.test/#product-print-capture?capture=${captureId}`,
     runScripts: 'outside-only'
@@ -62,6 +62,12 @@ async function workspace(t, submit, history = [], styles = {ready: [shortSleeve]
       assert.equal(options.method, 'POST');
       resultLookups.push(lookup.id);
       return success(await recover(lookup, history));
+    }
+    const rejected = history.find(entry => path === `${endpoint}/results/${entry.id}/banana`);
+    if (rejected) {
+      assert.equal(options.method, 'POST');
+      assert.equal(JSON.parse(options.body).confirmed, true);
+      return success(await retryBanana(rejected, history));
     }
     if (path.startsWith('/api/v1/product-capture-templates?')) {
       const items = path.includes('readyOnly=true') ? styles.ready : styles.editable;
@@ -226,6 +232,31 @@ test('refresh recovers only the original unsettled request and shows the recover
   assert.deepEqual(app.resultLookups, ['pending-c']);
   assert.deepEqual(app.resultButtons().map(button => button.dataset.result), ['print-a', 'pending-c']);
   assert.match(app.get('results').textContent, /第三方内容限制/);
+  assert.equal(app.submissions.length, 0);
+});
+
+test('a historic refusal switches to Banana only after confirming the selected image', async t => {
+  const rejected = {id: 'rejected-b', imageId: 'b', status: 'REJECTED', bananaRetry: true};
+  let bananaCalls = 0;
+  const app = await workspace(t, () => assert.fail('primary request must not be resubmitted'),
+    [rejected], undefined, undefined, (entry, history) => {
+      assert.equal(entry.id, rejected.id);
+      bananaCalls++;
+      const recovered = {...result('b'), id: rejected.id};
+      history[0] = recovered;
+      return recovered;
+    });
+  const button = app.get('results').querySelector('button');
+  assert.equal(button.textContent, '用 Banana 提取');
+  app.window.confirm = () => false;
+  button.click();
+  await flush();
+  assert.equal(bananaCalls, 0);
+  app.window.confirm = () => true;
+  button.click();
+  await flush();
+  assert.equal(bananaCalls, 1);
+  assert.equal(app.resultButtons()[0].dataset.result, rejected.id);
   assert.equal(app.submissions.length, 0);
 });
 

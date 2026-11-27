@@ -24,6 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class ProductPrintCaptureController {
     public record LookupRequest(String url) {}
     public record ExtractRequest(String imageId, boolean confirmed) {}
+    public record BananaRetryRequest(boolean confirmed) {}
 
     private final ProductPrintCaptureService service;
 
@@ -69,6 +70,12 @@ public class ProductPrintCaptureController {
         var image = service.resultImage(id, user);
         return ResponseEntity.ok().contentType(MediaType.IMAGE_PNG).cacheControl(CacheControl.noStore())
                 .header("X-Content-Type-Options", "nosniff").body(java.util.Base64.getDecoder().decode(image.dataBase64()));
+    }
+
+    @PostMapping("/results/{id}/banana")
+    public ApiResponse<CommerceSampleService.View> retryWithBanana(@PathVariable String id,
+            @RequestBody BananaRetryRequest request, @AuthenticationPrincipal PlatformPrincipal user) {
+        return ApiResponse.ok(service.retryWithBanana(id, request.confirmed(), user));
     }
 
     @PostMapping(path = "/{captureId}/production", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

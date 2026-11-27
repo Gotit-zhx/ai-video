@@ -89,6 +89,11 @@ public class ProductPrintCaptureService {
         return samples.archiveCaptureResult(id, user);
     }
 
+    public CommerceSampleService.View retryWithBanana(String id, boolean confirmed, PlatformPrincipal user) {
+        requireEdit(user);
+        return samples.retryCaptureWithBanana(id, confirmed, user);
+    }
+
     public CommerceDesignImageGateway.Reference resultImage(String id, PlatformPrincipal user) {
         requireEdit(user);
         return samples.captureResultImage(id, user);

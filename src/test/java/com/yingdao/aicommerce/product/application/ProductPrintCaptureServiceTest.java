@@ -56,7 +56,7 @@ class ProductPrintCaptureServiceTest {
         var capture = new ProductCapture("org-a", "u", "key", "hash", "SHOPEE",
                 "https://shopee.ph/product/105/209", "105", "209", "印花 T 恤", null, null, null,
                 null, null, null, "{}", "{}");
-        var result = new CommerceSampleService.CaptureResult("image", "print", "READY", "/image", null);
+        var result = new CommerceSampleService.CaptureResult("image", "print", "READY", "/image", null, false);
         assertEquals(HttpStatus.FORBIDDEN, assertThrows(BusinessException.class,
                 () -> service.results(capture.getId(), principal("product:view"))).getStatus());
         when(captures.getPrintSource("missing", editor))
